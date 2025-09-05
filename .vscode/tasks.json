@@ -1,0 +1,528 @@
+{
+	"version": "2.0.0",
+	"tasks": [
+		{
+			"label": "生成版本信息",
+			"type": "shell",
+			"command": "goversioninfo",
+			"detail": "syso资源文件生成"
+		},
+		{
+			"label": "fyne Build Android APK2",
+			"type": "shell",
+			"command": "fyne",
+			"args": [
+				"package",
+				"--target",
+				"android",
+				"--name",
+				"果汁",
+				"--appID",
+				"com.cjxpj.juice",
+				"--icon",
+				"../assets/icon.png",
+				"--appVersion",
+				"7.3.0"
+			],
+			"problemMatcher": [],
+			"group": {
+				"kind": "build",
+				"isDefault": true
+			},
+			"detail": "fyne生成 Android APK 文件2",
+			"options": {
+				"cwd": "${workspaceFolder}/juiceAndroid",
+				"env": {
+					"ANDROID_NDK_HOME": "E:/code/android-ndk-r26d-windows/android-ndk-r26d"
+				}
+			}
+		},
+		{
+			"label": "Build Android APK",
+			"type": "shell",
+			"command": "gomobile",
+			"args": [
+				"build",
+				"-target=android/arm64",
+				"-o",
+				"dist/Android7X64.apk",
+				"-androidapi=30",
+				"-v",
+				"-x",
+				"./juiceAndroid"
+			],
+			"problemMatcher": [],
+			"group": {
+				"kind": "build",
+				"isDefault": true
+			},
+			"detail": "生成 Android APK 文件",
+			"options": {
+				"env": {
+					"ANDROID_NDK_HOME": "E:/code/android-ndk-r26d-windows/android-ndk-r26d"
+				}
+			}
+		},
+		{
+			"label": "Build Android APK x32",
+			"type": "shell",
+			"command": "gomobile",
+			"args": [
+				"build",
+				"-target=android",
+				"-o",
+				"dist/Android7X86.apk",
+				"-androidapi=30",
+				"-v",
+				"-x",
+				"./juiceAndroid"
+			],
+			"problemMatcher": [],
+			"group": {
+				"kind": "build",
+				"isDefault": true
+			},
+			"detail": "生成 Android APK x32 文件",
+			"options": {
+				"env": {
+					"ANDROID_NDK_HOME": "E:/code/android-ndk-r26d-windows/android-ndk-r26d"
+				}
+			}
+		},
+		{
+			"type": "shell",
+			"label": "Go: build Android SO arm64",
+			"command": "go",
+			"args": [
+				"build",
+				"-o",
+				"dist/libNebula.so",
+				"-buildmode=c-shared",
+				"./nebulaApp/main_so.go"
+			],
+			"group": {
+				"kind": "build",
+				"isDefault": true
+			},
+			"detail": "使用 Go 工具链构建共享对象文件",
+			"options": {
+				"env": {
+					"GO111MODULE": "on",
+					"CGO_ENABLED": "1",
+					"GOOS": "android",
+					"GOARCH": "arm64",
+					"CC": "C:/Users/29609/beer/tool/android-ndk-r26d-windows/android-ndk-r26d/toolchains/llvm/prebuilt/windows-x86_64/bin/aarch64-linux-android28-clang"
+				}
+			}
+		},
+		{
+			"type": "shell",
+			"label": "Go: build Android SO amd64",
+			"command": "go",
+			"args": [
+				"build",
+				"-o",
+				"dist/libNebula_amd64.so",
+				"-buildmode=c-shared",
+				"./nebulaApp/main_so_amd.go"
+			],
+			"group": {
+				"kind": "build",
+				"isDefault": false
+			},
+			"detail": "使用 Go 工具链构建 Android x86_64 共享对象文件",
+			"options": {
+				"env": {
+					"GO111MODULE": "on",
+					"CGO_ENABLED": "1",
+					"GOOS": "android",
+					"GOARCH": "amd64",
+					"CC": "C:/Users/29609/beer/tool/android-ndk-r26d-windows/android-ndk-r26d/toolchains/llvm/prebuilt/windows-x86_64/bin/x86_64-linux-android28-clang"
+				}
+			}
+		},
+		{
+			"type": "shell",
+			"label": "Go: build dll X86_64",
+			"command": "go",
+			"args": [
+				"build",
+				"-o",
+				"dist/libJuice.dll",
+				"-buildmode=c-shared",
+				"./nebulaApp/main_dll.go"
+			],
+			"group": {
+				"kind": "build",
+				"isDefault": true
+			},
+			"detail": "使用 Go 工具链构建动态链接库文件Dll",
+			"options": {
+				"env": {
+					"GO111MODULE": "on",
+					"CGO_ENABLED": "1",
+					"GOOS": "windows",
+					"GOARCH": "amd64"
+				}
+			}
+		},
+		{
+			"type": "go",
+			"label": "go: build Android",
+			"command": "build",
+			"args": [
+				"-ldflags",
+				"-s -w",
+				"-o",
+				"dist/juice_android",
+				"-tags",
+				"android",
+				"-v",
+				"-x",
+				"./main"
+			],
+			"group": {
+				"kind": "build",
+				"isDefault": true
+			},
+			"detail": "生成 Android 可执行文件",
+			"options": {
+				"env": {
+					"GO111MODULE": "on",
+					"GOOS": "android",
+					"GOARCH": "arm64",
+					"CGO_ENABLED": "1",
+					"CC": "E://code/android-ndk-r26d-windows/android-ndk-r26d/toolchains/llvm/prebuilt/windows-x86_64/bin/aarch64-linux-android28-clang"
+				}
+			}
+		},
+		{
+			"type": "go",
+			"label": "buildWindows_amd386",
+			"command": "build",
+			"args": [
+				"-ldflags",
+				"-H=windows -s -w",
+				"-o",
+				"dist/win_amd386.exe",
+				"-tags",
+				"windows",
+				"./nebulaApp/win"
+			],
+			"problemMatcher": [
+				"$go"
+			],
+			"group": {
+				"kind": "build",
+				"isDefault": true
+			},
+			"detail": "生成 x86 位 Windows 可执行文件",
+			"options": {
+				"env": {
+					"GO111MODULE": "on",
+					"GOARCH": "386"
+				}
+			}
+		},
+		{
+			"type": "go",
+			"label": "buildWindows_amd64",
+			"command": "build",
+			"args": [
+				"-ldflags",
+				"-H=windows -s -w",
+				"-o",
+				"dist/win_amd64.exe",
+				"-tags",
+				"windows",
+				"./nebulaApp/win"
+			],
+			"problemMatcher": [
+				"$go"
+			],
+			"group": {
+				"kind": "build",
+				"isDefault": true
+			},
+			"detail": "生成 x64 位 Windows 可执行文件",
+			"options": {
+				"env": {
+					"GO111MODULE": "on",
+					"GOARCH": "amd64"
+				}
+			}
+		},
+		{
+			"type": "go",
+			"label": "buildWindows_arm64",
+			"command": "build",
+			"args": [
+				"-ldflags",
+				"-H=windows -s -w",
+				"-o",
+				"dist/win_arm64.exe",
+				"-tags",
+				"windows",
+				"./nebulaApp/win"
+			],
+			"problemMatcher": [
+				"$go"
+			],
+			"group": {
+				"kind": "build",
+				"isDefault": true
+			},
+			"detail": "生成 arm Windows 可执行文件",
+			"options": {
+				"env": {
+					"GO111MODULE": "on",
+					"GOARCH": "arm64"
+				}
+			}
+		},
+		{
+			"type": "go",
+			"label": "buildWindows_arm386",
+			"command": "build",
+			"args": [
+				"-ldflags",
+				"-H=windows -s -w",
+				"-o",
+				"dist/win_arm386.exe",
+				"-tags",
+				"windows",
+				"./nebulaApp/win"
+			],
+			"problemMatcher": [
+				"$go"
+			],
+			"group": {
+				"kind": "build",
+				"isDefault": true
+			},
+			"detail": "生成 arm Windows 可执行文件",
+			"options": {
+				"env": {
+					"GO111MODULE": "on",
+					"GOARCH": "arm"
+				}
+			}
+		},
+		{
+			"type": "go",
+			"label": "buildLinux_amd386",
+			"command": "build",
+			"args": [
+				"-ldflags",
+				"-s -w",
+				"-o",
+				"dist/linux_amd386",
+				"-tags",
+				"linux",
+				"./nebulaApp/main_linux.go"
+			],
+			"problemMatcher": [
+				"$go"
+			],
+			"group": {
+				"kind": "build",
+				"isDefault": true
+			},
+			"detail": "生成 x86 位 Linux 可执行文件",
+			"options": {
+				"env": {
+					"GO111MODULE": "on",
+					"GOARCH": "386",
+					"GOOS": "linux"
+				}
+			}
+		},
+		{
+			"type": "go",
+			"label": "buildLinux_amd64",
+			"command": "build",
+			"args": [
+				"-ldflags",
+				"-s -w",
+				"-o",
+				"dist/linux_amd64",
+				"-tags",
+				"linux",
+				"./nebulaApp/main_linux.go"
+			],
+			"problemMatcher": [
+				"$go"
+			],
+			"group": {
+				"kind": "build",
+				"isDefault": true
+			},
+			"detail": "生成 x64 位 Linux 可执行文件",
+			"options": {
+				"env": {
+					"GO111MODULE": "on",
+					"GOARCH": "amd64",
+					"GOOS": "linux"
+				}
+			}
+		},
+		{
+			"type": "go",
+			"label": "buildLinux_arm64",
+			"command": "build",
+			"args": [
+				"-ldflags",
+				"-s -w",
+				"-o",
+				"dist/linux_arm64",
+				"-tags",
+				"linux",
+				"./nebulaApp/main_linux.go"
+			],
+			"problemMatcher": [
+				"$go"
+			],
+			"group": {
+				"kind": "build",
+				"isDefault": true
+			},
+			"detail": "生成 arm Linux 可执行文件",
+			"options": {
+				"env": {
+					"GO111MODULE": "on",
+					"GOARCH": "arm64",
+					"GOOS": "linux"
+				}
+			}
+		},
+		{
+			"type": "go",
+			"label": "buildLinux_arm386",
+			"command": "build",
+			"args": [
+				"-ldflags",
+				"-s -w",
+				"-o",
+				"dist/linux_arm386",
+				"-tags",
+				"linux",
+				"./nebulaApp/main_linux.go"
+			],
+			"problemMatcher": [
+				"$go"
+			],
+			"group": {
+				"kind": "build",
+				"isDefault": true
+			},
+			"detail": "生成 arm Linux 可执行文件",
+			"options": {
+				"env": {
+					"GO111MODULE": "on",
+					"GOARCH": "arm",
+					"GOOS": "linux"
+				}
+			}
+		},
+		{
+			"type": "go",
+			"label": "buildMacOS_amd64",
+			"command": "build",
+			"args": [
+				"-ldflags",
+				"-s -w",
+				"-o",
+				"dist/mac_amd64",
+				"-tags",
+				"darwin",
+				"./nebulaApp/win"
+			],
+			"problemMatcher": [
+				"$go"
+			],
+			"group": {
+				"kind": "build",
+				"isDefault": true
+			},
+			"detail": "生成 macOS 可执行文件",
+			"options": {
+				"env": {
+					"GO111MODULE": "on",
+					"GOARCH": "amd64",
+					"GOOS": "darwin"
+				}
+			}
+		},
+		{
+			"type": "go",
+			"label": "buildMacOS_arm64",
+			"command": "build",
+			"args": [
+				"-ldflags",
+				"-s -w",
+				"-o",
+				"dist/mac_arm64",
+				"-tags",
+				"darwin",
+				"./nebulaApp/win"
+			],
+			"problemMatcher": [
+				"$go"
+			],
+			"group": {
+				"kind": "build",
+				"isDefault": true
+			},
+			"detail": "生成 macOS 可执行文件",
+			"options": {
+				"env": {
+					"GO111MODULE": "on",
+					"GOARCH": "arm64",
+					"GOOS": "darwin"
+				}
+			}
+		},
+		{
+			"type": "go",
+			"label": "buildWASM",
+			"command": "build",
+			"args": [
+				"-o",
+				"dist/main.wasm",
+				"./nebulaApp/wasm" // 这里改成你的 wasm 源码目录
+			],
+			"problemMatcher": [
+				"$go"
+			],
+			"group": {
+				"kind": "build",
+				"isDefault": true
+			},
+			"detail": "生成 WebAssembly 文件",
+			"options": {
+				"env": {
+					"GO111MODULE": "on",
+					"GOOS": "js",
+					"GOARCH": "wasm"
+				}
+			}
+		},
+		{
+			"label": "编译全部电脑端",
+			"dependsOrder": "sequence",
+			"dependsOn": [
+				"buildWindows_amd386",
+				"buildWindows_amd64",
+				"buildWindows_arm64",
+				// "buildWindows_arm386",
+				"buildLinux_amd386",
+				"buildLinux_amd64",
+				"buildLinux_arm64",
+				"buildLinux_arm386",
+				// "buildMacOS_amd64",
+				// "buildMacOS_arm64"
+			],
+			"problemMatcher": []
+		}
+	]
+}

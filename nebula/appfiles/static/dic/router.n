@@ -1,0 +1,149 @@
+
+.* #{
+访问路径:%:%括号0%
+路径文本长度:$:$长度 %访问路径%$
+路径尾巴:$:$截取 %访问路径% [%路径文本长度%-1] %路径文本长度%$
+默认文件::index.wn
+
+如果:%路径尾巴%==/
+    访问路径:%:%访问路径%%默认文件%
+如果尾
+
+存在:$:$存在文件 public%访问路径%$
+文件后缀:$:$文件后缀 %访问路径%$
+404文件::public/404.wn
+404默认值::404
+404存在:$:$存在文件 %404文件%$
+
+如果:%404存在%==true&%存在%==false
+    $全局变量 响应状态 404$
+    $设置头部 Content-Type text/html;charset=UTF-8$
+    $执行网页词库文件 %404文件%$
+
+// Nebula
+否则如果:%文件后缀%==.n
+    $执行词库文件 public%访问路径% Main$
+
+// php win端
+/*
+否则如果:%文件后缀%==.php
+    文件数据:$:$读文件 public%访问路径% %404默认值%$
+    $PHP %文件数据% %_请求数据_% %_响应数据_%$
+*/
+
+// WebNebula
+否则如果:%文件后缀%==.wn
+    $设置头部 Content-Type text/html;charset=UTF-8$
+    $执行网页词库文件 public%访问路径%$
+
+否则如果:%文件后缀%==.md
+$设置头部 Content-Type text/html;charset=UTF-8$
+文件数据:$:$读文件 public%访问路径% %404默认值%$
+转换:$:$MD转HTML %文件数据%$
+文本>HTML=%val5%
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/github-markdown-css/4.0.0/github-markdown.min.css">
+<style>
+.markdown-body {
+box-sizing: border-box;
+min-width: 200px;
+max-width: 980px;
+margin: 0 auto;
+padding: 45px;
+}
+@media (max-width: 767px) {
+.markdown-body {
+padding: 15px;
+}
+}
+</style>
+</head>
+<body>
+<article class="markdown-body">
+%转换%
+</article></body></html>
+<文本
+%HTML%
+
+否则如果:%文件后缀%==.txt
+$读文件 public/%访问路径% %404默认值%$
+
+否则
+
+JSON>输出文件={}
+// 前端
+html=text/html;charset=UTF-8
+htm=text/html;charset=UTF-8
+css=text/css;charset=UTF-8
+js=application/javascript;charset=UTF-8
+// 图片
+jpg=image/jpeg
+jpeg=image/jpeg
+png=image/png
+gif=image/gif
+ico=image/x-icon
+svg=image/svg
+webp=image/webp
+// 字体
+ttf=application/ttf
+otf=font/otf
+// 压缩文件
+zip=application/zip
+7z=application/7z
+rar=application/x-rar-compressed
+tar=application/x-tar
+gz=application/gzip
+bz2=application/x-bzip2
+// 文档格式
+txt=text/plain;charset=UTF-8
+rtf=application/rtf
+doc=application/msword
+docx=application/vnd.openxmlformats-officedocument.wordprocessingml.document
+xls=application/vnd.ms-excel
+xlsx=application/vnd.openxmlformats-officedocument.spreadsheetml.sheet
+ppt=application/vnd.ms-powerpoint
+pptx=application/vnd.openxmlformats-officedocument.presentationml.presentation
+pdf=application/pdf
+odt=application/vnd.oasis.opendocument.text
+ods=application/vnd.oasis.opendocument.spreadsheet
+odp=application/vnd.oasis.opendocument.presentation
+// 音频格式
+mp3=audio/mpeg
+wav=audio/wav
+ogg=audio/ogg
+m4a=audio/mp4
+aac=audio/aac
+flac=audio/flac
+amr=audio/amr
+silk=audio/silk
+// 视频格式
+webm=video/webm
+mp4=video/mp4
+// 数据
+xml=application/xml;charset=UTF-8
+json=application/json;charset=UTF-8
+// 二进制程序文件
+wasm=application/wasm
+exe=application/octet-stream
+dll=application/octet-stream
+so=application/octet-stream
+<JSON
+
+遍历>key,value=%输出文件%
+    如果>%文件后缀%==.%key%
+        $设置头部 Content-Type %value%$
+        $设置头部 Accept-Ranges bytes$
+        $读文件 public%访问路径% %404默认值%$
+        >终止
+    <如果
+<遍历
+
+$全局变量 响应状态 404$
+$设置头部 Content-Type text/html;charset=UTF-8$
+词库文本:$:$读文件 %404文件%$
+$执行网页词库 %词库文本%$
+}#

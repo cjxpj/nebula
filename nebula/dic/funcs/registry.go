@@ -1,0 +1,53 @@
+package funcs
+
+import "fmt"
+
+func Setup() {
+	if err := Registers(
+		f{"文本长度", "1", stringSliceLen},
+		f{"长度", "1", stringLen},
+		f{"复读", "1", repeat},
+		f{"去除左右", "1|2", removeLR},
+		f{"去除左", "1|2", removeL},
+		f{"去除右", "1|2", removeR},
+		f{"字符拼接", "2", join},
+		f{"查找字", "2", find},
+		f{"取中间", "2|3", takeTheMiddle},
+		f{"截取", "2|3", intercept},
+		f{"中文转拼音", "1", pinYin},
+		f{"数字格式化", "2|3", numberFormatting},
+		f{"数字转中文", "1", numToString},
+		f{"线程变量", "1|2", threadVar},
+		f{"变量", "1|2", localVar},
+		f{"全局变量", "1|2", globalVar},
+		f{"锁变量", "1", localVarLock},
+		f{"变量文本", "1", localVarText},
+		f{"延迟", "1", appSleep},
+		f{"读", "1|2|3", readKeyStringFile},
+		f{"写", "2|3", writeKeyStringFile},
+		f{"写文件", "1|2", writeStringFile},
+		f{"读文件", "1|2", readStringFile},
+		f{"文件后缀", "1", fileSuffix},
+		f{"存在文件", "1", fileExist},
+		f{"存在文件夹", "1", dirExist},
+		f{"存在文件或文件夹", "1", fileOrDirExist},
+		f{"删除文件", "1", deleteFile},
+		f{"删除文件夹", "1", deleteDir},
+		f{"下载文件", "2|3|4", downloadFile},
+		f{"邮件", "6", sendMail},
+		f{"随机文件名", "0|1", randomFileName},
+		f{"随机文件夹名", "0|1", randomDirName},
+		f{"sqlite", "3..", sqliteConn},
+		f{"mysql", "3..", mysqlConn},
+		f{"取前字符", "2", subStrHead},
+		f{"取后字符", "2", subStrTail},
+		f{"日志", "1|2", log},
+		f{"打印", "1..", print},
+		f{"MD转HTML", "1", markdownToHtml},
+		f{"Lua", "1|2..", runLua},
+		f{"哈基米加密", "1|2", hajimimanboEncrypt},
+		f{"哈基米解密", "1|2", hajimimanboDecrypt},
+	); err != nil {
+		fmt.Println(err)
+	}
+}

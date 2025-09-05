@@ -1,0 +1,14 @@
+{
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "name": "Go: Launch",
+            "type": "go",
+            "request": "launch",
+            "mode": "auto",
+            "program": "${workspaceFolder}/nebulaApp/win", // 确保这个路径是正确的
+            "env": {},
+            "args": []
+        }
+    ]
+}
