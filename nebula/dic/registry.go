@@ -11,4 +11,5 @@ func init() {
 	go funcs.Register("回调", "1..", callDic)
 	go funcs.Register("执行网页词库", "1", runWebDic)
 	go funcs.Register("执行网页词库文件", "1", runWebDicFile)
+	go funcs.Register("终端.监听执行", "2", cmdListenRun)
 }

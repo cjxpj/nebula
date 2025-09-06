@@ -1,10 +1,8 @@
 package dic
 
 import (
-	"bufio"
 	"errors"
 	"fmt"
-	"io"
 	"log"
 	"os"
 	"os/exec"
@@ -549,9 +547,6 @@ func (d *DicFunc) Funcs(text string) (any, error) {
 		}
 		return "", nil
 
-	case "终端.创建":
-		return f.RunCommandNew()
-
 	case "终端.解码器":
 		return f.RunCommandDecoder()
 
@@ -563,71 +558,6 @@ func (d *DicFunc) Funcs(text string) (any, error) {
 
 	case "终端.输入":
 		return f.RunCommandInputText()
-
-	case "终端.执行":
-		if inputsLen == 2 {
-			cmd, ok := f.Inputs.Get(1).(*funcs.CmdConfig)
-			if !ok {
-				return "", errors.New("终端执行参数错误")
-			}
-
-			stdout, _ := cmd.Cmd.StdoutPipe()
-			stderr, _ := cmd.Cmd.StderrPipe()
-
-			if err := cmd.Cmd.Start(); err != nil {
-				log.Fatal(err)
-			}
-
-			multi := io.MultiReader(stdout, stderr)
-			scanner := bufio.NewScanner(multi)
-
-			go func() {
-				for scanner.Scan() {
-					raw := scanner.Bytes()
-					line, _ := utils.DecodeType(cmd.Decoder, raw) // 解码
-
-					dicpath := f.Inputs.String(2)
-					cmdfile, err := utils.NewFileQueue(dicpath).ReadFromFile()
-					if err != nil {
-						fmt.Println("读取文件时出错:", err)
-						break
-					}
-
-					d := NewDic(dicpath, cmdfile)
-
-					// 内联设置“断开连接”动作
-					d.SetFunc("断开连接", func(val *dto.DicVal, inputs *utils.DicInputs) (any, error) {
-						if !inputs.LenOk(0) {
-							return "参数错误", nil
-						}
-						cmd.Cmd.Process.Kill()
-						return "", nil
-					})
-
-					// 内联设置“输入文本”动作
-					d.SetFunc("输入文本", func(val *dto.DicVal, inputs *utils.DicInputs) (any, error) {
-						if !inputs.LenOk(1) {
-							return "参数错误", nil
-						}
-						stdin, err := cmd.Cmd.StdinPipe()
-						if err != nil {
-							return "", err
-						}
-						stdin.Write([]byte(f.Inputs.String(1)))
-						return "", nil
-					})
-
-					if res := d.Run(line); res != "" {
-						fmt.Println(res)
-					}
-				}
-
-				if err := scanner.Err(); err != nil {
-					fmt.Println("终端断开:", err)
-				}
-			}()
-		}
-		return f.RunCommand()
 
 	case "终端等待输入":
 		return f.RunCommandInput()

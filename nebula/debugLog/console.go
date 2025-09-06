@@ -1,4 +1,4 @@
-package log
+package debugLog
 
 import (
 	"fmt"

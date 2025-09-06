@@ -9,7 +9,7 @@ import (
 	"github.com/cjxpj/nebula/dto"
 )
 
-func log(d *dto.DicInputs) (any, error) {
+func logfile(d *dto.DicInputs) (any, error) {
 	switch d.Inputs.StringDefault(2, "成功") {
 	case "成功":
 		utils.Log(strings.ReplaceAll(d.Inputs.String(1), "\\n", "\n"))

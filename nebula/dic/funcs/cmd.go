@@ -4,15 +4,20 @@ import (
 	"bufio"
 	"bytes"
 	"errors"
+	"io"
+	"log"
 	"os"
 	"os/exec"
 
+	"github.com/cjxpj/nebula/dto"
 	"github.com/cjxpj/nebula/utils"
 )
 
 // 终端结构
 type CmdConfig struct {
 	Cmd *exec.Cmd
+	// 写入端
+	Stdin io.WriteCloser
 	// 解码器
 	Decoder string
 }
@@ -36,26 +41,29 @@ func (f *DicFunc) RunCommandInput() (string, error) {
 }
 
 // 新建终端
-func (f *DicFunc) RunCommandNew() (any, error) {
-	if f.Len == 0 {
-		return "", errors.New("缺少参数")
-	}
-
+func runCommandNew(d *dto.DicInputs) (any, error) {
 	var cmd *exec.Cmd
 
-	if f.Len > 1 {
+	if d.Inputs.Len() > 1 {
 		var args []string
-		for _, arg := range f.Inputs.List[2:] {
+		for _, arg := range d.Inputs.List[2:] {
 			if strArg, ok := arg.(string); ok {
 				args = append(args, strArg)
 			}
 		}
-		cmd = exec.Command(f.Inputs.String(1), args...)
+		cmd = exec.Command(d.Inputs.String(1), args...)
 	} else {
-		cmd = exec.Command(f.Inputs.String(1))
+		cmd = exec.Command(d.Inputs.String(1))
 	}
+
+	stdin, err := cmd.StdinPipe()
+	if err != nil {
+		return nil, err
+	}
+
 	cmdConfig := &CmdConfig{
 		Cmd:     cmd,
+		Stdin:   stdin,
 		Decoder: "utf-8",
 	}
 	return cmdConfig, nil
@@ -121,23 +129,20 @@ func (f *DicFunc) RunCommandInputText() (string, error) {
 	}
 
 	// 检测启动
-	if err := cmd.Cmd.Start(); err != nil {
-		return "未启动", nil
+	if cmd.Cmd.Process == nil {
+		return "", errors.New("未启动终端")
 	}
 
-	if stdin, err := cmd.Cmd.StdinPipe(); err != nil {
-		stdin.Write([]byte(f.Inputs.String(2)))
+	_, err := cmd.Stdin.Write([]byte(f.Inputs.String(2)))
+	if err != nil {
+		return "", err
 	}
 	return "", nil
 }
 
 // 执行终端
-func (f *DicFunc) RunCommand() (string, error) {
-	if !f.Inputs.LenOk(1) {
-		return "", errors.New("参数错误")
-	}
-
-	cmd, ok := f.Inputs.Get(1).(*CmdConfig)
+func runCommand(d *dto.DicInputs) (any, error) {
+	cmd, ok := d.Inputs.Get(1).(*CmdConfig)
 	if !ok {
 		return "", errors.New("传入参数错误")
 	}
@@ -156,4 +161,19 @@ func (f *DicFunc) RunCommand() (string, error) {
 		return err.Error(), nil
 	}
 	return str, nil
+}
+
+// 异步执行终端
+func runCommandAsync(d *dto.DicInputs) (any, error) {
+	cmd, ok := d.Inputs.Get(1).(*CmdConfig)
+	if !ok {
+		return "", errors.New("传入参数错误")
+	}
+
+	go func() {
+		if err := cmd.Cmd.Run(); err != nil {
+			log.Println(err)
+		}
+	}()
+	return "", nil
 }

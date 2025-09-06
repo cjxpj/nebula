@@ -1,5 +1,5 @@
 // Package log 是 SDK 的 logger 接口定义与内置的 logger。
-package log
+package debugLog
 
 // DefaultLogger 默认logger
 var DefaultLogger = Logger(new(consoleLogger))

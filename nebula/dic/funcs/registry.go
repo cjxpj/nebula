@@ -41,12 +41,17 @@ func Setup() {
 		f{"mysql", "3..", mysqlConn},
 		f{"取前字符", "2", subStrHead},
 		f{"取后字符", "2", subStrTail},
-		f{"日志", "1|2", log},
+		f{"日志", "1|2", logfile},
 		f{"打印", "1..", print},
 		f{"MD转HTML", "1", markdownToHtml},
 		f{"Lua", "1|2..", runLua},
 		f{"哈基米加密", "1|2", hajimimanboEncrypt},
 		f{"哈基米解密", "1|2", hajimimanboDecrypt},
+		f{"写图片", "3", writeImage},
+		f{"读图片", "2", readImage},
+		f{"终端.创建", "1..", runCommandNew},
+		f{"终端.异步执行", "1", runCommandAsync},
+		f{"终端.执行", "1", runCommand},
 	); err != nil {
 		fmt.Println(err)
 	}

@@ -47,16 +47,11 @@ NebulaData/README.md
 
 ### 程序系统重要文件 ⚙️
 
-#### 程序启动执行hua
-NebulaData/system/start.n
-
-### 程序网页重要文件 🌐
-
-#### 随着系统跟随启动的目录文件
-NebulaData/web/private/system/start.n
+#### 随着系统跟随启动的配置
+NebulaData/private/system/config.n
 
 #### 路由词库 🗺️
-NebulaData/web/private/system/router.n
+NebulaData/private/system/router.n
 
 ## 👥 开发讨论
 QQ群：927467925
@@ -1013,6 +1008,7 @@ $绘制.马赛克 [画布] [X1] [Y1] [X2] [Y2]$
 $绘制.圆弧 [画布] [X] [Y] [半径] [起始] [结束] [颜色]$
 $绘制.线 [画布] [X1] [Y1] [X2] [Y2] [颜色]$
 $绘制.喷漆 [画布] [X1] [Y1] [X2] [Y2] [半径] [密度1~100] [颜色]$
+$绘制.文本 [画布] [X1] [Y1] [文本] [旋转|0.0] [颜色] [描边颜色] [描边宽度]$
 ```
 
 画笔
@@ -1503,8 +1499,12 @@ cmd:$终端.创建 ./NebulaData/forFmt.exe$
 // 终端临时环境变量
 // $终端.变量 %cmd% cxk=ok$
 // $终端.输入 %cmd% 内容$
-// 最后一个参数用来实时监听，不填就等待执行完毕获取全部输出
-$终端.执行 %cmd% [private/cmd.n]$
+// 等待执行完毕获取全部输出
+$终端.执行 %cmd%$
+// 挂载后台执行不返回
+// $终端.异步执行 %cmd%$
+// 用于监听
+// $终端.监听执行 %cmd% private/cmd.n$
 // $终端.断开 %cmd%$
 ```
 

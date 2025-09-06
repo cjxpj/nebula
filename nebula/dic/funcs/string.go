@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"github.com/cjxpj/nebula/dto"
+	"github.com/cjxpj/nebula/utils"
 
 	"github.com/cjxpj/hajimimanbo"
 	"github.com/mozillazg/go-pinyin"
@@ -31,6 +32,26 @@ func hajimimanboDecrypt(d *dto.DicInputs) (any, error) {
 		return "", nil
 	}
 	return res, nil
+}
+
+// 写图片
+func writeImage(d *dto.DicInputs) (any, error) {
+	path1 := utils.NewFileQueue(d.Inputs.String(1)).FileName
+	imgdata, err := utils.SetImgData(path1, []byte(d.Inputs.String(2)))
+	if err != nil {
+		return "", err
+	}
+	return string(imgdata), nil
+}
+
+// 读图片
+func readImage(d *dto.DicInputs) (any, error) {
+	path1 := utils.NewFileQueue(d.Inputs.String(1)).FileName
+	res, err := utils.ReadImgData(path1)
+	if err != nil {
+		return d.Inputs.String(2), nil
+	}
+	return string(res), nil
 }
 
 func repeat(d *dto.DicInputs) (any, error) {
