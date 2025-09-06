@@ -1,3 +1,4 @@
 /nebulaApp/win/NebulaData/
 dist
 debug
+*.exe
