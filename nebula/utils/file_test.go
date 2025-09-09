@@ -4,7 +4,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/cjxpj/nebula/log"
+	"github.com/cjxpj/nebula/debugLog"
 )
 
 func TestDebug(t *testing.T) {
@@ -16,7 +16,7 @@ func TestDebug(t *testing.T) {
 
 		// 构造新文件完整路径
 		newPath := filepath.Join(dir, newName)
-		log.Debug(newPath)
+		debugLog.Debug(newPath)
 	})
 
 	t.Run("TestFileExists", func(t *testing.T) {
@@ -24,6 +24,6 @@ func TestDebug(t *testing.T) {
 		newName := "ok"
 
 		newPath := filepath.Join(newName, filepath.Base(path))
-		log.Debug(newPath)
+		debugLog.Debug(newPath)
 	})
 }
