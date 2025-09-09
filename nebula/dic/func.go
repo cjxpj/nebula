@@ -23,15 +23,13 @@ import (
 
 // 函数跟变量
 func (d *DicFunc) Runs(text string) string {
-	output := run.ReplaceProcessedContents(text, "$", "$", func(valStr string) (string, bool) {
+	fmt.Println("开始执行函数")
+	fmt.Println(text)
+	output := run.BuildFuncStr(text, func(valStr []string) (string, bool) {
+		fmt.Println(valStr)
 		resAny, err := d.Funcs(valStr)
 		if err != nil {
-			// 分割空格取第一个
-			strList := strings.Split(valStr, " ")
-			if len(strList) > 0 {
-				valStr = strList[0]
-			}
-			log.Printf("[%s]%s：%v", d.Val.Get("_词库路径_"), valStr, err)
+			log.Printf("[%s]%s：%v", d.Val.Get("_词库路径_"), valStr[0], err)
 		}
 		if resStr, ok := resAny.(string); ok {
 			return resStr, false
@@ -47,7 +45,7 @@ func (d *DicFunc) Runs(text string) string {
 func (d *DicFunc) RunsAny(text string) any {
 	// 拦截外部赋予值
 	var resA any
-	output := run.ReplaceProcessedContents(text, "$", "$", func(valStr string) (string, bool) {
+	output := run.BuildFuncStr(text, func(valStr []string) (string, bool) {
 		resAny, err := d.Funcs(valStr)
 		if err != nil {
 			fmt.Println(err)
@@ -73,7 +71,7 @@ func (d *DicFunc) RunsAny(text string) any {
 func (d *DicFunc) RunsVal(text string, setVal string) (string, bool) {
 	// 拦截外部赋予值
 	strNo := false
-	output := run.ReplaceProcessedContents(text, "$", "$", func(valStr string) (string, bool) {
+	output := run.BuildFuncStr(text, func(valStr []string) (string, bool) {
 		resAny, err := d.Funcs(valStr)
 		if err != nil {
 			fmt.Println(err)
@@ -92,15 +90,17 @@ func (d *DicFunc) RunsVal(text string, setVal string) (string, bool) {
 
 // 纯函数
 func (d *DicFunc) Run(text string) string {
-	output := run.ReplaceProcessedContent(text, "$", "$", func(valStr string) string {
+	output := run.BuildFuncStr(text, func(valStr []string) (string, bool) {
 		resAny, err := d.Funcs(valStr)
 		if err != nil {
-			fmt.Println(err)
+			log.Printf("[%s]%s：%v", d.Val.Get("_词库路径_"), valStr[0], err)
 		}
 		if resStr, ok := resAny.(string); ok {
-			return resStr
+			return resStr, false
 		}
-		return ""
+		return "", false
+	}, func(s string) (string, bool) {
+		return s, false
 	})
 	return output
 }
@@ -130,34 +130,38 @@ func caseRestart() (string, error) {
 	return "", nil
 }
 
-func (d *DicFunc) Funcs(text string) (any, error) {
+func (d *DicFunc) Funcs(linesStr []string) (any, error) {
+	linesLen := len(linesStr)
+	if linesLen <= 1 {
+		return "$$", nil
+	}
+
+	funcName := linesStr[0]
 	// 面对象
-	if len(text) > 1 && (text[0] == '.' || text[0] == '%') {
-		lines := strings.Split(text[1:], " ")
-		classN := lines[0]
+	if len(funcName) > 1 && (funcName[0] == '.' || funcName[0] == '%') {
+		linesStr[0] = funcName[1:]
+
 		var isV bool
-		if text[0] == '%' {
+		if funcName[0] == '%' {
 			isV = true
 		}
-		if classN == "自己" {
-			classN = d.Val.P.Get("Class").(string)
+		if funcName == "自己" {
+			funcName = d.Val.P.Get("Class").(string)
 		}
-		classData := d.Dic.LocalClass[classN]
+		classData := d.Dic.LocalClass[funcName]
 		if classData == nil {
 			return "", errors.New("非整合包")
 		}
 
-		linesLen := len(lines)
-
 		if isV {
 			if linesLen == 3 {
-				resVT := utils.AnyIsString(d.Val.Text(count.RunCountText(d.Val, lines[1])))
-				resVTs := utils.AnyIsString(d.Val.Text(count.RunCountText(d.Val, lines[2])))
+				resVT := utils.AnyIsString(d.Val.Text(count.RunCountText(d.Val, linesStr[1])))
+				resVTs := utils.AnyIsString(d.Val.Text(count.RunCountText(d.Val, linesStr[2])))
 				classData.LocalValue.Set(resVT, resVTs)
 				return "", nil
 			}
 			if linesLen == 2 {
-				resVT := utils.AnyIsString(d.Val.Text(count.RunCountText(d.Val, lines[1])))
+				resVT := utils.AnyIsString(d.Val.Text(count.RunCountText(d.Val, linesStr[1])))
 				resV, _ := classData.LocalValue.Get(resVT).(string)
 				return resV, nil
 			}
@@ -168,13 +172,13 @@ func (d *DicFunc) Funcs(text string) (any, error) {
 			return "未知整合包方法", nil
 		}
 
-		TStr := strings.Join(lines[1:], " ")
+		TStr := strings.Join(linesStr[1:], " ")
 		// 整合包局部函数
 		if str, Tstr, _, regex := run.RunFor(classData.LocalFunc, TStr, 0); regex != nil {
 			funcv := dto.NewVal()
 			funcv.Set("触发", Tstr)
 			funcv.Set("触发词", TStr)
-			funcv.Set("Class", classN)
+			funcv.Set("Class", funcName)
 			dto.ValRunTrigger(TStr, Tstr, funcv, d.Val.P)
 			RunDic := NewRunDicEntry().
 				CloseTrigger().
@@ -186,6 +190,7 @@ func (d *DicFunc) Funcs(text string) (any, error) {
 			return resRunDic, nil
 		}
 	} else {
+		text := strings.Join(linesStr, " ")
 		// 局部函数
 		if str, Tstr, _, regex, tparts := run.RunFors(d.Dic.LocalFunc, text, 0); regex != nil {
 			funcv := dto.NewVal()
@@ -221,7 +226,6 @@ func (d *DicFunc) Funcs(text string) (any, error) {
 		}
 	}
 
-	linesStr := strings.Split(text, " ")
 	inputsLen := len(linesStr)
 	lines := make([]any, inputsLen)
 	inputs := utils.NewDicInputs()
@@ -411,51 +415,6 @@ func (d *DicFunc) Funcs(text string) (any, error) {
 			return conn, nil
 		}
 		return "", nil
-
-	case "异步函数", "函数":
-		if inputs.LenOk(1, 2) {
-			Tstr := ""
-			if inputsLen == 2 {
-				Tstr = inputs.String(2)
-			}
-			obj := d.Val.P.GetObj(inputs.String(1))
-			if t, ok := obj["type"].(string); ok {
-				if t == "函数框" {
-					funcTrigger := obj["trigger"].(string)
-					regex := regexp.MustCompile("^" + funcTrigger + "$")
-					matches := regex.FindStringSubmatch(Tstr)
-					if len(matches) > 0 || funcTrigger == "" {
-						funcv := dto.NewVal()
-						funcv.Reset(d.Val.P.GetAll())
-						funcv.Set("触发", funcTrigger)
-						funcv.Set("触发词", Tstr)
-						content := obj["content"].([]string)
-						if lines[0] == "异步函数" {
-							go func() {
-								resDic := NewRunDicEntry().
-									SetGlobal_v(d.Val.G).
-									Set_v(funcv).
-									SetDic_v(d.Dic).
-									Run(content)
-								if resDic != "" {
-									utils.Log(resDic)
-								}
-							}()
-							return "", nil
-						} else {
-							resDics := NewRunDicEntry().
-								SetGlobal_v(d.Val.G).
-								Set_v(funcv).
-								SetDic_v(d.Dic)
-							resDic := resDics.Run(content)
-							return resDic, nil
-						}
-					}
-				}
-			}
-		}
-
-		return "", errors.New("函数参数错误")
 
 	case "替换":
 		if inputsLen == 4 {
@@ -868,7 +827,7 @@ func (d *DicFunc) Funcs(text string) (any, error) {
 
 	}
 
-	return "$" + text + "$", nil
+	return "$" + strings.Join(linesStr, " ") + "$", nil
 }
 
 // t := lines[0]

@@ -6,7 +6,7 @@ func Setup() {
 	if err := Registers(
 		f{"文本长度", "1", stringSliceLen},
 		f{"长度", "1", stringLen},
-		f{"复读", "1", repeat},
+		f{"复读", "1|2", repeat},
 		f{"去除左右", "1|2", removeLR},
 		f{"去除左", "1|2", removeL},
 		f{"去除右", "1|2", removeR},

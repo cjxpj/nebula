@@ -27,52 +27,127 @@ func ReplaceFunc(input, old string, replaceFunc func(string) string) string {
 	return result.String()
 }
 
-// ReplaceProcessedContents 接受一个字符串、开始和结束的子串，以及两个处理函数作为参数
-func ReplaceProcessedContents(str, strStart, strEnd string, process, process2 func(string) (string, bool)) string {
+// 处理函数
+func BuildFuncStr(
+	str string,
+	process func([]string) (string, bool), // 处理函数文本
+	process2 func(string) (string, bool), // 处理外部文本，原样给你，不做转义
+) string {
 	var result strings.Builder
 	start := 0
 
 	for {
-		// 查找开始子串的下一个位置
-		openIndex := strings.Index(str[start:], strStart)
+		openIndex := findUnescaped(str, "$", start)
 		if openIndex == -1 {
 			break
 		}
-		openIndex += start
-
-		// 查找结束子串的下一个位置（从openIndex之后开始）
-		closeIndex := strings.Index(str[openIndex+len(strStart):], strEnd)
+		closeIndex := findUnescaped(str, "$", openIndex+1)
 		if closeIndex == -1 {
 			break
 		}
-		closeIndex += openIndex + len(strStart)
 
-		// 提取 $$ 外的文本并处理
-		outsideContent := str[start:openIndex]
-		processedOutsideContent, stop := process2(outsideContent)
-		if stop {
-			break
+		// 外部文本（不做转义）
+		if outside := str[start:openIndex]; len(outside) > 0 {
+			if out, stop := process2(outside); stop {
+				break
+			} else {
+				result.WriteString(out)
+			}
 		}
-		result.WriteString(processedOutsideContent)
 
-		// 提取 $$ 内的内容并处理
-		content := str[openIndex+len(strStart) : closeIndex]
-		processedContent, stop := process(content)
-		if stop {
+		// 内部文本：按空格分割，\ 处理转义（\ , \\, \$）
+		content := str[openIndex+1 : closeIndex]
+		args := splitWithEscape(content)
+		if in, stop := process(args); stop {
 			break
+		} else {
+			result.WriteString(in)
 		}
-		result.WriteString(processedContent)
 
-		// 更新开始位置为 $$ 之后
-		start = closeIndex + len(strEnd)
+		start = closeIndex + 1
 	}
 
-	// 添加剩余的部分到结果字符串并处理
-	outsideContent := str[start:]
-	processedOutsideContent, _ := process2(outsideContent)
-	result.WriteString(processedOutsideContent)
+	// 余下外部文本
+	if outside := str[start:]; len(outside) > 0 {
+		if out, _ := process2(outside); true {
+			result.WriteString(out)
+		}
+	}
 
 	return result.String()
+}
+
+// 找到下一个“未被奇数个反斜杠转义”的子串 sub（这里 sub="$"）
+func findUnescaped(s, sub string, start int) int {
+	for {
+		i := strings.Index(s[start:], sub)
+		if i == -1 {
+			return -1
+		}
+		i += start
+
+		// 统计紧挨在前的反斜杠数量
+		bs := 0
+		for j := i - 1; j >= 0 && s[j] == '\\'; j-- {
+			bs++
+		}
+		if bs%2 == 0 {
+			return i // 偶数 → 未转义
+		}
+		start = i + len(sub)
+	}
+}
+
+// 在 $...$ 内部：按空格切分；支持 "\ " 保留空格，"\\"=>"\", "\$"=>"$"
+func splitWithEscape(s string) []string {
+	var args []string
+	var b strings.Builder
+	escaped := false
+
+	for i := 0; i < len(s); i++ {
+		ch := s[i]
+
+		if escaped {
+			switch ch {
+			case ' ':
+				b.WriteByte(' ') // \  + 空格 → 字面空格
+			case '\\':
+				b.WriteByte('\\') // \\ → \
+			case '$':
+				b.WriteByte('$') // \$ → $
+			default:
+				// 未知转义：按字面写回
+				b.WriteByte('\\')
+				b.WriteByte(ch)
+			}
+			escaped = false
+			continue
+		}
+
+		if ch == '\\' {
+			escaped = true
+			continue
+		}
+
+		if ch == ' ' {
+			if b.Len() > 0 {
+				args = append(args, b.String())
+				b.Reset()
+			}
+			continue
+		}
+
+		b.WriteByte(ch)
+	}
+
+	// 结尾是悬空反斜杠：当作字面反斜杠
+	if escaped {
+		b.WriteByte('\\')
+	}
+	if b.Len() > 0 {
+		args = append(args, b.String())
+	}
+	return args
 }
 
 // replaceProcessedContent 接受一个字符串、开始和结束的子串，以及一个处理函数作为参数

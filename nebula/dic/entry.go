@@ -11,26 +11,10 @@ import (
 	"github.com/cjxpj/nebula/count"
 	"github.com/cjxpj/nebula/dic/funcs"
 	"github.com/cjxpj/nebula/dto"
-	"github.com/cjxpj/nebula/run"
 	"github.com/cjxpj/nebula/utils"
 
 	"github.com/buger/jsonparser"
 )
-
-// 报错抛出
-func (r *DicEntry) Error(txt string) {
-	trigger := "Error:" + txt
-	GetDic, GetDicTrigger, _, _ := run.RunFor(r.Dic.LocalStatic, trigger, 0)
-	funcV := dto.NewVal()
-	funcV.Set("触发词", trigger)
-	funcV.Set("触发", GetDicTrigger)
-	RunDics := NewRunDicEntry().
-		SetGlobal_v(r.Val.G).
-		Set_v(funcV).
-		SetDic_v(r.Dic)
-	RunDic := RunDics.Run(GetDic)
-	r.Output.Set(RunDic)
-}
 
 // 执行
 func (r *DicEntry) Run(txt []string) string {

@@ -48,10 +48,10 @@ QQBot
 APPID:
 密钥:
 地址:qq-bot
-词库:private/bot.n
+词库:private/QQBot.n
 
 YunHuBot
 是/否
 密钥:
 地址:yunhu-bot
-词库:private/bot.n
+词库:private/YunHuBot.n

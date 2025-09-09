@@ -12,4 +12,6 @@ func init() {
 	go funcs.Register("执行网页词库", "1", runWebDic)
 	go funcs.Register("执行网页词库文件", "1", runWebDicFile)
 	go funcs.Register("终端.监听执行", "2", cmdListenRun)
+	go funcs.Register("函数", "1|2", runFunc)
+	go funcs.Register("异步函数", "1|2", runAsyncFunc)
 }
