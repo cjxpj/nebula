@@ -16,8 +16,9 @@ import (
 	"github.com/cjxpj/nebula/appfiles"
 	"github.com/cjxpj/nebula/dto"
 	"github.com/cjxpj/nebula/utils"
+	yunhubotapi "github.com/cjxpj/nebula/yunhuBotTool/yunhubotApi"
 
-	qqbotapi "github.com/cjxpj/nebula/qqbotTool/qqbotApi"
+	qqbotapi "github.com/cjxpj/nebula/qqBotTool/qqbotApi"
 
 	"github.com/gorilla/websocket"
 	"github.com/patrickmn/go-cache"
@@ -61,42 +62,42 @@ func Start() {
 	file.SetPath("private/system/router.n")
 	if !file.FileExists() {
 		file.WriteFileByte(appfiles.GetFile("dic/router.n"))
-	}
 
-	// WS词库
-
-	file.SetPath("private/websocket")
-	if !file.DirExists() {
-		// 服务器
-		file.SetPath("private/websocket/server.n")
-		if !file.FileExists() {
-			file.WriteToFile(appfiles.GetFileString("dic/websocket/server.n"))
-		}
-		// 客户端
-		file.SetPath("private/websocket/app.n")
-		if !file.FileExists() {
-			file.WriteToFile(appfiles.GetFileString("dic/websocket/app.n"))
-		}
-	}
-
-	// 主页文件
-	file.SetPath("public")
-	if !file.DirExists() {
-		file.SetPath("public/index.wn")
-		if !file.FileExists() {
-			file.WriteToFile(appfiles.GetFileString("dic/public/index.wn"))
+		// WS词库
+		file.SetPath("private/websocket")
+		if !file.DirExists() {
+			// 服务器
+			file.SetPath("private/websocket/server.n")
+			if !file.FileExists() {
+				file.WriteToFile(appfiles.GetFileString("dic/websocket/server.n"))
+			}
+			// 客户端
+			file.SetPath("private/websocket/app.n")
+			if !file.FileExists() {
+				file.WriteToFile(appfiles.GetFileString("dic/websocket/app.n"))
+			}
 		}
 
-		// 默认样板文件
-		file.SetPath("public/api.n")
-		if !file.FileExists() {
-			file.WriteToFile(appfiles.GetFileString("dic/public/api.n"))
+		// 主页文件
+		file.SetPath("public")
+		if !file.DirExists() {
+			file.SetPath("public/index.wn")
+			if !file.FileExists() {
+				file.WriteToFile(appfiles.GetFileString("dic/public/index.wn"))
+			}
+
+			// 默认样板文件
+			file.SetPath("public/api.n")
+			if !file.FileExists() {
+				file.WriteToFile(appfiles.GetFileString("dic/public/api.n"))
+			}
+			// 404文件
+			file.SetPath("public/404.wn")
+			if !file.FileExists() {
+				file.WriteFileByte(appfiles.GetFile("dic/public/404.wn"))
+			}
 		}
-		// 404文件
-		file.SetPath("public/404.wn")
-		if !file.FileExists() {
-			file.WriteFileByte(appfiles.GetFile("dic/public/404.wn"))
-		}
+
 	}
 
 	handler := &ServeRouter{}
@@ -133,6 +134,21 @@ func Start() {
 			BotDic := utils.NewFileQueue(dicPath)
 			if !BotDic.FileExists() {
 				BotDic.WriteFileByte(appfiles.GetFile("dic/QQBot.n"))
+			}
+		}
+
+		if d := infoDic.NewRun("YunHuBot"); d == "是" {
+			secret := infoDic.Val.P.GetStr("密钥")
+			dicPath := infoDic.Val.P.GetStr("词库")
+			handler.YunHuBot = &yunhubotapi.RouterYunHuBot{
+				Open:     true,
+				Addr:     "/" + infoDic.Val.P.GetStr("地址"),
+				Secret:   secret,
+				FilePath: dicPath,
+			}
+			BotDic := utils.NewFileQueue(dicPath)
+			if !BotDic.FileExists() {
+				BotDic.WriteFileByte(appfiles.GetFile("dic/YunHuBot.n"))
 			}
 		}
 
@@ -222,6 +238,11 @@ func (s *ServeRouter) WebRun(w http.ResponseWriter, r *http.Request) {
 
 	if s.QQBot != nil && s.QQBot.Open && r.URL.Path == s.QQBot.Addr {
 		s.QQBotRun(w, r)
+		return
+	}
+
+	if s.YunHuBot != nil && s.YunHuBot.Open && r.URL.Path == s.YunHuBot.Addr {
+		s.YunHuBotRun(w, r)
 		return
 	}
 

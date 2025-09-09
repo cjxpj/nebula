@@ -6,21 +6,15 @@ import (
 	"errors"
 	"strconv"
 
+	"github.com/cjxpj/nebula/dto"
 	"golang.org/x/crypto/curve25519"
 )
 
-func (f *DicFunc) Ed25519_SeedSize() (string, error) {
-	if f.Len != 0 {
-		return "", errors.New("参数数量错误")
-	}
+func ed25519_SeedSize(d *dto.DicInputs) (any, error) {
 	return strconv.Itoa(ed25519.SeedSize), nil
 }
 
-func (f *DicFunc) Ed25519_GenerateKey() (string, error) {
-	if f.Len != 0 {
-		return "", errors.New("参数数量错误")
-	}
-
+func ed25519_GenerateKey(d *dto.DicInputs) (any, error) {
 	publicKey, privateKey, err := ed25519.GenerateKey(rand.Reader)
 	if err != nil {
 		return "", errors.New("生成密钥失败")

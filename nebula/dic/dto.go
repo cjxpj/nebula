@@ -5,8 +5,9 @@ import (
 	"net/url"
 
 	"github.com/cjxpj/nebula/dto"
-	qqbotapi "github.com/cjxpj/nebula/qqbotTool/qqbotApi"
+	qqbotapi "github.com/cjxpj/nebula/qqBotTool/qqbotApi"
 	"github.com/cjxpj/nebula/utils"
+	yunhubotapi "github.com/cjxpj/nebula/yunhuBotTool/yunhubotApi"
 
 	"github.com/gorilla/websocket"
 )
@@ -84,8 +85,10 @@ type ServeRouterWebSocket struct {
 type ServeRouter struct {
 	// WS地址
 	Ws *ServeRouterWebSocket
-	// Bot地址
+	// QQBot地址
 	QQBot *qqbotapi.RouterQQBot
+	// YunHuBot地址
+	YunHuBot *yunhubotapi.RouterYunHuBot
 }
 
 type RequestInfo struct {

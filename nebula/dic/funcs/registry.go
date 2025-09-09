@@ -52,6 +52,16 @@ func Setup() {
 		f{"终端.创建", "1..", runCommandNew},
 		f{"终端.异步执行", "1", runCommandAsync},
 		f{"终端.执行", "1", runCommand},
+		f{"终端等待输入", "0", runCommandInput},
+		f{"文件夹列表", "0|1", dirList},
+		f{"文件列表", "0|1", fileList},
+		f{"Ed25519种子大小", "0", ed25519_SeedSize},
+		f{"Ed25519生成密钥", "0", ed25519_GenerateKey},
+		f{"画布.创建", "2|3", drawImgNew},
+		f{"主机", "1", host_information},
+		f{"画笔.获取颜色", "1|2|3|4", drawImgGetColor},
+		f{"画笔.设置颜色", "1|2|3|4|5", drawImgSetColor},
+		f{"画布.获取", "1|2", drawImgGet},
 	); err != nil {
 		fmt.Println(err)
 	}

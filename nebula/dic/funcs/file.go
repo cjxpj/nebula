@@ -1,7 +1,6 @@
 package funcs
 
 import (
-	"errors"
 	"path/filepath"
 	"strconv"
 
@@ -88,11 +87,8 @@ func readKeyStringFile(d *dto.DicInputs) (any, error) {
 }
 
 // 文件夹列表
-func (f *DicFunc) DirList() (string, error) {
-	if !f.Inputs.LenOk(0, 1) {
-		return "", errors.New("文件夹列表参数错误")
-	}
-	path := f.Inputs.String(1)
+func dirList(d *dto.DicInputs) (any, error) {
+	path := d.Inputs.String(1)
 	list, err := utils.NewFileQueue(path).GetFileList("文件夹")
 	if err != nil {
 		return "{}", nil
@@ -132,11 +128,8 @@ func randomFileName(d *dto.DicInputs) (any, error) {
 }
 
 // 文件列表
-func (f *DicFunc) FileList() (string, error) {
-	if !f.Inputs.LenOk(0, 1) {
-		return "", errors.New("文件列表参数错误")
-	}
-	path := f.Inputs.String(1)
+func fileList(d *dto.DicInputs) (any, error) {
+	path := d.Inputs.String(1)
 	list, err := utils.NewFileQueue(path).GetFileList("文件")
 	if err != nil {
 		return "{}", nil

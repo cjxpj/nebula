@@ -47,5 +47,11 @@ QQBot
 是/否
 APPID:
 密钥:
-地址:bot
-词库:private/QQbot.n
+地址:qq-bot
+词库:private/bot.n
+
+YunHuBot
+是/否
+密钥:
+地址:yunhu-bot
+词库:private/bot.n

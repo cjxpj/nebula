@@ -13,6 +13,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/cjxpj/nebula/dto"
 	"github.com/cjxpj/nebula/utils"
 
 	"github.com/disintegration/imaging"
@@ -46,27 +47,27 @@ func (ndi *NDrawImg) GetColor() *color.NRGBA {
 }
 
 // 创建画布
-func (f *DicFunc) DrawImgNew() (*NDrawImg, error) {
+func drawImgNew(d *dto.DicInputs) (any, error) {
 	var img *image.RGBA
 
-	p1, p1ok := f.Inputs.IntOk(1)
-	p2, p2ok := f.Inputs.IntOk(2)
+	p1, p1ok := d.Inputs.IntOk(1)
+	p2, p2ok := d.Inputs.IntOk(2)
 	if p1ok && p2ok && p1 > 0 && p2 > 0 {
 		// 新建画布模式：第三个参数是背景色
 		imgColor := &color.NRGBA{0, 0, 0, 255}
-		if cVal, ok := f.Inputs.Get(3).(string); ok && strings.HasPrefix(cVal, "#") {
+		if cVal, ok := d.Inputs.Get(3).(string); ok && strings.HasPrefix(cVal, "#") {
 			c, err := hexToNRGBA(cVal)
 			if err == nil {
 				imgColor = c
 			}
-		} else if c, ok := f.Inputs.Get(3).(*color.NRGBA); ok {
+		} else if c, ok := d.Inputs.Get(3).(*color.NRGBA); ok {
 			imgColor = c
 		}
 
 		img = image.NewRGBA(image.Rect(0, 0, p1, p2))
 		draw.Draw(img, img.Bounds(), &image.Uniform{imgColor}, image.Point{}, draw.Src)
 	} else {
-		param1 := f.Inputs.Get(1)
+		param1 := d.Inputs.Get(1)
 		switch v := param1.(type) {
 		case *NDrawImg:
 			bounds := v.img.Bounds()
@@ -74,8 +75,8 @@ func (f *DicFunc) DrawImgNew() (*NDrawImg, error) {
 			origH := bounds.Dy()
 
 			// 读取新高宽（留空就用原图高宽）
-			p2, p2ok = f.Inputs.IntOk(2)  // 高度
-			p3, p3ok := f.Inputs.IntOk(3) // 宽度
+			p2, p2ok = d.Inputs.IntOk(2)  // 高度
+			p3, p3ok := d.Inputs.IntOk(3) // 宽度
 			if !p2ok || p2 <= 0 {
 				p2 = origH
 			}
@@ -107,8 +108,8 @@ func (f *DicFunc) DrawImgNew() (*NDrawImg, error) {
 				origW := bounds.Dx()
 				origH := bounds.Dy()
 
-				p2, p2ok = f.Inputs.IntOk(2)
-				p3, p3ok := f.Inputs.IntOk(3)
+				p2, p2ok = d.Inputs.IntOk(2)
+				p3, p3ok := d.Inputs.IntOk(3)
 				if !p2ok || p2 <= 0 {
 					p2 = origH
 				}
@@ -137,8 +138,8 @@ func (f *DicFunc) DrawImgNew() (*NDrawImg, error) {
 				origW := bounds.Dx()
 				origH := bounds.Dy()
 
-				p2, p2ok = f.Inputs.IntOk(2)
-				p3, p3ok := f.Inputs.IntOk(3)
+				p2, p2ok = d.Inputs.IntOk(2)
+				p3, p3ok := d.Inputs.IntOk(3)
 				if !p2ok || p2 <= 0 {
 					p2 = origH
 				}
@@ -179,12 +180,12 @@ func (f *DicFunc) DrawImgNew() (*NDrawImg, error) {
 }
 
 // 获取画笔颜色
-func (f *DicFunc) DrawImgGetColor() (*color.NRGBA, error) {
-	if rStr, ok := f.Inputs.Get(1).(string); ok && rStr == "随机" {
+func drawImgGetColor(d *dto.DicInputs) (any, error) {
+	if rStr, ok := d.Inputs.Get(1).(string); ok && rStr == "随机" {
 		return &color.NRGBA{uint8(rand.Intn(256)), uint8(rand.Intn(256)), uint8(rand.Intn(256)), 255}, nil
 	}
 	// 判断参数1是不是字符串（十六进制颜色）
-	if hexStr, ok := f.Inputs.Get(1).(string); ok && strings.HasPrefix(hexStr, "#") {
+	if hexStr, ok := d.Inputs.Get(1).(string); ok && strings.HasPrefix(hexStr, "#") {
 		c, err := hexToNRGBA(hexStr)
 		if err != nil {
 			return &color.NRGBA{}, fmt.Errorf("十六进制颜色解析失败: %v", err)
@@ -193,57 +194,57 @@ func (f *DicFunc) DrawImgGetColor() (*color.NRGBA, error) {
 	}
 
 	// 否则按RGB(A)取
-	r := f.Inputs.Int(1)
-	g := f.Inputs.Int(2)
-	b := f.Inputs.Int(3)
+	r := d.Inputs.Int(1)
+	g := d.Inputs.Int(2)
+	b := d.Inputs.Int(3)
 	a := 255
-	if aa, ok := f.Inputs.IntOk(4); ok {
+	if aa, ok := d.Inputs.IntOk(4); ok {
 		a = aa
 	}
 	return &color.NRGBA{uint8(r), uint8(g), uint8(b), uint8(a)}, nil
 }
 
 // 设置画笔颜色
-func (f *DicFunc) DrawImgSetColor() error {
-	img, ok := f.Inputs.Get(1).(*NDrawImg)
+func drawImgSetColor(d *dto.DicInputs) (any, error) {
+	img, ok := d.Inputs.Get(1).(*NDrawImg)
 	if !ok {
-		return errors.New("参数1必须是画布")
+		return "", errors.New("参数1必须是画布")
 	}
 	if img == nil {
-		return errors.New("图片不能为空")
+		return "", errors.New("图片不能为空")
 	}
 
-	if rStr, ok := f.Inputs.Get(2).(string); ok && rStr == "随机" {
+	if rStr, ok := d.Inputs.Get(2).(string); ok && rStr == "随机" {
 		img.color = nil
-		return nil
+		return nil, nil
 	}
 
 	// 判断参数2是不是字符串（十六进制颜色）
-	if hexStr, ok := f.Inputs.Get(2).(string); ok && strings.HasPrefix(hexStr, "#") {
+	if hexStr, ok := d.Inputs.Get(2).(string); ok && strings.HasPrefix(hexStr, "#") {
 		c, err := hexToNRGBA(hexStr)
 		if err != nil {
-			return fmt.Errorf("十六进制颜色解析失败: %v", err)
+			return "", fmt.Errorf("十六进制颜色解析失败: %v", err)
 		}
 		img.color = c
-		return nil
+		return nil, nil
 	}
 
 	// 否则看参数2是否直接是 color.NRGBA
-	if c, ok := f.Inputs.Get(2).(*color.NRGBA); ok {
+	if c, ok := d.Inputs.Get(2).(*color.NRGBA); ok {
 		img.color = c
-		return nil
+		return nil, nil
 	}
 
 	// 否则按RGB(A)取
-	r := f.Inputs.Int(2)
-	g := f.Inputs.Int(3)
-	b := f.Inputs.Int(4)
+	r := d.Inputs.Int(2)
+	g := d.Inputs.Int(3)
+	b := d.Inputs.Int(4)
 	a := 255
-	if aa, ok := f.Inputs.IntOk(5); ok {
+	if aa, ok := d.Inputs.IntOk(5); ok {
 		a = aa
 	}
 	img.color = &color.NRGBA{uint8(r), uint8(g), uint8(b), uint8(a)}
-	return nil
+	return nil, nil
 }
 
 // hexToNRGBA 解析 #RRGGBB 或 #RRGGBBAA 格式
@@ -1833,8 +1834,8 @@ func (f *DicFunc) DrawImgPolygons() error {
 }
 
 // 获取图片
-func (f *DicFunc) DrawImgGet() (string, error) {
-	img, ok := f.Inputs.Get(1).(*NDrawImg)
+func drawImgGet(d *dto.DicInputs) (any, error) {
+	img, ok := d.Inputs.Get(1).(*NDrawImg)
 	if !ok {
 		return "", errors.New("参数1必须是画布")
 	}
@@ -1844,7 +1845,7 @@ func (f *DicFunc) DrawImgGet() (string, error) {
 	}
 
 	var buf bytes.Buffer
-	format := strings.ToLower(f.Inputs.String(2))
+	format := strings.ToLower(d.Inputs.String(2))
 
 	// 释放图片资源
 	defer img.Close()

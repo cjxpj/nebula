@@ -13,7 +13,7 @@ import (
 )
 
 // 频道处理
-func (s *ServeRouter) QQBOTChannelRun(payload qqbottool.Payload) {
+func (s *ServeRouter) QQBOTChannelRun(payload *qqbottool.Payload) {
 	// 解析消息数据
 	m := &qqbottool.GuildMessageEvent{}
 	err := json.Unmarshal([]byte(payload.Data), m)
@@ -94,7 +94,7 @@ func (s *ServeRouter) QQBOTChannelRun(payload qqbottool.Payload) {
 }
 
 // 频道私信处理
-func (s *ServeRouter) QQBOTChannelPrivateRun(payload qqbottool.Payload) {
+func (s *ServeRouter) QQBOTChannelPrivateRun(payload *qqbottool.Payload) {
 	// 解析消息数据
 	m := &qqbottool.GuildMessageEvent{}
 	err := json.Unmarshal([]byte(payload.Data), m)
@@ -178,7 +178,7 @@ func (s *ServeRouter) QQBOTChannelPrivateRun(payload qqbottool.Payload) {
 }
 
 // 群消息处理
-func (s *ServeRouter) QQBOTGroupATRun(payload qqbottool.Payload) {
+func (s *ServeRouter) QQBOTGroupATRun(payload *qqbottool.Payload) {
 	// 解析消息数据
 	m := &qqbottool.GroupMessageEvent{}
 	err := json.Unmarshal([]byte(payload.Data), m)
@@ -334,7 +334,7 @@ func (s *ServeRouter) QQBOTGroupATRun(payload qqbottool.Payload) {
 }
 
 // 群私聊处理
-func (s *ServeRouter) QQBOTGroupPrivateRun(payload qqbottool.Payload) {
+func (s *ServeRouter) QQBOTGroupPrivateRun(payload *qqbottool.Payload) {
 	// 解析消息数据
 	m := &qqbottool.GroupMessageEvent{}
 	err := json.Unmarshal([]byte(payload.Data), m)
@@ -476,28 +476,27 @@ func (s *ServeRouter) QQBotRun(w http.ResponseWriter, r *http.Request) {
 		fmt.Println("QQBot数据验证失败")
 		return
 	case "服务端进行消息推送":
-
 		// 处理消息
 		switch payload.Type {
 
 		case "MESSAGE_CREATE": // 频道-私域全局消息
-			s.QQBOTChannelRun(*payload)
+			s.QQBOTChannelRun(payload)
 			w.Write([]byte("Bot Message"))
 
 		case "AT_MESSAGE_CREATE": // 频道-公域艾特消息
-			s.QQBOTChannelRun(*payload)
+			s.QQBOTChannelRun(payload)
 			w.Write([]byte("Bot Message"))
 
 		case "DIRECT_MESSAGE_CREATE": // 频道-私聊消息
-			s.QQBOTChannelPrivateRun(*payload)
+			s.QQBOTChannelPrivateRun(payload)
 			w.Write([]byte("Bot Message"))
 
 		case "GROUP_AT_MESSAGE_CREATE": // 群-艾特消息
-			s.QQBOTGroupATRun(*payload)
+			s.QQBOTGroupATRun(payload)
 			w.Write([]byte("Bot Message"))
 
 		case "C2C_MESSAGE_CREATE": // 群-私聊
-			s.QQBOTGroupPrivateRun(*payload)
+			s.QQBOTGroupPrivateRun(payload)
 			w.Write([]byte("Bot Message"))
 
 		default:

@@ -23,10 +23,7 @@ type CmdConfig struct {
 }
 
 // 终端输入
-func (f *DicFunc) RunCommandInput() (string, error) {
-	if f.Len != 0 {
-		return "", errors.New("参数错误")
-	}
+func runCommandInput(d *dto.DicInputs) (any, error) {
 	var inputText string
 	scanner := bufio.NewScanner(os.Stdin)
 	if scanner.Scan() {

@@ -559,9 +559,6 @@ func (d *DicFunc) Funcs(text string) (any, error) {
 	case "终端.输入":
 		return f.RunCommandInputText()
 
-	case "终端等待输入":
-		return f.RunCommandInput()
-
 	case "分割":
 		return f.Split()
 
@@ -619,12 +616,6 @@ func (d *DicFunc) Funcs(text string) (any, error) {
 	case "ZIP解压":
 		return f.UnZip(), nil
 
-	case "文件列表":
-		return f.FileList()
-
-	case "文件夹列表":
-		return f.DirList()
-
 	case "文件夹大小":
 		return f.DirSize(), nil
 
@@ -642,9 +633,6 @@ func (d *DicFunc) Funcs(text string) (any, error) {
 
 	case "计算":
 		return f.Count(), nil
-
-	case "主机":
-		return f.Host_information(), nil
 
 	case "随机数":
 		return f.RandNum(), nil
@@ -769,13 +757,6 @@ func (d *DicFunc) Funcs(text string) (any, error) {
 	case "范围":
 		return f.Range(), nil
 
-		// Ed25519相关功能
-	case "Ed25519种子大小":
-		return f.Ed25519_SeedSize()
-
-	case "Ed25519生成密钥":
-		return f.Ed25519_GenerateKey()
-
 	case "Ed25519从种子生成密钥":
 		return f.Ed25519_NewKeyFromSeed()
 
@@ -794,20 +775,8 @@ func (d *DicFunc) Funcs(text string) (any, error) {
 	case "Ed25519从Curve25519生成密钥":
 		return f.Ed25519_NewKeyFromCurve25519()
 
-	case "画布.创建":
-		return f.DrawImgNew()
-
-	case "画布.获取":
-		return f.DrawImgGet()
-
 	case "画笔.字体":
 		return nil, f.DrawImgLoadFont()
-
-	case "画笔.获取颜色":
-		return f.DrawImgGetColor()
-
-	case "画笔.设置颜色":
-		return nil, f.DrawImgSetColor()
 
 	case "画笔.大小":
 		return nil, f.DrawImgSetSize()
