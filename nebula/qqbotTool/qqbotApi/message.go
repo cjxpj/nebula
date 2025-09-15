@@ -1,4 +1,4 @@
-package api
+package qqbotapi
 
 import (
 	"encoding/base64"

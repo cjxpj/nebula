@@ -15,10 +15,9 @@ import (
 
 	"github.com/cjxpj/nebula/appfiles"
 	"github.com/cjxpj/nebula/dto"
+	qqbotapi "github.com/cjxpj/nebula/qqBotTool/qqbotApi"
 	"github.com/cjxpj/nebula/utils"
 	yunhubotapi "github.com/cjxpj/nebula/yunhuBotTool/yunhubotApi"
-
-	qqbotapi "github.com/cjxpj/nebula/qqBotTool/qqbotApi"
 
 	"github.com/gorilla/websocket"
 	"github.com/patrickmn/go-cache"
@@ -289,7 +288,7 @@ func (s *ServeRouter) WebRun(w http.ResponseWriter, r *http.Request) {
 					conn.Close()
 					return "", nil
 				})
-				dic.Val.P.Set("WS连接数据", conn)
+				dic.Val.G.Set("_WS连接_", conn)
 				resData := dic.RunPrivate("连接成功")
 				if resData != "" {
 					if err := conn.WriteMessage(websocket.TextMessage, []byte(resData)); err != nil {
@@ -337,6 +336,7 @@ func (s *ServeRouter) WebRun(w http.ResponseWriter, r *http.Request) {
 						break
 					}
 					d := NewDic("private/websocket/server.n", wsfileData)
+					d.Val.G.Set("_WS连接_", conn)
 					d.Val.G.Set("访问数据", string(responseJSON))
 					d.SetFunc("断开连接", func(val *dto.DicVal, inputs *utils.DicInputs) (any, error) {
 						conn.Close()
@@ -366,6 +366,7 @@ func (s *ServeRouter) WebRun(w http.ResponseWriter, r *http.Request) {
 				}
 			}()
 		}
+		return
 	}
 
 	// 输出运行结果

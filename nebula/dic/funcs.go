@@ -296,6 +296,7 @@ func runAsyncFunc(d *dto.DicInputs) (any, error) {
 					fmt.Println(resDic)
 				}
 			}()
+			return "", nil
 		}
 	}
 	return "", errors.New("未知函数")

@@ -1,4 +1,4 @@
-package api
+package qqbotapi
 
 import (
 	"net/http"

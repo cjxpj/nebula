@@ -23,10 +23,10 @@ import (
 
 // 函数跟变量
 func (d *DicFunc) Runs(text string) string {
-	fmt.Println("开始执行函数")
-	fmt.Println(text)
+	// fmt.Println("开始执行函数")
+	// fmt.Println(text)
 	output := run.BuildFuncStr(text, func(valStr []string) (string, bool) {
-		fmt.Println(valStr)
+		// fmt.Println(valStr)
 		resAny, err := d.Funcs(valStr)
 		if err != nil {
 			log.Printf("[%s]%s：%v", d.Val.Get("_词库路径_"), valStr[0], err)
@@ -132,7 +132,7 @@ func caseRestart() (string, error) {
 
 func (d *DicFunc) Funcs(linesStr []string) (any, error) {
 	linesLen := len(linesStr)
-	if linesLen <= 1 {
+	if linesLen <= 0 {
 		return "$$", nil
 	}
 
