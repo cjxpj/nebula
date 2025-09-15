@@ -184,7 +184,7 @@ func (d *DicFunc) Funcs(linesStr []string) (any, error) {
 			funcv.Set("触发", Tstr)
 			funcv.Set("触发词", TStr)
 			funcv.Set("Class", funcName)
-			dto.ValRunTrigger(TStr, Tstr, funcv, d.Val.P)
+			dto.ValRunTrigger(TStr, Tstr, d.Val.NewDicVal(funcv), d.Val)
 			RunDic := NewRunDicEntry().
 				CloseTrigger().
 				SetGlobal_v(d.Val.G).
@@ -211,7 +211,7 @@ func (d *DicFunc) Funcs(linesStr []string) (any, error) {
 			}
 			funcv.Set("触发", Tstr)
 			funcv.Set("触发词", text)
-			dto.ValRunTrigger(text, Tstr, funcv, d.Val.P)
+			dto.ValRunTrigger(text, Tstr, d.Val.NewDicVal(funcv), d.Val)
 			RunDic := NewRunDicEntry().
 				CloseTrigger().
 				SetGlobal_v(d.Val.G).
@@ -714,9 +714,6 @@ func (d *DicFunc) Funcs(linesStr []string) (any, error) {
 
 	case "排序":
 		return f.Sort(), nil
-
-	case "Js":
-		return f.RunJs(d.Val.P), nil
 
 	case "范围":
 		return f.Range(), nil

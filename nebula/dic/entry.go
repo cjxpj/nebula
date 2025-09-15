@@ -858,7 +858,7 @@ func Entry(r *DicEntry, txt []string, funcV *DicFunc) {
 			// fmt.Println(vType, vPrefix, vSuffix)
 
 			switch vType {
-			case 1, 2:
+			case 1, 2, 7, 8:
 				vSetData = funcV.Runs(count.RunCountText(r.Val, vSuffix))
 			}
 
@@ -905,6 +905,31 @@ func Entry(r *DicEntry, txt []string, funcV *DicFunc) {
 					r.Val.P.Set(vPrefix, valStr+vSetData)
 					continue
 				}
+			case 7: // 乘法
+				var valStr string
+				if str, ok := r.Val.P.Get(vPrefix).(string); ok {
+					valStr = str
+				}
+				one, err1 := strconv.ParseFloat(valStr, 64)
+				two, err2 := strconv.ParseFloat(vSetData, 64)
+				if err1 == nil && err2 == nil {
+					r.Val.P.Set(vPrefix, strconv.FormatFloat(one*two, 'f', -1, 64))
+					// 复读字符串
+				} else if err1 != nil && err2 == nil {
+					r.Val.P.Set(vPrefix, strings.Repeat(valStr, int(two)))
+				}
+				continue
+			case 8: // 除法
+				var valStr string
+				if str, ok := r.Val.P.Get(vPrefix).(string); ok {
+					valStr = str
+				}
+				one, err1 := strconv.ParseFloat(valStr, 64)
+				two, err2 := strconv.ParseFloat(vSetData, 64)
+				if err1 == nil && err2 == nil {
+					r.Val.P.Set(vPrefix, strconv.FormatFloat(one/two, 'f', -1, 64))
+				}
+				continue
 			case 3:
 				r.Val.P.Set(vPrefix, funcV.Runs(vSuffix))
 				continue
@@ -939,6 +964,14 @@ func Entry(r *DicEntry, txt []string, funcV *DicFunc) {
 									continue
 								}
 								r.Val.P.Set(vPrefix, vSetData)
+							}
+							if j, ok := j.([]any); ok {
+								vSetData := funcV.Runs(count.RunCountText(r.Val, vSuffix))
+								j := funcs.JsonSetValue(j, setJsonHead, vSetData, false)
+								if j, err := json.Marshal(j); err == nil {
+									r.Val.P.Set(vPrefix, string(j))
+									continue
+								}
 							}
 						}
 					}

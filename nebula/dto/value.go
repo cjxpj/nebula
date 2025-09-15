@@ -84,8 +84,8 @@ func RunTrigger(msg, trigger string, v *Val) {
 }
 
 // 变量生成参数跟括号
-func ValRunTrigger(msg, trigger string, setV, v *Val) {
-	setV.Set("括号0", v.Text(msg))
+func ValRunTrigger(msg, trigger string, setV, v *DicVal) {
+	setV.P.Set("括号0", v.Text(msg))
 	regex, err := regexp.Compile("^" + trigger + "$")
 	if err == nil {
 		matches := regex.FindStringSubmatch(msg)
@@ -94,7 +94,7 @@ func ValRunTrigger(msg, trigger string, setV, v *Val) {
 				continue
 			}
 			key := fmt.Sprintf("括号%d", i)
-			setV.Set(key, v.Text(val))
+			setV.P.Set(key, v.Text(val))
 		}
 	} else {
 		fmt.Println("正则语法错误:", err)
@@ -102,7 +102,7 @@ func ValRunTrigger(msg, trigger string, setV, v *Val) {
 	triggerSplit := strings.Split(msg, " ")
 	for i, val := range triggerSplit {
 		key := fmt.Sprintf("参数%d", i)
-		setV.Set(key, v.Text(val))
+		setV.P.Set(key, v.Text(val))
 	}
 }
 
@@ -164,6 +164,14 @@ func (v *Val) GetAll() map[string]interface{} {
 func (v *Val) NewObj(val map[string]interface{}) {
 	for k, newVal := range val {
 		v.obj.Store(k, newVal)
+	}
+}
+
+// 新建词库对象
+func (dv *DicVal) NewDicVal(v *Val) *DicVal {
+	return &DicVal{
+		G: dv.G,
+		P: v,
 	}
 }
 
@@ -244,39 +252,68 @@ func (v *DicVal) getVal(key string) (any, bool) {
 // 词库变量
 func (v *DicVal) Text(str string) any {
 	result := replaceProcessedContent(str, "%", "%", func(val string) any {
-		strLen := len(val)
 
-		if strLen > 4 {
-			// url编码
-			if val[0] == 'U' && val[1] == 'R' && val[2] == 'L' && val[3] == '_' {
-				if value, ok := v.getVal(val[4:]); ok {
-					if strValue, isString := value.(string); isString {
-						return url.QueryEscape(strValue)
-					}
+		// url编码
+		if strings.HasPrefix(val, "URL_") {
+			if value, ok := v.getVal(val[4:]); ok {
+				if strValue, isString := value.(string); isString {
+					return url.QueryEscape(strValue)
 				}
-				return ""
 			}
-			// B64编码
-			if val[0] == 'B' && val[1] == '6' && val[2] == '4' && val[3] == '_' {
-				if value, ok := v.getVal(val[4:]); ok {
-					if strValue, isString := value.(string); isString {
-						return base64.StdEncoding.EncodeToString([]byte(strValue))
-					}
+			return ""
+		}
+		// B64编码
+		if strings.HasPrefix(val, "B64_") {
+			if value, ok := v.getVal(val[4:]); ok {
+				if strValue, isString := value.(string); isString {
+					return base64.StdEncoding.EncodeToString([]byte(strValue))
 				}
-				return ""
 			}
-			// 类型
-			if strLen > 5 {
-				if val[0] == 'T' && val[1] == 'Y' && val[2] == 'P' && val[3] == 'E' && val[4] == '_' {
-					if value, ok := v.getVal(val[5:]); ok {
-						return reflect.TypeOf(value).String()
+			return ""
+		}
+		// 类型
+		if strings.HasPrefix(val, "TYPE_") {
+			if value, ok := v.getVal(val[5:]); ok {
+				return reflect.TypeOf(value).String()
+			}
+			return ""
+		}
+
+		if strings.HasPrefix(val, "@") {
+			list := strings.Split(val[1:], "->")
+			if len(list) > 1 {
+				// 先取第一个变量
+				value, _ := v.getVal(list[0])
+				if valueStr, ok := value.(string); ok {
+					if j := utils.IsJSONResult(valueStr); j != nil {
+						res := j
+						for _, key := range list[1:] {
+							switch curr := res.(type) {
+							case map[string]any:
+								if v, ok := curr[key]; ok {
+									res = v
+								} else {
+									return nil // key 不存在
+								}
+							case []any:
+								// 尝试把 key 转成索引
+								idx, err := strconv.Atoi(key)
+								if err != nil || idx < 0 || idx >= len(curr) {
+									return nil // 索引无效
+								}
+								res = curr[idx]
+							default:
+								// 遇到不可再下探的类型
+								return res
+							}
+						}
+						return res
 					}
-					return ""
 				}
 			}
 		}
 
-		if strLen > 1 && val[0] == '!' {
+		if strings.HasPrefix(val, "!") {
 			value, _ := v.getVal(val[1:])
 			if strValue, isString := value.(string); isString {
 				switch strValue {
@@ -323,7 +360,7 @@ func (v *DicVal) Text(str string) any {
 			}
 		}
 
-		if strLen > 6 && val[:6] == "时间" {
+		if strings.HasPrefix(val, "时间") {
 			getstr := val[6:]
 			replacements := map[string]string{
 				"yyyy":   "2006",
@@ -359,7 +396,7 @@ func (v *DicVal) Text(str string) any {
 			}
 		}
 
-		if strLen == 4 && val[:3] == "val" {
+		if strings.HasPrefix(val, "val") && len(val) == 4 {
 			getstr := val[3:]
 			switch getstr {
 			case "0":
@@ -386,168 +423,6 @@ func (v *DicVal) Text(str string) any {
 		}
 
 		return "%" + val + "%"
-	})
-
-	return result
-}
-
-// 获取
-func (v *Val) getVal(key string) (any, bool) {
-	return v.obj.Load(key)
-}
-
-// Text 读取变量
-func (v *Val) Text(str string) any {
-	return v.Texts(str, "%", "%")
-}
-
-func (v *Val) Texts(str, start, end string) any {
-	result := replaceProcessedContent(str, start, end, func(val string) any {
-
-		strLen := len(val)
-
-		if strLen > 4 {
-			// url编码
-			if val[0] == 'U' && val[1] == 'R' && val[2] == 'L' && val[3] == '_' {
-				if value, ok := v.getVal(val[4:]); ok {
-					if strValue, isString := value.(string); isString {
-						return url.QueryEscape(strValue)
-					}
-				}
-				return ""
-			}
-			// B64编码
-			if val[0] == 'B' && val[1] == '6' && val[2] == '4' && val[3] == '_' {
-				if value, ok := v.getVal(val[4:]); ok {
-					if strValue, isString := value.(string); isString {
-						return base64.StdEncoding.EncodeToString([]byte(strValue))
-					}
-				}
-				return ""
-			}
-			// 类型
-			if strLen > 5 {
-				if val[0] == 'T' && val[1] == 'Y' && val[2] == 'P' && val[3] == 'E' && val[4] == '_' {
-					if value, ok := v.getVal(val[5:]); ok {
-						return reflect.TypeOf(value).String()
-					}
-					return ""
-				}
-			}
-		}
-
-		if strLen > 1 && val[0] == '!' {
-			value, _ := v.obj.Load(val[1:])
-			if strValue, isString := value.(string); isString {
-				if strValue == "true" {
-					return "false"
-				}
-				if strValue == "false" {
-					return "true"
-				}
-				if strValue == "1" {
-					return "0"
-				}
-				if strValue == "0" {
-					return "1"
-				}
-				return strValue
-			}
-			return ""
-		}
-
-		switch val {
-		case "时间戳":
-			return strconv.FormatInt(time.Now().Unix(), 10)
-		case "毫秒时间戳":
-			return strconv.FormatInt(time.Now().UnixNano()/1e6, 10)
-		case "微秒时间戳":
-			return strconv.FormatInt(time.Now().UnixNano()/1e3, 10)
-		case "纳秒时间戳":
-			return strconv.FormatInt(time.Now().UnixNano(), 10)
-		case "空格":
-			return " "
-		case "换行":
-			return "\n"
-		case "系统":
-			return runtime.GOOS
-		case "版本":
-			return appfiles.Version
-		}
-
-		value, valueOk := v.obj.Load(val)
-		if valueOk {
-			strValue, isString := value.(string)
-			if isString {
-				return strValue
-			} else {
-				return value
-			}
-		}
-
-		if strLen > 6 && val[:6] == "时间" {
-			getstr := val[6:]
-			replacements := map[string]string{
-				"yyyy":   "2006",
-				"MM":     "01",
-				"dd":     "02",
-				"hh":     "03",
-				"HH":     "15",
-				"mm":     "04",
-				"ss":     "05",
-				"Mon":    "Mon",
-				"Monday": "Monday",
-			}
-			for key, value := range replacements {
-				getstr = strings.ReplaceAll(getstr, key, value)
-			}
-			return time.Now().Format(getstr)
-		}
-
-		if strings.HasPrefix(val, "随机数") {
-			lval := val[9:]
-			if dashIndex := strings.Index(lval, "-"); dashIndex != -1 {
-				minStr := lval[:dashIndex]
-				maxStr := lval[dashIndex+1:]
-				if min, err := strconv.Atoi(minStr); err == nil {
-					if max, err := strconv.Atoi(maxStr); err == nil {
-						rN := utils.RandNum(min, max)
-						if rN == min-1 {
-							return ""
-						}
-						return strconv.Itoa(rN)
-					}
-				}
-			}
-		}
-
-		if strLen == 4 && val[:3] == "val" {
-			getstr := val[3:]
-			switch getstr {
-			case "0":
-				return "$"
-			case "1":
-				return "%"
-			case "2":
-				return ":"
-			case "3":
-				return " "
-			case "4":
-				return "\t"
-			case "5":
-				return "\n"
-			case "6":
-				return ";"
-			case "7":
-				return "["
-			case "8":
-				return "]"
-			case "9":
-				return "\r\n"
-			}
-		}
-
-		return start + val + end
 	})
 
 	return result

@@ -11,6 +11,8 @@ import "unicode"
 * 4 执行变量
 * 5 纯文本赋予值
 * 6 普通赋予值
+* 7 乘法
+* 8 除法
  */
 func ValTextTest(text string) (int8, string, string) {
 	textLen := len(text)
@@ -33,6 +35,16 @@ func ValTextTest(text string) (int8, string, string) {
 				prefix := text[:i]
 				suffix := text[endIdx:]
 				return 2, prefix, suffix
+			}
+			if r == '*' && text[i+1] == ':' {
+				prefix := text[:i]
+				suffix := text[endIdx:]
+				return 7, prefix, suffix
+			}
+			if r == '/' && text[i+1] == ':' {
+				prefix := text[:i]
+				suffix := text[endIdx:]
+				return 8, prefix, suffix
 			}
 		}
 		if r == ':' {
@@ -79,15 +91,4 @@ func ValTextTest(text string) (int8, string, string) {
 		}
 	}
 	return 0, "", ""
-}
-
-// 匹配自己想要的字符第一个
-func MatchFirst(text string) (int, rune) {
-	// 匹配:跟+跟-
-	for i, r := range text {
-		if r == ':' || r == '+' || r == '-' {
-			return i, r
-		}
-	}
-	return -1, 0
 }
