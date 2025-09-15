@@ -877,6 +877,23 @@ func Entry(r *DicEntry, txt []string, funcV *DicFunc) {
 			case 2:
 				var valStr string
 				if str, ok := r.Val.P.Get(vPrefix).(string); ok {
+					// 追加json
+					if j := utils.IsJSONResult(str); j != nil {
+						if j, ok := j.([]any); ok {
+							j = append(j, vSetData)
+							if j, err := json.Marshal(j); err == nil {
+								r.Val.P.Set(vPrefix, string(j))
+								continue
+							}
+						}
+						if j, ok := j.(map[string]any); ok {
+							j[strconv.Itoa(len(j))] = vSetData
+							if j, err := json.Marshal(j); err == nil {
+								r.Val.P.Set(vPrefix, string(j))
+								continue
+							}
+						}
+					}
 					valStr = str
 				}
 				one, err1 := strconv.ParseFloat(valStr, 64)
@@ -905,6 +922,26 @@ func Entry(r *DicEntry, txt []string, funcV *DicFunc) {
 
 				if vSuffix == "" {
 					r.Val.P.Set(vPrefix, "")
+					continue
+				}
+
+				if setJsonHead := strings.Split(vPrefix, "->"); len(setJsonHead) > 1 {
+					vPrefix = setJsonHead[0]
+					setJsonHead = setJsonHead[1:]
+					// 设置json
+					if str, ok := r.Val.P.Get(vPrefix).(string); ok {
+						if j := utils.IsJSONResult(str); j != nil {
+							if j, ok := j.(map[string]any); ok {
+								vSetData := funcV.Runs(count.RunCountText(r.Val, vSuffix))
+								j := funcs.JsonSetValue(j, setJsonHead, vSetData, false)
+								if j, err := json.Marshal(j); err == nil {
+									r.Val.P.Set(vPrefix, string(j))
+									continue
+								}
+								r.Val.P.Set(vPrefix, vSetData)
+							}
+						}
+					}
 					continue
 				}
 
@@ -972,7 +1009,8 @@ func Entry(r *DicEntry, txt []string, funcV *DicFunc) {
 							// 第一次加载解析数据
 							if RunI == 0 {
 								// 读取数据去除@
-								runTexts := funcV.RunsAny(count.RunCountText(r.Val, key[1:]))
+								runTexts := funcV.RunsAny(key[1:])
+								// fmt.Println(runTexts)
 								// 推断数据map
 								if rJ, ok := runTexts.(map[string]string); ok {
 									runText = rJ

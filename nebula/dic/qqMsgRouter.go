@@ -8,14 +8,14 @@ import (
 	"time"
 
 	"github.com/cjxpj/nebula/dto"
-	qqBotTool "github.com/cjxpj/nebula/qqbottool"
+	"github.com/cjxpj/nebula/qqbottool"
 	"github.com/cjxpj/nebula/utils"
 )
 
 // 频道处理
-func (s *ServeRouter) QQBOTChannelRun(payload *qqBotTool.Payload) {
+func (s *ServeRouter) QQBOTChannelRun(payload *qqbottool.Payload) {
 	// 解析消息数据
-	m := &qqBotTool.GuildMessageEvent{}
+	m := &qqbottool.GuildMessageEvent{}
 	err := json.Unmarshal([]byte(payload.Data), m)
 	if err != nil {
 		fmt.Println("QQBot消息数据验证失败")
@@ -43,7 +43,7 @@ func (s *ServeRouter) QQBOTChannelRun(payload *qqBotTool.Payload) {
 	}
 
 	// 去除艾特
-	msg = qqBotTool.RemoveLeadingMentionOnce(msg)
+	msg = qqbottool.RemoveLeadingMentionOnce(msg)
 
 	// 回复消息
 	dic := NewDic(s.QQBot.FilePath, FileData).
@@ -94,9 +94,9 @@ func (s *ServeRouter) QQBOTChannelRun(payload *qqBotTool.Payload) {
 }
 
 // 频道私信处理
-func (s *ServeRouter) QQBOTChannelPrivateRun(payload *qqBotTool.Payload) {
+func (s *ServeRouter) QQBOTChannelPrivateRun(payload *qqbottool.Payload) {
 	// 解析消息数据
-	m := &qqBotTool.GuildMessageEvent{}
+	m := &qqbottool.GuildMessageEvent{}
 	err := json.Unmarshal([]byte(payload.Data), m)
 	if err != nil {
 		fmt.Println("QQBot消息数据验证失败")
@@ -124,7 +124,7 @@ func (s *ServeRouter) QQBOTChannelPrivateRun(payload *qqBotTool.Payload) {
 	}
 
 	// 去除艾特
-	msg = qqBotTool.RemoveLeadingMentionOnce(msg)
+	msg = qqbottool.RemoveLeadingMentionOnce(msg)
 
 	// 回复消息
 	dic := NewDic(s.QQBot.FilePath, FileData).
@@ -178,9 +178,9 @@ func (s *ServeRouter) QQBOTChannelPrivateRun(payload *qqBotTool.Payload) {
 }
 
 // 群消息处理
-func (s *ServeRouter) QQBOTGroupATRun(payload *qqBotTool.Payload) {
+func (s *ServeRouter) QQBOTGroupATRun(payload *qqbottool.Payload) {
 	// 解析消息数据
-	m := &qqBotTool.GroupMessageEvent{}
+	m := &qqbottool.GroupMessageEvent{}
 	err := json.Unmarshal([]byte(payload.Data), m)
 	if err != nil {
 		fmt.Println("QQBot消息数据验证失败")
@@ -208,7 +208,7 @@ func (s *ServeRouter) QQBOTGroupATRun(payload *qqBotTool.Payload) {
 	}
 
 	// 去除开头第一个空格
-	msg = qqBotTool.RemoveLeadingSpace(msg)
+	msg = qqbottool.RemoveLeadingSpace(msg)
 
 	// 回复消息
 	dic := NewDic(s.QQBot.FilePath, FileData).
@@ -334,9 +334,9 @@ func (s *ServeRouter) QQBOTGroupATRun(payload *qqBotTool.Payload) {
 }
 
 // 群私聊处理
-func (s *ServeRouter) QQBOTGroupPrivateRun(payload *qqBotTool.Payload) {
+func (s *ServeRouter) QQBOTGroupPrivateRun(payload *qqbottool.Payload) {
 	// 解析消息数据
-	m := &qqBotTool.GroupMessageEvent{}
+	m := &qqbottool.GroupMessageEvent{}
 	err := json.Unmarshal([]byte(payload.Data), m)
 	if err != nil {
 		fmt.Println("QQBot消息数据验证失败")
@@ -450,21 +450,21 @@ func (s *ServeRouter) QQBotRun(w http.ResponseWriter, r *http.Request) {
 		w.Write([]byte("Bot Post"))
 		return
 	}
-	payload := &qqBotTool.Payload{}
+	payload := &qqbottool.Payload{}
 	if err = json.Unmarshal(httpBody, payload); err != nil {
 		w.Write([]byte("Bot ErrorData"))
 		return
 	}
 	// fmt.Println("QQBot收到消息")
 	// fmt.Println("QQBot消息内容:", string(httpBody))
-	// fmt.Println("处理:", qqBotTool.Op(payload.Op))
-	switch qqBotTool.Op(payload.Op) {
+	// fmt.Println("处理:", qqbottool.Op(payload.Op))
+	switch qqbottool.Op(payload.Op) {
 	case "开放平台对机器人服务端进行验证":
 		// 验证数据
-		data := &qqBotTool.ValidationRequest{}
+		data := &qqbottool.ValidationRequest{}
 		if err = json.Unmarshal(payload.Data, data); err == nil {
 			// 效验签名
-			if sign, err := qqBotTool.GenerateValidationResult(s.QQBot.Secret, data.Event, data.Token); err == nil {
+			if sign, err := qqbottool.GenerateValidationResult(s.QQBot.Secret, data.Event, data.Token); err == nil {
 				// 返回效验结果
 				w.Write([]byte(sign))
 				fmt.Println("QQBot数据验证成功")

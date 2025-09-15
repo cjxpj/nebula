@@ -62,8 +62,9 @@ func Setup() {
 		f{"画笔.获取颜色", "1|2|3|4", drawImgGetColor},
 		f{"画笔.设置颜色", "1|2|3|4|5", drawImgSetColor},
 		f{"画布.获取", "1|2", drawImgGet},
-		f{"map.创建", "0|1", newMapData},
-		f{"map.设置", "3..", setMapData},
+		f{"字典.创建", "0|1", newMapData},
+		f{"字典.设置", "3..", setMapData},
+		f{"字典.获取", "1", getMapData},
 	); err != nil {
 		fmt.Println(err)
 	}

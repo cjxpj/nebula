@@ -14,6 +14,7 @@ import "unicode"
  */
 func ValTextTest(text string) (int8, string, string) {
 	textLen := len(text)
+	jsonHead := false
 	for i, r := range text {
 		// if i == 0 {
 		// 	continue
@@ -58,6 +59,19 @@ func ValTextTest(text string) (int8, string, string) {
 			prefix := text[:i]
 			suffix := text[endIdx:]
 			return 6, prefix, suffix
+		}
+
+		// 匹配json多键
+		if jsonHead {
+			if r == '>' {
+				jsonHead = false
+				continue
+			}
+			break
+		}
+		if r == '-' && !jsonHead {
+			jsonHead = true
+			continue
 		}
 
 		if !(unicode.IsLetter(r) || unicode.IsDigit(r) || unicode.Is(unicode.Scripts["Han"], r) || r == '_') {

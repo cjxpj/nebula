@@ -15,7 +15,7 @@ import (
 
 	"github.com/cjxpj/nebula/appfiles"
 	"github.com/cjxpj/nebula/dto"
-	qqbotapi "github.com/cjxpj/nebula/qqBotTool/qqbotApi"
+	"github.com/cjxpj/nebula/qqbottool/qqbotapi"
 	"github.com/cjxpj/nebula/utils"
 	yunhubotapi "github.com/cjxpj/nebula/yunhuBotTool/yunhubotApi"
 

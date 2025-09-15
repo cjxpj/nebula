@@ -59,7 +59,12 @@ func (d *DicFunc) RunsAny(text string) any {
 		resA = resAny
 		return "", true
 	}, func(s string) (string, bool) {
-		return utils.AnyIsString(d.Val.Text(s)), false
+		resAny := d.Val.Text(s)
+		if resStr, ok := resAny.(string); ok {
+			return resStr, false
+		}
+		resA = resAny
+		return "", true
 	})
 	if resA != nil {
 		return resA

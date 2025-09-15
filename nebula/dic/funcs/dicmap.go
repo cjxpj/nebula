@@ -11,7 +11,6 @@ func newMapData(d *dto.DicInputs) (any, error) {
 	var result map[string]any
 	err := json.Unmarshal([]byte(d.Inputs.String(1)), &result)
 	if err != nil {
-		fmt.Println("返回", result)
 		return result, nil
 	}
 	return result, nil
@@ -20,7 +19,7 @@ func newMapData(d *dto.DicInputs) (any, error) {
 func setMapData(d *dto.DicInputs) (any, error) {
 	m, ok := d.Inputs.Get(1).(map[string]any)
 	if !ok {
-		return nil, errors.New("不是map数据类型")
+		return nil, errors.New("不是字典数据类型")
 	}
 
 	// 跳过第一个(map)，取出 keys+value
@@ -51,4 +50,14 @@ func setMapData(d *dto.DicInputs) (any, error) {
 	}
 
 	return m, nil
+}
+
+func getMapData(d *dto.DicInputs) (any, error) {
+	m, ok := d.Inputs.Get(1).(map[string]any)
+	if !ok {
+		return nil, errors.New("不是字典数据类型")
+	}
+
+	r, err := json.Marshal(m)
+	return string(r), err
 }
