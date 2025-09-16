@@ -61,7 +61,12 @@ func (f *DicFunc) IsJson() string {
 	s := f.Inputs.String(1)
 	var m map[string]any
 	var a []any
-	if json.Unmarshal([]byte(s), &m) == nil || json.Unmarshal([]byte(s), &a) == nil {
+	err1 := json.Unmarshal([]byte(s), &m)
+	err2 := json.Unmarshal([]byte(s), &a)
+	// fmt.Println("data", s)
+	// fmt.Println("err1", err1)
+	// fmt.Println("err2", err2)
+	if err1 == nil || err2 == nil {
 		return "true"
 	}
 	return "false"
