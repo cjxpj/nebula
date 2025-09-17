@@ -250,7 +250,11 @@ func (v *DicVal) getVal(key string) (any, bool) {
 }
 
 // 词库变量
-func (v *DicVal) Text(str string) any {
+func (v *DicVal) Text(content any) any {
+	str, ok := content.(string)
+	if !ok {
+		return content
+	}
 	result := replaceProcessedContent(str, "%", "%", func(val string) any {
 
 		// url编码
@@ -293,21 +297,23 @@ func (v *DicVal) Text(str string) any {
 								if v, ok := curr[key]; ok {
 									res = v
 								} else {
-									return nil // key 不存在
+									// 不存在键返回
+									return ""
 								}
 							case []any:
 								// 尝试把 key 转成索引
 								idx, err := strconv.Atoi(key)
 								if err != nil || idx < 0 || idx >= len(curr) {
-									return nil // 索引无效
+									// 不存在键返回
+									return ""
 								}
 								res = curr[idx]
 							default:
 								// 遇到不可再下探的类型
-								return res
+								return utils.AnyToString(res)
 							}
 						}
-						return res
+						return utils.AnyToString(res)
 					}
 				}
 			}

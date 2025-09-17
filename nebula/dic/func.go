@@ -4,8 +4,6 @@ import (
 	"errors"
 	"fmt"
 	"log"
-	"os"
-	"os/exec"
 	"regexp"
 	"runtime"
 	"strconv"
@@ -23,11 +21,10 @@ import (
 
 // 函数跟变量
 func (d *DicFunc) Runs(text string) string {
-	// fmt.Println("开始执行函数")
-	// fmt.Println(text)
 	output := run.BuildFuncStr(text, func(valStr []string) (string, bool) {
-		// fmt.Println(valStr)
-		resAny, err := d.Funcs(valStr)
+		input := utils.NewDicInputs()
+		input.SetString(valStr)
+		resAny, err := d.Funcs(input)
 		if err != nil {
 			log.Printf("[%s]%s：%v", d.Val.Get("_词库路径_"), valStr[0], err)
 		}
@@ -46,7 +43,9 @@ func (d *DicFunc) RunsAny(text string) any {
 	// 拦截外部赋予值
 	var resA any
 	output := run.BuildFuncStr(text, func(valStr []string) (string, bool) {
-		resAny, err := d.Funcs(valStr)
+		input := utils.NewDicInputs()
+		input.SetString(valStr)
+		resAny, err := d.Funcs(input)
 		if err != nil {
 			fmt.Println(err)
 		}
@@ -77,7 +76,9 @@ func (d *DicFunc) RunsVal(text string, setVal string) (string, bool) {
 	// 拦截外部赋予值
 	strNo := false
 	output := run.BuildFuncStr(text, func(valStr []string) (string, bool) {
-		resAny, err := d.Funcs(valStr)
+		input := utils.NewDicInputs()
+		input.SetString(valStr)
+		resAny, err := d.Funcs(input)
 		if err != nil {
 			fmt.Println(err)
 		}
@@ -96,7 +97,9 @@ func (d *DicFunc) RunsVal(text string, setVal string) (string, bool) {
 // 纯函数
 func (d *DicFunc) Run(text string) string {
 	output := run.BuildFuncStr(text, func(valStr []string) (string, bool) {
-		resAny, err := d.Funcs(valStr)
+		input := utils.NewDicInputs()
+		input.SetString(valStr)
+		resAny, err := d.Funcs(input)
 		if err != nil {
 			log.Printf("[%s]%s：%v", d.Val.Get("_词库路径_"), valStr[0], err)
 		}
@@ -110,80 +113,54 @@ func (d *DicFunc) Run(text string) string {
 	return output
 }
 
-func caseRestart() (string, error) {
-	// 获取当前程序的路径
-	exe, err := exec.LookPath(os.Args[0])
-	if err != nil {
-		return "", fmt.Errorf("无法找到程序路径: %v", err)
-	}
-
-	// 使用 os/exec 调用自身程序
-	cmd := exec.Command(exe, os.Args[1:]...)
-	cmd.Stdin = os.Stdin
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
-
-	// 启动新进程
-	err = cmd.Start()
-	if err != nil {
-		return "", fmt.Errorf("重启失败: %v", err)
-	}
-
-	// 根据操作系统退出当前进程
-	defer os.Exit(0)
-
-	return "", nil
-}
-
-func (d *DicFunc) Funcs(linesStr []string) (any, error) {
-	linesLen := len(linesStr)
-	if linesLen <= 0 {
+func (d *DicFunc) Funcs(dic_i *utils.DicInputs) (any, error) {
+	if dic_i.LenOk(-1) {
 		return "$$", nil
 	}
 
-	funcName := linesStr[0]
 	// 面对象
-	if len(funcName) > 1 && (funcName[0] == '.' || funcName[0] == '%') {
-		linesStr[0] = funcName[1:]
+	if className := dic_i.String(0); dic_i.LenOk("2..") && len(className) > 1 && (className[0] == '.' || className[0] == '%') {
+		classType := className[0]
+		className := className[1:]
 
 		var isV bool
-		if funcName[0] == '%' {
+		if classType == '%' {
 			isV = true
 		}
-		if funcName == "自己" {
-			funcName = d.Val.P.Get("Class").(string)
+		if className == "自己" {
+			className = d.Val.P.Get("Class").(string)
 		}
-		classData := d.Dic.LocalClass[funcName]
+		classData := d.Dic.LocalClass[className]
 		if classData == nil {
 			return "", errors.New("非整合包")
 		}
 
 		if isV {
-			if linesLen == 3 {
-				resVT := utils.AnyIsString(d.Val.Text(count.RunCountText(d.Val, linesStr[1])))
-				resVTs := utils.AnyIsString(d.Val.Text(count.RunCountText(d.Val, linesStr[2])))
+			if dic_i.LenOk(3) {
+				resVT := utils.AnyIsString(d.Val.Text(count.RunCountText(d.Val, dic_i.String(1))))
+				resVTs := utils.AnyIsString(d.Val.Text(count.RunCountText(d.Val, dic_i.String(2))))
 				classData.LocalValue.Set(resVT, resVTs)
 				return "", nil
 			}
-			if linesLen == 2 {
-				resVT := utils.AnyIsString(d.Val.Text(count.RunCountText(d.Val, linesStr[1])))
+			if dic_i.LenOk(2) {
+				resVT := utils.AnyIsString(d.Val.Text(count.RunCountText(d.Val, dic_i.String(1))))
 				resV, _ := classData.LocalValue.Get(resVT).(string)
 				return resV, nil
 			}
 			return "未知整合包变量方法", nil
 		}
 
-		if linesLen <= 1 {
+		if dic_i.LenOk(0, 1) {
 			return "未知整合包方法", nil
 		}
 
-		TStr := strings.Join(linesStr[1:], " ")
+		TStr := strings.Join(dic_i.StringAfterList(1), " ")
 		// 整合包局部函数
 		if str, Tstr, _, regex := run.RunFor(classData.LocalFunc, TStr, 0); regex != nil {
 			funcv := dto.NewVal()
 			funcv.Set("触发", Tstr)
 			funcv.Set("触发词", TStr)
-			funcv.Set("Class", funcName)
+			funcv.Set("Class", className)
 			dto.ValRunTrigger(TStr, Tstr, d.Val.NewDicVal(funcv), d.Val)
 			RunDic := NewRunDicEntry().
 				CloseTrigger().
@@ -195,7 +172,7 @@ func (d *DicFunc) Funcs(linesStr []string) (any, error) {
 			return resRunDic, nil
 		}
 	} else {
-		text := strings.Join(linesStr, " ")
+		text := strings.Join(dic_i.StringList(), " ")
 		// 局部函数
 		if str, Tstr, _, regex, tparts := run.RunFors(d.Dic.LocalFunc, text, 0); regex != nil {
 			funcv := dto.NewVal()
@@ -231,44 +208,42 @@ func (d *DicFunc) Funcs(linesStr []string) (any, error) {
 		}
 	}
 
-	inputsLen := len(linesStr)
-	lines := make([]any, inputsLen)
+	lines := make([]any, dic_i.Len()+1)
 	inputs := utils.NewDicInputs()
-	inputs.Set(make([]any, inputsLen))
-	inputsLen--
+	inputs.Set(make([]any, dic_i.Len()+1))
 
-	for i, line := range linesStr {
+	for i, line := range dic_i.List {
 		lines[i] = line
 		inputs.List[i] = d.Val.Text(count.RunCountText(d.Val, line))
 	}
 
 	f := &funcs.DicFunc{
-		Len:       inputsLen,
-		InputData: linesStr,
+		Len:       dic_i.Len(),
+		InputData: dic_i.List,
 		Inputs:    inputs,
 	}
 
 	// 自定义函数
-	if fn, ok := d.Dic.MyFunc[lines[0].(string)]; ok {
+	if fn, ok := d.Dic.MyFunc[dic_i.String(0)]; ok {
 		return fn(d.Val, inputs)
 	}
 
 	// 系统函数
-	if fnInfo, ok := funcs.GetFunc(lines[0].(string)); ok {
+	if fnInfo, ok := funcs.GetFunc(dic_i.String(0)); ok {
 		if inputs.LenOk(fnInfo.L) {
 			return fnInfo.Fn(dto.NewDicInputs(d.Dic, d.Val, inputs))
 		}
 	}
 
-	switch lines[0].(string) {
+	switch dic_i.String(0) {
 	case "捕获输出":
-		if inputsLen == 0 {
+		if dic_i.LenOk(0) {
 			return d.Output.Get(), nil
 		}
 		return "", nil
 
 	case "拦截输出":
-		if inputsLen == 0 {
+		if dic_i.LenOk(0) {
 			res := d.Output.Get()
 			d.Output.Clear()
 			return res, nil
@@ -276,20 +251,14 @@ func (d *DicFunc) Funcs(linesStr []string) (any, error) {
 		return "", nil
 
 	case "STOP":
-		if inputsLen == 0 {
+		if dic_i.LenOk(0) {
 			utils.LogStop(d.Output.Get())
 			return "", nil
 		}
 		return "", nil
 
-	case "重启":
-		if inputsLen == 0 {
-			return caseRestart()
-		}
-		return "", errors.New("重启参数错误")
-
 	case "WS发送":
-		if inputsLen == 2 {
+		if dic_i.LenOk(2) {
 			if conn_ws, ok := inputs.Get(1).(*websocket.Conn); ok {
 				if err := conn_ws.WriteMessage(websocket.TextMessage, []byte(inputs.String(2))); err != nil {
 					return "", err
@@ -300,7 +269,7 @@ func (d *DicFunc) Funcs(linesStr []string) (any, error) {
 		return "", nil
 
 	case "WS断开":
-		if inputsLen == 1 {
+		if dic_i.LenOk(1) {
 			if conn_ws, ok := inputs.Get(1).(*websocket.Conn); ok {
 				conn_ws.Close()
 				return "", nil
@@ -313,7 +282,7 @@ func (d *DicFunc) Funcs(linesStr []string) (any, error) {
 			addr := inputs.String(1)
 
 			dicpath := "private/websocket/app.n"
-			if inputsLen == 2 {
+			if dic_i.LenOk(2) {
 				dicpath = inputs.String(2)
 			}
 
@@ -422,7 +391,7 @@ func (d *DicFunc) Funcs(linesStr []string) (any, error) {
 		return "", nil
 
 	case "替换":
-		if inputsLen == 4 {
+		if dic_i.LenOk(4) {
 			tStr := inputs.List[3].(string)
 			num, err := strconv.Atoi(inputs.List[4].(string))
 			if err != nil {
@@ -431,9 +400,9 @@ func (d *DicFunc) Funcs(linesStr []string) (any, error) {
 			res := strings.Replace(inputs.List[1].(string), inputs.List[2].(string), tStr, num)
 			return res, nil
 		}
-		if inputsLen == 2 || inputsLen == 3 {
+		if dic_i.LenOk(2) || dic_i.LenOk(3) {
 			var tStr string
-			if inputsLen == 3 {
+			if dic_i.LenOk(3) {
 				tStr = inputs.List[3].(string)
 				if tStr == lines[3] && strings.HasPrefix(lines[3].(string), "%") && strings.HasSuffix(lines[3].(string), "%") && strings.Count(lines[3].(string), "%") == 2 {
 					var regex *regexp.Regexp
@@ -829,83 +798,5 @@ func (d *DicFunc) Funcs(linesStr []string) (any, error) {
 
 	}
 
-	return "$" + strings.Join(linesStr, " ") + "$", nil
+	return "$" + strings.Join(dic_i.StringList(), " ") + "$", nil
 }
-
-// t := lines[0]
-// if fn, ok := funcAll[t]; ok {
-// 	funcAlls.Len = inputsLen
-// 	funcAlls.Inputs = inputs
-// 	res := fn.(func() string)()
-// 	return res, nil
-// }
-
-// var funcAlls = &funcs.DicFunc{}
-// var funcAll = map[string]interface{}{
-// "字符切片":   funcAlls.StringSlice,
-// "文本长度":   funcAlls.StringSliceLen,
-// "长度":     funcAlls.StringLen,
-// "计算":     funcAlls.Count,
-// "HTML编码": funcAlls.HtmlEncode,
-// "HTML解码": funcAlls.HtmlDecode,
-// "JSON判断": funcAlls.IsJson,
-// "JSON解析": funcAlls.QueryJson,
-// "随机文本":   funcAlls.RandString,
-// "随机数":    funcAlls.RandNum,
-// }
-
-/*
-// ParseString 解析由双引号或单引号包裹的字符串，支持转义符号
-func ParseString(input string) (string, bool) {
-	// 检查输入是否足够长
-	if len(input) < 2 {
-		return "", false
-	}
-
-	// 检查开头是否为双引号或单引号
-	startQuote := input[0]
-	if startQuote != '"' && startQuote != '\'' {
-		return "", false
-	}
-
-	var result strings.Builder
-	escaped := false // 标记是否在转义状态
-
-	// 遍历输入字符串，从第2个字符开始
-	for i := 1; i < len(input); i++ {
-		ch := input[i]
-
-		// 如果前一个字符是转义符号
-		if escaped {
-			// 处理转义字符
-			switch ch {
-			case 'n':
-				result.WriteByte('\n') // 转义为换行符
-			case 't':
-				result.WriteByte('\t') // 转义为制表符
-			case '\\':
-				result.WriteByte('\\') // 转义为反斜杠
-			case '"':
-				result.WriteByte('"') // 转义为双引号
-			case '\'':
-				result.WriteByte('\'') // 转义为单引号
-			default:
-				result.WriteByte(ch) // 其他字符原样添加
-			}
-			escaped = false
-		} else {
-			if ch == '\\' {
-				escaped = true // 下一个字符将被转义
-			} else if ch == startQuote {
-				// 找到匹配的结束引号
-				return result.String(), nil
-			} else {
-				result.WriteByte(ch) // 普通字符，直接添加
-			}
-		}
-	}
-
-	// 如果到这里没有返回，说明没有找到匹配的结束引号
-	return "", false
-}
-*/

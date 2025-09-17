@@ -84,6 +84,13 @@ func (i *DicInputs) Set(input []any) {
 	i.List = input
 }
 
+func (i *DicInputs) SetString(input []string) {
+	i.List = make([]any, len(input))
+	for ii, v := range input {
+		i.List[ii] = v
+	}
+}
+
 func (i *DicInputs) Get(ii int) any {
 	if ii >= len(i.List) {
 		return nil
@@ -123,6 +130,20 @@ func (i *DicInputs) StringAfterList(ii int) []string {
 	for _, v := range i.List[ii:] {
 		if s, ok := v.([]string); ok {
 			str = append(str, s...)
+		}
+	}
+	return str
+}
+
+// 获取全部[]string
+func (i *DicInputs) StringList() []string {
+	var str []string
+	// 推断全部String
+	for _, v := range i.List {
+		if s, ok := v.(string); ok {
+			str = append(str, s)
+		} else {
+			str = append(str, "")
 		}
 	}
 	return str

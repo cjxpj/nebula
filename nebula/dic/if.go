@@ -6,6 +6,7 @@ import (
 	"strconv"
 
 	"github.com/cjxpj/nebula/count"
+	"github.com/cjxpj/nebula/utils"
 )
 
 func Pd(dic *DicFunc, str string) bool {
@@ -119,7 +120,7 @@ func (it *IfText) Evaluate(dic *DicFunc, parsed []map[string]string) string {
 			result += p["text"]
 			continue
 		}
-		a := dic.Runs(count.RunCountText(dic.Val, p["a"]))
+		a := dic.Runs(utils.AnyToString(count.RunCountText(dic.Val, p["a"])))
 		if len(p) == 1 {
 			switch a {
 			case "true", "1":
@@ -134,7 +135,7 @@ func (it *IfText) Evaluate(dic *DicFunc, parsed []map[string]string) string {
 			continue
 		}
 
-		c := dic.Runs(count.RunCountText(dic.Val, p["c"]))
+		c := dic.Runs(utils.AnyToString(count.RunCountText(dic.Val, p["c"])))
 
 		switch p["b"] {
 		case " in ":

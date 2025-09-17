@@ -777,7 +777,7 @@ func Entry(r *DicEntry, txt []string, funcV *DicFunc) {
 				if textLen >= endIdx {
 					key := text[7:startIdx]
 					value := text[endIdx:]
-					runText := funcV.Runs(count.RunCountText(r.Val, value))
+					runText := funcV.Runs(utils.AnyToString(count.RunCountText(r.Val, value)))
 					var testjs map[string]interface{}
 					if json.Unmarshal([]byte(runText), &testjs) == nil {
 						r.Sys_v.ForEach.Run = []byte(runText)
@@ -804,7 +804,7 @@ func Entry(r *DicEntry, txt []string, funcV *DicFunc) {
 				if textLen >= endIdx {
 					key := text[7:startIdx]
 					value := text[endIdx:]
-					runText := funcV.Runs(count.RunCountText(r.Val, value))
+					runText := funcV.Runs(utils.AnyToString(count.RunCountText(r.Val, value)))
 					// 将字符串解析为整数
 					intValue, err := strconv.Atoi(runText)
 					if err == nil {
@@ -848,7 +848,7 @@ func Entry(r *DicEntry, txt []string, funcV *DicFunc) {
 		}
 
 		if textLen > 2 && text[:2] == "#:" {
-			funcV.Runs(count.RunCountText(r.Val, text[2:]))
+			funcV.Runs(utils.AnyToString(count.RunCountText(r.Val, text[2:])))
 			continue
 		}
 
@@ -859,7 +859,7 @@ func Entry(r *DicEntry, txt []string, funcV *DicFunc) {
 
 			switch vType {
 			case 1, 2, 7, 8:
-				vSetData = funcV.Runs(count.RunCountText(r.Val, vSuffix))
+				vSetData = funcV.Runs(utils.AnyToString(count.RunCountText(r.Val, vSuffix)))
 			}
 
 			switch vType {
@@ -957,7 +957,7 @@ func Entry(r *DicEntry, txt []string, funcV *DicFunc) {
 					if str, ok := r.Val.P.Get(vPrefix).(string); ok {
 						if j := utils.IsJSONResult(str); j != nil {
 							if j, ok := j.(map[string]any); ok {
-								vSetData := funcV.Runs(count.RunCountText(r.Val, vSuffix))
+								vSetData := funcV.Runs(utils.AnyToString(count.RunCountText(r.Val, vSuffix)))
 								j := funcs.JsonSetValue(j, setJsonHead, vSetData, false)
 								if j, err := json.Marshal(j); err == nil {
 									r.Val.P.Set(vPrefix, string(j))
@@ -966,7 +966,7 @@ func Entry(r *DicEntry, txt []string, funcV *DicFunc) {
 								r.Val.P.Set(vPrefix, vSetData)
 							}
 							if j, ok := j.([]any); ok {
-								vSetData := funcV.Runs(count.RunCountText(r.Val, vSuffix))
+								vSetData := funcV.Runs(utils.AnyToString(count.RunCountText(r.Val, vSuffix)))
 								j := funcs.JsonSetValue(j, setJsonHead, vSetData, false)
 								if j, err := json.Marshal(j); err == nil {
 									r.Val.P.Set(vPrefix, string(j))
@@ -1026,7 +1026,7 @@ func Entry(r *DicEntry, txt []string, funcV *DicFunc) {
 					if strings.HasPrefix(GetIfKey, "@") {
 						keys := strings.Split(GetIfKey, "->")
 						if len(keys) < 2 {
-							runText, stopSetVal := funcV.RunsVal(count.RunCountText(r.Val, GetIfKey), vPrefix)
+							runText, stopSetVal := funcV.RunsVal(utils.AnyToString(count.RunCountText(r.Val, GetIfKey)), vPrefix)
 							if stopSetVal {
 								break
 							}
@@ -1119,7 +1119,7 @@ func Entry(r *DicEntry, txt []string, funcV *DicFunc) {
 							continue
 						}
 					} else {
-						runText, stopSetVal := funcV.RunsVal(count.RunCountText(r.Val, GetIfKey), vPrefix)
+						runText, stopSetVal := funcV.RunsVal(utils.AnyToString(count.RunCountText(r.Val, GetIfKey)), vPrefix)
 						if stopSetVal {
 							break
 						}

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"io"
 	"regexp"
+	"strconv"
 
 	"golang.org/x/text/encoding/charmap"
 	"golang.org/x/text/encoding/japanese"
@@ -41,6 +42,19 @@ func AnyIsString(text any) string {
 func AnyToString(data any) string {
 	if str, ok := data.(string); ok {
 		return str
+	}
+
+	// 打印类型
+	// fmt.Println("type", reflect.TypeOf(data))
+
+	// 小数
+	if num, ok := data.(float64); ok {
+		return strconv.FormatFloat(num, 'f', -1, 64)
+	}
+
+	// 整数
+	if num, ok := data.(int); ok {
+		return strconv.Itoa(num)
 	}
 
 	b, err := json.Marshal(data)

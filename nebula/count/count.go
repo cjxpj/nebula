@@ -35,7 +35,11 @@ type Lexer struct {
 }
 
 // RunCountText 函数用于处理文本
-func RunCountText(v *dto.DicVal, text string) string {
+func RunCountText(v *dto.DicVal, content any) any {
+	text, ok := content.(string)
+	if !ok {
+		return text
+	}
 	if text == "" {
 		return ""
 	}

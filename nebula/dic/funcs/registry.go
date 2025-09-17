@@ -66,6 +66,7 @@ func Setup() {
 		f{"字典.设置", "3..", setMapData},
 		f{"字典.获取", "1", getMapData},
 		f{"Js", "1|2", runJs},
+		f{"重启", "0", restart},
 	); err != nil {
 		fmt.Println(err)
 	}

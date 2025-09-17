@@ -14,7 +14,7 @@ type DicFunc struct {
 	// 长度
 	Len int
 	// 原始参数
-	InputData []string
+	InputData []any
 	// 参数
 	Inputs *utils.DicInputs
 }
