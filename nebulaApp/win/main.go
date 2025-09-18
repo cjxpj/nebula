@@ -110,6 +110,11 @@ func main() {
 		cancel()
 	}()
 
+	funcs.Register("打开浏览器", "1", func(d *dto.DicInputs) (any, error) {
+		err := openBrowser(d.Inputs.String(1))
+		return "", err
+	})
+
 	funcs.Register("回收站", "1", func(d *dto.DicInputs) (any, error) {
 		fq := utils.NewFileQueue(d.Inputs.String(1))
 		// 检查文件夹是否存在

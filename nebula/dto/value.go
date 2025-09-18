@@ -116,7 +116,7 @@ func (v *DicVal) Get(key string) any {
 }
 
 // Get 返回指定键的值
-func (v *Val) Get(key string) interface{} {
+func (v *Val) Get(key string) any {
 	value, _ := v.obj.Load(key)
 	return value
 }
@@ -140,18 +140,18 @@ func (v *Val) GetINT(key string) int {
 }
 
 // GetObj 返回指定键的值
-func (v *Val) GetObj(key string) map[string]interface{} {
+func (v *Val) GetObj(key string) map[string]any {
 	value, _ := v.obj.Load(key)
-	if value, ok := value.(map[string]interface{}); ok {
+	if value, ok := value.(map[string]any); ok {
 		return value
 	}
-	return make(map[string]interface{})
+	return make(map[string]any)
 }
 
 // GetAll 返回全部对象
-func (v *Val) GetAll() map[string]interface{} {
-	all := make(map[string]interface{})
-	v.obj.Range(func(key, value interface{}) bool {
+func (v *Val) GetAll() map[string]any {
+	all := make(map[string]any)
+	v.obj.Range(func(key, value any) bool {
 		if k, ok := key.(string); ok {
 			all[k] = value
 		}
@@ -161,7 +161,7 @@ func (v *Val) GetAll() map[string]interface{} {
 }
 
 // NewObj 添加新对象
-func (v *Val) NewObj(val map[string]interface{}) {
+func (v *Val) NewObj(val map[string]any) {
 	for k, newVal := range val {
 		v.obj.Store(k, newVal)
 	}
@@ -176,10 +176,10 @@ func (dv *DicVal) NewDicVal(v *Val) *DicVal {
 }
 
 // 覆盖obj
-func (v *Val) AddObjs(key string, mapV []map[string]interface{}) {
+func (v *Val) AddObjs(key string, mapV []map[string]any) {
 	value, _ := v.obj.Load(key)
-	var obj []map[string]interface{}
-	if m, ok := value.([]map[string]interface{}); ok {
+	var obj []map[string]any
+	if m, ok := value.([]map[string]any); ok {
 		obj = m
 	}
 	obj = append(obj, mapV...)
@@ -187,7 +187,7 @@ func (v *Val) AddObjs(key string, mapV []map[string]interface{}) {
 }
 
 // Reset 重新设置对象
-func (v *Val) Reset(val map[string]interface{}) {
+func (v *Val) Reset(val map[string]any) {
 	v.obj = sync.Map{}
 	for k, newVal := range val {
 		v.obj.Store(k, newVal)
@@ -195,9 +195,9 @@ func (v *Val) Reset(val map[string]interface{}) {
 }
 
 // SetObj 设置指定键的值，如果操作成功返回 true，否则返回 false
-func (v *Val) SetObj(key string, objkey string, val interface{}) bool {
+func (v *Val) SetObj(key string, objkey string, val any) bool {
 	value, _ := v.obj.Load(key)
-	if m, ok := value.(map[string]interface{}); ok {
+	if m, ok := value.(map[string]any); ok {
 		m[objkey] = val
 		v.obj.Store(key, m)
 		return true
@@ -221,7 +221,7 @@ func (v *Val) Set(key string, val any) *Val {
 }
 
 // Add 将值添加到指定键的值后面
-func (v *Val) Add(key string, val interface{}) {
+func (v *Val) Add(key string, val any) {
 	value, _ := v.obj.Load(key)
 	if existingVal, ok := value.(string); ok {
 		v.obj.Store(key, existingVal+val.(string))
@@ -231,7 +231,7 @@ func (v *Val) Add(key string, val interface{}) {
 }
 
 // HeaderAdd 将值添加到指定键的值前面
-func (v *Val) HeaderAdd(key string, val interface{}) {
+func (v *Val) HeaderAdd(key string, val any) {
 	value, _ := v.obj.Load(key)
 	if existingVal, ok := value.(string); ok {
 		v.obj.Store(key, val.(string)+existingVal)
@@ -256,9 +256,8 @@ func (v *DicVal) Text(content any) any {
 		return content
 	}
 	result := replaceProcessedContent(str, "%", "%", func(val string) any {
-
 		// url编码
-		if strings.HasPrefix(val, "URL_") {
+		if strings.HasPrefix(val, "URL@") {
 			if value, ok := v.getVal(val[4:]); ok {
 				if strValue, isString := value.(string); isString {
 					return url.QueryEscape(strValue)
@@ -267,7 +266,7 @@ func (v *DicVal) Text(content any) any {
 			return ""
 		}
 		// B64编码
-		if strings.HasPrefix(val, "B64_") {
+		if strings.HasPrefix(val, "B64@") {
 			if value, ok := v.getVal(val[4:]); ok {
 				if strValue, isString := value.(string); isString {
 					return base64.StdEncoding.EncodeToString([]byte(strValue))
@@ -276,7 +275,7 @@ func (v *DicVal) Text(content any) any {
 			return ""
 		}
 		// 类型
-		if strings.HasPrefix(val, "TYPE_") {
+		if strings.HasPrefix(val, "TYPE@") {
 			if value, ok := v.getVal(val[5:]); ok {
 				return reflect.TypeOf(value).String()
 			}
@@ -288,7 +287,8 @@ func (v *DicVal) Text(content any) any {
 			if len(list) > 1 {
 				// 先取第一个变量
 				value, _ := v.getVal(list[0])
-				if valueStr, ok := value.(string); ok {
+				switch valueStr := value.(type) {
+				case string:
 					if j := utils.IsJSONResult(valueStr); j != nil {
 						res := j
 						for _, key := range list[1:] {
@@ -315,6 +315,19 @@ func (v *DicVal) Text(content any) any {
 						}
 						return utils.AnyToString(res)
 					}
+				case map[string]any:
+					var res any = valueStr
+					for _, key := range list[1:] {
+						if v, ok := res.(map[string]any); ok {
+							if val, ok := v[key]; ok {
+								res = val
+							} else {
+								// 不存在键返回
+								return ""
+							}
+						}
+					}
+					return utils.AnyToString(res)
 				}
 			}
 		}
