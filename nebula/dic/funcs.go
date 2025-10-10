@@ -209,26 +209,10 @@ func cmdListenRun(d *dto.DicInputs) (any, error) {
 
 	// 注册动作：断开连接
 	dicpath := d.Inputs.String(2)
-	cmdfile, err := utils.NewFileQueue(dicpath).ReadFromFile()
-	if err != nil {
-		fmt.Println("读取文件时出错，请手动创建词库监听文件:", err)
-		return "", err
+	cmdfileTool := utils.NewFileQueue(dicpath)
+	if !cmdfileTool.FileExists() {
+		return "", errors.New("请创建词库监听文件")
 	}
-	dd := NewDic(dicpath, cmdfile)
-
-	dd.SetFunc("断开连接", func(val *dto.DicVal, inputs *utils.DicInputs) (any, error) {
-		cmd.Cmd.Process.Kill()
-		return "", nil
-	})
-
-	dd.SetFunc("输入文本", func(val *dto.DicVal, inputs *utils.DicInputs) (any, error) {
-		if !inputs.LenOk(1) {
-			return "参数错误", nil
-		}
-		text := inputs.String(1)
-		_, err := cmd.Stdin.Write([]byte(text))
-		return "", err
-	})
 
 	// 监听输出
 	go func() {
@@ -237,6 +221,23 @@ func cmdListenRun(d *dto.DicInputs) (any, error) {
 		for scanner.Scan() {
 			raw := scanner.Bytes()
 			line, _ := utils.DecodeType(cmd.Decoder, raw)
+
+			// 重新读取
+			cmdfile, _ := cmdfileTool.ReadFromFile()
+			dd := NewDic(dicpath, cmdfile)
+			dd.SetFunc("断开连接", func(val *dto.DicVal, inputs *utils.DicInputs) (any, error) {
+				cmd.Cmd.Process.Kill()
+				return "", nil
+			})
+			dd.SetFunc("输入文本", func(val *dto.DicVal, inputs *utils.DicInputs) (any, error) {
+				if !inputs.LenOk(1) {
+					return "参数错误", nil
+				}
+				text := inputs.String(1)
+				_, err := cmd.Stdin.Write([]byte(text))
+				return "", err
+			})
+
 			if res := dd.Run(line); res != "" {
 				fmt.Println(res)
 			}
