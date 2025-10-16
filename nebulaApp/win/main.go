@@ -23,16 +23,18 @@ import (
 	"golang.org/x/sys/windows/registry"
 )
 
-// func init() {
-// 	exePath, _ := os.Executable()
-// 	exeDir := filepath.Dir(exePath)
-// 	// 打印./位置
-// 	// fmt.Println("启动位置:", exeDir)
-// 	err := os.Chdir(exeDir) // 强制切换为 exe 所在目录
-// 	if err != nil {
-// 		fmt.Println("切换目录失败:", err)
-// 	}
-// }
+func init() {
+	if len(os.Args) > 1 && os.Args[1] == "--autostart" {
+		exePath, _ := os.Executable()
+		exeDir := filepath.Dir(exePath)
+		// 打印./位置
+		// fmt.Println("启动位置:", exeDir)
+		err := os.Chdir(exeDir) // 强制切换为 exe 所在目录
+		if err != nil {
+			fmt.Println("自动启动失败:", err)
+		}
+	}
+}
 
 // 设置开机启动
 func setAutoStart(appName string) error {
@@ -49,7 +51,9 @@ func setAutoStart(appName string) error {
 		return err
 	}
 	defer k.Close()
-	return k.SetStringValue(appName, exePath)
+
+	// 注册表里写入带参数的启动命令
+	return k.SetStringValue(appName, fmt.Sprintf(`"%s" --autostart`, exePath))
 }
 
 // 取消开机启动
@@ -218,6 +222,13 @@ func main() {
 	}
 
 	switch args[1] {
+	case "--autostart":
+		// 启动
+		dic.Start()
+		<-ctx.Done()
+		fmt.Println("主程序退出")
+		return
+
 	case "-help":
 		fmt.Println("-help               （显示帮助）")
 		fmt.Println("-v                  （显示版本）")
