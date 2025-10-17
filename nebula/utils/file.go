@@ -10,6 +10,7 @@ import (
 	"image"
 	"io"
 	"math/big"
+	mrand "math/rand/v2"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -1052,4 +1053,90 @@ func CreateFolderIfNotExists(folderName string) bool {
 		ErrorStop("无法检查文件夹" + folderName)
 	}
 	return false
+}
+
+// GetLineCount 获取文件行数（高效版本）
+func (fq *FileQueue) GetLineCount() (int, error) {
+	fileMutex.Lock()
+	defer fileMutex.Unlock()
+
+	file, err := os.Open(fq.FileName)
+	if err != nil {
+		return 0, err
+	}
+	defer file.Close()
+
+	count := 0
+	scanner := bufio.NewScanner(file)
+	for scanner.Scan() {
+		count++
+	}
+	if err := scanner.Err(); err != nil {
+		return count, err
+	}
+	return count, nil
+}
+
+// 从文件中随机读取一行（单次扫描，高性能版本）
+func (fq *FileQueue) ReadFileRandomLine() (string, error) {
+	fileMutex.Lock()
+	defer fileMutex.Unlock()
+
+	file, err := os.Open(fq.FileName)
+	if err != nil {
+		return "", err
+	}
+	defer file.Close()
+
+	var chosen string
+	count := 0
+	scanner := bufio.NewScanner(file)
+	for scanner.Scan() {
+		count++
+		// 蓄水池抽样算法（Reservoir Sampling）
+		if mrand.IntN(count) == 0 {
+			chosen = scanner.Text()
+		}
+	}
+	if err := scanner.Err(); err != nil {
+		return "", err
+	}
+	if count == 0 {
+		return "", errors.New("文件为空")
+	}
+	return chosen, nil
+}
+
+// ReadLines 从指定行开始读取指定数量的行（高效流式版）
+func (fq *FileQueue) ReadLines(start, count int) ([]string, error) {
+	fileMutex.Lock()
+	defer fileMutex.Unlock()
+
+	if start < 0 || count <= 0 {
+		return nil, errors.New("参数无效")
+	}
+
+	file, err := os.Open(fq.FileName)
+	if err != nil {
+		return nil, err
+	}
+	defer file.Close()
+
+	scanner := bufio.NewScanner(file)
+	lines := make([]string, 0, count)
+	index := 0
+
+	for scanner.Scan() {
+		if index >= start {
+			lines = append(lines, scanner.Text())
+			if len(lines) >= count {
+				break
+			}
+		}
+		index++
+	}
+	if err := scanner.Err(); err != nil {
+		return lines, err
+	}
+	return lines, nil
 }

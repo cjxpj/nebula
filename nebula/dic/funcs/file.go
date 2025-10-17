@@ -58,6 +58,40 @@ func readStringFile(d *dto.DicInputs) (any, error) {
 	return data, nil
 }
 
+// 读文件随机一行
+func readStringFileRandomLine(d *dto.DicInputs) (any, error) {
+	data, err := utils.NewFileQueue(d.Inputs.String(1)).ReadFileRandomLine()
+	if err != nil {
+		return d.Inputs.String(2), nil
+	}
+	return data, nil
+}
+
+// 读文件行
+func readStringFileLines(d *dto.DicInputs) (any, error) {
+	one := max(d.Inputs.Int(2), 1)
+	two := max(d.Inputs.Int(3), 1)
+	data, err := utils.NewFileQueue(d.Inputs.String(1)).ReadLines(one, two)
+	if err != nil {
+		return d.Inputs.String(4), nil
+	}
+	// []string 转字符串
+	resS, err := json.Marshal(data)
+	if err != nil {
+		return d.Inputs.String(4), nil
+	}
+	return string(resS), nil
+}
+
+// 读文件行数
+func readStringFileLinesCount(d *dto.DicInputs) (any, error) {
+	count, err := utils.NewFileQueue(d.Inputs.String(1)).GetLineCount()
+	if err != nil {
+		return d.Inputs.String(2), nil
+	}
+	return strconv.Itoa(count), nil
+}
+
 func writeKeyStringFile(d *dto.DicInputs) (any, error) {
 	path := "database/" + d.Inputs.String(1)
 	utils.NewFileQueue(path).WriteFileKey(d.Inputs.String(2), d.Inputs.String(3))

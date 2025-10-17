@@ -318,3 +318,18 @@ func numToString(d *dto.DicInputs) (any, error) {
 
 	return finalStr, nil
 }
+
+// 替换
+func replaced(d *dto.DicInputs) (any, error) {
+	tStr := d.Inputs.String(3)
+	if d.Inputs.LenOk(4) {
+		num, err := strconv.Atoi(d.Inputs.String(4))
+		if err != nil {
+			return "", errors.New("非数字")
+		}
+		res := strings.Replace(d.Inputs.String(1), d.Inputs.String(2), tStr, num)
+		return res, nil
+	}
+	res := strings.ReplaceAll(d.Inputs.String(1), d.Inputs.String(2), tStr)
+	return res, nil
+}

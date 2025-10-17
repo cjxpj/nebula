@@ -1,6 +1,7 @@
 package utils
 
 import (
+	"reflect"
 	"strconv"
 	"strings"
 )
@@ -96,6 +97,14 @@ func (i *DicInputs) Get(ii int) any {
 		return nil
 	}
 	return i.List[ii]
+}
+
+func (i *DicInputs) GetType(ii int) string {
+	if ii >= len(i.List) {
+		return ""
+	}
+	// 返回类型
+	return reflect.TypeOf(i.List[ii]).String()
 }
 
 func (i *DicInputs) String(ii int) string {

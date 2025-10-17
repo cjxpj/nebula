@@ -9,15 +9,34 @@ import (
 	"github.com/iancoleman/orderedmap"
 )
 
-// newMapData 把 JSON 字符串转成 orderedmap
+// newMapData 把 JSON 字符串或 map[string]interface{} 转成 orderedmap
 func newMapData(d *dto.DicInputs) (any, error) {
 	result := orderedmap.New()
-	err := json.Unmarshal([]byte(d.Inputs.String(1)), &result)
-	result.SetEscapeHTML(false)
-	if err != nil {
+	val := d.Inputs.Get(1)
+
+	switch v := val.(type) {
+	case map[string]any:
+		// 如果已经是 map，直接转换
+		for k, vv := range v {
+			result.Set(k, vv)
+		}
+		result.SetEscapeHTML(false)
 		return result, nil
+
+	case string:
+		// 如果是字符串，尝试解析为 JSON
+		err := json.Unmarshal([]byte(v), &result)
+		result.SetEscapeHTML(false)
+		if err != nil {
+			// 解析失败，返回空 orderedmap
+			return result, nil
+		}
+		return result, nil
+
+	default:
+		// 其他类型不支持
+		return nil, fmt.Errorf("unsupported input type: %T", v)
 	}
-	return result, nil
 }
 
 // setMapData 在 orderedmap 中设置嵌套值

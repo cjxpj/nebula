@@ -6,7 +6,6 @@ import (
 	"log"
 	"regexp"
 	"runtime"
-	"strconv"
 	"strings"
 
 	"github.com/cjxpj/nebula/count"
@@ -254,55 +253,6 @@ func (d *DicFunc) Funcs(dic_i *utils.DicInputs) (any, error) {
 			utils.LogStop(d.Output.Get())
 			return "", nil
 		}
-		return "", nil
-
-	case "替换":
-		if dic_i.LenOk(4) {
-			tStr := inputs.List[3].(string)
-			num, err := strconv.Atoi(inputs.List[4].(string))
-			if err != nil {
-				return "非数字", nil
-			}
-			res := strings.Replace(inputs.List[1].(string), inputs.List[2].(string), tStr, num)
-			return res, nil
-		}
-		if dic_i.LenOk(2) || dic_i.LenOk(3) {
-			var tStr string
-			if dic_i.LenOk(3) {
-				tStr = inputs.List[3].(string)
-				if tStr == lines[3] && strings.HasPrefix(lines[3].(string), "%") && strings.HasSuffix(lines[3].(string), "%") && strings.Count(lines[3].(string), "%") == 2 {
-					var regex *regexp.Regexp
-					obj := d.Val.P.GetObj(lines[3].(string)[1 : len(lines[3].(string))-1])
-					if t, ok := obj["type"].(string); ok && t == "函数框" {
-						funcTrigger := obj["trigger"].(string)
-						regex = regexp.MustCompile("^" + funcTrigger + "$")
-						num := 0
-						res := run.ReplaceFunc(inputs.List[1].(string), inputs.List[2].(string), func(s string) string {
-							num++
-							strNum := strconv.Itoa(num)
-							matches := regex.FindStringSubmatch(strNum)
-							if len(matches) > 0 || funcTrigger == "" {
-								funcv := dto.NewVal()
-								funcv.Reset(d.Val.P.GetAll())
-								funcv.Set("触发", funcTrigger)
-								funcv.Set("触发词", strNum)
-								content := obj["content"].([]string)
-								RunDic := NewRunDicEntry().
-									SetGlobal_v(d.Val.G).
-									Set_v(funcv).
-									SetDic_v(d.Dic)
-								return RunDic.Run(content)
-							}
-							return ""
-						})
-						return res, nil
-					}
-				}
-			}
-			res := strings.ReplaceAll(inputs.List[1].(string), inputs.List[2].(string), tStr)
-			return res, nil
-		}
-
 		return "", nil
 
 	case "正则替换":
