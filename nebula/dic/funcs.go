@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"os"
 	"regexp"
 	"strings"
 	"time"
@@ -304,6 +305,7 @@ func runAsyncFunc(d *dto.DicInputs) (any, error) {
 	return "", errors.New("未知函数")
 }
 
+// WS连接
 func wsConnect(d *dto.DicInputs) (any, error) {
 	addr := d.Inputs.String(1)
 
@@ -433,4 +435,186 @@ func wsSend(d *dto.DicInputs) (any, error) {
 		}
 	}
 	return "", nil
+}
+
+// =================== 读词库 ===================
+func readDicFile(d *dto.DicInputs) (any, error) {
+	filePath := utils.NewFileQueue(d.Inputs.String(1)).FileName
+	trigger := d.Inputs.StringDefault(2, "Main")
+	useRegex := d.Inputs.String(3) == "true"
+
+	lines, err := readFileLines(filePath)
+	if err != nil {
+		return nil, err
+	}
+
+	result := extractSectionStrict(lines, trigger, useRegex)
+
+	jsonStr, err := toJSONString(result)
+	if err != nil {
+		return nil, err
+	}
+
+	return jsonStr, nil
+}
+
+// =================== 写词库 ===================
+func writeDicFile(d *dto.DicInputs) (any, error) {
+	dicPath := d.Inputs.String(1)
+	trigger := d.Inputs.StringDefault(2, "Main")
+	content := d.Inputs.StringDefault(3, "")
+	useRegex := d.Inputs.String(4) == "true"
+
+	filePath := utils.NewFileQueue(dicPath).FileName
+	lines, err := readFileLines(filePath)
+	if err != nil {
+		return nil, err
+	}
+
+	var newLines []string
+	var found bool
+	var re *regexp.Regexp
+	if useRegex {
+		re, err = regexp.Compile(trigger)
+		if err != nil {
+			return nil, err
+		}
+	}
+
+	for i := 0; i < len(lines); i++ {
+		line := lines[i]
+
+		// 段落结束空行直接写入
+		if line == "" {
+			newLines = append(newLines, line)
+			continue
+		}
+
+		// 每个段落的第一行是触发词
+		isTrigger := (useRegex && re.MatchString(line)) || (!useRegex && line == trigger)
+		if isTrigger {
+			found = true
+			newLines = append(newLines, line) // 写触发词行
+			// 写入新内容
+			if content != "" {
+				newLines = append(newLines, splitLines(content)...)
+			}
+			// 跳过原内容块
+			i++ // 下一个就是内容行
+			for i < len(lines) && lines[i] != "" {
+				i++
+			}
+			if i < len(lines) {
+				newLines = append(newLines, "") // 保留段落结束空行
+			}
+			continue
+		}
+
+		// 非目标触发词段落，原样保留整段
+		newLines = append(newLines, line)
+		// 写完当前段落剩余内容
+		i++
+		for i < len(lines) && lines[i] != "" {
+			newLines = append(newLines, lines[i])
+			i++
+		}
+		if i < len(lines) {
+			newLines = append(newLines, "") // 保留段落结束空行
+		}
+	}
+
+	// 如果没有找到触发词，则追加
+	if !found {
+		if len(newLines) > 0 && newLines[len(newLines)-1] != "" {
+			newLines = append(newLines, "")
+		}
+		newLines = append(newLines, trigger)
+		if content != "" {
+			newLines = append(newLines, splitLines(content)...)
+		}
+		newLines = append(newLines, "")
+	}
+
+	// 写回文件
+	if err := os.WriteFile(filePath, []byte(joinLines(newLines)), 0644); err != nil {
+		return nil, err
+	}
+	return "ok", nil
+}
+
+// =================== 辅助函数 ===================
+func splitLines(s string) []string {
+	var res []string
+	scanner := bufio.NewScanner(strings.NewReader(s))
+	for scanner.Scan() {
+		res = append(res, scanner.Text())
+	}
+	return res
+}
+
+func joinLines(lines []string) string {
+	return strings.Join(lines, "\n")
+}
+
+func readFileLines(filePath string) ([]string, error) {
+	file, err := os.Open(filePath)
+	if err != nil {
+		return nil, err
+	}
+	defer file.Close()
+
+	scanner := bufio.NewScanner(file)
+	var lines []string
+	for scanner.Scan() {
+		lines = append(lines, scanner.Text())
+	}
+	return lines, scanner.Err()
+}
+
+// 严格按段落匹配触发词提取内容块
+func extractSectionStrict(lines []string, trigger string, useRegex bool) []string {
+	var result []string
+	var re *regexp.Regexp
+	if useRegex {
+		re = regexp.MustCompile(trigger)
+	}
+
+	for i := 0; i < len(lines); i++ {
+		line := lines[i]
+		if line == "" {
+			continue
+		}
+
+		isTrigger := (useRegex && re.MatchString(line)) || (!useRegex && line == trigger)
+		if !isTrigger {
+			// 跳过整段非匹配段落
+			i++
+			for i < len(lines) && lines[i] != "" {
+				i++
+			}
+			continue
+		}
+
+		// 找到匹配段落，读取内容块
+		i++ // 下一个是内容行
+		for i < len(lines) && lines[i] != "" {
+			result = append(result, lines[i])
+			i++
+		}
+		break // 只取第一个匹配段落
+	}
+
+	return result
+}
+
+// 转 JSON
+func toJSONString(data []string) (string, error) {
+	if len(data) == 0 {
+		return "[]", nil
+	}
+	b, err := json.Marshal(data)
+	if err != nil {
+		return "", err
+	}
+	return string(b), nil
 }

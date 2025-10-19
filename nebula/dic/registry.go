@@ -20,5 +20,7 @@ func init() {
 		f{Name: "WS连接", L: "1|2", Fn: wsConnect},
 		f{Name: "WS断开", L: "1", Fn: wsClose},
 		f{Name: "WS发送", L: "2", Fn: wsSend},
+		f{Name: "读词库", L: "1|2|3", Fn: readDicFile},
+		f{Name: "写词库", L: "1|2|3", Fn: writeDicFile},
 	)
 }
