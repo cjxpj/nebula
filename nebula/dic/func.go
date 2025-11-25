@@ -308,15 +308,6 @@ func (d *DicFunc) Funcs(dic_i *utils.DicInputs) (any, error) {
 	case "终端.输入":
 		return f.RunCommandInputText()
 
-	case "分割":
-		return f.Split()
-
-	case "AES加密":
-		return f.AesEn(d.Val.P)
-
-	case "AES解密":
-		return f.AesDe(d.Val.P), nil
-
 	case "MD5编码":
 		return f.Md5(), nil
 
@@ -376,9 +367,6 @@ func (d *DicFunc) Funcs(dic_i *utils.DicInputs) (any, error) {
 
 	case "复制粘贴":
 		return f.FileCopy(), nil
-
-	case "字符切片":
-		return f.StringSlice(), nil
 
 	case "计算":
 		return f.Count(), nil

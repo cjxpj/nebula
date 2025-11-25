@@ -1,53 +1,48 @@
 package funcs
 
 import (
-	"errors"
 	"strconv"
 	"strings"
+
+	"github.com/cjxpj/nebula/dto"
 )
 
-func (f *DicFunc) Split() (string, error) {
-	if f.Len == 3 {
+func split(d *dto.DicInputs) (any, error) {
+	if d.Inputs.LenOk(3) {
 		var z int
-		if zz, err := strconv.Atoi(f.Inputs.String(3)); err == nil {
+		if zz, err := strconv.Atoi(d.Inputs.String(3)); err == nil {
 			z = zz
 		}
-		parts := strings.SplitN(f.Inputs.String(2), f.Inputs.String(1), z)
+		parts := strings.SplitN(d.Inputs.String(2), d.Inputs.String(1), z)
 		resS, err := json.Marshal(parts)
 		if err != nil {
 			return "[]", nil
 		}
 		return string(resS), nil
 	}
-	if f.Len == 2 {
-		parts := strings.Split(f.Inputs.String(2), f.Inputs.String(1))
+	parts := strings.Split(d.Inputs.String(2), d.Inputs.String(1))
 
-		resS, err := json.Marshal(parts)
-		if err != nil {
-			return "[]", nil
-		}
-		return string(resS), nil
+	resS, err := json.Marshal(parts)
+	if err != nil {
+		return "[]", nil
 	}
-	return "", errors.New("参数数量不正确")
+	return string(resS), nil
 }
 
-func (f *DicFunc) StringSlice() string {
-	if f.Len == 1 {
-		r := []rune(f.Inputs.String(1))
-		stringlist := make([]string, len(r))
-		for i, r := range r {
-			stringlist[i] = string(r)
-		}
-
-		var jsonBuilder strings.Builder
-		encoder := json.NewEncoder(&jsonBuilder)
-		encoder.SetEscapeHTML(false)
-		err := encoder.Encode(stringlist)
-		if err != nil {
-			return "[]"
-		}
-
-		return jsonBuilder.String()
+func stringSlice(d *dto.DicInputs) (any, error) {
+	r := []rune(d.Inputs.String(1))
+	stringlist := make([]string, len(r))
+	for i, r := range r {
+		stringlist[i] = string(r)
 	}
-	return ""
+
+	var jsonBuilder strings.Builder
+	encoder := json.NewEncoder(&jsonBuilder)
+	encoder.SetEscapeHTML(false)
+	err := encoder.Encode(stringlist)
+	if err != nil {
+		return "[]", nil
+	}
+
+	return jsonBuilder.String(), nil
 }

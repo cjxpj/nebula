@@ -508,6 +508,24 @@
 			}
 		},
 		{
+			"label": "buildTinyWASM",
+			"type": "shell",
+			"command": "tinygo",
+			"args": [
+				"build",
+				"-o",
+				"dist/main.wasm",
+				"-target",
+				"wasm",
+				"./nebulaApp/wasm"
+			],
+			"group": {
+				"kind": "build",
+				"isDefault": true
+			},
+			"detail": "使用 TinyGo 生成 WebAssembly 文件"
+		},
+		{
 			"label": "编译全部电脑端",
 			"dependsOrder": "sequence",
 			"dependsOn": [

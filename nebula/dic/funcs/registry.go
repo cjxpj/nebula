@@ -71,6 +71,10 @@ func Setup() {
 		f{"读文件行", "1|2|3|4", readStringFileLines},
 		f{"读文件.行数", "1|2", readStringFileLinesCount},
 		f{"替换", "2|3|4", replaced},
+		f{"AES加密", "3", aesEncrypt},
+		f{"AES解密", "3", aesDecrypt},
+		f{"分割", "2|3", split},
+		f{"字符切片", "1", stringSlice},
 	); err != nil {
 		fmt.Println(err)
 	}

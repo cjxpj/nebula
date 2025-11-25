@@ -2,7 +2,7 @@
 
 package main
 
-import "cjxpj/nebula/dic"
+import "github.com/cjxpj/nebula/dic"
 
 func main() {
 	dic.Start()

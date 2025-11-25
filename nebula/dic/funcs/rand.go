@@ -39,7 +39,7 @@ func (f *DicFunc) RandLetter(mod int) string {
 	}
 
 	var result strings.Builder
-	for i := 0; i < num; i++ {
+	for range num {
 		index := rand.Intn(len(charset))
 		result.WriteByte(charset[index])
 	}
