@@ -68,7 +68,7 @@ func (s *ServeRouter) YunHuBotRun(w http.ResponseWriter, r *http.Request) {
 		w.Write([]byte("Bot Message"))
 
 	default:
-		fmt.Println("QQBot消息类型未支持")
+		fmt.Println("Bot消息类型未支持")
 		return
 	}
 

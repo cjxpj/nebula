@@ -47,5 +47,19 @@ func install(a string) {
 		} else {
 			fmt.Println("silk_v3 安装成功，路径:", installDir)
 		}
+	case "napcat_bot":
+		if utils.NewFileQueue("private/NapCat.Shell/launcher.bat").FileExists() {
+			fmt.Println("napcat_bot 已安装")
+			return
+		}
+		installDir := filepath.Join("private", "NapCat.Shell")
+		args := os.Args
+		if len(args) < 4 {
+			fmt.Println("请输入QQ账号")
+			return
+		}
+		if err := installNapCatBot(installDir, args[3]); err != nil {
+			fmt.Println("napcat_bot 安装失败:", err)
+		}
 	}
 }

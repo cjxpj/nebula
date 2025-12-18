@@ -196,8 +196,8 @@ func (d *DicFunc) Funcs(dic_i *utils.DicInputs) (any, error) {
 
 			resRunDic := RunDic.Run(str)
 			if tparts != "" {
-				subParts := strings.Split(tparts, ",")
-				for _, setv := range subParts {
+				subParts := strings.SplitSeq(tparts, ",")
+				for setv := range subParts {
 					getv := RunDic.Val.P.Get(setv)
 					d.Val.P.Set(setv, getv)
 				}
@@ -440,44 +440,11 @@ func (d *DicFunc) Funcs(dic_i *utils.DicInputs) (any, error) {
 	case "HTML解码":
 		return f.HtmlDecode()
 
-	case "访问":
-		return f.AccessGet()
-
 	case "编码":
 		return f.EnUtf8(), nil
 
 	case "解码":
 		return f.DeUtf8(), nil
-
-	case "访问POST":
-		return f.AccessPost()
-
-	case "通信记录":
-		return f.AccessSet(d.Sys)
-
-	case "通信超时":
-		return f.AccessSetTimes(d.Sys)
-
-	case "通信头部":
-		return f.AccessSetHeader(d.Sys)
-
-	case "通信GET":
-		return f.AccessSetGet(d.Sys)
-
-	case "通信POST":
-		return f.AccessSetPost(d.Sys)
-
-	case "通信POST文件":
-		return f.AccessSetPostFile(d.Sys)
-
-	case "通信发包":
-		return f.AccessSend(d.Sys)
-
-	case "通信取出":
-		return f.AccessGetSendAll(d.Sys)
-
-	case "通信取出结果":
-		return f.AccessGetSend(d.Sys)
 
 	case "GIF拆帧":
 		return f.GetGif(), nil

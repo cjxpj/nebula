@@ -10,7 +10,7 @@ import (
 )
 
 const (
-	APIURL = "https://chat-go.jwzhd.com/open-apis/v1" // 您要求的常量
+	APIURL = "https://chat-go.jwzhd.com/open-apis/v1"
 )
 
 // post 公共 POST 逻辑

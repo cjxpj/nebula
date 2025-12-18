@@ -9,7 +9,6 @@ import (
 	"net/http"
 	"net/url"
 	"regexp"
-	"strconv"
 	"time"
 
 	"github.com/cjxpj/nebula/dto"
@@ -40,536 +39,437 @@ func downloadFile(d *dto.DicInputs) (any, error) {
 	return "", errors.New("参数数量错误")
 }
 
-func (f *DicFunc) AccessGet() (string, error) {
-	if f.Len == 1 || f.Len == 2 {
-		url := f.Inputs.String(1)
-		if !regexp.MustCompile(`^https?://`).MatchString(url) {
-			url = "http://" + url
-		}
-
-		req, err := http.NewRequest("GET", url, nil)
-		if err != nil {
-			utils.Error(err.Error())
-			return "新建访问报错", nil
-		}
-
-		req.Header.Set("User-Agent", "Nebula-Client/1.0")
-
-		if f.Len == 2 {
-			var headers map[string]string
-			if err := json.Unmarshal([]byte(f.Inputs.String(2)), &headers); err == nil {
-				for key, value := range headers {
-					req.Header.Add(key, value)
-					req.Header.Set(key, value)
-				}
-			}
-		}
-
-		client := &http.Client{
-			// 超时限制
-			Timeout: 15 * time.Second,
-			Transport: &http.Transport{
-				TLSClientConfig: &tls.Config{
-					InsecureSkipVerify: true,
-				},
-			},
-		}
-
-		resp, err := client.Do(req)
-		client.CloseIdleConnections()
-		if err != nil {
-			return "访问报错", nil
-		}
-		defer resp.Body.Close()
-		body, err := io.ReadAll(resp.Body)
-		if err != nil {
-			utils.Error(err.Error())
-			return "获取错误", nil
-		}
-
-		res := string(body)
-
-		return res, nil
-
+func accessGet(d *dto.DicInputs) (any, error) {
+	url := d.Inputs.String(1)
+	if !regexp.MustCompile(`^https?://`).MatchString(url) {
+		url = "http://" + url
 	}
-	return "", errors.New("参数数量错误")
-}
 
-func (f *DicFunc) AccessPost() (string, error) {
-	if f.Len == 2 || f.Len == 3 {
-		url := f.Inputs.String(1)
-		if !regexp.MustCompile(`^https?://`).MatchString(url) {
-			url = "http://" + url
-		}
-
-		bodys := f.Inputs.String(2)
-		reqBody := bytes.NewBufferString(bodys)
-		req, err := http.NewRequest("POST", url, reqBody)
-		if err != nil {
-			return "新建访问报错", nil
-		}
-
-		if utils.IsJSON(bodys) {
-			req.Header.Set("Content-Type", "application/json")
-		} else {
-			req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-		}
-
-		req.Header.Set("User-Agent", "Nebula-Client/1.0")
-
-		if f.Len == 3 {
-			var headers map[string]string
-			if err := json.Unmarshal([]byte(f.Inputs.String(3)), &headers); err == nil {
-				for key, value := range headers {
-					req.Header.Add(key, value)
-					req.Header.Set(key, value)
-				}
-			}
-		}
-
-		client := &http.Client{
-			// 超时限制
-			Timeout: 15 * time.Second,
-			Transport: &http.Transport{
-				TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
-			},
-		}
-		resp, err := client.Do(req)
-		if err != nil {
-			return "访问报错", nil
-		}
-		defer resp.Body.Close()
-		body, err := io.ReadAll(resp.Body)
-		if err != nil {
-			utils.Error(err.Error())
-			return "获取错误", nil
-		}
-
-		res := string(body)
-
-		return res, nil
-
+	req, err := http.NewRequest("GET", url, nil)
+	if err != nil {
+		utils.Error(err.Error())
+		return "新建访问报错", nil
 	}
-	return "", errors.New("参数数量错误")
-}
 
-func (f *DicFunc) AccessSet(sysVal *dto.LocalDicValue) (string, error) {
-	if f.Len != 1 {
-		return "", errors.New("参数数量错误")
-	}
-	setUrl := f.Inputs.String(1)
-	regex := regexp.MustCompile(`^https?://`)
-	if !regex.MatchString(setUrl) {
-		setUrl = "http://" + setUrl
-	}
-	setobj := map[string]interface{}{
-		"type":      "get",
-		"host":      setUrl,
-		"headers":   map[string]string{},
-		"times_out": 0,
-		"file":      make(map[string]map[string][]byte),
-		"body":      "",
-		"res":       map[string]interface{}{},
-	}
-	sysVal.Access = setobj
-	return "", nil
-}
+	req.Header.Set("User-Agent", "Nebula-Client/1.0")
 
-func (f *DicFunc) AccessSetTimes(sysVal *dto.LocalDicValue) (string, error) {
-	if f.Len != 1 {
-		return "", errors.New("参数数量错误")
-	}
-	obj, ok := sysVal.Access.(map[string]interface{})
-	if !ok {
-		obj = map[string]interface{}{}
-	}
-	// if err := json.Unmarshal([]byte(f.Inputs[1]), &headers); err == nil {
-	// 转int
-	if times, err := strconv.Atoi(f.Inputs.String(1)); err == nil {
-		obj["times_out"] = times
-	}
-	sysVal.Access = obj
-	return "", nil
-}
-
-func (f *DicFunc) AccessSetHeader(sysVal *dto.LocalDicValue) (string, error) {
-	if f.Len != 1 {
-		return "", errors.New("参数数量错误")
-	}
-	obj, ok := sysVal.Access.(map[string]interface{})
-	if !ok {
-		obj = map[string]interface{}{}
-	}
-	// 尝试解析 JSON 字符串
-	var headers map[string]string
-	if err := json.Unmarshal([]byte(f.Inputs.String(1)), &headers); err == nil {
-		obj["headers"] = headers
-	} else {
-		obj["headers"] = headers
-	}
-	sysVal.Access = obj
-	return "", nil
-}
-
-func (f *DicFunc) AccessSetGet(sysVal *dto.LocalDicValue) (string, error) {
-	if f.Len != 1 {
-		return "", errors.New("参数数量错误")
-	}
-	obj, ok := sysVal.Access.(map[string]interface{})
-	if !ok {
-		obj = map[string]interface{}{}
-	}
-	obj["type"] = "get"
-	sysVal.Access = obj
-	return "", nil
-}
-
-func (f *DicFunc) AccessSetPost(sysVal *dto.LocalDicValue) (string, error) {
-	if !(f.Len == 0 || f.Len == 1) {
-		return "", errors.New("参数数量错误")
-	}
-	obj, ok := sysVal.Access.(map[string]interface{})
-	if !ok {
-		obj = map[string]interface{}{}
-	}
-	obj["type"] = "post"
-	if f.Len == 1 {
-		obj["body"] = f.Inputs.String(1) // 请求主体
-	}
-	sysVal.Access = obj
-	return "", nil
-}
-
-func (f *DicFunc) AccessSetPostFile(sysVal *dto.LocalDicValue) (string, error) {
-	if !(f.Len == 0 || f.Len == 2 || f.Len == 3) {
-		return "", errors.New("参数数量错误")
-	}
-	obj, ok := sysVal.Access.(map[string]interface{})
-	if !ok {
-		obj = map[string]interface{}{}
-	}
-	obj["type"] = "post"
-	if f.Len == 2 {
-		if files, ok := obj["file"].(map[string]map[string][]byte); ok {
-			if files[f.Inputs.String(1)] == nil {
-				files[f.Inputs.String(1)] = make(map[string][]byte)
-			}
-			files[f.Inputs.String(1)][f.Inputs.String(1)] = []byte(f.Inputs.String(2))
-		}
-	}
-	if f.Len == 3 {
-		if files, ok := obj["file"].(map[string]map[string][]byte); ok {
-			if files[f.Inputs.String(1)] == nil {
-				files[f.Inputs.String(1)] = make(map[string][]byte)
-			}
-			files[f.Inputs.String(1)][f.Inputs.String(2)] = []byte(f.Inputs.String(3))
-		}
-	}
-	sysVal.Access = obj
-	return "", nil
-}
-
-func (f *DicFunc) AccessSend(sysVal *dto.LocalDicValue) (string, error) {
-	if f.Len != 0 {
-		return "", errors.New("参数数量错误")
-	}
-	obj, ok := sysVal.Access.(map[string]interface{})
-	if !ok {
-		obj = map[string]interface{}{}
-	}
-	switch obj["type"] {
-	case "get":
-		req, err := http.NewRequest("GET", obj["host"].(string), nil)
-		if err != nil {
-			utils.Error(err.Error())
-			return "新建通信报错", nil
-		}
-
-		req.Header.Set("User-Agent", "Nebula-Client/1.0")
-
-		for key, value := range obj["headers"].(map[string]string) {
-			req.Header.Add(key, value)
-			req.Header.Set(key, value)
-		}
-
-		times_out := obj["times_out"].(int)
-
-		client := &http.Client{
-			// 超时限制
-			Timeout: time.Duration(times_out) * time.Second,
-			Transport: &http.Transport{
-				TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
-			},
-		}
-		resp, err := client.Do(req)
-		if err != nil {
-			return "发送通信报错", nil
-		}
-		defer resp.Body.Close()
-		body, err := io.ReadAll(resp.Body)
-		if err != nil {
-			utils.Error(err.Error())
-			return "通信获取报错", nil
-		}
-
-		obj["res"] = map[string]interface{}{
-			"statusText": resp.Status,
-			"status":     resp.StatusCode,
-			"headers":    resp.Header,
-			"data":       body,
-		}
-		sysVal.Access = obj
-		return "", nil
-	case "post":
-		var ok bool
-		sendurl, ok := obj["host"].(string)
-		if !ok {
-			return "未记录", nil
-		}
-		objStr, ok := obj["body"].(string)
-		if !ok {
-			return "不存在POST数据", nil
-		}
-		// 获取文件列表并遍历
-		if fileList, ok := obj["file"].(map[string]map[string][]byte); ok && len(fileList) > 0 {
-			var reqBody bytes.Buffer
-			writer := multipart.NewWriter(&reqBody)
-			for fieldName, fileLists := range fileList {
-				for fileName, fileContent := range fileLists {
-					// 创建一个 form 文件部分
-					part, err := writer.CreateFormFile(fieldName, fileName)
-					if err != nil {
-						utils.Error(err.Error())
-						return "新建文件报错", nil
-					}
-
-					// 写入文件内容到 part
-					_, err = part.Write(fileContent)
-					if err != nil {
-						utils.Error(err.Error())
-						return "写入文件报错", nil
-					}
-				}
-			}
-
-			// 添加表单数据部分
-			if objStr != "" {
-				// 尝试解析为 JSON
-				var formData map[string]string
-				objerr := json.Unmarshal([]byte(objStr), &formData)
-				if objerr == nil {
-					// 解析为 JSON 成功，写入表单字段
-					if err := writeFields(formData, writer); err != nil {
-						return "添加报错", nil
-					}
-				} else {
-					// 解析 JSON 失败，尝试解析为表单
-					parsedFormData, err := url.ParseQuery(objStr)
-					if err != nil {
-						return "解析POST表单报错", nil
-					}
-					// 将 url.Values 转换为 map[string]string，取每个键的第一个值
-					formDataMap := make(map[string]string)
-					for key, values := range parsedFormData {
-						if len(values) > 0 {
-							formDataMap[key] = values[0]
-						}
-					}
-					// 写入表单字段
-					if err := writeFields(formDataMap, writer); err != nil {
-						return "添加报错", nil
-					}
-				}
-			}
-
-			// 关闭 writer 来完成请求体
-			writer.Close()
-
-			// 创建一个 HTTP POST 请求
-			req, err := http.NewRequest("POST", sendurl, &reqBody)
-			if err != nil {
-				utils.Error(err.Error())
-				return "新建通信报错", nil
-			}
-
-			req.Header.Set("User-Agent", "juice-requests/1.0")
-
-			// 设置请求头
-			req.Header.Set("Content-Type", writer.FormDataContentType())
-
-			for key, value := range obj["headers"].(map[string]string) {
+	if d.Inputs.LenOk(2) {
+		var headers map[string]string
+		if err := json.Unmarshal([]byte(d.Inputs.String(2)), &headers); err == nil {
+			for key, value := range headers {
 				req.Header.Add(key, value)
 				req.Header.Set(key, value)
 			}
-
-			times_out := obj["times_out"].(int)
-
-			// 发送请求
-			client := &http.Client{
-				// 超时限制
-				Timeout: time.Duration(times_out) * time.Second,
-				Transport: &http.Transport{
-					TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
-				},
-			}
-			resp, err := client.Do(req)
-			if err != nil {
-				return "发送通信报错", nil
-			}
-			defer resp.Body.Close()
-
-			// 使用 io.ReadAll 读取整个响应体
-			respBody, err := io.ReadAll(resp.Body)
-			if err != nil {
-				utils.Error(err.Error())
-				return "通信获取报错", nil
-			}
-
-			obj["res"] = map[string]interface{}{
-				"statusText": resp.Status,
-				"status":     resp.StatusCode,
-				"headers":    resp.Header,
-				"data":       respBody,
-			}
-			sysVal.Access = obj
-			return "", nil
 		}
-
-		reqBody := bytes.NewBufferString(objStr) // 使用请求的主体
-
-		req, err := http.NewRequest("POST", sendurl, reqBody)
-		if err != nil {
-			utils.Error(err.Error())
-			return "新建通信报错", nil
-		}
-
-		req.Header.Set("User-Agent", "juice-requests/1.0")
-
-		if utils.IsJSON(objStr) {
-			req.Header.Set("Content-Type", "application/json")
-		} else {
-			req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-		}
-
-		for key, value := range obj["headers"].(map[string]string) {
-			req.Header.Add(key, value)
-			req.Header.Set(key, value)
-		}
-
-		client := &http.Client{
-			// 超时限制30秒
-			Timeout: 30 * time.Second,
-			Transport: &http.Transport{
-				TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
-			},
-		}
-		resp, err := client.Do(req)
-		if err != nil {
-			return "发送通信报错", nil
-		}
-		defer resp.Body.Close()
-
-		respBody, err := io.ReadAll(resp.Body)
-		if err != nil {
-			utils.Error(err.Error())
-			return "通信获取报错", nil
-		}
-		obj["res"] = map[string]interface{}{
-			"statusText": resp.Status,
-			"status":     resp.StatusCode,
-			"headers":    resp.Header,
-			"data":       respBody,
-		}
-		sysVal.Access = obj
-		return "", nil
 	}
-	return "", errors.New("参数数量错误")
+
+	client := &http.Client{
+		// 超时限制
+		Timeout: 15 * time.Second,
+		Transport: &http.Transport{
+			TLSClientConfig: &tls.Config{
+				InsecureSkipVerify: true,
+			},
+		},
+	}
+
+	resp, err := client.Do(req)
+	client.CloseIdleConnections()
+	if err != nil {
+		return "访问报错", nil
+	}
+	defer resp.Body.Close()
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		utils.Error(err.Error())
+		return "获取错误", nil
+	}
+
+	res := string(body)
+
+	return res, nil
 }
 
-// 辅助函数：写入表单字段
-func writeFields(data map[string]string, writer *multipart.Writer) error {
-	for key, value := range data {
-		if err := writer.WriteField(key, value); err != nil {
-			return err
+func accessPost(d *dto.DicInputs) (any, error) {
+	url := d.Inputs.String(1)
+	if !regexp.MustCompile(`^https?://`).MatchString(url) {
+		url = "http://" + url
+	}
+
+	bodys := d.Inputs.String(2)
+	reqBody := bytes.NewBufferString(bodys)
+	req, err := http.NewRequest("POST", url, reqBody)
+	if err != nil {
+		return "新建访问报错", nil
+	}
+
+	if utils.IsJSON(bodys) {
+		req.Header.Set("Content-Type", "application/json")
+	} else {
+		req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	}
+
+	req.Header.Set("User-Agent", "Nebula-Client/1.0")
+
+	if d.Inputs.LenOk(3) {
+		var headers map[string]string
+		if err := json.Unmarshal([]byte(d.Inputs.String(3)), &headers); err == nil {
+			for key, value := range headers {
+				req.Header.Add(key, value)
+				req.Header.Set(key, value)
+			}
+		}
+	}
+
+	client := &http.Client{
+		// 超时限制
+		Timeout: 15 * time.Second,
+		Transport: &http.Transport{
+			TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
+		},
+	}
+	resp, err := client.Do(req)
+	if err != nil {
+		return "访问报错", nil
+	}
+	defer resp.Body.Close()
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		utils.Error(err.Error())
+		return "获取错误", nil
+	}
+
+	res := string(body)
+
+	return res, nil
+}
+
+// =======================
+// 结构体定义
+// =======================
+
+type AccessRequest struct {
+	Type         string
+	Host         string
+	Headers      map[string]string
+	Timeout      int
+	Files        map[string]map[string][]byte
+	Body         string
+	Res          *AccessResponse
+	StopRedirect bool
+}
+
+type AccessResponse struct {
+	StatusText string
+	Status     int
+	Headers    http.Header
+	Data       []byte
+}
+
+// =======================
+// 内部工具函数
+// =======================
+
+func getAccess(d *dto.DicInputs) *AccessRequest {
+	if v := d.Inputs.Get(1); v != nil {
+		if req, ok := v.(*AccessRequest); ok {
+			return req
 		}
 	}
 	return nil
 }
 
-func (f *DicFunc) AccessGetSendAll(sysVal *dto.LocalDicValue) (string, error) {
-	if f.Len != 0 {
-		return "", errors.New("参数数量错误")
+// =======================
+// 访问.新建
+// =======================
+
+func newRequest(d *dto.DicInputs) (any, error) {
+	setUrl := d.Inputs.String(1)
+	if !regexp.MustCompile(`^https?://`).MatchString(setUrl) {
+		setUrl = "http://" + setUrl
 	}
 
-	// 确保 sysVal.Access 是一个 map[string]interface{} 类型
-	obj, ok := sysVal.Access.(map[string]interface{})
-	if !ok {
-		return "未定义", nil
+	req := &AccessRequest{
+		Type:         "get",
+		Host:         setUrl,
+		Headers:      map[string]string{},
+		Timeout:      0,
+		Files:        make(map[string]map[string][]byte),
+		Body:         "",
+		Res:          nil,
+		StopRedirect: false,
 	}
 
-	var result string
-	var objData []uint8
-	objDatas := make(map[string]map[string][]byte)
+	return req, nil
+}
 
-	// 将拷贝中的 res 字段设置为 nil（即 null）
-	objRes, ok := obj["res"].(map[string]interface{})
-	if ok {
-		if objDatA, Ok := objRes["data"].([]uint8); Ok {
-			objData = objDatA
+// =======================
+// 访问.切换GET / POST
+// =======================
+
+func changeRequestGet(d *dto.DicInputs) (any, error) {
+	req := getAccess(d)
+	if req == nil {
+		return nil, errors.New("未新建请求")
+	}
+	req.Type = "get"
+	return "", nil
+}
+
+func changeRequestPost(d *dto.DicInputs) (any, error) {
+	req := getAccess(d)
+	if req == nil {
+		return nil, errors.New("未新建请求")
+	}
+	req.Type = "post"
+	if d.Inputs.LenOk(2) {
+		req.Body = d.Inputs.String(2)
+	}
+	return "", nil
+}
+
+// =======================
+// 访问.禁用跳转
+// =======================
+
+func requestDisableRedirects(d *dto.DicInputs) (any, error) {
+	req := getAccess(d)
+	if req == nil {
+		return nil, errors.New("未新建请求")
+	}
+	req.StopRedirect = true
+	return "", nil
+}
+
+// =======================
+// 访问.启用跳转
+// =======================
+
+func requestEnableRedirects(d *dto.DicInputs) (any, error) {
+	req := getAccess(d)
+	if req == nil {
+		return nil, errors.New("未新建请求")
+	}
+	req.StopRedirect = false
+	return "", nil
+}
+
+// =======================
+// 访问.设置头部
+// =======================
+
+func requestSetHeader(d *dto.DicInputs) (any, error) {
+	req := getAccess(d)
+	if req == nil {
+		return nil, errors.New("未新建请求")
+	}
+
+	var headers map[string]string
+	if err := json.Unmarshal([]byte(d.Inputs.String(2)), &headers); err == nil {
+		req.Headers = headers
+	}
+	return "", nil
+}
+
+// =======================
+// 访问.设置超时
+// =======================
+
+func requestSetTimeout(d *dto.DicInputs) (any, error) {
+	req := getAccess(d)
+	if req == nil {
+		return nil, errors.New("未新建请求")
+	}
+	req.Timeout = d.Inputs.Int(2)
+	return "", nil
+}
+
+// =======================
+// 访问.POST
+// =======================
+
+func requestPost(d *dto.DicInputs) (any, error) {
+	req := getAccess(d)
+	if req == nil {
+		return nil, errors.New("未新建请求")
+	}
+	req.Type = "post"
+	req.Body = d.Inputs.String(2)
+	return "", nil
+}
+
+// =======================
+// 访问.POST文件
+// =======================
+
+func requestPostFile(d *dto.DicInputs) (any, error) {
+	req := getAccess(d)
+	if req == nil {
+		return nil, errors.New("未新建请求")
+	}
+
+	req.Type = "post"
+
+	field := d.Inputs.String(2)
+	if req.Files[field] == nil {
+		req.Files[field] = make(map[string][]byte)
+	}
+
+	if d.Inputs.LenOk(3) {
+		req.Files[field][field] = []byte(d.Inputs.String(3))
+	} else {
+		req.Files[field][d.Inputs.String(4)] = []byte(d.Inputs.String(5))
+	}
+	return "", nil
+}
+
+// =======================
+// 访问.发送
+// =======================
+
+func requestSend(d *dto.DicInputs) (any, error) {
+	req := getAccess(d)
+	if req == nil {
+		return nil, errors.New("未新建请求")
+	}
+
+	client := &http.Client{
+		Timeout: time.Duration(req.Timeout) * time.Second,
+		Transport: &http.Transport{
+			TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
+		},
+	}
+
+	if req.StopRedirect {
+		client.CheckRedirect = func(req *http.Request, via []*http.Request) error {
+			return http.ErrUseLastResponse
 		}
-		objRes["data"] = "已屏蔽"
 	}
 
-	objFile, oks := obj["file"].(map[string]map[string][]byte)
-	if oks {
-		for k, v := range objFile {
-			for kk, vv := range v {
-				if objDatas[k] == nil {
-					objDatas[k] = make(map[string][]byte)
+	var httpReq *http.Request
+	var err error
+
+	if req.Type == "get" {
+		httpReq, err = http.NewRequest("GET", req.Host, nil)
+	} else {
+		httpReq, err = buildPostRequest(req)
+	}
+
+	if err != nil {
+		return "新建请求失败", nil
+	}
+
+	httpReq.Header.Set("User-Agent", "Nebula-Client/1.0")
+	for k, v := range req.Headers {
+		httpReq.Header.Set(k, v)
+	}
+
+	resp, err := client.Do(httpReq)
+	if err != nil {
+		return "发送失败", nil
+	}
+	defer resp.Body.Close()
+
+	data, _ := io.ReadAll(resp.Body)
+	req.Res = &AccessResponse{
+		StatusText: resp.Status,
+		Status:     resp.StatusCode,
+		Headers:    resp.Header,
+		Data:       data,
+	}
+
+	return "", nil
+}
+
+// =======================
+// POST 构建
+// =======================
+
+func buildPostRequest(req *AccessRequest) (*http.Request, error) {
+	if len(req.Files) == 0 {
+		body := bytes.NewBufferString(req.Body)
+		r, err := http.NewRequest("POST", req.Host, body)
+		if err != nil {
+			return nil, err
+		}
+		if utils.IsJSON(req.Body) {
+			r.Header.Set("Content-Type", "application/json")
+		} else {
+			r.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+		}
+		return r, nil
+	}
+
+	var buf bytes.Buffer
+	writer := multipart.NewWriter(&buf)
+
+	for field, files := range req.Files {
+		for name, data := range files {
+			part, err := writer.CreateFormFile(field, name)
+			if err != nil {
+				return nil, err
+			}
+			part.Write(data)
+		}
+	}
+
+	if req.Body != "" {
+		var m map[string]string
+		if json.Unmarshal([]byte(req.Body), &m) == nil {
+			for k, v := range m {
+				writer.WriteField(k, v)
+			}
+		} else {
+			vals, _ := url.ParseQuery(req.Body)
+			for k, v := range vals {
+				if len(v) > 0 {
+					writer.WriteField(k, v[0])
 				}
-				objDatas[k][kk] = vv
-				objFile[k][kk] = nil
 			}
 		}
 	}
 
-	// 将拷贝的 objs 转换为 JSON 字符串并返回
-	resultss, err := json.Marshal(obj)
-	results := string(resultss)
+	writer.Close()
 
-	// results, err := json.Marshal(obj)
-	if err == nil {
-		result = string(results)
-	}
-	if ok {
-		objRes["data"] = objData
-	}
-
-	if oks {
-		obj["file"] = objDatas
-	}
-
+	r, err := http.NewRequest("POST", req.Host, &buf)
 	if err != nil {
-		return "获取错误", nil
+		return nil, err
 	}
-
-	return result, nil
+	r.Header.Set("Content-Type", writer.FormDataContentType())
+	return r, nil
 }
 
-func (f *DicFunc) AccessGetSend(sysVal *dto.LocalDicValue) (string, error) {
-	if f.Len != 0 {
-		return "", errors.New("参数数量错误")
+// =======================
+// 访问.内容 / 全部内容
+// =======================
+
+func requestContent(d *dto.DicInputs) (any, error) {
+	req := getAccess(d)
+	if req == nil {
+		return nil, errors.New("未新建请求")
 	}
-	obj, ok := sysVal.Access.(map[string]interface{})
-	if !ok {
-		obj = map[string]interface{}{}
-	}
-	res, ok := obj["res"].(map[string]interface{})
-	if !ok {
+	if req.Res == nil {
 		return "", nil
 	}
-	if result, ok := res["data"].([]byte); ok {
-		return string(result), nil
+	return string(req.Res.Data), nil
+}
+
+func requestAllContent(d *dto.DicInputs) (any, error) {
+	req := getAccess(d)
+	if req == nil {
+		return nil, errors.New("未新建请求")
 	}
-	return "不存在结果", nil
+
+	copyReq := *req
+	if copyReq.Res != nil {
+		copyReq.Res = &AccessResponse{
+			StatusText: req.Res.StatusText,
+			Status:     req.Res.Status,
+			Headers:    req.Res.Headers,
+			Data:       []byte("已屏蔽"),
+		}
+	}
+
+	b, _ := json.Marshal(copyReq)
+	return string(b), nil
 }

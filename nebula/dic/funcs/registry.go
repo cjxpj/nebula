@@ -75,6 +75,22 @@ func Setup() {
 		f{"AES解密", "3", aesDecrypt},
 		f{"分割", "2|3", split},
 		f{"字符切片", "1", stringSlice},
+		f{"sha256加密", "1", sha256Encrypt},
+
+		f{"访问.新建", "1", newRequest},
+		f{"访问.切换GET", "1", changeRequestGet},
+		f{"访问.切换POST", "1|2", changeRequestPost},
+		f{"访问.启用跳转", "1", requestEnableRedirects},
+		f{"访问.禁用跳转", "1", requestDisableRedirects},
+		f{"访问.设置头部", "2", requestSetHeader},
+		f{"访问.设置超时", "2", requestSetTimeout},
+		f{"访问.POST", "2", requestPost},
+		f{"访问.POST文件", "3|4", requestPostFile},
+		f{"访问.发送", "1", requestSend},
+		f{"访问.全部内容", "1", requestAllContent},
+		f{"访问.内容", "1", requestContent},
+		f{"访问", "1|2", accessGet},
+		f{"访问POST", "2|3", accessPost},
 	); err != nil {
 		fmt.Println(err)
 	}

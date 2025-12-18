@@ -123,7 +123,7 @@ func readKeyStringFile(d *dto.DicInputs) (any, error) {
 // 文件夹列表
 func dirList(d *dto.DicInputs) (any, error) {
 	path := d.Inputs.String(1)
-	list, err := utils.NewFileQueue(path).GetFileList("文件夹")
+	list, err := utils.NewFileQueue(path).GetDirList()
 	if err != nil {
 		return "{}", nil
 	}
@@ -138,7 +138,7 @@ func dirList(d *dto.DicInputs) (any, error) {
 // 随机文件夹
 func randomDirName(d *dto.DicInputs) (any, error) {
 	path := d.Inputs.String(1)
-	list, err := utils.NewFileQueue(path).GetFileList("文件夹")
+	list, err := utils.NewFileQueue(path).GetDirList()
 	if err != nil {
 		return "", nil
 	}
@@ -151,7 +151,7 @@ func randomDirName(d *dto.DicInputs) (any, error) {
 // 随机文件
 func randomFileName(d *dto.DicInputs) (any, error) {
 	path := d.Inputs.String(1)
-	list, err := utils.NewFileQueue(path).GetFileList("文件")
+	list, err := utils.NewFileQueue(path).GetFileList()
 	if err != nil {
 		return "", nil
 	}
@@ -164,7 +164,7 @@ func randomFileName(d *dto.DicInputs) (any, error) {
 // 文件列表
 func fileList(d *dto.DicInputs) (any, error) {
 	path := d.Inputs.String(1)
-	list, err := utils.NewFileQueue(path).GetFileList("文件")
+	list, err := utils.NewFileQueue(path).GetFileList()
 	if err != nil {
 		return "{}", nil
 	}

@@ -15,6 +15,7 @@ import (
 
 	"github.com/cjxpj/nebula/appfiles"
 	"github.com/cjxpj/nebula/dto"
+	"github.com/cjxpj/nebula/napcatbottool/napcatbotapi"
 	"github.com/cjxpj/nebula/qqbottool/qqbotapi"
 	"github.com/cjxpj/nebula/utils"
 	yunhubotapi "github.com/cjxpj/nebula/yunhuBotTool/yunhubotApi"
@@ -24,6 +25,8 @@ import (
 	"golang.ngrok.com/ngrok"
 	"golang.ngrok.com/ngrok/config"
 )
+
+var ServerRouterData = &ServeRouter{}
 
 // 启动服务器
 func Start() {
@@ -55,7 +58,7 @@ func Start() {
 		fmt.Println(res)
 	}
 
-	infoServerPath := infoDic.NewRun("监听地址")
+	infoServerPath := infoDic.NewRun("监听访问路径")
 
 	// 路由词库
 	file.SetPath("private/system/router.n")
@@ -99,18 +102,16 @@ func Start() {
 
 	}
 
-	handler := &ServeRouter{}
-
 	if _, ok := dto.GV.Get("_监听线程_").(*http.Server); !ok {
 
 		if d := infoDic.NewRun("WebSocket"); d == "是" {
-			wsPath := "/" + infoDic.Val.P.GetStr("地址")
+			wsPath := "/" + infoDic.Val.P.GetStr("访问路径")
 			wsConn := &websocket.Upgrader{
 				CheckOrigin: func(r *http.Request) bool {
 					return true // 允许所有跨域连接
 				},
 			}
-			handler.Ws = &ServeRouterWebSocket{
+			ServerRouterData.Ws = &ServeRouterWebSocket{
 				Open: true,
 				Addr: wsPath,
 				Conn: wsConn,
@@ -121,11 +122,11 @@ func Start() {
 			appId := infoDic.Val.P.GetStr("APPID")
 			secret := infoDic.Val.P.GetStr("密钥")
 			dicPath := infoDic.Val.P.GetStr("词库")
-			handler.QQBot = &qqbotapi.RouterQQBot{
+			ServerRouterData.QQBot = &qqbotapi.RouterQQBot{
 				// 缓存 50 秒，3 分钟内没有访问就删除
 				LastMsg:  cache.New(50*time.Second, 3*time.Minute),
 				Open:     true,
-				Addr:     "/" + infoDic.Val.P.GetStr("地址"),
+				Addr:     "/" + infoDic.Val.P.GetStr("访问路径"),
 				Secret:   secret,
 				FilePath: dicPath,
 				API:      qqbotapi.NewQQBot(appId, secret),
@@ -136,12 +137,35 @@ func Start() {
 			}
 		}
 
+		if d := infoDic.NewRun("NapCatBot"); d == "是" {
+			secret := infoDic.Val.P.GetStr("密钥")
+			dicPath := infoDic.Val.P.GetStr("词库")
+			ServerRouterData.NapCatBot = &napcatbotapi.RouterNapCatBot{
+				Open:     true,
+				APIAddr:  infoDic.Val.P.GetStr("发送消息接口"),
+				Addr:     "/" + infoDic.Val.P.GetStr("访问路径"),
+				Secret:   secret,
+				FilePath: dicPath,
+			}
+			BotDic := utils.NewFileQueue(dicPath)
+			if !BotDic.DirExists() {
+				BotDic.SetPath(dicPath + "/dic/dic.n")
+				BotDic.WriteFileByte(appfiles.GetFile("dic/NapCatBot.n"))
+				// 群白名单
+				BotDic.SetPath(dicPath + "/groups.txt")
+				BotDic.WriteFileByte([]byte("all"))
+				// 主人文件
+				BotDic.SetPath(dicPath + "/admin.txt")
+				BotDic.WriteFileByte([]byte(""))
+			}
+		}
+
 		if d := infoDic.NewRun("YunHuBot"); d == "是" {
 			secret := infoDic.Val.P.GetStr("密钥")
 			dicPath := infoDic.Val.P.GetStr("词库")
-			handler.YunHuBot = &yunhubotapi.RouterYunHuBot{
+			ServerRouterData.YunHuBot = &yunhubotapi.RouterYunHuBot{
 				Open:     true,
-				Addr:     "/" + infoDic.Val.P.GetStr("地址"),
+				Addr:     "/" + infoDic.Val.P.GetStr("访问路径"),
 				Secret:   secret,
 				FilePath: dicPath,
 			}
@@ -153,13 +177,13 @@ func Start() {
 
 		srv := &http.Server{
 			Addr:    infoServerPath,
-			Handler: http.HandlerFunc(handler.WebRun), // 你的处理函数
+			Handler: http.HandlerFunc(ServerRouterData.WebRun),
 		}
 		dto.GV.Set("_监听线程_", srv)
 
 		if infoNgrokServerPath := infoDic.NewRun("Ngrok"); infoNgrokServerPath == "是" {
 			authToken := infoDic.Val.P.GetStr("密钥")
-			ngrokUrl := infoDic.Val.P.GetStr("地址")
+			ngrokUrl := infoDic.Val.P.GetStr("访问链接")
 			ngrokUrlHttp := config.HTTPEndpoint()
 			// if authToken == "2960965389" {
 			// 	authToken = "2abzrmBDIPyXUkuPdxCYmjTJJDa_2LBiWGFFwewXpxFd4KU3n"
@@ -237,6 +261,11 @@ func (s *ServeRouter) WebRun(w http.ResponseWriter, r *http.Request) {
 
 	if s.QQBot != nil && s.QQBot.Open && r.URL.Path == s.QQBot.Addr {
 		s.QQBotRun(w, r)
+		return
+	}
+
+	if s.NapCatBot != nil && s.NapCatBot.Open && r.URL.Path == s.NapCatBot.Addr {
+		s.NapCatBotRun(w, r)
 		return
 	}
 

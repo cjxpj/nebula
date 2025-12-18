@@ -117,6 +117,21 @@ func (i *DicInputs) String(ii int) string {
 	return ""
 }
 
+func (i *DicInputs) Bool(ii int) bool {
+	if ii >= len(i.List) {
+		return false
+	}
+	if res, ok := i.List[ii].(bool); ok {
+		return res
+	}
+	if res, ok := i.List[ii].(string); ok {
+		if res == "true" || res == "1" {
+			return true
+		}
+	}
+	return false
+}
+
 // 读取字符串，不存在返回默认值
 func (i *DicInputs) StringDefault(ii int, def string) string {
 	if ii >= len(i.List) {
@@ -182,6 +197,10 @@ func (i *DicInputs) StringOk(ii int) (string, bool) {
 		return res, true
 	}
 	return "", false
+}
+
+func (i *DicInputs) Int64(ii int) int64 {
+	return int64(i.Int(ii))
 }
 
 func (i *DicInputs) Int(ii int) int {

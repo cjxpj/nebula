@@ -31,27 +31,35 @@ Ngrok
 是/否
 密钥:
 // 留空获取随机域名，仅限Ngrok域名
-地址:
+访问链接:
 
 Ngrok启动成功 https?://.+
 NgrokUrl：%参数1%
 
-监听地址
+监听访问路径
 127.0.0.1:8080
 
 WebSocket
 是/否
-地址:ws
+访问路径:ws
 
 QQBot
 是/否
 APPID:
 密钥:
-地址:qq-bot
+访问路径:qq-bot
 词库:private/QQBot.n
 
 YunHuBot
 是/否
 密钥:
-地址:yunhu-bot
+访问路径:yunhu-bot
 词库:private/YunHuBot.n
+
+NapCatBot
+是/否
+// 此处填HTTP服务器的Token不是HTTP客户端的
+密钥:
+发送消息接口:http://127.0.0.1:3000
+访问路径:napcat
+词库:private/napcat

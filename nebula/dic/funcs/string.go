@@ -1,6 +1,7 @@
 package funcs
 
 import (
+	"crypto/sha256"
 	"errors"
 	"strconv"
 	"strings"
@@ -333,3 +334,13 @@ func replaced(d *dto.DicInputs) (any, error) {
 	res := strings.ReplaceAll(d.Inputs.String(1), d.Inputs.String(2), tStr)
 	return res, nil
 }
+
+// sha256加密
+func sha256Encrypt(d *dto.DicInputs) (any, error) {
+	return sha256.Sum256([]byte(d.Inputs.String(1))), nil
+}
+
+// // sha256解密
+// func sha256De(d *dto.DicInputs) (any, error) {
+
+// }

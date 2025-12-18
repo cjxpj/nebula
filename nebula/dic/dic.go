@@ -1,6 +1,7 @@
 package dic
 
 import (
+	"maps"
 	"strings"
 
 	"github.com/cjxpj/nebula/appfiles"
@@ -261,9 +262,7 @@ func (D *Dic) Run(trigger string) string {
 	}
 
 	if D.ClassText != nil {
-		for key, val := range D.ClassText {
-			SplitText.LocalClass[key] = val
-		}
+		maps.Copy(SplitText.LocalClass, D.ClassText)
 	}
 
 	DicHaderText = SplitText.Head

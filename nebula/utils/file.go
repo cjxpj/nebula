@@ -11,11 +11,11 @@ import (
 	"io"
 	"math/big"
 	mrand "math/rand/v2"
+	"net"
 	"net/http"
 	"os"
 	"path/filepath"
 	"runtime"
-	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -286,147 +286,205 @@ func (fq *FileQueue) Download(url string) bool {
 
 // 下载文件
 func (fq *FileQueue) DownloadWithDynamicThreads(url string, maxThreads int, showProgress bool) error {
-	// HEAD 获取文件大小
-	resp, err := http.Head(url)
+	// ------------------------  可调常量区 ------------------------
+	const (
+		chunkSize     = 4 * 1024 * 1024 // 4 MB
+		dialTimeout   = 10 * time.Second
+		headerTimeout = 10 * time.Second
+		maxRetries    = 3
+		userAgent     = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36"
+	)
+	// 运行时配置（依赖 maxThreads）
+	idleConns := maxThreads * 4
+	idlePerHost := maxThreads * 4
+	idleTimeout := 90 * time.Second
+	// -------------------------------------------------------------
+
+	// 1. HEAD 拿大小与 Range 支持
+	client := &http.Client{
+		// Timeout: headerTimeout,
+		Transport: &http.Transport{
+			Proxy:                 http.ProxyFromEnvironment,
+			MaxIdleConns:          idleConns,
+			MaxIdleConnsPerHost:   idlePerHost,
+			IdleConnTimeout:       idleTimeout,
+			TLSHandshakeTimeout:   dialTimeout,
+			DisableCompression:    true,
+			ResponseHeaderTimeout: 30 * time.Second, // 首字节 30 s 足够
+			DialContext: (&net.Dialer{
+				Timeout:   dialTimeout,
+				KeepAlive: 30 * time.Second,
+				DualStack: true,
+			}).DialContext,
+		},
+	}
+	req, _ := http.NewRequest("HEAD", url, nil)
+	req.Header.Set("User-Agent", userAgent)
+	resp, err := client.Do(req)
 	if err != nil {
 		return err
 	}
-	if resp.StatusCode != http.StatusOK || resp.Header.Get("Content-Length") == "" {
-		return errors.New("无法获取文件大小")
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("HEAD 失败，状态码 %d", resp.StatusCode)
 	}
-	length, _ := strconv.ParseInt(resp.Header.Get("Content-Length"), 10, 64)
-	acceptRanges := strings.Contains(strings.ToLower(resp.Header.Get("Accept-Ranges")), "bytes")
+	length := resp.ContentLength
+	if length <= 0 {
+		return errors.New("无法获取 Content-Length")
+	}
+	acceptRanges := strings.EqualFold(resp.Header.Get("Accept-Ranges"), "bytes")
 	if !acceptRanges {
 		if showProgress {
-			fmt.Println("⚠️ 服务器未声明 Accept-Ranges，将使用单线程模式")
+			fmt.Println("⚠️  服务器不支持 Range，强制单线程")
 		}
 		maxThreads = 1
 	}
 
-	if showProgress {
-		fmt.Printf("文件大小: %.2f MB\n", float64(length)/1024/1024)
-	}
-
-	// 分片任务池
-	chunkSize := int64(2 * 1024 * 1024) // 2MB/片
+	// 2. 分片任务生成
 	chunks := int((length + chunkSize - 1) / chunkSize)
-	tasks := make(chan [2]int64, chunks)
-	for i := 0; i < chunks; i++ {
+	type task struct {
+		idx   int
+		start int64
+		end   int64
+	}
+	tasks := make(chan task, chunks)
+	for i := range chunks {
 		start := int64(i) * chunkSize
 		end := start + chunkSize - 1
 		if end >= length {
 			end = length - 1
 		}
-		tasks <- [2]int64{start, end}
+		tasks <- task{idx: i, start: start, end: end}
 	}
 	close(tasks)
 
-	partFiles := make([]string, chunks)
-	var downloaded int64
-	var wg sync.WaitGroup
-	var mu sync.Mutex
-	var failed error
-
-	client := &http.Client{
-		Transport: &http.Transport{
-			MaxIdleConns:        maxThreads * 2,
-			MaxIdleConnsPerHost: maxThreads * 2,
-		},
+	// 3. 目录 & 临时文件
+	dir := filepath.Dir(fq.FileName)
+	if err := os.MkdirAll(dir, 0755); err != nil {
+		return err
 	}
+	tmpFiles := make([]string, chunks)
 
-	startTime := time.Now()
-	stop := make(chan struct{})
+	// 4. 进度条
+	var downloaded int64
+	var mu sync.Mutex
+	startT := time.Now()
+	stopBar := make(chan struct{})
 	if showProgress {
 		go func() {
-			ticker := time.NewTicker(500 * time.Millisecond)
-			defer ticker.Stop()
+			tick := time.NewTicker(100 * time.Millisecond)
+			defer tick.Stop()
 			for {
 				select {
-				case <-ticker.C:
+				case <-tick.C:
 					d := atomic.LoadInt64(&downloaded)
-					percent := float64(d) / float64(length) * 100
-					speed := float64(d) / 1024 / 1024 / time.Since(startTime).Seconds()
-					remain := time.Duration(float64(length-d)/1024/1024/speed) * time.Second
-					fmt.Printf("\r进度: %.2f%% 速度: %.2f MB/s 剩余: %s", percent, speed, remain)
-				case <-stop:
-					fmt.Printf("\r下载完成: 100.00%%\n")
+					percent := float64(d) * 100 / float64(length)
+					speed := float64(d) / 1048576 / time.Since(startT).Seconds()
+					eta := time.Duration(float64(length-d)/1048576/speed) * time.Second
+					fmt.Printf("\r[%.1f%%] %.2f MB/s  eta %s ", percent, speed, eta.Round(time.Second))
+				case <-stopBar:
+					fmt.Printf("\r[100.0%%] %.2f MB/s  total %s \n",
+						float64(length)/1048576/time.Since(startT).Seconds(),
+						time.Since(startT).Round(time.Millisecond))
 					return
 				}
 			}
 		}()
 	}
 
-	// 动态线程池
+	// 5. 并发下载
+	var wg sync.WaitGroup
+	var firstErr error
+	sem := make(chan struct{}, maxThreads)
 	for t := 0; t < maxThreads; t++ {
 		wg.Add(1)
-		go func(workerID int) {
+		go func() {
 			defer wg.Done()
-			for rng := range tasks {
-				start, end := rng[0], rng[1]
-				partPath := fmt.Sprintf("%s.part%d-%d", fq.FileName, start, end)
-
-				req, _ := http.NewRequest("GET", url, nil)
-				if maxThreads > 1 {
-					req.Header.Set("Range", fmt.Sprintf("bytes=%d-%d", start, end))
+			for tk := range tasks {
+				if firstErr != nil {
+					continue
 				}
-				res, err := client.Do(req)
-				if err != nil || (res.StatusCode != http.StatusPartialContent && res.StatusCode != http.StatusOK) {
-					mu.Lock()
-					failed = fmt.Errorf("线程 %d 下载失败: %v", workerID, err)
-					mu.Unlock()
-					return
-				}
+				sem <- struct{}{}
+				for attempt := range maxRetries {
+					if err := func() error {
+						tmp := fmt.Sprintf("%s.part.%d", fq.FileName, tk.idx)
+						req, _ := http.NewRequest("GET", url, nil)
+						req.Header.Set("User-Agent", userAgent)
+						if maxThreads > 1 {
+							req.Header.Set("Range", fmt.Sprintf("bytes=%d-%d", tk.start, tk.end))
+						}
+						resp, err := client.Do(req)
+						if err != nil {
+							return err
+						}
+						defer resp.Body.Close()
+						if maxThreads > 1 && resp.StatusCode != http.StatusPartialContent {
+							return fmt.Errorf("range 请求返回 %d", resp.StatusCode)
+						}
+						if maxThreads == 1 && resp.StatusCode != http.StatusOK {
+							return fmt.Errorf("GET 请求返回 %d", resp.StatusCode)
+						}
 
-				out, err := os.Create(partPath)
-				if err != nil {
-					mu.Lock()
-					failed = fmt.Errorf("创建文件失败: %v", err)
-					mu.Unlock()
-					return
-				}
+						f, err := os.Create(tmp)
+						if err != nil {
+							return err
+						}
+						defer f.Close()
 
-				buf := make([]byte, 256*1024)
-				for {
-					n, err := res.Body.Read(buf)
-					if n > 0 {
-						out.Write(buf[:n])
-						atomic.AddInt64(&downloaded, int64(n))
-					}
-					if err != nil {
+						buf := make([]byte, 256*1024)
+						for {
+							n, err := resp.Body.Read(buf)
+							if n > 0 {
+								f.Write(buf[:n])
+								atomic.AddInt64(&downloaded, int64(n))
+							}
+							if err != nil {
+								if err == io.EOF {
+									break
+								}
+								return err
+							}
+						}
+						tmpFiles[tk.idx] = tmp
+						return nil
+					}(); err == nil {
 						break
+					} else if attempt == maxRetries-1 {
+						mu.Lock()
+						if firstErr == nil {
+							firstErr = err
+						}
+						mu.Unlock()
 					}
 				}
-
-				res.Body.Close()
-				out.Close()
-				partFiles[start/chunkSize] = partPath
+				<-sem
 			}
-		}(t)
+		}()
 	}
-
 	wg.Wait()
-	close(stop)
-
-	if failed != nil {
-		return failed
+	close(stopBar)
+	if firstErr != nil {
+		return firstErr
 	}
 
-	// 合并文件
+	// 6. 零拷贝合并
 	out, err := os.Create(fq.FileName)
 	if err != nil {
 		return err
 	}
 	defer out.Close()
-	for _, part := range partFiles {
-		f, err := os.Open(part)
+	for _, p := range tmpFiles {
+		f, err := os.Open(p)
 		if err != nil {
 			return err
 		}
-		io.Copy(out, f)
+		_, err = io.Copy(out, f)
 		f.Close()
-		os.Remove(part)
+		os.Remove(p)
+		if err != nil {
+			return err
+		}
 	}
-
 	return nil
 }
 
@@ -683,8 +741,18 @@ func (fq *FileQueue) ReadFile() (string, error) {
 	return result.String(), nil
 }
 
-// GetFileList 函数用于获取指定文件夹中的文件列表
-func (fq *FileQueue) GetFileList(t string) ([]string, error) {
+// 获取文件夹列表
+func (fq *FileQueue) GetDirList() ([]string, error) {
+	return fq.GetList("dir")
+}
+
+// 获取文件列表
+func (fq *FileQueue) GetFileList() ([]string, error) {
+	return fq.GetList("file")
+}
+
+// GetList 函数用于获取指定文件夹中的文件列表
+func (fq *FileQueue) GetList(t string) ([]string, error) {
 	fileList := []string{}
 
 	entries, err := os.ReadDir(fq.FileName)
@@ -707,30 +775,6 @@ func (fq *FileQueue) GetFileList(t string) ([]string, error) {
 			fileList = append(fileList, entry.Name())
 		}
 	}
-
-	// err := filepath.Walk(fq.FileName, func(path string, info os.FileInfo, err error) error {
-	// 	if err != nil {
-	// 		return err
-	// 	}
-
-	// 	// 根据 t 的值来决定是否添加到 fileList 中
-	// 	switch t {
-	// 	case "file", "文件":
-	// 		if !info.IsDir() && filepath.Dir(path) == fq.FileName {
-	// 			fileList = append(fileList, filepath.Base(path))
-	// 		}
-	// 	case "dir", "文件夹":
-	// 		if info.IsDir() && path != fq.FileName {
-	// 			fileList = append(fileList, filepath.Base(path))
-	// 		}
-	// 	default: // 默认处理 "all"
-	// 		if filepath.Dir(path) == fq.FileName {
-	// 			fileList = append(fileList, filepath.Base(path))
-	// 		}
-	// 	}
-
-	// 	return nil
-	// })
 
 	return fileList, nil
 }

@@ -5,6 +5,7 @@ import (
 	"net/url"
 
 	"github.com/cjxpj/nebula/dto"
+	"github.com/cjxpj/nebula/napcatbottool/napcatbotapi"
 	"github.com/cjxpj/nebula/qqbottool/qqbotapi"
 	"github.com/cjxpj/nebula/utils"
 	yunhubotapi "github.com/cjxpj/nebula/yunhuBotTool/yunhubotApi"
@@ -89,6 +90,8 @@ type ServeRouter struct {
 	QQBot *qqbotapi.RouterQQBot
 	// YunHuBot地址
 	YunHuBot *yunhubotapi.RouterYunHuBot
+	// NapCatBot地址
+	NapCatBot *napcatbotapi.RouterNapCatBot
 }
 
 type RequestInfo struct {

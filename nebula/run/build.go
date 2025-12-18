@@ -422,7 +422,7 @@ func (t *Build) Web(lines []string) *dto.BuildValue {
 					fmt.Println("加载目录不存在：", dirPath)
 					continue
 				}
-				filesToLoad2, err := fileLoad.GetFileList("file")
+				filesToLoad2, err := fileLoad.GetFileList()
 				if err != nil {
 					continue
 				}
@@ -584,7 +584,7 @@ func (t *Build) SplitText(text string) *dto.BuildValue {
 						fmt.Println("加载目录不存在：", dirPath)
 						continue
 					}
-					filesToLoad2, err := fileLoad.GetFileList("file")
+					filesToLoad2, err := fileLoad.GetFileList()
 					if err != nil {
 						continue
 					}

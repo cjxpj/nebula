@@ -838,33 +838,39 @@ $访问 url header$
 $访问POST url data header$
 ```
 
-### 通信 📡
+### 高度自义定访问 📡
+
 先记录后操作
 ```
-$通信记录 URL$
+a:$访问.新建 url$
 // 秒为单位，0为不限制
-$通信超时 1$
-$通信GET$
-$通信POST data$
-$通信POST文件 form name data$
-$通信POST文件 name data$
-$通信头部 json/string$
-$通信发包$
-// 这是获取全部信息，包括准备发送的数据都在内。
-$通信取出$
-// 这是只获取结果
-$通信取出结果$
+$访问.设置超时 1$
+$访问.切换GET %a%$
+$访问.切换POST %a%$
+$访问.POST %a% data$
+$访问.POST文件 %a% form name data$
+$访问.POST文件 %a% name data$
+$访问.设置头部 json/string$
+// 默认启用，禁用可以拦截头部的Location跳转
+$访问.启用跳转 %a%$
+$访问.禁用跳转 %a%$
+// 设置好后调用这个进行访问，数据请用获取内容函数取出，此函数不会返回数据
+$访问.发送 %a%$
+// 这是获取全部信息，包括准备发送的数据都在内，会屏蔽内容。
+$访问.全部内容 %a%$
+// 这是只获取结果，就跟直接获取访问一样。
+$访问.内容 %a%$
 ```
 
 上传文件  
 form是表单name文件名字data是数据
 ```
-$通信POST文件 form name data$
+$访问.POST文件 %a% form name data$
 ```
 
 直接填名字默认表单跟文件都为同一个名字
 ```
-$通信POST文件 name data$
+$访问.POST文件 %a% name data$
 ```
 
 ## 🕒 时间操作
