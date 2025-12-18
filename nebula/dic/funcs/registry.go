@@ -93,6 +93,19 @@ func Setup() {
 		f{"访问", "1|2", accessGet},
 		f{"访问POST", "2|3", accessPost},
 		f{"分割匹配", "3", splitMatch},
+		f{"正则替换", "2|3|4", regexReplace},
+		f{"正则匹配", "2", regexpMatche},
+		f{"正则", "2", regexpFind},
+		f{"随机文本", "1|2", randString},
+		f{"判断值", "1", ifNONull},
+		f{"判断空值", "1", ifNull},
+		f{"MD5编码", "1", enMd5},
+		f{"B64编码", "1", base64En},
+		f{"B64解码", "1", base64De},
+		f{"URL编码", "1", urlEn},
+		f{"URL解码", "1", urlDe},
+		f{"URL链接编码", "1", urlPathEn},
+		f{"URL链接解码", "1", urlPathDe},
 	); err != nil {
 		fmt.Println(err)
 	}

@@ -1,21 +1,19 @@
 package funcs
 
-import "encoding/base64"
+import (
+	"encoding/base64"
 
-func (f *DicFunc) Base64En() string {
-	if f.Len == 1 {
-		return base64.StdEncoding.EncodeToString([]byte(f.Inputs.String(1)))
-	}
-	return ""
+	"github.com/cjxpj/nebula/dto"
+)
+
+func base64En(d *dto.DicInputs) (any, error) {
+	return base64.StdEncoding.EncodeToString([]byte(d.Inputs.String(1))), nil
 }
 
-func (f *DicFunc) Base64De() string {
-	if f.Len == 1 {
-		data, err := base64.StdEncoding.DecodeString(f.Inputs.String(1))
-		if err != nil {
-			return ""
-		}
-		return string(data)
+func base64De(d *dto.DicInputs) (any, error) {
+	data, err := base64.StdEncoding.DecodeString(d.Inputs.String(1))
+	if err != nil {
+		return "", nil
 	}
-	return ""
+	return string(data), nil
 }

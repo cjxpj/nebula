@@ -5,6 +5,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/cjxpj/nebula/dto"
 	"github.com/cjxpj/nebula/utils"
 )
 
@@ -47,35 +48,33 @@ func (f *DicFunc) RandLetter(mod int) string {
 	return result.String()
 }
 
-func (f *DicFunc) RandString() string {
-	if f.Len == 1 {
-		r := []rune(f.Inputs.String(1))
+// 随机文本
+func randString(d *dto.DicInputs) (any, error) {
+	if d.Inputs.LenOk(1) {
+		r := []rune(d.Inputs.String(1))
 		min := 0
 		max := len(r) - 1
 
 		rN := utils.RandNum(min, max)
 		if rN == min-1 {
-			return ""
+			return "", nil
 		}
 
 		randomChar := r[rN]
 		resStr := string(randomChar)
-		return resStr
+		return resStr, nil
 	}
-	if f.Len == 2 {
-		r := strings.Split(f.Inputs.String(2), f.Inputs.String(1))
-		min := 0
-		max := len(r) - 1
+	r := strings.Split(d.Inputs.String(2), d.Inputs.String(1))
+	min := 0
+	max := len(r) - 1
 
-		rN := utils.RandNum(min, max)
-		if rN == min-1 {
-			return ""
-		}
-
-		resStr := r[rN]
-		return resStr
+	rN := utils.RandNum(min, max)
+	if rN == min-1 {
+		return "", nil
 	}
-	return ""
+
+	resStr := r[rN]
+	return resStr, nil
 }
 
 func (f *DicFunc) RandNum() string {

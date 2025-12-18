@@ -250,61 +250,6 @@ func cmdListenRun(d *dto.DicInputs) (any, error) {
 	return "", nil
 }
 
-// 执行函数
-func runFunc(d *dto.DicInputs) (any, error) {
-	Tstr := d.Inputs.String(2)
-	obj := d.V.P.GetObj(d.Inputs.String(1))
-	if t, ok := obj["type"].(string); ok && t == "函数框" {
-		funcTrigger := obj["trigger"].(string)
-		regex := regexp.MustCompile("^" + funcTrigger + "$")
-		matches := regex.FindStringSubmatch(Tstr)
-		if len(matches) > 0 || funcTrigger == "" {
-			funcv := dto.NewVal()
-			funcv.Reset(d.V.P.GetAll())
-			funcv.Set("触发", funcTrigger)
-			funcv.Set("触发词", Tstr)
-			content := obj["content"].([]string)
-			resDics := NewRunDicEntry().
-				SetGlobal_v(d.V.G).
-				Set_v(funcv).
-				SetDic_v(d.Dic)
-			resDic := resDics.Run(content)
-			return resDic, nil
-		}
-	}
-	return "", errors.New("未知函数")
-}
-
-// 异步函数
-func runAsyncFunc(d *dto.DicInputs) (any, error) {
-	Tstr := d.Inputs.String(2)
-	obj := d.V.P.GetObj(d.Inputs.String(1))
-	if t, ok := obj["type"].(string); ok && t == "函数框" {
-		funcTrigger := obj["trigger"].(string)
-		regex := regexp.MustCompile("^" + funcTrigger + "$")
-		matches := regex.FindStringSubmatch(Tstr)
-		if len(matches) > 0 || funcTrigger == "" {
-			funcv := dto.NewVal()
-			funcv.Reset(d.V.P.GetAll())
-			funcv.Set("触发", funcTrigger)
-			funcv.Set("触发词", Tstr)
-			content := obj["content"].([]string)
-			resDics := NewRunDicEntry().
-				SetGlobal_v(d.V.G).
-				Set_v(funcv).
-				SetDic_v(d.Dic)
-			go func() {
-				resDic := resDics.Run(content)
-				if resDic != "" {
-					fmt.Println(resDic)
-				}
-			}()
-			return "", nil
-		}
-	}
-	return "", errors.New("未知函数")
-}
-
 // WS连接
 func wsConnect(d *dto.DicInputs) (any, error) {
 	addr := d.Inputs.String(1)

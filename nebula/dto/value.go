@@ -187,11 +187,12 @@ func (v *Val) AddObjs(key string, mapV []map[string]any) {
 }
 
 // Reset 重新设置对象
-func (v *Val) Reset(val map[string]any) {
+func (v *Val) Reset(val map[string]any) *Val {
 	v.obj = sync.Map{}
 	for k, newVal := range val {
 		v.obj.Store(k, newVal)
 	}
+	return v
 }
 
 // SetObj 设置指定键的值，如果操作成功返回 true，否则返回 false

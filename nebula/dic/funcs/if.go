@@ -1,39 +1,37 @@
 package funcs
 
-func (f *DicFunc) IfNull() string {
-	if f.Len == 1 {
-		switch f.Inputs.String(1) {
-		case "null",
-			"nil",
-			"false",
-			"{}",
-			"[]",
-			"空",
-			"NaN",
-			"undefined",
-			" ",
-			"":
-			return "true"
-		}
+import "github.com/cjxpj/nebula/dto"
+
+func ifNull(d *dto.DicInputs) (any, error) {
+	switch d.Inputs.String(1) {
+	case "null",
+		"nil",
+		"false",
+		"{}",
+		"[]",
+		"空",
+		"NaN",
+		"undefined",
+		" ",
+		"":
+		return "true", nil
 	}
-	return "false"
+	return "false", nil
 }
 
-func (f *DicFunc) IfNONull() string {
-	if f.Len == 1 {
-		switch f.Inputs.String(1) {
-		case "null",
-			"nil",
-			"false",
-			"{}",
-			"[]",
-			"空",
-			"NaN",
-			"undefined",
-			" ",
-			"":
-			return "false"
-		}
+func ifNONull(d *dto.DicInputs) (any, error) {
+	switch d.Inputs.String(1) {
+	case "null",
+		"nil",
+		"false",
+		"{}",
+		"[]",
+		"空",
+		"NaN",
+		"undefined",
+		" ",
+		"":
+		return "false", nil
 	}
-	return "true"
+	return "true", nil
 }

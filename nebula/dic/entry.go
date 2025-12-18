@@ -226,10 +226,10 @@ func Entry(r *DicEntry, txt []string, funcV *DicFunc) {
 			}
 			if text == "<函数" {
 				if forNum == 0 {
-					r.Val.P.Set(r.Sys_v.Func.VlaueName, map[string]interface{}{
-						"type":    "函数框",
-						"trigger": funcTrigger,
-						"content": content,
+					// 插入函数框
+					r.Val.P.Set(r.Sys_v.Func.VlaueName, &dto.FuncBox{
+						Trigger: funcTrigger,
+						Content: content,
 					})
 
 					r.Sys_v.Func.Content = []string{}
@@ -848,7 +848,9 @@ func Entry(r *DicEntry, txt []string, funcV *DicFunc) {
 		}
 
 		if textLen > 2 && text[:2] == "#:" {
-			funcV.Runs(utils.AnyToString(count.RunCountText(r.Val, text[2:])))
+			go func() {
+				funcV.Runs(utils.AnyToString(count.RunCountText(r.Val, text[2:])))
+			}()
 			continue
 		}
 

@@ -1,40 +1,31 @@
 package funcs
 
-import "net/url"
+import (
+	"net/url"
 
-func (f *DicFunc) UrlEn() string {
-	if f.Len == 1 {
-		return url.QueryEscape(f.Inputs.String(1))
-	}
-	return ""
+	"github.com/cjxpj/nebula/dto"
+)
+
+func urlEn(d *dto.DicInputs) (any, error) {
+	return url.QueryEscape(d.Inputs.String(1)), nil
 }
 
-func (f *DicFunc) UrlDe() string {
-	if f.Len == 1 {
-		data, err := url.QueryUnescape(f.Inputs.String(1))
-		if err != nil {
-			return ""
-		}
-		return data
+func urlDe(d *dto.DicInputs) (any, error) {
+	data, err := url.QueryUnescape(d.Inputs.String(1))
+	if err != nil {
+		return "", nil
 	}
-	return ""
-
+	return data, nil
 }
 
-func (f *DicFunc) UrlPathEn() string {
-	if f.Len == 1 {
-		return url.PathEscape(f.Inputs.String(1))
-	}
-	return ""
+func urlPathEn(d *dto.DicInputs) (any, error) {
+	return url.PathEscape(d.Inputs.String(1)), nil
 }
 
-func (f *DicFunc) UrlPathDe() string {
-	if f.Len == 1 {
-		data, err := url.PathUnescape(f.Inputs.String(1))
-		if err != nil {
-			return ""
-		}
-		return data
+func urlPathDe(d *dto.DicInputs) (any, error) {
+	data, err := url.PathUnescape(d.Inputs.String(1))
+	if err != nil {
+		return "", nil
 	}
-	return ""
+	return data, nil
 }

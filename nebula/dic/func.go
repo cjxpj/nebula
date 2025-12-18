@@ -122,7 +122,7 @@ func (d *DicFunc) Funcs(dic_i *utils.DicInputs) (any, error) {
 		className := className[1:]
 
 		var isV bool
-		if classType == '%' {
+		if classType == '%' && !strings.HasSuffix(className, "%") {
 			isV = true
 		}
 		if className == "自己" {
@@ -176,7 +176,7 @@ func (d *DicFunc) Funcs(dic_i *utils.DicInputs) (any, error) {
 			funcv := dto.NewVal()
 			give, ok := d.Val.P.Get("_继承_").(string)
 			if ok && give != "" {
-				for _, v := range strings.Split(give, ",") {
+				for v := range strings.SplitSeq(give, ",") {
 					set, ok := d.Val.P.Get(v).(string)
 					if ok {
 						funcv.Set(v, set)
@@ -221,6 +221,32 @@ func (d *DicFunc) Funcs(dic_i *utils.DicInputs) (any, error) {
 		Inputs:    inputs,
 	}
 
+	// 局部变量函数
+	if funcName := dic_i.String(0); strings.HasPrefix(funcName, "%") && strings.HasSuffix(funcName, "%") && len(funcName) > 2 {
+		Tstr := dic_i.StringAfter(1)
+		// 去头尾
+		funcName = funcName[1 : len(funcName)-1]
+		// fmt.Println("函数", funcName)
+		// fmt.Println("触发", Tstr)
+		if f, ok := d.Val.P.Get(funcName).(*dto.FuncBox); ok && f != nil {
+			matches := []string{}
+			if f.Trigger != "" {
+				matches = regexp.MustCompile("^" + f.Trigger + "$").FindStringSubmatch(Tstr)
+			}
+			if len(matches) > 0 || f.Trigger == "" {
+				funcv := dto.NewVal().
+					Reset(d.Val.P.GetAll()).
+					Set("触发", f.Trigger).
+					Set("触发词", Tstr)
+				resDics := NewRunDicEntry().
+					SetGlobal_v(d.Val.G).
+					Set_v(funcv).
+					SetDic_v(d.Dic)
+				return resDics.Run(f.Content), nil
+			}
+		}
+	}
+
 	// 自定义函数
 	if fn, ok := d.Dic.MyFunc[dic_i.String(0)]; ok {
 		return fn(d.Val, inputs)
@@ -255,47 +281,6 @@ func (d *DicFunc) Funcs(dic_i *utils.DicInputs) (any, error) {
 		}
 		return "", nil
 
-	case "正则替换":
-		if inputs.LenOk(2, 3) {
-			matcheA, err := regexp.Compile(inputs.String(2))
-			if err != nil {
-				return "", nil
-			}
-			var tStr string
-			if inputs.LenOk(3) {
-				tStr = inputs.String(3)
-				if tStr == lines[3].(string) && strings.HasPrefix(lines[3].(string), "%") && strings.HasSuffix(lines[3].(string), "%") && strings.Count(lines[3].(string), "%") == 2 {
-					var regex *regexp.Regexp
-					obj := d.Val.P.GetObj(lines[3].(string)[1 : len(lines[3].(string))-1])
-					if t, ok := obj["type"].(string); ok && t == "函数框" {
-						funcTrigger := obj["trigger"].(string)
-						regex = regexp.MustCompile("^" + funcTrigger + "$")
-						res := matcheA.ReplaceAllStringFunc(inputs.String(1), func(s string) string {
-							matches := regex.FindStringSubmatch(s)
-							if len(matches) > 0 || funcTrigger == "" {
-								funcv := dto.NewVal()
-								funcv.Reset(d.Val.P.GetAll())
-								funcv.Set("触发", funcTrigger)
-								funcv.Set("触发词", s)
-								content := obj["content"].([]string)
-								RunDic := NewRunDicEntry().
-									SetGlobal_v(d.Val.G).
-									Set_v(funcv).
-									SetDic_v(d.Dic)
-								return RunDic.Run(content)
-							}
-							return ""
-						})
-						return res, nil
-					}
-				}
-			}
-			replacedText := matcheA.ReplaceAllString(inputs.String(1), tStr)
-			return replacedText, nil
-
-		}
-		return "", nil
-
 	case "终端.解码器":
 		return f.RunCommandDecoder()
 
@@ -307,39 +292,6 @@ func (d *DicFunc) Funcs(dic_i *utils.DicInputs) (any, error) {
 
 	case "终端.输入":
 		return f.RunCommandInputText()
-
-	case "MD5编码":
-		return f.Md5(), nil
-
-	case "B64编码":
-		return f.Base64En(), nil
-
-	case "B64解码":
-		return f.Base64De(), nil
-
-	case "URL编码":
-		return f.UrlEn(), nil
-
-	case "URL解码":
-		return f.UrlDe(), nil
-
-	case "URL链接编码":
-		return f.UrlPathEn(), nil
-
-	case "URL链接解码":
-		return f.UrlPathDe(), nil
-
-	case "判断值":
-		return f.IfNONull(), nil
-
-	case "判断空值":
-		return f.IfNull(), nil
-
-	case "正则匹配":
-		return f.RegexpMatche(), nil
-
-	case "正则":
-		return f.Regexp(), nil
 
 	case "加密词库":
 		return f.EncodeDic(), nil
@@ -373,9 +325,6 @@ func (d *DicFunc) Funcs(dic_i *utils.DicInputs) (any, error) {
 
 	case "随机数":
 		return f.RandNum(), nil
-
-	case "随机文本":
-		return f.RandString(), nil
 
 	case "随机大小字母":
 		return f.RandLetter(0), nil
