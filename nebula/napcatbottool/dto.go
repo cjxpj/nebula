@@ -30,6 +30,23 @@ type MessagePayload struct {
 	TargetID    int64     `json:"target_id"`      // 目标 ID
 	RawInfo     []RawInfo `json:"raw_info"`       // 原始信息
 	File        File      `json:"file"`           // 上传的文件信息
+
+	Nickname        string `json:"nickname"`          // 群成员昵称
+	Card            string `json:"card"`              // 群名片
+	Sex             string `json:"sex"`               // 性别
+	Age             int    `json:"age"`               // 年龄
+	Area            string `json:"area"`              // 地区
+	Level           string `json:"level"`             // 群等级
+	QQLevel         int    `json:"qq_level"`          // QQ 等级
+	JoinTime        int64  `json:"join_time"`         // 入群时间戳
+	LastSentTime    int64  `json:"last_sent_time"`    // 最后发言时间戳
+	TitleExpireTime int64  `json:"title_expire_time"` // 群头衔过期时间
+	Unfriendly      bool   `json:"unfriendly"`        // 是否不良成员
+	CardChangeable  bool   `json:"card_changeable"`   // 是否允许修改群名片
+	IsRobot         bool   `json:"is_robot"`          // 是否为机器人
+	ShutUpTimestamp int64  `json:"shut_up_timestamp"` // 禁言到期时间
+	Role            string `json:"role"`              // 成员角色（member/admin/owner）
+	Title           string `json:"title"`             // 群头衔
 }
 
 // Sender 发送者信息

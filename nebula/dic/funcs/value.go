@@ -28,7 +28,25 @@ func localVar(d *dto.DicInputs) (any, error) {
 	if res := d.V.P.Get(d.Inputs.String(1)); res != nil {
 		return res, nil
 	}
+	if res := d.V.G.Get(d.Inputs.String(1)); res != nil {
+		return res, nil
+	}
 	return "", nil
+}
+
+// 存在变量
+func localVarExist(d *dto.DicInputs) (any, error) {
+	if d.Inputs.LenOk("2") {
+		d.V.P.Set(d.Inputs.String(1), d.Inputs.Get(2))
+		return "false", nil
+	}
+	if res := d.V.P.Get(d.Inputs.String(1)); res != nil {
+		return "true", nil
+	}
+	if res := d.V.G.Get(d.Inputs.String(1)); res != nil {
+		return "true", nil
+	}
+	return "false", nil
 }
 
 // 全局变量

@@ -568,7 +568,20 @@ func (s *ServeRouter) NapCatBOTGroupRun(msgData *napcatbottool.MessagePayload) {
 	for _, elem := range msgData.Message {
 		if elem.Type == "at" {
 			if qq, ok := elem.Data["qq"]; ok {
-				valData.Set(fmt.Sprintf("AT%d", qqNum), utils.AnyToString(qq))
+				qqStr, _ := qq.(string)
+				// string转int64
+				valData.Set(fmt.Sprintf("AT%d", qqNum), qqStr)
+				qq, _ := strconv.ParseInt(qqStr, 10, 64)
+				if userData, err := s.NapCatBot.GetGroupMemberInfo(groupID, qq); err == nil {
+					user := &napcatbottool.APIResponse{}
+					if err := json.Unmarshal(userData, user); err == nil && user.Status == "ok" {
+						nick := user.Data.Card
+						if nick == "" {
+							nick = user.Data.Nickname
+						}
+						valData.Set(fmt.Sprintf("ATName%d", qqNum), nick)
+					}
+				}
 				qqNum++
 			}
 		}

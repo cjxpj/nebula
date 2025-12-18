@@ -340,7 +340,7 @@ func sha256Encrypt(d *dto.DicInputs) (any, error) {
 	return sha256.Sum256([]byte(d.Inputs.String(1))), nil
 }
 
-// // sha256解密
-// func sha256De(d *dto.DicInputs) (any, error) {
-
-// }
+// 新建byte
+func newByte(d *dto.DicInputs) (any, error) {
+	return []byte(d.Inputs.String(1)), nil
+}

@@ -1,6 +1,7 @@
 package funcs
 
 import (
+	"slices"
 	"strconv"
 	"strings"
 
@@ -27,6 +28,17 @@ func split(d *dto.DicInputs) (any, error) {
 		return "[]", nil
 	}
 	return string(resS), nil
+}
+
+// 分割匹配
+func splitMatch(d *dto.DicInputs) (any, error) {
+	parts := strings.Split(d.Inputs.String(2), d.Inputs.String(1))
+	isStr := d.Inputs.String(3)
+	// 匹配是否存在
+	if slices.Contains(parts, isStr) {
+		return "true", nil
+	}
+	return "false", nil
 }
 
 func stringSlice(d *dto.DicInputs) (any, error) {

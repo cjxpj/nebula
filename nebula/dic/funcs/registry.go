@@ -19,6 +19,7 @@ func Setup() {
 		f{"数字转中文", "1", numToString},
 		f{"线程变量", "1|2", threadVar},
 		f{"变量", "1|2", localVar},
+		f{"存在变量", "1", localVarExist},
 		f{"全局变量", "1|2", globalVar},
 		f{"锁变量", "1", localVarLock},
 		f{"变量文本", "1", localVarText},
@@ -75,8 +76,8 @@ func Setup() {
 		f{"AES解密", "3", aesDecrypt},
 		f{"分割", "2|3", split},
 		f{"字符切片", "1", stringSlice},
-		f{"sha256加密", "1", sha256Encrypt},
-
+		f{"sha256", "1", sha256Encrypt},
+		f{"Byte生成", "1", newByte},
 		f{"访问.新建", "1", newRequest},
 		f{"访问.切换GET", "1", changeRequestGet},
 		f{"访问.切换POST", "1|2", changeRequestPost},
@@ -91,6 +92,7 @@ func Setup() {
 		f{"访问.内容", "1", requestContent},
 		f{"访问", "1|2", accessGet},
 		f{"访问POST", "2|3", accessPost},
+		f{"分割匹配", "3", splitMatch},
 	); err != nil {
 		fmt.Println(err)
 	}
