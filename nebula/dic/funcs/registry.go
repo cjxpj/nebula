@@ -106,6 +106,8 @@ func Setup() {
 		f{"URL解码", "1", urlDe},
 		f{"URL链接编码", "1", urlPathEn},
 		f{"URL链接解码", "1", urlPathDe},
+		f{"JSON存", "2..", jsonSet},
+		f{"JSON存字", "2..", jsonSetString},
 	); err != nil {
 		fmt.Println(err)
 	}

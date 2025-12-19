@@ -10,13 +10,13 @@ import (
 // 系统变量
 type LocalDicValue struct {
 	For struct {
-		Success   bool        `json:"success"`
-		Run       interface{} `json:"for"`
-		Num       int         `json:"num"`
-		VlaueName string      `json:"vlaueName"`
-		Content   []string    `json:"content"`
-		IsFor     bool        `json:"IsFor"`
-		Jump      bool        `json:"jump"`
+		Success   bool     `json:"success"`
+		Run       any      `json:"for"`
+		Num       int      `json:"num"`
+		VlaueName string   `json:"vlaueName"`
+		Content   []string `json:"content"`
+		IsFor     bool     `json:"IsFor"`
+		Jump      bool     `json:"jump"`
 	} `json:"循环框"`
 	ForEach LocalDicValueForEach `json:"遍历框"`
 	Func    struct {
@@ -70,7 +70,6 @@ type LocalDicValue struct {
 		Len      int  `json:"Len"`
 	} `json:"新建Json框"`
 	Database *sql.DB `json:"database"`
-	Access   any     `json:"access"`
 	Stop     bool    `json:"stop"`
 }
 

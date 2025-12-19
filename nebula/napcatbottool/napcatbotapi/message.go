@@ -47,6 +47,39 @@ func (c *RouterNapCatBot) SendGroupText(groupId int64, text string) ([]byte, err
 	return postJson(c, url, body)
 }
 
+// 发送私聊消息
+func (c *RouterNapCatBot) SendPrivateText(userId int64, text string) ([]byte, error) {
+	url := "/send_private_msg"
+
+	body := map[string]any{
+		"user_id": userId,
+		"message": parseMixedText(text),
+	}
+	return postJson(c, url, body)
+}
+
+// 发送音乐卡片
+func (c *RouterNapCatBot) SendGroupMusic(groupId int64, title, jumpUrl, imageUrl, musicUrl string) ([]byte, error) {
+	url := "/send_group_msg"
+
+	body := map[string]any{
+		"group_id": groupId,
+		"message": []map[string]any{
+			{
+				"type": "music",
+				"data": map[string]string{
+					"type":  "custom",
+					"title": title,
+					"url":   jumpUrl,
+					"audio": musicUrl,
+					"image": imageUrl,
+				},
+			},
+		},
+	}
+	return postJson(c, url, body)
+}
+
 /// 发群语音
 func (c *RouterNapCatBot) SendGroupRecord(groupId int64, file string) ([]byte, error) {
 	url := "/send_group_msg"
@@ -112,6 +145,15 @@ func (c *RouterNapCatBot) Nudge(groupId, userId int64) ([]byte, error) {
 	body := map[string]any{
 		"group_id": groupId,
 		"user_id":  userId,
+	}
+	return postJson(c, url, body)
+}
+
+// 私聊戳一戳
+func (c *RouterNapCatBot) NudgePrivate(userId int64) ([]byte, error) {
+	url := "/send_poke"
+	body := map[string]any{
+		"user_id": userId,
 	}
 	return postJson(c, url, body)
 }

@@ -4,6 +4,8 @@ import (
 	"errors"
 	"strconv"
 	"strings"
+
+	"github.com/cjxpj/nebula/dto"
 )
 
 func (f *DicFunc) QueryJson() (string, error) {
@@ -72,42 +74,43 @@ func (f *DicFunc) IsJson() string {
 	return "false"
 }
 
-func (f *DicFunc) JsonSet() string {
-	if f.Len < 3 {
-		return f.Inputs.String(1)
-	}
+func jsonSet(d *dto.DicInputs) (any, error) {
 	var obj any
-	if err := json.Unmarshal([]byte(f.Inputs.String(1)), &obj); err != nil {
-		return f.Inputs.String(1)
+	if err := json.Unmarshal([]byte(d.Inputs.String(1)), &obj); err != nil {
+		return nil, errors.New("不是json格式")
 	}
-	keys := make([]string, 0, f.Len-2)
-	for _, key := range f.Inputs.List[3:] {
-		if s, ok := key.(string); ok {
-			keys = append(keys, s)
-		}
-	}
-	obj = JsonSetValue(obj, keys, f.Inputs.String(2), false)
-	b, _ := json.Marshal(obj)
-	return string(b)
-}
 
-func (f *DicFunc) JsonSetString() string {
-	if f.Len < 3 {
-		return f.Inputs.String(1)
+	keys := d.Inputs.StringAfterList(2)
+	// 去掉最后一个元素
+	if keysLen := len(keys); keysLen > 1 {
+		keys = keys[:keysLen-1]
 	}
-	var obj any
-	if err := json.Unmarshal([]byte(f.Inputs.String(1)), &obj); err != nil {
-		return f.Inputs.String(1)
-	}
-	keys := make([]string, 0, f.Len-2)
-	for _, key := range f.Inputs.List[2:] {
-		if s, ok := key.(string); ok {
-			keys = append(keys, s)
-		}
-	}
-	obj = JsonSetValue(obj, keys, f.Inputs.String(2), true)
+
+	// 取最后一个元素作为设置值
+	value := d.Inputs.String(max(d.Inputs.Len(), 3))
+
+	obj = JsonSetValue(obj, keys, value, false)
 	b, _ := json.Marshal(obj)
-	return string(b)
+	return string(b), nil
+}
+func jsonSetString(d *dto.DicInputs) (any, error) {
+	var obj any
+	if err := json.Unmarshal([]byte(d.Inputs.String(1)), &obj); err != nil {
+		return nil, errors.New("不是json格式")
+	}
+
+	keys := d.Inputs.StringAfterList(2)
+	// 去掉最后一个元素
+	if keysLen := len(keys); keysLen > 1 {
+		keys = keys[:keysLen-1]
+	}
+
+	// 取最后一个元素作为设置值
+	value := d.Inputs.String(max(d.Inputs.Len(), 3))
+
+	obj = JsonSetValue(obj, keys, value, true)
+	b, _ := json.Marshal(obj)
+	return string(b), nil
 }
 
 func (f *DicFunc) JsonAdd() string {

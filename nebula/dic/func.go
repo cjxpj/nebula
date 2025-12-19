@@ -145,7 +145,7 @@ func (d *DicFunc) Funcs(dic_i *utils.DicInputs) (any, error) {
 				resV, _ := classData.LocalValue.Get(resVT).(string)
 				return resV, nil
 			}
-			return "未知整合包变量方法", nil
+			return "", nil
 		}
 
 		if dic_i.LenOk(0, 1) {
@@ -355,12 +355,6 @@ func (d *DicFunc) Funcs(dic_i *utils.DicInputs) (any, error) {
 
 	case "JSON判断":
 		return f.IsJson(), nil
-
-	case "JSON存":
-		return f.JsonSet(), nil
-
-	case "JSON存字":
-		return f.JsonSetString(), nil
 
 	case "JSON追加":
 		return f.JsonAdd(), nil

@@ -47,6 +47,10 @@ type MessagePayload struct {
 	ShutUpTimestamp int64  `json:"shut_up_timestamp"` // 禁言到期时间
 	Role            string `json:"role"`              // 成员角色（member/admin/owner）
 	Title           string `json:"title"`             // 群头衔
+
+	OperatorId   int64  `json:"operator_id"`   // 操作者 ID
+	OperatorNick string `json:"operator_nick"` // 操作者昵称
+	Times        int    `json:"times"`         // 操作次数
 }
 
 // Sender 发送者信息

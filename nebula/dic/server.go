@@ -158,6 +158,7 @@ func Start() {
 				BotDic.SetPath(dicPath + "/admin.txt")
 				BotDic.WriteFileByte([]byte(""))
 			}
+
 		}
 
 		if d := infoDic.NewRun("YunHuBot"); d == "是" {

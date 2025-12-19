@@ -143,7 +143,7 @@ func (i *DicInputs) StringDefault(ii int, def string) string {
 	return def
 }
 
-// 获取[]string后面全部文本
+// 获取string后面全部文本
 func (i *DicInputs) StringAfterList(ii int) []string {
 	if ii >= len(i.List) {
 		return nil
@@ -152,8 +152,10 @@ func (i *DicInputs) StringAfterList(ii int) []string {
 	var str []string
 	// 推断全部String
 	for _, v := range i.List[ii:] {
-		if s, ok := v.([]string); ok {
-			str = append(str, s...)
+		if s, ok := v.(string); ok {
+			str = append(str, s)
+		} else {
+			str = append(str, "")
 		}
 	}
 	return str
@@ -184,6 +186,8 @@ func (i *DicInputs) StringAfter(ii int) string {
 	for _, v := range i.List[ii:] {
 		if s, ok := v.(string); ok {
 			str = append(str, s)
+		} else {
+			str = append(str, "")
 		}
 	}
 	return strings.Join(str, " ")
