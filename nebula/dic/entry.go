@@ -3,12 +3,16 @@ package dic
 import (
 	"errors"
 	"fmt"
+	"maps"
 
 	"strconv"
 	"strings"
 
+	"github.com/cjxpj/nebula/bot/napcatbot"
 	dicBuild "github.com/cjxpj/nebula/build"
 	"github.com/cjxpj/nebula/count"
+	dic_api "github.com/cjxpj/nebula/dic/api"
+	dic_dto "github.com/cjxpj/nebula/dic/dto"
 	"github.com/cjxpj/nebula/dic/funcs"
 	"github.com/cjxpj/nebula/dto"
 	"github.com/cjxpj/nebula/utils"
@@ -17,7 +21,7 @@ import (
 )
 
 // 执行
-func (r *DicEntry) Run(txt []string) string {
+func (m *dicImpl) DicRunLine(r *dic_dto.DicEntry, txt []string) string {
 	// 重置文本
 	r.Output.Clear()
 
@@ -42,7 +46,7 @@ func (r *DicEntry) Run(txt []string) string {
 	}
 
 	// 函数包
-	funcV := &DicFunc{
+	funcV := &dic_dto.DicFunc{
 		Val:    r.Val,
 		Sys:    r.Sys_v,
 		Dic:    r.Dic,
@@ -54,7 +58,7 @@ func (r *DicEntry) Run(txt []string) string {
 	return r.Output.Get()
 }
 
-func Entry(r *DicEntry, txt []string, funcV *DicFunc) {
+func Entry(r *dic_dto.DicEntry, txt []string, funcV *dic_dto.DicFunc) {
 	var RunDicindex int16
 	var isif bool
 	var lock bool
@@ -137,9 +141,9 @@ func Entry(r *DicEntry, txt []string, funcV *DicFunc) {
 
 					valName := r.Sys_v.SetNewJson.VlaueName
 					if valName != "" {
-						r.Val.P.Set(valName, r.NewJson(r.Val.P, r.Sys_v.SetNewJson.Json))
+						r.Val.P.Set(valName, NewJson(r, r.Val.P, r.Sys_v.SetNewJson.Json))
 					} else {
-						r.Output.Add(r.NewJson(r.Val.P, r.Sys_v.SetNewJson.Json))
+						r.Output.Add(NewJson(r, r.Val.P, r.Sys_v.SetNewJson.Json))
 					}
 					r.Sys_v.SetNewJson.Success = false
 					continue
@@ -254,7 +258,7 @@ func Entry(r *DicEntry, txt []string, funcV *DicFunc) {
 			if text == "<遍历" {
 				if forNum == 0 {
 					valName := r.Sys_v.ForEach.VlaueName
-					RunDic := NewRunDicEntry().
+					RunDic := dic_dto.NewRunDicEntry().
 						SetV(r.Val).
 						SetDic_v(r.Dic).
 						SetRunForEach()
@@ -277,7 +281,7 @@ func Entry(r *DicEntry, txt []string, funcV *DicFunc) {
 							value := string(valueByte)
 							r.Val.P.Set(v1, key)
 							r.Val.P.Set(v2, value)
-							resRun := RunDic.Run(content)
+							resRun := dic_api.Api.DicRunLine(RunDic, content)
 							r.Output.Add(resRun)
 							if RunDic.Sys_v.ForEach.Jump || RunDic.Sys_v.Stop {
 								r.Sys_v.ForEach.Jump = false
@@ -302,7 +306,7 @@ func Entry(r *DicEntry, txt []string, funcV *DicFunc) {
 									r.Val.P.Set(v2, string(resS))
 								}
 							}
-							resRun := RunDic.Run(content)
+							resRun := dic_api.Api.DicRunLine(RunDic, content)
 							r.Output.Add(resRun)
 
 							if RunDic.Sys_v.Stop {
@@ -347,7 +351,7 @@ func Entry(r *DicEntry, txt []string, funcV *DicFunc) {
 			if text == "<循环" {
 				if forNum == 0 {
 					valName := r.Sys_v.For.VlaueName
-					RunDic := NewRunDicEntry().
+					RunDic := dic_dto.NewRunDicEntry().
 						SetV(r.Val).
 						SetDic_v(r.Dic).
 						SetRunFor()
@@ -359,7 +363,7 @@ func Entry(r *DicEntry, txt []string, funcV *DicFunc) {
 							i++
 							strNum := strconv.Itoa(i)
 							r.Val.P.Set(valName, strNum)
-							resRun := RunDic.Run(content)
+							resRun := dic_api.Api.DicRunLine(RunDic, content)
 							r.Output.Add(resRun)
 							if !r.Sys_v.For.IsFor && RunDic.Sys_v.Stop {
 								RunDic.Close()
@@ -388,7 +392,7 @@ func Entry(r *DicEntry, txt []string, funcV *DicFunc) {
 						for i := 1; i <= runi; i++ {
 							strNum := strconv.Itoa(i)
 							r.Val.P.Set(valName, strNum)
-							resRun := RunDic.Run(content)
+							resRun := dic_api.Api.DicRunLine(RunDic, content)
 							r.Output.Add(resRun)
 							if !r.Sys_v.For.IsFor && RunDic.Sys_v.Stop {
 								RunDic.Close()
@@ -437,7 +441,7 @@ func Entry(r *DicEntry, txt []string, funcV *DicFunc) {
 			}
 			if text == "<如果" {
 				if forNum == 0 {
-					RunDic := NewRunDicEntry().
+					RunDic := dic_dto.NewRunDicEntry().
 						SetV(r.Val).
 						SetDic_v(r.Dic).
 						SetRunIf()
@@ -452,7 +456,7 @@ func Entry(r *DicEntry, txt []string, funcV *DicFunc) {
 					for i := 0; i <= r.Sys_v.IfFunc.IfNum; i++ {
 						var ifval bool = Pd(funcV, r.Sys_v.IfFunc.If[i])
 						if ifval {
-							resRun := RunDic.Run(r.Sys_v.IfFunc.Run[i])
+							resRun := dic_api.Api.DicRunLine(RunDic, r.Sys_v.IfFunc.Run[i])
 							r.Output.Add(resRun)
 
 							if r.Sys_v.For.IsFor && RunDic.Sys_v.For.IsFor && RunDic.Sys_v.For.Jump {
@@ -472,7 +476,7 @@ func Entry(r *DicEntry, txt []string, funcV *DicFunc) {
 							if i != r.Sys_v.IfFunc.IfNum {
 								continue
 							}
-							resRun := RunDic.Run(r.Sys_v.IfFunc.Else)
+							resRun := dic_api.Api.DicRunLine(RunDic, r.Sys_v.IfFunc.Else)
 							r.Output.Add(resRun)
 						}
 
@@ -777,12 +781,12 @@ func Entry(r *DicEntry, txt []string, funcV *DicFunc) {
 				if textLen >= endIdx {
 					key := text[7:startIdx]
 					value := text[endIdx:]
-					runText := funcV.Runs(utils.AnyToString(count.RunCountText(r.Val, value)))
-					var testjs map[string]interface{}
+					runText := Runs(funcV, utils.AnyToString(count.RunCountText(r.Val, value)))
+					var testjs map[string]any
 					if json.Unmarshal([]byte(runText), &testjs) == nil {
 						r.Sys_v.ForEach.Run = []byte(runText)
 					} else {
-						var thisjson []interface{}
+						var thisjson []any
 						if json.Unmarshal([]byte(runText), &thisjson) == nil {
 							r.Sys_v.ForEach.Run = thisjson
 						}
@@ -804,7 +808,7 @@ func Entry(r *DicEntry, txt []string, funcV *DicFunc) {
 				if textLen >= endIdx {
 					key := text[7:startIdx]
 					value := text[endIdx:]
-					runText := funcV.Runs(utils.AnyToString(count.RunCountText(r.Val, value)))
+					runText := Runs(funcV, utils.AnyToString(count.RunCountText(r.Val, value)))
 					// 将字符串解析为整数
 					intValue, err := strconv.Atoi(runText)
 					if err == nil {
@@ -847,10 +851,20 @@ func Entry(r *DicEntry, txt []string, funcV *DicFunc) {
 			}
 		}
 
+		if text == ">>NapCat" {
+			maps.Copy(funcV.Dic.MyFunc, napcatbot.Funcs)
+			continue
+		}
+
 		if textLen > 2 && text[:2] == "#:" {
 			go func() {
-				funcV.Runs(utils.AnyToString(count.RunCountText(r.Val, text[2:])))
+				Runs(funcV, utils.AnyToString(count.RunCountText(r.Val, text[2:])))
 			}()
+			continue
+		}
+
+		if strings.HasPrefix(text, "https://") || strings.HasPrefix(text, "http://") {
+			r.Output.Add(Runs(funcV, text))
 			continue
 		}
 
@@ -861,7 +875,7 @@ func Entry(r *DicEntry, txt []string, funcV *DicFunc) {
 
 			switch vType {
 			case 1, 2, 7, 8:
-				vSetData = funcV.Runs(utils.AnyToString(count.RunCountText(r.Val, vSuffix)))
+				vSetData = Runs(funcV, utils.AnyToString(count.RunCountText(r.Val, vSuffix)))
 			}
 
 			switch vType {
@@ -933,7 +947,7 @@ func Entry(r *DicEntry, txt []string, funcV *DicFunc) {
 				}
 				continue
 			case 3:
-				r.Val.P.Set(vPrefix, funcV.Runs(vSuffix))
+				r.Val.P.Set(vPrefix, Runs(funcV, vSuffix))
 				continue
 			case 4:
 				r.Val.P.Set(vPrefix, utils.AnyIsString(r.Val.Text(vSuffix)))
@@ -942,8 +956,9 @@ func Entry(r *DicEntry, txt []string, funcV *DicFunc) {
 				r.Val.P.Set(vPrefix, vSuffix)
 				continue
 			case 6:
+				// fmt.Println("键：", vPrefix, "值：", vSuffix)
 				if vPrefix == "" {
-					r.Output.Add(funcV.Runs(text))
+					r.Output.Add(Runs(funcV, text))
 					continue
 				}
 
@@ -959,7 +974,7 @@ func Entry(r *DicEntry, txt []string, funcV *DicFunc) {
 					if str, ok := r.Val.P.Get(vPrefix).(string); ok {
 						if j := utils.IsJSONResult(str); j != nil {
 							if j, ok := j.(map[string]any); ok {
-								vSetData := funcV.Runs(utils.AnyToString(count.RunCountText(r.Val, vSuffix)))
+								vSetData := Runs(funcV, utils.AnyToString(count.RunCountText(r.Val, vSuffix)))
 								j := funcs.JsonSetValue(j, setJsonHead, vSetData, false)
 								if j, err := json.Marshal(j); err == nil {
 									r.Val.P.Set(vPrefix, string(j))
@@ -968,7 +983,7 @@ func Entry(r *DicEntry, txt []string, funcV *DicFunc) {
 								r.Val.P.Set(vPrefix, vSetData)
 							}
 							if j, ok := j.([]any); ok {
-								vSetData := funcV.Runs(utils.AnyToString(count.RunCountText(r.Val, vSuffix)))
+								vSetData := Runs(funcV, utils.AnyToString(count.RunCountText(r.Val, vSuffix)))
 								j := funcs.JsonSetValue(j, setJsonHead, vSetData, false)
 								if j, err := json.Marshal(j); err == nil {
 									r.Val.P.Set(vPrefix, string(j))
@@ -982,7 +997,7 @@ func Entry(r *DicEntry, txt []string, funcV *DicFunc) {
 
 				// 判断开头[结尾]
 				if strings.HasPrefix(vSuffix, "[") && strings.HasSuffix(vSuffix, "]") {
-					r.Val.P.Set(vPrefix, count.RunCountText(r.Val, funcV.Runs(vSuffix)))
+					r.Val.P.Set(vPrefix, count.RunCountText(r.Val, Runs(funcV, vSuffix)))
 					continue
 				}
 
@@ -1028,7 +1043,7 @@ func Entry(r *DicEntry, txt []string, funcV *DicFunc) {
 					if strings.HasPrefix(GetIfKey, "@") {
 						keys := strings.Split(GetIfKey, "->")
 						if len(keys) < 2 {
-							runText, stopSetVal := funcV.RunsVal(utils.AnyToString(count.RunCountText(r.Val, GetIfKey)), vPrefix)
+							runText, stopSetVal := RunsVal(funcV, utils.AnyToString(count.RunCountText(r.Val, GetIfKey)), vPrefix)
 							if stopSetVal {
 								break
 							}
@@ -1044,7 +1059,7 @@ func Entry(r *DicEntry, txt []string, funcV *DicFunc) {
 							// 第一次加载解析数据
 							if RunI == 0 {
 								// 读取数据去除@
-								runTexts := funcV.RunsAny(key[1:])
+								runTexts := RunsAny(funcV, key[1:])
 								// fmt.Println(runTexts)
 								// 推断数据map
 								if rJ, ok := runTexts.(map[string]string); ok {
@@ -1121,7 +1136,7 @@ func Entry(r *DicEntry, txt []string, funcV *DicFunc) {
 							continue
 						}
 					} else {
-						runText, stopSetVal := funcV.RunsVal(utils.AnyToString(count.RunCountText(r.Val, GetIfKey)), vPrefix)
+						runText, stopSetVal := RunsVal(funcV, utils.AnyToString(count.RunCountText(r.Val, GetIfKey)), vPrefix)
 						if stopSetVal {
 							break
 						}
@@ -1138,7 +1153,11 @@ func Entry(r *DicEntry, txt []string, funcV *DicFunc) {
 			}
 			continue
 		}
-		r.Output.Add(funcV.Runs(text))
+		// 判断尾部为\r，替换尾部为换行
+		if strings.HasSuffix(text, "\\r") {
+			text = text[:len(text)-2] + "\n"
+		}
+		r.Output.Add(Runs(funcV, text))
 	}
 }
 

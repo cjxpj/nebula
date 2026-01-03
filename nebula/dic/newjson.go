@@ -5,11 +5,12 @@ import (
 	"strconv"
 	"strings"
 
+	dic_dto "github.com/cjxpj/nebula/dic/dto"
 	"github.com/cjxpj/nebula/dto"
 )
 
 // NewJson 方法将 JSON 字符串转换为 map，遍历并替换包含 % 的字符串
-func (r *DicEntry) NewJson(v *dto.Val, jsonStr string) string {
+func NewJson(r *dic_dto.DicEntry, v *dto.Val, jsonStr string) string {
 	// 解析 JSON 字符串为 map
 	var data interface{}
 	if err := json.Unmarshal([]byte(jsonStr), &data); err != nil {

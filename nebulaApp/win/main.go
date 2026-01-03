@@ -16,6 +16,8 @@ import (
 
 	"github.com/cjxpj/nebula/appfiles"
 	"github.com/cjxpj/nebula/dic"
+	dic_api "github.com/cjxpj/nebula/dic/api"
+	dic_dto "github.com/cjxpj/nebula/dic/dto"
 	"github.com/cjxpj/nebula/dic/funcs"
 	"github.com/cjxpj/nebula/dto"
 	"github.com/cjxpj/nebula/utils"
@@ -70,12 +72,6 @@ func cancelAutoStart(appName string) error {
 	defer k.Close()
 	return k.DeleteValue(appName)
 }
-
-// func main() {
-// 	install("ffmpeg")
-// 	fmt.Println("准备安装附带silk_v3工具")
-// 	install("silk_v3")
-// }
 
 func main() {
 	// fmt.Println("Nebula 启动中...")
@@ -189,27 +185,6 @@ func main() {
 		return "true", nil
 	})
 
-	// debug.SetGCPercent(50) // 增长 50% 就触发 GC，更频繁
-
-	// go func() {
-	// 	mux := http.NewServeMux()
-
-	// 	// 注册标准 pprof 路由
-	// 	mux.HandleFunc("/debug/pprof/", httpPprof.Index)
-	// 	mux.HandleFunc("/debug/pprof/cmdline", httpPprof.Cmdline)
-	// 	mux.HandleFunc("/debug/pprof/profile", httpPprof.Profile)
-	// 	mux.HandleFunc("/debug/pprof/symbol", httpPprof.Symbol)
-	// 	mux.HandleFunc("/debug/pprof/trace", httpPprof.Trace)
-
-	// 	// 添加你自己的 heap_text 路由
-	// 	mux.HandleFunc("/debug/pprof/heap_text", func(w http.ResponseWriter, r *http.Request) {
-	// 		runtimePprof.Lookup("heap").WriteTo(w, 1) // 1 = human-readable text format
-	// 	})
-
-	// 	// 启动服务
-	// 	http.ListenAndServe(":6060", mux)
-	// }()
-
 	args := os.Args
 	argsLen := len(args)
 
@@ -219,7 +194,6 @@ func main() {
 		<-ctx.Done()
 		fmt.Println("主程序退出")
 		return
-
 	}
 
 	switch args[1] {
@@ -345,7 +319,7 @@ func main() {
 			}
 		}
 
-		results := dic.NewDic(cmdInput, result.String()).Run(triggerWord)
+		results := dic_api.Api.DicRun(dic_dto.NewDic(cmdInput, result.String()), triggerWord)
 		fmt.Print(results)
 		return
 	default:

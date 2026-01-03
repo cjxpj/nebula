@@ -2,9 +2,10 @@ package dic
 
 import (
 	"github.com/cjxpj/nebula/dic/funcs"
+	"github.com/cjxpj/nebula/dto"
 )
 
-type f = funcs.MyFuncInfo
+type f = dto.RegisterDicFunc
 
 func init() {
 	go funcs.Setup()

@@ -258,8 +258,8 @@ func (v *DicVal) Text(content any) any {
 	}
 	result := replaceProcessedContent(str, "%", "%", func(val string) any {
 		// url编码
-		if strings.HasPrefix(val, "URL@") {
-			if value, ok := v.getVal(val[4:]); ok {
+		if strings.HasPrefix(val, "URL编码@") {
+			if value, ok := v.getVal(val[10:]); ok {
 				if strValue, isString := value.(string); isString {
 					return url.QueryEscape(strValue)
 				}
@@ -267,14 +267,41 @@ func (v *DicVal) Text(content any) any {
 			return ""
 		}
 		// B64编码
-		if strings.HasPrefix(val, "B64@") {
-			if value, ok := v.getVal(val[4:]); ok {
+		if strings.HasPrefix(val, "B64编码@") {
+			if value, ok := v.getVal(val[10:]); ok {
 				if strValue, isString := value.(string); isString {
 					return base64.StdEncoding.EncodeToString([]byte(strValue))
 				}
 			}
 			return ""
 		}
+		// url解码
+		if strings.HasPrefix(val, "URL@") {
+			if value, ok := v.getVal(val[4:]); ok {
+				if strValue, isString := value.(string); isString {
+					decoded, err := url.QueryUnescape(strValue)
+					if err != nil {
+						return strValue
+					}
+					return decoded
+				}
+			}
+			return ""
+		}
+		// B64解码
+		if strings.HasPrefix(val, "B64@") {
+			if value, ok := v.getVal(val[4:]); ok {
+				if strValue, isString := value.(string); isString {
+					decoded, err := base64.StdEncoding.DecodeString(strValue)
+					if err != nil {
+						return ""
+					}
+					return string(decoded)
+				}
+			}
+			return ""
+		}
+
 		// 类型
 		if strings.HasPrefix(val, "TYPE@") {
 			if value, ok := v.getVal(val[5:]); ok {

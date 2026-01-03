@@ -38,6 +38,17 @@ func AnyIsString(text any) string {
 	return ""
 }
 
+// 直接转换字节
+func AnyIsStringAndBytes(text any) []byte {
+	if res, ok := text.(string); ok {
+		return []byte(res)
+	}
+	if res, ok := text.([]byte); ok {
+		return res
+	}
+	return []byte{}
+}
+
 // 统一将 any 类型转换为字符串（优先 JSON 编码）
 func AnyToString(data any) string {
 	if str, ok := data.(string); ok {

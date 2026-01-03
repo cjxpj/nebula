@@ -6,11 +6,11 @@ import (
 	"strconv"
 
 	"github.com/cjxpj/nebula/count"
+	dic_dto "github.com/cjxpj/nebula/dic/dto"
 	"github.com/cjxpj/nebula/utils"
 )
 
-func Pd(dic *DicFunc, str string) bool {
-
+func Pd(dic *dic_dto.DicFunc, str string) bool {
 	it := &IfText{}
 	runstr := it.Run(str)
 	pdstr := it.Evaluate(dic, runstr)
@@ -111,7 +111,7 @@ func (it *IfText) Run(input string) []map[string]string {
 	return parsed
 }
 
-func (it *IfText) Evaluate(dic *DicFunc, parsed []map[string]string) string {
+func (it *IfText) Evaluate(dic *dic_dto.DicFunc, parsed []map[string]string) string {
 	var result string
 	yes := "1"
 	no := "0"
@@ -120,7 +120,7 @@ func (it *IfText) Evaluate(dic *DicFunc, parsed []map[string]string) string {
 			result += p["text"]
 			continue
 		}
-		a := dic.Runs(utils.AnyToString(count.RunCountText(dic.Val, p["a"])))
+		a := Runs(dic, utils.AnyToString(count.RunCountText(dic.Val, p["a"])))
 		if len(p) == 1 {
 			switch a {
 			case "true", "1":
@@ -135,7 +135,7 @@ func (it *IfText) Evaluate(dic *DicFunc, parsed []map[string]string) string {
 			continue
 		}
 
-		c := dic.Runs(utils.AnyToString(count.RunCountText(dic.Val, p["c"])))
+		c := Runs(dic, utils.AnyToString(count.RunCountText(dic.Val, p["c"])))
 
 		switch p["b"] {
 		case " in ":

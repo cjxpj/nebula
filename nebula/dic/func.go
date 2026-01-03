@@ -9,6 +9,8 @@ import (
 	"strings"
 
 	"github.com/cjxpj/nebula/count"
+	dic_api "github.com/cjxpj/nebula/dic/api"
+	dic_dto "github.com/cjxpj/nebula/dic/dto"
 	"github.com/cjxpj/nebula/dic/funcs"
 	"github.com/cjxpj/nebula/dto"
 	"github.com/cjxpj/nebula/run"
@@ -18,11 +20,11 @@ import (
 )
 
 // 函数跟变量
-func (d *DicFunc) Runs(text string) string {
+func Runs(d *dic_dto.DicFunc, text string) string {
 	output := run.BuildFuncStr(text, func(valStr []string) (string, bool) {
 		input := utils.NewDicInputs()
 		input.SetString(valStr)
-		resAny, err := d.Funcs(input)
+		resAny, err := Funcs(d, input)
 		if err != nil {
 			log.Printf("[%s]%s：%v", d.Val.Get("_词库路径_"), valStr[0], err)
 		}
@@ -37,13 +39,13 @@ func (d *DicFunc) Runs(text string) string {
 }
 
 // 执行，函数跟变量
-func (d *DicFunc) RunsAny(text string) any {
+func RunsAny(d *dic_dto.DicFunc, text string) any {
 	// 拦截外部赋予值
 	var resA any
 	output := run.BuildFuncStr(text, func(valStr []string) (string, bool) {
 		input := utils.NewDicInputs()
 		input.SetString(valStr)
-		resAny, err := d.Funcs(input)
+		resAny, err := Funcs(d, input)
 		if err != nil {
 			fmt.Println(err)
 		}
@@ -70,13 +72,13 @@ func (d *DicFunc) RunsAny(text string) any {
 }
 
 // 赋予值执行，函数跟变量
-func (d *DicFunc) RunsVal(text string, setVal string) (string, bool) {
+func RunsVal(d *dic_dto.DicFunc, text string, setVal string) (string, bool) {
 	// 拦截外部赋予值
 	strNo := false
 	output := run.BuildFuncStr(text, func(valStr []string) (string, bool) {
 		input := utils.NewDicInputs()
 		input.SetString(valStr)
-		resAny, err := d.Funcs(input)
+		resAny, err := Funcs(d, input)
 		if err != nil {
 			fmt.Println(err)
 		}
@@ -93,11 +95,11 @@ func (d *DicFunc) RunsVal(text string, setVal string) (string, bool) {
 }
 
 // 纯函数
-func (d *DicFunc) Run(text string) string {
+func Run(d *dic_dto.DicFunc, text string) string {
 	output := run.BuildFuncStr(text, func(valStr []string) (string, bool) {
 		input := utils.NewDicInputs()
 		input.SetString(valStr)
-		resAny, err := d.Funcs(input)
+		resAny, err := Funcs(d, input)
 		if err != nil {
 			log.Printf("[%s]%s：%v", d.Val.Get("_词库路径_"), valStr[0], err)
 		}
@@ -111,7 +113,7 @@ func (d *DicFunc) Run(text string) string {
 	return output
 }
 
-func (d *DicFunc) Funcs(dic_i *utils.DicInputs) (any, error) {
+func Funcs(d *dic_dto.DicFunc, dic_i *utils.DicInputs) (any, error) {
 	if dic_i.LenOk(-1) {
 		return "$$", nil
 	}
@@ -160,13 +162,13 @@ func (d *DicFunc) Funcs(dic_i *utils.DicInputs) (any, error) {
 			funcv.Set("触发词", TStr)
 			funcv.Set("Class", className)
 			dto.ValRunTrigger(TStr, Tstr, d.Val.NewDicVal(funcv), d.Val)
-			RunDic := NewRunDicEntry().
+			RunDic := dic_dto.NewRunDicEntry().
 				CloseTrigger().
 				SetGlobal_v(d.Val.G).
 				Set_v(funcv).
 				SetDic_v(d.Dic.Clone())
 			RunDic.ClearDicFuncs()
-			resRunDic := RunDic.Run(str)
+			resRunDic := dic_api.Api.DicRunLine(RunDic, str)
 			return resRunDic, nil
 		}
 	} else {
@@ -187,14 +189,14 @@ func (d *DicFunc) Funcs(dic_i *utils.DicInputs) (any, error) {
 			funcv.Set("触发", Tstr)
 			funcv.Set("触发词", text)
 			dto.ValRunTrigger(text, Tstr, d.Val.NewDicVal(funcv), d.Val)
-			RunDic := NewRunDicEntry().
+			RunDic := dic_dto.NewRunDicEntry().
 				CloseTrigger().
 				SetGlobal_v(d.Val.G).
 				Set_v(funcv).
 				SetDic_v(d.Dic.Clone())
 			RunDic.ClearDicFuncs()
 
-			resRunDic := RunDic.Run(str)
+			resRunDic := dic_api.Api.DicRunLine(RunDic, str)
 			if tparts != "" {
 				subParts := strings.SplitSeq(tparts, ",")
 				for setv := range subParts {
@@ -238,18 +240,20 @@ func (d *DicFunc) Funcs(dic_i *utils.DicInputs) (any, error) {
 					Reset(d.Val.P.GetAll()).
 					Set("触发", f.Trigger).
 					Set("触发词", Tstr)
-				resDics := NewRunDicEntry().
+				resDics := dic_dto.NewRunDicEntry().
 					SetGlobal_v(d.Val.G).
 					Set_v(funcv).
 					SetDic_v(d.Dic)
-				return resDics.Run(f.Content), nil
+				return dic_api.Api.DicRunLine(resDics, f.Content), nil
 			}
 		}
 	}
 
 	// 自定义函数
 	if fn, ok := d.Dic.MyFunc[dic_i.String(0)]; ok {
-		return fn(d.Val, inputs)
+		if inputs.LenOk(fn.L) {
+			return fn.Fn(dto.NewDicInputs(d.Dic, d.Val, inputs))
+		}
 	}
 
 	// 系统函数

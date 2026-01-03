@@ -19,40 +19,23 @@ type DicFunc struct {
 	Inputs *utils.DicInputs
 }
 
-type DicFuncs struct {
-	// 长度
-	L string
-	// 函数
-	Fn func(d *dto.DicInputs) (any, error)
-}
-
 // =============注册函数================
-
-// 自义定函数信息
-type MyFuncInfo struct {
-	Name string
-	L    string
-	Fn   func(*dto.DicInputs) (any, error)
-}
-
-// 自定义函数别名
-type f = MyFuncInfo
 
 // 全部函数
 var FuncList sync.Map
 
 // 获取函数
-func GetFunc(name string) (DicFuncs, bool) {
+func GetFunc(name string) (dto.DicFunc, bool) {
 	v, ok := FuncList.Load(name)
 	if !ok {
-		return DicFuncs{}, false
+		return dto.DicFunc{}, false
 	}
-	return v.(DicFuncs), true
+	return v.(dto.DicFunc), true
 }
 
 // 注册函数
 func Register(name, l string, fn func(d *dto.DicInputs) (any, error)) error {
-	_, loaded := FuncList.LoadOrStore(name, DicFuncs{
+	_, loaded := FuncList.LoadOrStore(name, dto.DicFunc{
 		L:  l,
 		Fn: fn,
 	})
@@ -63,7 +46,7 @@ func Register(name, l string, fn func(d *dto.DicInputs) (any, error)) error {
 }
 
 // 批量注册函数
-func Registers(list ...MyFuncInfo) error {
+func Registers(list ...dto.RegisterDicFunc) error {
 	for _, v := range list {
 		if err := Register(v.Name, v.L, v.Fn); err != nil {
 			return err

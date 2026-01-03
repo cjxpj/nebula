@@ -11,6 +11,8 @@ import (
 	"strings"
 	"time"
 
+	dic_api "github.com/cjxpj/nebula/dic/api"
+	dic_dto "github.com/cjxpj/nebula/dic/dto"
 	"github.com/cjxpj/nebula/dic/funcs"
 	"github.com/cjxpj/nebula/dto"
 	"github.com/cjxpj/nebula/run"
@@ -32,23 +34,22 @@ func runDic(d *dto.DicInputs) (any, error) {
 	// 执行模式
 	dicType := d.Inputs.StringDefault(3, "独立")
 
-	calldicrun := NewDic(dicPath, data).
+	calldicrun := dic_dto.NewDic(dicPath, data).
 		SetGlobal_v(d.V.G)
 	calldicrun.MyFunc = d.Dic.MyFunc
-	calldicrun.SetFunc("调用", func(val *dto.DicVal, inputs *utils.DicInputs) (any, error) {
-		if !inputs.LenOk("2..") {
-			return "", errors.New("调用参数错误")
-		}
-		go func() {
-			sleepTime := inputs.Int(1)
-			time.Sleep(time.Duration(sleepTime) * time.Millisecond)
-			rMsg := calldicrun.RunPrivate(inputs.StringAfter(2))
-			if rMsg != "" {
-				fmt.Println(rMsg)
-			}
-		}()
-		return "", nil
-	})
+	calldicrun.SetFunc("调用", dto.DicFunc{
+		L: "2..",
+		Fn: func(d *dto.DicInputs) (any, error) {
+			go func() {
+				sleepTime := d.Inputs.Int(1)
+				time.Sleep(time.Duration(sleepTime) * time.Millisecond)
+				rMsg := dic_api.Api.DicRunPrivate(calldicrun, d.Inputs.StringAfter(2))
+				if rMsg != "" {
+					fmt.Println(rMsg)
+				}
+			}()
+			return "", nil
+		}})
 	calldicrun.ClassText = d.Dic.LocalClass
 	calldicrun.Val.P.Set("_词库路径_", dicPath)
 
@@ -67,7 +68,7 @@ func runDic(d *dto.DicInputs) (any, error) {
 		calldicrun.FuncText = d.Dic.LocalFunc
 	}
 
-	DicRes := calldicrun.Run(chufa)
+	DicRes := dic_api.Api.DicRun(calldicrun, chufa)
 	return DicRes, nil
 }
 
@@ -85,23 +86,23 @@ func runDicFile(d *dto.DicInputs) (any, error) {
 	// 执行模式
 	dicType := d.Inputs.StringDefault(3, "独立")
 
-	calldicrun := NewDic(dicPath, data).
+	calldicrun := dic_dto.NewDic(dicPath, data).
 		SetGlobal_v(d.V.G)
 	calldicrun.MyFunc = d.Dic.MyFunc
-	calldicrun.SetFunc("调用", func(val *dto.DicVal, inputs *utils.DicInputs) (any, error) {
-		if !inputs.LenOk("2..") {
-			return "", errors.New("调用参数错误")
-		}
-		go func() {
-			sleepTime := inputs.Int(1)
-			time.Sleep(time.Duration(sleepTime) * time.Millisecond)
-			rMsg := calldicrun.RunPrivate(inputs.StringAfter(2))
-			if rMsg != "" {
-				fmt.Println(rMsg)
-			}
-		}()
-		return "", nil
-	})
+
+	calldicrun.SetFunc("调用", dto.DicFunc{
+		L: "2..",
+		Fn: func(d *dto.DicInputs) (any, error) {
+			go func() {
+				sleepTime := d.Inputs.Int(1)
+				time.Sleep(time.Duration(sleepTime) * time.Millisecond)
+				rMsg := dic_api.Api.DicRunPrivate(calldicrun, d.Inputs.StringAfter(2))
+				if rMsg != "" {
+					fmt.Println(rMsg)
+				}
+			}()
+			return "", nil
+		}})
 	calldicrun.ClassText = d.Dic.LocalClass
 	calldicrun.Val.P.Set("_词库路径_", dicPath)
 
@@ -120,7 +121,7 @@ func runDicFile(d *dto.DicInputs) (any, error) {
 		calldicrun.FuncText = d.Dic.LocalFunc
 	}
 
-	DicRes := calldicrun.Run(chufa)
+	DicRes := dic_api.Api.DicRun(calldicrun, chufa)
 	return DicRes, nil
 }
 
@@ -143,11 +144,11 @@ func callDic(d *dto.DicInputs) (any, error) {
 			funcV.Reset(d.V.P.GetAll())
 			funcV.Set("触发词", trigger)
 			funcV.Set("触发", GetDicTrigger)
-			RunDics := NewRunDicEntry().
+			RunDics := dic_dto.NewRunDicEntry().
 				SetGlobal_v(d.V.G).
 				Set_v(funcV).
 				SetDic_v(d.Dic)
-			RunDic := RunDics.Run(GetDic)
+			RunDic := dic_api.Api.DicRunLine(RunDics, GetDic)
 			return RunDic, nil
 		}
 	}
@@ -156,11 +157,11 @@ func callDic(d *dto.DicInputs) (any, error) {
 	funcV.Reset(d.V.P.GetAll())
 	funcV.Set("触发词", trigger)
 	funcV.Set("触发", GetDicTrigger)
-	RunDics := NewRunDicEntry().
+	RunDics := dic_dto.NewRunDicEntry().
 		SetGlobal_v(d.V.G).
 		Set_v(funcV).
 		SetDic_v(d.Dic)
-	RunDic := RunDics.Run(GetDic)
+	RunDic := dic_api.Api.DicRunLine(RunDics, GetDic)
 	return RunDic, nil
 }
 
@@ -171,10 +172,10 @@ func runWebDic(d *dto.DicInputs) (any, error) {
 		return "", nil
 	}
 	dicPath := "执行"
-	webdic := NewWebDic(dicPath, data).
+	webdic := dic_dto.NewWebDic(dicPath, data).
 		SetGlobal_v(d.V.G)
 	webdic.MyFunc = d.Dic.MyFunc
-	webdicRes := webdic.Run()
+	webdicRes := dic_api.Api.WebDicRun(webdic)
 	return webdicRes, nil
 }
 
@@ -185,10 +186,10 @@ func runWebDicFile(d *dto.DicInputs) (any, error) {
 	if err != nil {
 		return "", nil
 	}
-	webdic := NewWebDic(dicPath, data).
+	webdic := dic_dto.NewWebDic(dicPath, data).
 		SetGlobal_v(d.V.G)
 	webdic.MyFunc = d.Dic.MyFunc
-	webdicRes := webdic.Run()
+	webdicRes := dic_api.Api.WebDicRun(webdic)
 	return webdicRes, nil
 }
 
@@ -225,21 +226,22 @@ func cmdListenRun(d *dto.DicInputs) (any, error) {
 
 			// 重新读取
 			cmdfile, _ := cmdfileTool.ReadFromFile()
-			dd := NewDic(dicpath, cmdfile)
-			dd.SetFunc("断开连接", func(val *dto.DicVal, inputs *utils.DicInputs) (any, error) {
-				cmd.Cmd.Process.Kill()
-				return "", nil
-			})
-			dd.SetFunc("输入文本", func(val *dto.DicVal, inputs *utils.DicInputs) (any, error) {
-				if !inputs.LenOk(1) {
-					return "参数错误", nil
-				}
-				text := inputs.String(1)
-				_, err := cmd.Stdin.Write([]byte(text))
-				return "", err
-			})
+			dd := dic_dto.NewDic(dicpath, cmdfile)
+			dd.SetFunc("断开连接", dto.DicFunc{
+				L: "0",
+				Fn: func(d *dto.DicInputs) (any, error) {
+					cmd.Cmd.Process.Kill()
+					return "", nil
+				}})
+			dd.SetFunc("输入文本", dto.DicFunc{
+				L: "1",
+				Fn: func(d *dto.DicInputs) (any, error) {
+					text := d.Inputs.String(1)
+					_, err := cmd.Stdin.Write([]byte(text))
+					return "", err
+				}})
 
-			if res := dd.Run(line); res != "" {
+			if res := dic_api.Api.DicRun(dd, line); res != "" {
 				fmt.Println(res)
 			}
 		}
@@ -280,12 +282,14 @@ func wsConnect(d *dto.DicInputs) (any, error) {
 
 	// 运行词库
 	if wsFileData, err := utils.NewFileQueue(dicpath).ReadFromFile(); err == nil {
-		dic := NewDic(dicpath, wsFileData).
-			SetFunc("断开连接", func(val *dto.DicVal, inputs *utils.DicInputs) (any, error) {
-				conn.Close()
-				return "", nil
-			})
-		resData := dic.RunPrivate("连接成功")
+		dic := dic_dto.NewDic(dicpath, wsFileData).
+			SetFunc("断开连接", dto.DicFunc{
+				L: "0",
+				Fn: func(d *dto.DicInputs) (any, error) {
+					conn.Close()
+					return "", nil
+				}})
+		resData := dic_api.Api.DicRunPrivate(dic, "连接成功")
 		if resData != "" {
 			if err := conn.WriteMessage(websocket.TextMessage, []byte(resData)); err != nil {
 				fmt.Println("发送消息时出错:", err)
@@ -331,17 +335,19 @@ func wsConnect(d *dto.DicInputs) (any, error) {
 				conn.Close() // 关闭连接
 				break
 			}
-			d := NewDic(dicpath, wsfileData)
-			d.SetFunc("断开连接", func(val *dto.DicVal, inputs *utils.DicInputs) (any, error) {
-				conn.Close()
-				return "", nil
-			})
+			d := dic_dto.NewDic(dicpath, wsfileData)
+			d.SetFunc("断开连接", dto.DicFunc{
+				L: "0",
+				Fn: func(d *dto.DicInputs) (any, error) {
+					conn.Close()
+					return "", nil
+				}})
 			d.Val.P.Set("类型", typeName)
 			rStr := ""
 			if wsClose {
-				rStr = d.RunPrivate(Tstr)
+				rStr = dic_api.Api.DicRunPrivate(d, Tstr)
 			} else {
-				rStr = d.Run(Tstr)
+				rStr = dic_api.Api.DicRun(d, Tstr)
 			}
 			// 拦截并处理错误
 			if readMsgErr != nil {

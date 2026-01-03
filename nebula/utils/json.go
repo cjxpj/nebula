@@ -28,3 +28,8 @@ func IsJSONResult(s string) any {
 	}
 	return nil
 }
+
+// 编码
+func Marshal(v any) ([]byte, error) {
+	return json.Marshal(v)
+}
