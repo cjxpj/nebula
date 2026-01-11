@@ -11,8 +11,6 @@ type RouterFeishubot struct {
 	API *lark.Client
 	// 词库路径
 	FilePath string
-	// 消息次数
-	Count int
 }
 
 type SlackURLVerification struct {

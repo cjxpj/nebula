@@ -2,3 +2,6 @@
 dist
 debug
 *.exe
+/nebulaApp/win/node_modules/
+/nebulaApp/win/package.json
+/nebulaApp/win/package-lock.json

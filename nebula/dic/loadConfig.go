@@ -26,16 +26,33 @@ func Start() {
 	file := utils.NewFile()
 	file.SetPath("README.md").WriteFileByte(appfiles.GetFile("dic.md"))
 
-	infoDic := loadConfig()
+	loadConfig()
 
-	if res := dic_server.Start(dto.ServerConfig.Http.Addr); res != "" {
-		if res := dic_api.Api.DicRun(infoDic, res); res != "" {
-			fmt.Println(res)
+	file.SetPath("private/system/start.n")
+	if !file.FileExists() {
+		file.WriteFileByte(appfiles.GetFile("dic/system/start.n"))
+	}
+
+	FileData, err := file.ReadFromFile()
+	if err != nil {
+		utils.ErrorStop("启动词库不存在")
+	}
+
+	GV := dto.NewVal()
+	GV.Set("版本", appfiles.Version)
+	infoDic := dic_dto.NewDic("private/system/start.n", FileData)
+	infoDic.SetGlobal_v(GV)
+
+	res := dic_server.Start(dto.ServerConfig.Router.Http.Addr)
+	// 遍历res
+	for _, t := range res {
+		if dicRes := dic_api.Api.DicRun(infoDic, t); dicRes != "" {
+			fmt.Println(dicRes)
 		}
 	}
 }
 
-func loadConfig() *dic_dto.Dic {
+func loadConfig() {
 
 	file := utils.NewFile()
 
@@ -44,30 +61,55 @@ func loadConfig() *dic_dto.Dic {
 		file.WriteFileByte(appfiles.GetFile("font.ttf"))
 	}
 
-	file.SetPath("private/system/config.n")
+	file.SetPath(dto.DIC_CONFIG_PATH)
 	if !file.FileExists() {
-		file.WriteFileByte(appfiles.GetFile("dic/config.n"))
+		file.WriteFileByte(appfiles.GetFile("dic/system/config.ini"))
 	}
 
-	FileData, err := file.ReadFromFile()
+	httpData, err := file.LoadIni()
 	if err != nil {
-		utils.ErrorStop("启动配置不存在")
+		utils.ErrorStop("系统配置不存在")
 	}
 
-	GV := dto.NewVal()
-	GV.Set("版本", appfiles.Version)
-	infoDic := dic_dto.NewDic("private/system/config.n", FileData)
-	infoDic.SetGlobal_v(GV)
+	HTTP_Config := httpData.Section("HTTP")
+	infoServerPath := HTTP_Config.Key("server").String()
+	corsOk, _ := HTTP_Config.Key("跨域").Bool()
+	dto.ServerConfig.Router = &dto.ServerHTTP{
+		Cors: corsOk,
+		Http: &http.Server{
+			Addr:    infoServerPath,
+			Handler: http.HandlerFunc(webRun),
+		},
+	}
 
-	// fmt.Println("Nebula触发")
-	if res := dic_api.Api.DicRun(infoDic, "启动"); res != "" {
-		fmt.Println(res)
+	opUi := httpData.Section("管理面板")
+	if ok, _ := opUi.Key("启用").Bool(); ok {
+		path := opUi.Key("访问路径").String()
+		if path == "nebula" {
+			fmt.Println("管理面板的密码忘记可以去配置文件看或者自己改，请不要泄漏导致服务器被攻击！")
+			path = fmt.Sprintf("%s/%s", path, utils.RandomString("大小字母", 12))
+			opUi.Key("访问路径").SetValue(path)
+			file.SaveIni(httpData)
+		}
+		dto.ServerConfig.OPUI = &dto.OPUI{
+			Addr: "/" + path,
+		}
+	}
+
+	file.SetPath(dto.BOT_CONFIG_PATH)
+	if !file.FileExists() {
+		file.WriteFileByte(appfiles.GetFile("dic/system/bot_config.ini"))
+	}
+
+	botData, err := file.LoadIni()
+	if err != nil {
+		utils.ErrorStop("对接配置不存在")
 	}
 
 	// 路由词库
 	file.SetPath("private/system/router.n")
 	if !file.FileExists() {
-		file.WriteFileByte(appfiles.GetFile("dic/router.n"))
+		file.WriteFileByte(appfiles.GetFile("dic/system/router.n"))
 
 		// WS词库
 		file.SetPath("private/websocket")
@@ -106,11 +148,24 @@ func loadConfig() *dic_dto.Dic {
 
 	}
 
-	if d := dic_api.Api.DicRun(infoDic, "WebSocket"); d == "是" {
-		wsPath := "/" + infoDic.Val.P.GetStr("访问路径")
+	Ngrok_Config := httpData.Section("Ngrok")
+	if ok, _ := Ngrok_Config.Key("启用").Bool(); ok {
+		ngrokUrl := Ngrok_Config.Key("访问链接").String()
+		authToken := Ngrok_Config.Key("密钥").String()
+		dto.ServerConfig.Ngrok = &dto.NgrokConfig{
+			Addr:  ngrokUrl,
+			Token: authToken,
+		}
+	}
+
+	WebSocket_Config := httpData.Section("WebSocket")
+	if ok, _ := WebSocket_Config.Key("启用").Bool(); ok {
+		corsOk, _ := WebSocket_Config.Key("跨域").Bool()
+		wsPath := "/" + WebSocket_Config.Key("访问路径").String()
 		wsConn := &websocket.Upgrader{
 			CheckOrigin: func(r *http.Request) bool {
-				return true // 允许所有跨域连接
+				// 跨域连接
+				return corsOk
 			},
 		}
 		dto.ServerConfig.Ws = &dto.ServerRouterWebSocket{
@@ -120,15 +175,16 @@ func loadConfig() *dic_dto.Dic {
 		}
 	}
 
-	if d := dic_api.Api.DicRun(infoDic, "QQBot"); d == "是" {
-		appId := infoDic.Val.P.GetStr("APPID")
-		secret := infoDic.Val.P.GetStr("密钥")
-		dicPath := infoDic.Val.P.GetStr("词库")
+	QQBot_Config := botData.Section("QQ")
+	if ok, _ := QQBot_Config.Key("启用").Bool(); ok {
+		appId := QQBot_Config.Key("APPID").String()
+		secret := QQBot_Config.Key("密钥").String()
+		dicPath := QQBot_Config.Key("词库").String()
 		dto.ServerConfig.QQBot = &qqbot_msg.RouterQQBot{
 			// 缓存 50 秒，3 分钟内没有访问就删除
 			LastMsg:  cache.New(50*time.Second, 3*time.Minute),
 			Open:     true,
-			Addr:     "/" + infoDic.Val.P.GetStr("访问路径"),
+			Addr:     "/" + QQBot_Config.Key("访问路径").String(),
 			FilePath: dicPath,
 			API:      qqbot_msg.NewQQBot(appId, secret),
 		}
@@ -138,13 +194,14 @@ func loadConfig() *dic_dto.Dic {
 		}
 	}
 
-	if d := dic_api.Api.DicRun(infoDic, "NapCatBot"); d == "是" {
-		secret := infoDic.Val.P.GetStr("密钥")
-		dicPath := infoDic.Val.P.GetStr("词库")
+	NapCat_Config := botData.Section("NapCat")
+	if ok, _ := NapCat_Config.Key("启用").Bool(); ok {
+		secret := NapCat_Config.Key("密钥").String()
+		dicPath := NapCat_Config.Key("词库").String()
 		dto.ServerConfig.NapCatBot = &napcatbot_dto.RouterNapCatBot{
 			Open:     true,
-			APIAddr:  infoDic.Val.P.GetStr("发送消息接口"),
-			Addr:     "/" + infoDic.Val.P.GetStr("访问路径"),
+			APIAddr:  NapCat_Config.Key("发送消息接口").String(),
+			Addr:     "/" + NapCat_Config.Key("访问路径").String(),
 			Secret:   secret,
 			FilePath: dicPath,
 		}
@@ -159,15 +216,15 @@ func loadConfig() *dic_dto.Dic {
 			BotDic.SetPath(dicPath + "/admin.txt")
 			BotDic.WriteFileByte([]byte(""))
 		}
-
 	}
 
-	if d := dic_api.Api.DicRun(infoDic, "YunHuBot"); d == "是" {
-		secret := infoDic.Val.P.GetStr("密钥")
-		dicPath := infoDic.Val.P.GetStr("词库")
+	YunHu_Config := botData.Section("云湖")
+	if ok, _ := YunHu_Config.Key("启用").Bool(); ok {
+		secret := YunHu_Config.Key("密钥").String()
+		dicPath := YunHu_Config.Key("词库").String()
 		dto.ServerConfig.YunHuBot = &yunhubot_dto.RouterYunHuBot{
 			Open:     true,
-			Addr:     "/" + infoDic.Val.P.GetStr("访问路径"),
+			Addr:     "/" + YunHu_Config.Key("访问路径").String(),
 			Secret:   secret,
 			FilePath: dicPath,
 		}
@@ -177,13 +234,14 @@ func loadConfig() *dic_dto.Dic {
 		}
 	}
 
-	if d := dic_api.Api.DicRun(infoDic, "FeiShuBot"); d == "是" {
-		appId := infoDic.Val.P.GetStr("APPID")
-		secret := infoDic.Val.P.GetStr("密钥")
-		dicPath := infoDic.Val.P.GetStr("词库")
+	FeiShu_Config := botData.Section("飞书")
+	if ok, _ := FeiShu_Config.Key("启用").Bool(); ok {
+		appId := FeiShu_Config.Key("APPID").String()
+		secret := FeiShu_Config.Key("密钥").String()
+		dicPath := FeiShu_Config.Key("词库").String()
 		dto.ServerConfig.FeiShuBot = &feishubot_msg.RouterFeishubot{
 			Open:     true,
-			Addr:     "/" + infoDic.Val.P.GetStr("访问路径"),
+			Addr:     "/" + FeiShu_Config.Key("访问路径").String(),
 			API:      lark.NewClient(appId, secret),
 			FilePath: dicPath,
 		}
@@ -196,22 +254,5 @@ func loadConfig() *dic_dto.Dic {
 			BotDic.WriteFileByte([]byte(""))
 		}
 	}
-
-	if infoNgrokServerPath := dic_api.Api.DicRun(infoDic, "Ngrok"); infoNgrokServerPath == "是" {
-		authToken := infoDic.Val.P.GetStr("密钥")
-		ngrokUrl := infoDic.Val.P.GetStr("访问链接")
-		dto.ServerConfig.Ngrok = &dto.NgrokConfig{
-			Addr:  ngrokUrl,
-			Token: authToken,
-		}
-	}
-
-	infoServerPath := dic_api.Api.DicRun(infoDic, "监听访问路径")
-	dto.ServerConfig.Http = &http.Server{
-		Addr:    infoServerPath,
-		Handler: http.HandlerFunc(webRun),
-	}
-
-	return infoDic
 
 }

@@ -14,8 +14,6 @@ type RouterQQBot struct {
 	Addr string
 	// 词库路径
 	FilePath string
-	// 消息处理次数
-	MsgCount int
 	// 缓存器-清重复数据
 	LastMsg *cache.Cache
 	// 接口

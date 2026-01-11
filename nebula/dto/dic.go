@@ -69,6 +69,10 @@ type LocalDicValue struct {
 		JsonType bool `json:"JsonType"`
 		Len      int  `json:"Len"`
 	} `json:"新建Json框"`
+	NodeJs struct {
+		Success bool     `json:"success"`
+		Content []string `json:"content"`
+	}
 	Database *sql.DB `json:"database"`
 	Stop     bool    `json:"stop"`
 }

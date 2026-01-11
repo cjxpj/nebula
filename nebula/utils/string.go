@@ -2,8 +2,10 @@ package utils
 
 import (
 	"bytes"
+	"crypto/rand"
 	"errors"
 	"io"
+	"math/big"
 	"regexp"
 	"strconv"
 
@@ -125,4 +127,18 @@ func DecodeType(t string, raw []byte) (string, error) {
 	}
 
 	return "", errors.New("不存在类型")
+}
+
+// 随机字符
+func RandomString(str string, n int) string {
+	if str == "大小字母" {
+		str = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz"
+	}
+	b := make([]byte, n)
+	l := big.NewInt(int64(len(str)))
+	for i := range b {
+		idx, _ := rand.Int(rand.Reader, l)
+		b[i] = str[idx.Int64()]
+	}
+	return string(b)
 }

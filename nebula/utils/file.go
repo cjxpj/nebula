@@ -20,6 +20,8 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"gopkg.in/ini.v1"
 )
 
 const GPATH = "NebulaData"
@@ -782,6 +784,26 @@ func (fq *FileQueue) GetList(t string) ([]string, error) {
 // ReadFileExt 获取文件后缀
 func (fq *FileQueue) ReadFileExt() string {
 	return filepath.Ext(fq.FileName)
+}
+
+// 加载ini
+func (fq *FileQueue) LoadIni() (*ini.File, error) {
+	fileMutex.RLock()
+	defer fileMutex.RUnlock()
+
+	file, err := ini.Load(fq.FileName)
+	if err != nil {
+		return nil, err
+	}
+	return file, nil
+}
+
+// 保存ini
+func (fq *FileQueue) SaveIni(file *ini.File) error {
+	fileMutex.Lock()
+	defer fileMutex.Unlock()
+
+	return file.SaveTo(fq.FileName)
 }
 
 // ReadFromFile 从文件读取数据

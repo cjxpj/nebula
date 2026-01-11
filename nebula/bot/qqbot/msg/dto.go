@@ -5,6 +5,8 @@ import (
 	"time"
 )
 
+var MsgCount = 0
+
 // QQBot 封装机器人鉴权和发消息流程
 type QQBot struct {
 	AppId        string

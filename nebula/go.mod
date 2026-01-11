@@ -12,7 +12,7 @@ require (
 	github.com/dop251/goja_nodejs v0.0.0-20250217171036-ba90ff8d8790
 	github.com/go-sql-driver/mysql v1.8.1
 	github.com/golang/freetype v0.0.0-20170609003504-e2365dfdc4a0
-	github.com/gomarkdown/markdown v0.0.0-20240419095408-642f0ee99ae2
+	github.com/gomarkdown/markdown v0.0.0-20250810172220-2e2c11897d1a
 	github.com/gorilla/websocket v1.5.0
 	github.com/json-iterator/go v1.1.12
 	github.com/llgcode/draw2d v0.0.0-20240627062922-0ed1ff131195
@@ -34,6 +34,7 @@ require (
 	github.com/ncruces/go-strftime v0.1.9 // indirect
 	github.com/remyoudompheng/bigfft v0.0.0-20230129092748-24d4a6f8daec // indirect
 	golang.org/x/exp v0.0.0-20250620022241-b7579e27df2b // indirect
+	gopkg.in/ini.v1 v1.67.0 // indirect
 	modernc.org/libc v1.66.10 // indirect
 	modernc.org/mathutil v1.7.1 // indirect
 	modernc.org/memory v1.11.0 // indirect

@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"maps"
+	"time"
 
 	"strconv"
 	"strings"
@@ -16,6 +17,13 @@ import (
 	"github.com/cjxpj/nebula/dic/funcs"
 	"github.com/cjxpj/nebula/dto"
 	"github.com/cjxpj/nebula/utils"
+	"github.com/dop251/goja"
+	"github.com/dop251/goja_nodejs/buffer"
+	"github.com/dop251/goja_nodejs/console"
+	"github.com/dop251/goja_nodejs/eventloop"
+	"github.com/dop251/goja_nodejs/process"
+	"github.com/dop251/goja_nodejs/require"
+	"github.com/dop251/goja_nodejs/url"
 
 	"github.com/buger/jsonparser"
 )
@@ -58,7 +66,7 @@ func (m *dicImpl) DicRunLine(r *dic_dto.DicEntry, txt []string) string {
 	return r.Output.Get()
 }
 
-func Entry(r *dic_dto.DicEntry, txt []string, funcV *dic_dto.DicFunc) {
+func Entry(r *dic_dto.DicEntry, txt []string, funcV *dic_dto.DicFunc) error {
 	var RunDicindex int16
 	var isif bool
 	var lock bool
@@ -72,6 +80,96 @@ func Entry(r *dic_dto.DicEntry, txt []string, funcV *dic_dto.DicFunc) {
 		textLen := len(text)
 
 		RunDicindex++
+
+		if r.Sys_v.NodeJs.Success {
+			if text != "--end" {
+				r.Sys_v.NodeJs.Content = append(r.Sys_v.NodeJs.Content, text)
+			}
+			if index == txtLen-1 || text == "--end" {
+				r.Sys_v.NodeJs.Success = false
+
+				registry := new(require.Registry)
+				loop := eventloop.NewEventLoop()
+				vm := goja.New()
+				registry.Enable(vm)
+				console.Enable(vm)
+				url.Enable(vm)
+				buffer.Enable(vm)
+				process.Enable(vm)
+
+				vm.Set("dic", func(call goja.FunctionCall) goja.Value {
+					dicLine := call.Argument(0).String()
+					// 分割\n
+					dicLineArr := strings.Split(dicLine, "\n")
+
+					RunDics := dic_dto.NewRunDicEntry().
+						SetGlobal_v(r.Val.G).
+						Set_v(r.Val.P)
+					res := dic_api.Api.DicRunLine(RunDics, dicLineArr)
+					// 返回文本
+					return vm.ToValue(res)
+				})
+
+				vm.Set("dic_value", func(call goja.FunctionCall) goja.Value {
+					k := call.Argument(0).String()
+					v := call.Argument(1).String()
+					r.Val.P.Set(k, v)
+					return goja.Undefined()
+				})
+
+				// 将 setTimeout 和 setInterval 注册到 JavaScript 环境中
+				vm.Set("setTimeout", func(call goja.FunctionCall) goja.Value {
+					fn := call.Argument(0)
+					delay := call.Argument(1).ToInteger()
+
+					// 确保第一个参数是函数
+					if fnFn, ok := goja.AssertFunction(fn); ok {
+						loop.SetTimeout(func(vm *goja.Runtime) {
+							fnFn(goja.Undefined())
+						}, time.Duration(delay)*time.Millisecond)
+					}
+					return goja.Undefined()
+				})
+
+				vm.Set("setInterval", func(call goja.FunctionCall) goja.Value {
+					fn := call.Argument(0)
+					delay := call.Argument(1).ToInteger()
+
+					// 确保第一个参数是函数
+					if fnFn, ok := goja.AssertFunction(fn); ok {
+						loop.SetInterval(func(vm *goja.Runtime) {
+							fnFn(goja.Undefined())
+						}, time.Duration(delay)*time.Millisecond)
+					}
+					return goja.Undefined()
+				})
+
+				// 启动事件循环
+				loop.Start()
+
+				for k, v := range r.Val.G.GetAll() {
+					vm.Set(k, v)
+				}
+				for k, v := range r.Val.P.GetAll() {
+					vm.Set(k, v)
+				}
+
+				scriptText := strings.Join(r.Sys_v.NodeJs.Content, "\n")
+				r.Sys_v.NodeJs.Content = []string{}
+				res, err := vm.RunString(scriptText)
+				if err != nil {
+					r.Output.Add(err.Error())
+					return nil
+				}
+				if res == goja.Undefined() {
+					continue
+				}
+				resStr := res.String()
+				r.Output.Add(resStr)
+				continue
+			}
+			continue
+		}
 
 		// 赋予值纯文本框
 		if r.Sys_v.ValTextr.Success {
@@ -291,7 +389,7 @@ func Entry(r *dic_dto.DicEntry, txt []string, funcV *dic_dto.DicFunc) {
 						})
 						if RunDic.Sys_v.Stop {
 							r.Sys_v.Stop = true
-							return
+							return nil
 						}
 
 					case []any:
@@ -317,7 +415,7 @@ func Entry(r *dic_dto.DicEntry, txt []string, funcV *dic_dto.DicFunc) {
 
 							if !RunDic.Sys_v.ForEach.IsFor && RunDic.Sys_v.Stop {
 								RunDic.Close()
-								return
+								return nil
 							}
 							if RunDic.Sys_v.ForEach.Jump {
 								RunDic.Close()
@@ -367,7 +465,7 @@ func Entry(r *dic_dto.DicEntry, txt []string, funcV *dic_dto.DicFunc) {
 							r.Output.Add(resRun)
 							if !r.Sys_v.For.IsFor && RunDic.Sys_v.Stop {
 								RunDic.Close()
-								return
+								return nil
 							}
 
 							if RunDic.Sys_v.For.Jump {
@@ -378,7 +476,7 @@ func Entry(r *dic_dto.DicEntry, txt []string, funcV *dic_dto.DicFunc) {
 							if RunDic.Sys_v.Stop {
 								RunDic.Close()
 								r.Sys_v.Stop = true
-								return
+								return nil
 							}
 							if setNum := r.Val.P.Get(valName).(string); setNum != strNum {
 								Xi, err := strconv.Atoi(setNum)
@@ -396,7 +494,7 @@ func Entry(r *dic_dto.DicEntry, txt []string, funcV *dic_dto.DicFunc) {
 							r.Output.Add(resRun)
 							if !r.Sys_v.For.IsFor && RunDic.Sys_v.Stop {
 								RunDic.Close()
-								return
+								return nil
 							}
 
 							if RunDic.Sys_v.For.Jump {
@@ -407,7 +505,7 @@ func Entry(r *dic_dto.DicEntry, txt []string, funcV *dic_dto.DicFunc) {
 							if RunDic.Sys_v.Stop {
 								RunDic.Close()
 								r.Sys_v.Stop = true
-								return
+								return nil
 							}
 							if setNum := r.Val.P.Get(valName).(string); setNum != strNum {
 								Xi, err := strconv.Atoi(setNum)
@@ -460,16 +558,16 @@ func Entry(r *dic_dto.DicEntry, txt []string, funcV *dic_dto.DicFunc) {
 							r.Output.Add(resRun)
 
 							if r.Sys_v.For.IsFor && RunDic.Sys_v.For.IsFor && RunDic.Sys_v.For.Jump {
-								return
+								return nil
 							}
 
 							if r.Sys_v.ForEach.IsFor && RunDic.Sys_v.ForEach.IsFor && RunDic.Sys_v.ForEach.Jump {
-								return
+								return nil
 							}
 
 							if RunDic.Sys_v.Stop {
 								r.Sys_v.Stop = true
-								return
+								return nil
 							}
 							break
 						} else {
@@ -482,17 +580,17 @@ func Entry(r *dic_dto.DicEntry, txt []string, funcV *dic_dto.DicFunc) {
 
 						if r.Sys_v.For.IsFor && RunDic.Sys_v.For.IsFor && RunDic.Sys_v.For.Jump {
 							RunDic.Close()
-							return
+							return nil
 						}
 
 						if r.Sys_v.ForEach.IsFor && RunDic.Sys_v.ForEach.IsFor && RunDic.Sys_v.ForEach.Jump {
 							RunDic.Close()
-							return
+							return nil
 						}
 
 						if !r.Sys_v.IfFunc.IsIf && RunDic.Sys_v.Stop {
 							RunDic.Close()
-							return
+							return nil
 						}
 
 						if RunDic.Sys_v.IfFunc.Jump {
@@ -503,7 +601,7 @@ func Entry(r *dic_dto.DicEntry, txt []string, funcV *dic_dto.DicFunc) {
 						if RunDic.Sys_v.Stop {
 							RunDic.Close()
 							r.Sys_v.Stop = true
-							return
+							return nil
 						}
 					}
 
@@ -634,31 +732,31 @@ func Entry(r *dic_dto.DicEntry, txt []string, funcV *dic_dto.DicFunc) {
 		}
 
 		if text == ">跳过" && r.Sys_v.For.IsFor {
-			return
+			return nil
 		}
 
 		if text == ">跳过" && r.Sys_v.ForEach.IsFor {
-			return
+			return nil
 		}
 
 		if text == ">终止循环" && r.Sys_v.For.IsFor {
 			r.Sys_v.For.Jump = true
-			return
+			return nil
 		}
 
 		if text == ">终止遍历" && r.Sys_v.ForEach.IsFor {
 			r.Sys_v.ForEach.Jump = true
-			return
+			return nil
 		}
 
 		if text == ">跳过" && r.Sys_v.IfFunc.IsIf {
 			r.Sys_v.IfFunc.Jump = true
-			return
+			return nil
 		}
 
 		if text == ">终止" {
 			r.Sys_v.Stop = true
-			return
+			return nil
 		}
 
 		if textLen >= 7 && text[:7] == "函数>" {
@@ -849,6 +947,11 @@ func Entry(r *dic_dto.DicEntry, txt []string, funcV *dic_dto.DicFunc) {
 				index = index - num
 				continue
 			}
+		}
+
+		if text == "--js" {
+			r.Sys_v.NodeJs.Success = true
+			continue
 		}
 
 		if text == ">>NapCat" {
@@ -1159,6 +1262,7 @@ func Entry(r *dic_dto.DicEntry, txt []string, funcV *dic_dto.DicFunc) {
 		}
 		r.Output.Add(Runs(funcV, text))
 	}
+	return nil
 }
 
 // UnmarshalJSON 尝试将给定的 JSON 文本解析为 map[string]interface{} 或 []interface{}。

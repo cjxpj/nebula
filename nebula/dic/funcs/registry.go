@@ -59,7 +59,6 @@ func Setup() {
 		f{Name: "打印", L: "1..", Fn: print},
 
 		f{Name: "MD转HTML", L: "1", Fn: markdownToHtml},
-		f{Name: "Lua", L: "1|2..", Fn: runLua},
 
 		f{Name: "哈基米加密", L: "1|2", Fn: hajimimanboEncrypt},
 		f{Name: "哈基米解密", L: "1|2", Fn: hajimimanboDecrypt},
@@ -89,7 +88,6 @@ func Setup() {
 		f{Name: "字典.设置", L: "3..", Fn: setMapData},
 		f{Name: "字典.获取", L: "1", Fn: getMapData},
 
-		f{Name: "Js", L: "1|2", Fn: runJs},
 		f{Name: "重启", L: "0", Fn: restart},
 
 		f{Name: "读文件.随机一行", L: "1|2", Fn: readStringFileRandomLine},

@@ -3,6 +3,7 @@ package dic_server
 import (
 	"context"
 	"fmt"
+	"net"
 	"net/http"
 
 	"github.com/cjxpj/nebula/dto"
@@ -12,7 +13,8 @@ import (
 )
 
 // 启动服务器
-func Start(infoServerPath string) string {
+func Start(infoServerPath string) []string {
+	res := make([]string, 2)
 	if dto.ServerConfig.Ngrok != nil {
 		authToken := dto.ServerConfig.Ngrok.Token
 		ngrokUrl := dto.ServerConfig.Ngrok.Addr
@@ -36,23 +38,31 @@ func Start(infoServerPath string) string {
 			ngrok.WithAuthtoken(authToken),
 		); err == nil {
 			go func() {
-				if err := http.Serve(listener, dto.ServerConfig.Http.Handler); err != nil {
+				if err := http.Serve(listener, dto.ServerConfig.Router.Http.Handler); err != nil {
 					utils.Error("Ngrok启动失败>" + err.Error())
 					panic(err)
 				}
 			}()
 
-			return fmt.Sprintf("Ngrok启动成功 %s", listener.URL())
+			// return fmt.Sprintf("Ngrok启动成功 %s", listener.URL())
+			res = append(res, fmt.Sprintf("Ngrok启动成功 %s", listener.URL()))
 		} else {
 			fmt.Println("Ngrok配置失败")
 		}
 	}
+
 	// 使用 Goroutine 启动服务器
 	go func() {
-		if err := dto.ServerConfig.Http.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+		if err := dto.ServerConfig.Router.Http.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 			utils.Error("启动失败>" + err.Error())
 			panic(err)
 		}
 	}()
-	return "启动成功"
+
+	if _, port, err := net.SplitHostPort(dto.ServerConfig.Router.Http.Addr); err == nil {
+		fmt.Println("WebUi：", fmt.Sprintf("http://%s:%s%s", "localhost", port, dto.ServerConfig.OPUI.Addr))
+	}
+
+	res = append(res, "Main")
+	return res
 }

@@ -13,6 +13,4 @@ type RouterYunHuBot struct {
 	Secret string
 	// 词库路径
 	FilePath string
-	// 消息次数
-	Count int
 }

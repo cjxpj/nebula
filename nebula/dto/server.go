@@ -23,9 +23,21 @@ type ServerRouterWebSocket struct {
 	Conn *websocket.Upgrader
 }
 
+type ServerHTTP struct {
+	Cors bool
+	Http *http.Server
+}
+
+type OPUI struct {
+	// 地址
+	Addr string
+}
+
 type ServerConfigInfo struct {
 	// HTTP地址
-	Http *http.Server
+	Router *ServerHTTP
+	// OPUI
+	OPUI *OPUI
 	// WS地址
 	Ws *ServerRouterWebSocket
 	// QQBot地址

@@ -32,7 +32,7 @@ func qqBOTChannelRun(payload *qqbot_msg.Payload) {
 	}
 
 	// 处理消息次数
-	dto.ServerConfig.QQBot.MsgCount++
+	qqbot_msg.MsgCount++
 
 	// 新建副本消息
 	msg := m.Content
@@ -112,7 +112,7 @@ func qqBOTChannelPrivateRun(payload *qqbot_msg.Payload) {
 	}
 
 	// 处理消息次数
-	dto.ServerConfig.QQBot.MsgCount++
+	qqbot_msg.MsgCount++
 
 	// 新建副本消息
 	msg := m.Content
@@ -195,7 +195,7 @@ func qqBOTGroupATRun(payload *qqbot_msg.Payload) {
 	}
 
 	// 处理消息次数
-	dto.ServerConfig.QQBot.MsgCount++
+	qqbot_msg.MsgCount++
 
 	// 新建副本消息
 	msg := m.Content
@@ -347,7 +347,7 @@ func qqBOTGroupPrivateRun(payload *qqbot_msg.Payload) {
 	}
 
 	// 处理消息次数
-	dto.ServerConfig.QQBot.MsgCount++
+	qqbot_msg.MsgCount++
 
 	// 词库
 	BotDic := utils.NewFileQueue(dto.ServerConfig.QQBot.FilePath)
