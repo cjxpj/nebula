@@ -7,18 +7,11 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
-	"time"
 
 	"github.com/cjxpj/nebula/appfiles"
-	feishubot_msg "github.com/cjxpj/nebula/bot/feishubot/msg"
-	napcatbot_dto "github.com/cjxpj/nebula/bot/napcatbot/dto"
-	qqbot_msg "github.com/cjxpj/nebula/bot/qqbot/msg"
-	yunhubot_dto "github.com/cjxpj/nebula/bot/yunhubot/dto"
 	"github.com/cjxpj/nebula/dto"
 	"github.com/cjxpj/nebula/utils"
 	"github.com/gorilla/websocket"
-	lark "github.com/larksuite/oapi-sdk-go/v3"
-	"github.com/patrickmn/go-cache"
 )
 
 type HttpOpUiData struct {
@@ -244,25 +237,13 @@ func OpUI(w http.ResponseWriter, r *http.Request, getpath string) {
 				utils.ErrorStop("系统配置不存在")
 			}
 			d := f.Section("QQ")
-			dto.ServerConfig.QQBot = &qqbot_msg.RouterQQBot{
-				// 缓存 50 秒，3 分钟内没有访问就删除
-				LastMsg:  cache.New(50*time.Second, 3*time.Minute),
-				Open:     j.Open,
-				Addr:     "/" + j.Path,
-				FilePath: j.Dic,
-				API:      qqbot_msg.NewQQBot(j.Appid, j.Secret),
-			}
 			d.Key("启用").SetValue(strconv.FormatBool(j.Open))
 			d.Key("词库").SetValue(j.Dic)
 			d.Key("访问路径").SetValue(j.Path)
 			d.Key("APPID").SetValue(j.Appid)
 			d.Key("密钥").SetValue(j.Secret)
+			dto.LoadConfig_qq(d)
 			ff.SaveIni(f)
-			dicPath := j.Dic
-			BotDic := utils.NewFileQueue(dicPath)
-			if !BotDic.FileExists() {
-				BotDic.WriteFileByte(appfiles.GetFile("dic/QQBot.n"))
-			}
 			w.Write([]byte(`{"status":"ok"}`))
 			return
 
@@ -295,31 +276,13 @@ func OpUI(w http.ResponseWriter, r *http.Request, getpath string) {
 				utils.ErrorStop("系统配置不存在")
 			}
 			d := f.Section("NapCat")
-			dto.ServerConfig.NapCatBot = &napcatbot_dto.RouterNapCatBot{
-				Open:     j.Open,
-				FilePath: j.Dic,
-				Addr:     "/" + j.Path,
-				Secret:   j.Secret,
-				APIAddr:  j.Api,
-			}
 			d.Key("启用").SetValue(strconv.FormatBool(j.Open))
 			d.Key("词库").SetValue(j.Dic)
 			d.Key("访问路径").SetValue(j.Path)
 			d.Key("密钥").SetValue(j.Secret)
 			d.Key("发送消息接口").SetValue(j.Api)
+			dto.LoadConfig_napcat(d)
 			ff.SaveIni(f)
-			dicPath := j.Dic
-			BotDic := utils.NewFileQueue(dicPath)
-			if !BotDic.DirExists() {
-				BotDic.SetPath(dicPath + "/dic/dic.n")
-				BotDic.WriteFileByte(appfiles.GetFile("dic/NapCatBot.n"))
-				// 群白名单
-				BotDic.SetPath(dicPath + "/groups.txt")
-				BotDic.WriteFileByte([]byte("all"))
-				// 主人文件
-				BotDic.SetPath(dicPath + "/admin.txt")
-				BotDic.WriteFileByte([]byte(""))
-			}
 			w.Write([]byte(`{"status":"ok"}`))
 			return
 
@@ -351,16 +314,11 @@ func OpUI(w http.ResponseWriter, r *http.Request, getpath string) {
 				utils.ErrorStop("系统配置不存在")
 			}
 			d := f.Section("云湖")
-			dto.ServerConfig.YunHuBot = &yunhubot_dto.RouterYunHuBot{
-				Open:     j.Open,
-				FilePath: j.Dic,
-				Addr:     "/" + j.Path,
-				Secret:   j.Secret,
-			}
 			d.Key("启用").SetValue(strconv.FormatBool(j.Open))
 			d.Key("词库").SetValue(j.Dic)
 			d.Key("访问路径").SetValue(j.Path)
 			d.Key("密钥").SetValue(j.Secret)
+			dto.LoadConfig_yunhu(d)
 			ff.SaveIni(f)
 			w.Write([]byte(`{"status":"ok"}`))
 			return
@@ -395,17 +353,12 @@ func OpUI(w http.ResponseWriter, r *http.Request, getpath string) {
 				utils.ErrorStop("系统配置不存在")
 			}
 			d := f.Section("飞书")
-			dto.ServerConfig.FeiShuBot = &feishubot_msg.RouterFeishubot{
-				Open:     j.Open,
-				FilePath: j.Dic,
-				Addr:     "/" + j.Path,
-				API:      lark.NewClient(j.Appid, j.Secret),
-			}
 			d.Key("启用").SetValue(strconv.FormatBool(j.Open))
 			d.Key("词库").SetValue(j.Dic)
 			d.Key("访问路径").SetValue(j.Path)
 			d.Key("APPID").SetValue(j.Appid)
 			d.Key("密钥").SetValue(j.Secret)
+			dto.LoadConfig_feishu(d)
 			ff.SaveIni(f)
 			w.Write([]byte(`{"status":"ok"}`))
 			return

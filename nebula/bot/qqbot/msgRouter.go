@@ -236,13 +236,18 @@ func qqBOTGroupATRun(payload *qqbot_msg.Payload) {
 				rMsg = strings.ReplaceAll(rMsg, "\\r", "\n")
 
 				// fmt.Println("QQBot回复:", rMsg)
-				if img := qqVal.P.GetStr("发送图片"); img != "" {
+				if rMsg, imgs := stripImgTags(rMsg); len(imgs) != 0 {
 					if rMsg != "" {
 						rMsg = "\n" + rMsg
 					}
-					_, mErr := dto.ServerConfig.QQBot.API.ReplyGroupImgMessage(m.ID, m.GroupOpenID, img, rMsg)
-					if mErr != nil {
-						fmt.Println("QQBot回复图文失败", mErr)
+					for i, img := range imgs {
+						if i == 1 {
+							rMsg = ""
+						}
+						_, mErr := dto.ServerConfig.QQBot.API.ReplyGroupImgMessage(m.ID, m.GroupOpenID, img, rMsg)
+						if mErr != nil {
+							fmt.Println("QQBot回复图文失败", mErr)
+						}
 					}
 					return
 				}
@@ -309,13 +314,19 @@ func qqBOTGroupATRun(payload *qqbot_msg.Payload) {
 	rMsg = strings.ReplaceAll(rMsg, "\\r", "\n")
 
 	// fmt.Println("QQBot回复:", rMsg)
-	if img := dic.Val.P.GetStr("发送图片"); img != "" {
+
+	if rMsg, imgs := stripImgTags(rMsg); len(imgs) != 0 {
 		if rMsg != "" {
 			rMsg = "\n" + rMsg
 		}
-		_, mErr := dto.ServerConfig.QQBot.API.ReplyGroupImgMessage(m.ID, m.GroupOpenID, img, rMsg)
-		if mErr != nil {
-			fmt.Println("QQBot回复图文失败", mErr)
+		for i, img := range imgs {
+			if i == 1 {
+				rMsg = ""
+			}
+			_, mErr := dto.ServerConfig.QQBot.API.ReplyGroupImgMessage(m.ID, m.GroupOpenID, img, rMsg)
+			if mErr != nil {
+				fmt.Println("QQBot回复图文失败", mErr)
+			}
 		}
 		return
 	}
@@ -375,16 +386,25 @@ func qqBOTGroupPrivateRun(payload *qqbot_msg.Payload) {
 				time.Sleep(time.Duration(sleepTime) * time.Millisecond)
 				rMsg := dic_api.Api.DicRunPrivateVal(dic, d.Inputs.StringAfter(2), qqVal)
 				rMsg = strings.ReplaceAll(rMsg, "\\r", "\n")
-				if img := qqVal.P.GetStr("发送图片"); img != "" {
-					dto.ServerConfig.QQBot.API.ReplyGroupPrivateImgMessage(m.ID, m.Author.UserOpenID, img, rMsg)
-				} else if rMsg != "" {
+
+				if rMsg, imgs := stripImgTags(rMsg); len(imgs) != 0 {
+					for i, img := range imgs {
+						if i == 1 {
+							rMsg = ""
+						}
+						dto.ServerConfig.QQBot.API.ReplyGroupPrivateImgMessage(m.ID, m.Author.UserOpenID, img, rMsg)
+					}
+					return
+				}
+
+				if rMsg != "" {
 					dto.ServerConfig.QQBot.API.ReplyGroupPrivateMessage(m.ID, m.Author.UserOpenID, rMsg)
 				}
 			}()
 			return "", nil
 		}})
 
-	dic.SetFunc("发送文本", dto.DicFunc{
+	dic.SetFunc("私聊", dto.DicFunc{
 		L: "1|2",
 		Fn: func(d *dto.DicInputs) (any, error) {
 			go func() {
@@ -416,23 +436,22 @@ func qqBOTGroupPrivateRun(payload *qqbot_msg.Payload) {
 			return "", nil
 		}})
 
-	rMsg := dic_api.Api.DicRun(dic, m.Content)
+	rMsg := dic_api.Api.DicRun(dic, "#私聊#"+m.Content)
 	// 替换‘\r’换行
 	rMsg = strings.ReplaceAll(rMsg, "\\r", "\n")
 
 	// fmt.Println("QQBot回复:", rMsg)
-	if img := dic.Val.P.GetStr("发送图片"); img != "" {
-		_, mErr := dto.ServerConfig.QQBot.API.ReplyGroupPrivateImgMessage(m.ID, m.Author.UserOpenID, img, rMsg)
-		if mErr != nil {
-			fmt.Println("QQBot回复图文失败", mErr)
+	if rMsg, imgs := stripImgTags(rMsg); len(imgs) != 0 {
+		for i, img := range imgs {
+			if i == 1 {
+				rMsg = ""
+			}
+			dto.ServerConfig.QQBot.API.ReplyGroupPrivateImgMessage(m.ID, m.Author.UserOpenID, img, rMsg)
 		}
 		return
 	}
 	if rMsg != "" {
-		_, mErr := dto.ServerConfig.QQBot.API.ReplyGroupPrivateMessage(m.ID, m.Author.UserOpenID, rMsg)
-		if mErr != nil {
-			fmt.Println("QQBot回复失败", mErr)
-		}
+		dto.ServerConfig.QQBot.API.ReplyGroupPrivateMessage(m.ID, m.Author.UserOpenID, rMsg)
 	}
 }
 

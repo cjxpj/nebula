@@ -3,22 +3,13 @@ package dic
 import (
 	"fmt"
 	"net/http"
-	"time"
 
 	"github.com/cjxpj/nebula/appfiles"
-	feishubot_msg "github.com/cjxpj/nebula/bot/feishubot/msg"
-	napcatbot_dto "github.com/cjxpj/nebula/bot/napcatbot/dto"
-	qqbot_msg "github.com/cjxpj/nebula/bot/qqbot/msg"
-	yunhubot_dto "github.com/cjxpj/nebula/bot/yunhubot/dto"
 	dic_api "github.com/cjxpj/nebula/dic/api"
 	dic_dto "github.com/cjxpj/nebula/dic/dto"
 	"github.com/cjxpj/nebula/dto"
 	dic_server "github.com/cjxpj/nebula/server"
 	"github.com/cjxpj/nebula/utils"
-	lark "github.com/larksuite/oapi-sdk-go/v3"
-
-	"github.com/gorilla/websocket"
-	"github.com/patrickmn/go-cache"
 )
 
 func Start() {
@@ -159,100 +150,18 @@ func loadConfig() {
 	}
 
 	WebSocket_Config := httpData.Section("WebSocket")
-	if ok, _ := WebSocket_Config.Key("启用").Bool(); ok {
-		corsOk, _ := WebSocket_Config.Key("跨域").Bool()
-		wsPath := "/" + WebSocket_Config.Key("访问路径").String()
-		wsConn := &websocket.Upgrader{
-			CheckOrigin: func(r *http.Request) bool {
-				// 跨域连接
-				return corsOk
-			},
-		}
-		dto.ServerConfig.Ws = &dto.ServerRouterWebSocket{
-			Open: true,
-			Addr: wsPath,
-			Conn: wsConn,
-		}
-	}
+	dto.LoadConfig_websocket(WebSocket_Config)
 
 	QQBot_Config := botData.Section("QQ")
-	if ok, _ := QQBot_Config.Key("启用").Bool(); ok {
-		appId := QQBot_Config.Key("APPID").String()
-		secret := QQBot_Config.Key("密钥").String()
-		dicPath := QQBot_Config.Key("词库").String()
-		dto.ServerConfig.QQBot = &qqbot_msg.RouterQQBot{
-			// 缓存 50 秒，3 分钟内没有访问就删除
-			LastMsg:  cache.New(50*time.Second, 3*time.Minute),
-			Open:     true,
-			Addr:     "/" + QQBot_Config.Key("访问路径").String(),
-			FilePath: dicPath,
-			API:      qqbot_msg.NewQQBot(appId, secret),
-		}
-		BotDic := utils.NewFileQueue(dicPath)
-		if !BotDic.FileExists() {
-			BotDic.WriteFileByte(appfiles.GetFile("dic/QQBot.n"))
-		}
-	}
+	dto.LoadConfig_qq(QQBot_Config)
 
 	NapCat_Config := botData.Section("NapCat")
-	if ok, _ := NapCat_Config.Key("启用").Bool(); ok {
-		secret := NapCat_Config.Key("密钥").String()
-		dicPath := NapCat_Config.Key("词库").String()
-		dto.ServerConfig.NapCatBot = &napcatbot_dto.RouterNapCatBot{
-			Open:     true,
-			APIAddr:  NapCat_Config.Key("发送消息接口").String(),
-			Addr:     "/" + NapCat_Config.Key("访问路径").String(),
-			Secret:   secret,
-			FilePath: dicPath,
-		}
-		BotDic := utils.NewFileQueue(dicPath)
-		if !BotDic.DirExists() {
-			BotDic.SetPath(dicPath + "/dic/dic.n")
-			BotDic.WriteFileByte(appfiles.GetFile("dic/NapCatBot.n"))
-			// 群白名单
-			BotDic.SetPath(dicPath + "/groups.txt")
-			BotDic.WriteFileByte([]byte("all"))
-			// 主人文件
-			BotDic.SetPath(dicPath + "/admin.txt")
-			BotDic.WriteFileByte([]byte(""))
-		}
-	}
+	dto.LoadConfig_napcat(NapCat_Config)
 
 	YunHu_Config := botData.Section("云湖")
-	if ok, _ := YunHu_Config.Key("启用").Bool(); ok {
-		secret := YunHu_Config.Key("密钥").String()
-		dicPath := YunHu_Config.Key("词库").String()
-		dto.ServerConfig.YunHuBot = &yunhubot_dto.RouterYunHuBot{
-			Open:     true,
-			Addr:     "/" + YunHu_Config.Key("访问路径").String(),
-			Secret:   secret,
-			FilePath: dicPath,
-		}
-		BotDic := utils.NewFileQueue(dicPath)
-		if !BotDic.FileExists() {
-			BotDic.WriteFileByte(appfiles.GetFile("dic/YunHuBot.n"))
-		}
-	}
+	dto.LoadConfig_yunhu(YunHu_Config)
 
 	FeiShu_Config := botData.Section("飞书")
-	if ok, _ := FeiShu_Config.Key("启用").Bool(); ok {
-		appId := FeiShu_Config.Key("APPID").String()
-		secret := FeiShu_Config.Key("密钥").String()
-		dicPath := FeiShu_Config.Key("词库").String()
-		dto.ServerConfig.FeiShuBot = &feishubot_msg.RouterFeishubot{
-			Open:     true,
-			Addr:     "/" + FeiShu_Config.Key("访问路径").String(),
-			API:      lark.NewClient(appId, secret),
-			FilePath: dicPath,
-		}
-		BotDic := utils.NewFileQueue(dicPath)
-		if !BotDic.DirExists() {
-			BotDic.SetPath(dicPath + "/dic/dic.n")
-			BotDic.WriteFileByte(appfiles.GetFile("dic/NapCatBot.n"))
-			// 主人文件
-			BotDic.SetPath(dicPath + "/admin.txt")
-			BotDic.WriteFileByte([]byte(""))
-		}
-	}
+	dto.LoadConfig_feishu(FeiShu_Config)
 
 }

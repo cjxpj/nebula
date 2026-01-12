@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"regexp"
 	"strings"
+
+	"github.com/cjxpj/nebula/utils"
 )
 
 // 移除艾特消息开头的 @xxx
@@ -35,4 +37,37 @@ func RemoveLeadingSpace(s string) string {
 		return s[1:]
 	}
 	return s
+}
+
+// 去掉所有 ±img=...± 段，并返回净化后文本 + 提取到的 img 值列表
+func stripImgTags(s string) (string, []string) {
+	re := regexp.MustCompile(`±img=(.+?)±`)
+	var imgs []string
+
+	dst := re.ReplaceAllStringFunc(s, func(raw string) string {
+		m := re.FindStringSubmatch(raw)
+		if len(m) < 2 {
+			return ""
+		}
+
+		src := m[1]
+
+		var data string
+		var err error
+
+		// 判断是否为 http / https
+		if strings.HasPrefix(src, "http://") || strings.HasPrefix(src, "https://") {
+			data, err = utils.Get(src)
+		} else {
+			data, err = utils.NewFileQueue(src).ReadFile()
+		}
+
+		if err == nil {
+			imgs = append(imgs, data)
+		}
+
+		return ""
+	})
+
+	return dst, imgs
 }

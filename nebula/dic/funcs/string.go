@@ -3,6 +3,8 @@ package funcs
 import (
 	"crypto/sha256"
 	"errors"
+	"mime"
+	"path/filepath"
 	"strconv"
 	"strings"
 
@@ -343,4 +345,16 @@ func sha256Encrypt(d *dto.DicInputs) (any, error) {
 // 新建byte
 func newByte(d *dto.DicInputs) (any, error) {
 	return []byte(d.Inputs.String(1)), nil
+}
+
+// MIME类型
+func getMime(d *dto.DicInputs) (any, error) {
+	ext := d.Inputs.String(1)
+	if res := filepath.Ext(ext); res != "" {
+		ext = res
+	}
+	if !strings.HasPrefix(ext, ".") {
+		ext = "." + ext
+	}
+	return mime.TypeByExtension(ext), nil
 }

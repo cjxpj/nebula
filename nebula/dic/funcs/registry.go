@@ -141,6 +141,8 @@ func Setup() {
 
 		f{Name: "JSON存", L: "2..", Fn: jsonSet},
 		f{Name: "JSON存字", L: "2..", Fn: jsonSetString},
+
+		f{Name: "MIME类型", L: "1", Fn: getMime},
 	); err != nil {
 		fmt.Println(err)
 	}
