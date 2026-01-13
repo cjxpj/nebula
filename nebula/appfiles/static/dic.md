@@ -21,16 +21,18 @@ Documents/NebulaData
 
 ### wn词库 📑
 ```
-<h1>
-<?n
-%版本%
-?>
-</h1>
+<h1>{{.标题}}</h1>
+<h3>{{.副标题}}</h3>
+<script type="nebula" id="标题">星云</script>
+<script type="nebula">
+副标题:当前使用的版本v%版本%
+</script>
 ```
 
 ### n词库 📚
+默认Main触发词
 ```
-头部
+头部执行
 赋予值:内容
 
 Main
@@ -60,17 +62,17 @@ QQ群：927467925
 
 ### Github
 ```
-https://github.com/cjxpj/nebulaLanguage
+https://github.com/cjxpj/nebula
 ```
 
-<a href="https://github.com/cjxpj/nebulaLanguage/releases">下载</a>
+<a href="https://github.com/cjxpj/nebula/releases">下载</a>
 
 ### Gitee
 ```
-https://gitee.com/cjxpj/nebulaLanguage
+https://gitee.com/cjxpj/nebula
 ```
 
-<a href="https://gitee.com/cjxpj/nebulaLanguage/releases">下载</a>
+<a href="https://gitee.com/cjxpj/nebula/releases">下载</a>
 
 ## 🚀 Nebula 核心特性
 
@@ -88,17 +90,6 @@ https://gitee.com/cjxpj/nebulaLanguage
 
 ```
 储存目录用于读写，资源目录用于存放重要资源跟词库，词库目录用于被访问执行公开的数据。
-```
-
-### 执行方式 ▶️
-
-> 词库支持头部在没有触发词情况下执行哦！
-
-```
-头部
-
-Main
-尾巴
 ```
 
 ## 📦 数据结构相关
@@ -256,14 +247,19 @@ c
 ?>
 ```
 
-wn文件用于执行词库
+或者
+
 ```
-<h1>
-<?n
-%版本%
-?>
-</h1>
+Main #{
+
+a
+
+b
+
+c
+}#
 ```
+
 
 ### 加密词库 🔒
 返回true/false
@@ -1560,6 +1556,7 @@ $邮件 smtp.qq.com 587 2960965389@qq.com xxxxx 2960965389@qq.com %发送%$
 ```
 $执行词库文件 [文件路径] [触发] [独立/继承/继承函数/互通]$
 $执行网页词库文件 [文件路径]$
+$执行PHP网页词库文件 [文件路径]$
 ```
 
 ### 调用 🔗
@@ -1615,33 +1612,10 @@ require
 a,b,c
 
 ```
-a:ok
-code:'''
-参数0+参数1
-'''
-$Js %code% %a%,b$
-```
-
-### Lua 🟡
-,来分割参数
-a,b,c
-
-```
-Main #{
-
-code:'''
-a = "nonon"
-function main(txt,txt2)
-print(a)
-return txt..txt2
-end
-'''
-
-$Lua %code% a,b$
-如果>%报错%!=
-%报错%
-<如果
-}#
+a:1
+--js
+a+a
+--end
 ```
 
 ### MYSQL 🐬
@@ -1733,7 +1707,7 @@ $调用 500 打招呼$
 
 测试
 文本
-发送图片:$读文件 database/img.png$
+±img=database/img.png±
 ```
 
 群变量
@@ -1746,7 +1720,12 @@ $调用 500 打招呼$
 
 群函数
 ```
-$发文本 [文本] [图片数据]$
+// 群用
+$群单发 [文本] [图片数据]$
+// 私聊用
+$私聊 [文本] [图片数据]$
+// 其他地方用
+$发送文本 [文本] [图片数据]$
 $发视频 [视频数据]$
 $发语音 [语音数据]$
 ```
@@ -1810,5 +1789,10 @@ $sha256 [文本]$
 ```
 $Byte转String [Byte]$
 $Byte生成 [文本]$
+```
+
+## MIME类型 📦
+```
+$MIME类型 [文件后缀|文件路径]$
 ```
 

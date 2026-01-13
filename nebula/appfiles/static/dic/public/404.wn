@@ -62,10 +62,10 @@
         <p>请检查网址是否正确或返回主页。</p>
         <a href="/">返回首页</a>
         <div class="version-info">
-            <p>版本信息：v
-            <?n %版本% ?>
-            </p>
+            <p>版本信息：v {{.版本}}</p>
         </div>
     </div>
 </body>
 </html>
+
+<script type="nebula" id="版本">%版本%</script>

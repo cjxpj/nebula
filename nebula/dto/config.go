@@ -125,5 +125,15 @@ func LoadConfig_websocket(WebSocket_Config *ini.Section) {
 			Addr: wsPath,
 			Conn: wsConn,
 		}
+		// WS词库
+		wsfile := utils.NewFileQueue("private/websocket")
+		if !wsfile.DirExists() {
+			// 服务器
+			wsfile.SetPath("private/websocket/server.n")
+			wsfile.WriteToFile(appfiles.GetFileString("dic/websocket/server.n"))
+			// 客户端
+			wsfile.SetPath("private/websocket/app.n")
+			wsfile.WriteToFile(appfiles.GetFileString("dic/websocket/app.n"))
+		}
 	}
 }

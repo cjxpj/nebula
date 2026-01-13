@@ -16,7 +16,7 @@ Main
     <文本
 <函数
 函数>检查更新
-    最新信息:$访问 https://gitee.com/cjxpj/nebula/raw/master/nebula/version.json$
+    最新信息:$访问 https://gitee.com/cjxpj/nebuladb/raw/master/nebula/version.json$
     最新版本:@%最新信息%->version?:null
     最新版本说明:@%最新信息%->tips
     如果:%版本%!=%最新版本%&%最新版本%!=null

@@ -102,41 +102,22 @@ func loadConfig() {
 	if !file.FileExists() {
 		file.WriteFileByte(appfiles.GetFile("dic/system/router.n"))
 
-		// WS词库
-		file.SetPath("private/websocket")
-		if !file.DirExists() {
-			// 服务器
-			file.SetPath("private/websocket/server.n")
-			if !file.FileExists() {
-				file.WriteToFile(appfiles.GetFileString("dic/websocket/server.n"))
-			}
-			// 客户端
-			file.SetPath("private/websocket/app.n")
-			if !file.FileExists() {
-				file.WriteToFile(appfiles.GetFileString("dic/websocket/app.n"))
-			}
-		}
-
 		// 主页文件
 		file.SetPath("public")
 		if !file.DirExists() {
+			// 默认主页
 			file.SetPath("public/index.wn")
-			if !file.FileExists() {
-				file.WriteToFile(appfiles.GetFileString("dic/public/index.wn"))
-			}
-
+			file.WriteToFile(appfiles.GetFileString("dic/public/index.wn"))
+			// 默认图标
+			file.SetPath("public/favicon.ico")
+			file.WriteFileByte(appfiles.GetFile("dic/public/favicon.ico"))
 			// 默认样板文件
 			file.SetPath("public/api.n")
-			if !file.FileExists() {
-				file.WriteToFile(appfiles.GetFileString("dic/public/api.n"))
-			}
+			file.WriteToFile(appfiles.GetFileString("dic/public/api.n"))
 			// 404文件
 			file.SetPath("public/404.wn")
-			if !file.FileExists() {
-				file.WriteFileByte(appfiles.GetFile("dic/public/404.wn"))
-			}
+			file.WriteFileByte(appfiles.GetFile("dic/public/404.wn"))
 		}
-
 	}
 
 	Ngrok_Config := httpData.Section("Ngrok")
