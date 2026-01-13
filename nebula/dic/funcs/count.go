@@ -3,7 +3,38 @@ package funcs
 import (
 	"math"
 	"math/big"
+
+	"github.com/cjxpj/nebula/dto"
 )
+
+// 四舍五入
+func round(d *dto.DicInputs) (any, error) {
+	one := d.Inputs.BigFloat(1)
+	two := d.Inputs.BigFloat(2)
+
+	// 小数位数
+	twoInt64, _ := two.Int64()
+	// factor = 10 ^ digits
+	factor := new(big.Float).SetFloat64(
+		math.Pow(10, float64(twoInt64)),
+	)
+
+	// scaled = one * factor
+	scaled := new(big.Float).Mul(one, factor)
+
+	// +0.5 实现四舍五入
+	rounded := new(big.Float).Add(scaled, big.NewFloat(0.5))
+
+	// 转整数
+	roundedInt := new(big.Int)
+	rounded.Int(roundedInt)
+
+	// 再除回去
+	result := new(big.Float).SetInt(roundedInt)
+	result.Quo(result, factor)
+
+	return result.Text('f', -1), nil
+}
 
 func (f *DicFunc) Count() string {
 	if f.Len == 3 {

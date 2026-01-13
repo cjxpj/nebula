@@ -1,6 +1,7 @@
 package utils
 
 import (
+	"math/big"
 	"reflect"
 	"strconv"
 	"strings"
@@ -250,6 +251,21 @@ func (i *DicInputs) IntDefault(ii int, def int) int {
 		}
 	}
 	return def
+}
+
+func (i *DicInputs) BigFloat(ii int) *big.Float {
+	if ii >= len(i.List) {
+		return big.NewFloat(0)
+	}
+	if res, ok := i.List[ii].(*big.Float); ok {
+		return res
+	}
+	if res, ok := i.List[ii].(string); ok {
+		if val, ok := new(big.Float).SetString(res); ok {
+			return val
+		}
+	}
+	return big.NewFloat(0)
 }
 
 func (i *DicInputs) Float64(ii int) float64 {
