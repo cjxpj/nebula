@@ -17,7 +17,9 @@ type DicApi = interface {
 	// 执行词条
 	DicRunLine(r *dic_dto.DicEntry, txt []string) string
 	// 新建执行词条
-	NewDicRunLine(D *dic_dto.Dic, trigger string) string
+	NewDicRunLine(D *dic_dto.DicEntry, txt []string) string
+	// 执行网页词库
+	WebPHPDicRun(WD *dic_dto.WebDic) string
 	// 执行网页词库
 	WebDicRun(WD *dic_dto.WebDic) string
 }

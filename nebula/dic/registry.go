@@ -13,6 +13,8 @@ func init() {
 		f{Name: "执行词库", L: "1|2|3", Fn: runDic},
 		f{Name: "执行词库文件", L: "1|2|3", Fn: runDicFile},
 		f{Name: "回调", L: "1..", Fn: callDic},
+		f{Name: "执行PHP网页词库", L: "1", Fn: runWebPHPDic},
+		f{Name: "执行PHP网页词库文件", L: "1", Fn: runWebPHPDicFile},
 		f{Name: "执行网页词库", L: "1", Fn: runWebDic},
 		f{Name: "执行网页词库文件", L: "1", Fn: runWebDicFile},
 		f{Name: "终端.监听执行", L: "2", Fn: cmdListenRun},

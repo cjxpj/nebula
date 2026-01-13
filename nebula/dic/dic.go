@@ -1,12 +1,17 @@
 package dic
 
 import (
+	"bytes"
+	"fmt"
+	"html/template"
+	"log"
 	"maps"
 	"strings"
 
 	dic_dto "github.com/cjxpj/nebula/dic/dto"
 	"github.com/cjxpj/nebula/dto"
 	"github.com/cjxpj/nebula/run"
+	"golang.org/x/net/html"
 
 	jsoniter "github.com/json-iterator/go"
 )
@@ -15,8 +20,98 @@ var json = jsoniter.Config{
 	EscapeHTML: false, // 禁用 HTML 转义
 }.Froze()
 
-// 运行网页词库
-func (m *dicImpl) WebDicRun(WD *dic_dto.WebDic) string {
+type scriptNebula struct {
+	Id   string `json:"id"`
+	Text string `json:"text"`
+}
+
+func isNebulaScript(n *html.Node) bool {
+	if n.Type != html.ElementNode || n.Data != "script" {
+		return false
+	}
+
+	for _, a := range n.Attr {
+		if a.Key == "type" && a.Val == "nebula" {
+			return true
+		}
+	}
+	return false
+}
+
+func removeNebulaScripts(n *html.Node) {
+	for c := n.FirstChild; c != nil; {
+		next := c.NextSibling
+
+		if isNebulaScript(c) {
+			n.RemoveChild(c)
+		} else {
+			removeNebulaScripts(c)
+		}
+
+		c = next
+	}
+}
+
+func getAttr(n *html.Node, key string) string {
+	for _, attr := range n.Attr {
+		if attr.Key == key {
+			return attr.Val
+		}
+	}
+	return ""
+}
+
+func extractText(n *html.Node) string {
+	var s string
+	for c := n.FirstChild; c != nil; c = c.NextSibling {
+		if c.Type == html.TextNode {
+			s += c.Data
+		}
+	}
+	return s
+}
+
+// 在 html 或 body 直接子树中查找 <script type="nebula">
+func findNebulaScripts(doc *html.Node) []scriptNebula {
+	var result []scriptNebula
+
+	// 找 html
+	var htmlNode *html.Node
+	for c := doc.FirstChild; c != nil; c = c.NextSibling {
+		if c.Type == html.ElementNode && c.Data == "html" {
+			htmlNode = c
+			break
+		}
+	}
+	if htmlNode == nil {
+		return result
+	}
+
+	// 扫描 head 和 body
+	for c := htmlNode.FirstChild; c != nil; c = c.NextSibling {
+		if c.Type != html.ElementNode {
+			continue
+		}
+
+		if c.Data == "head" || c.Data == "body" {
+			for cc := c.FirstChild; cc != nil; cc = cc.NextSibling {
+				if cc.Type == html.ElementNode &&
+					cc.Data == "script" &&
+					isNebulaScript(cc) {
+
+					result = append(result, scriptNebula{
+						Id:   getAttr(cc, "id"),
+						Text: strings.TrimSpace(extractText(cc)),
+					})
+				}
+			}
+		}
+	}
+
+	return result
+}
+
+func (m *dicImpl) WebPHPDicRun(WD *dic_dto.WebDic) string {
 
 	// 返回数据
 	var result string
@@ -39,6 +134,61 @@ func (m *dicImpl) WebDicRun(WD *dic_dto.WebDic) string {
 		RunDic := m.DicRunLine(dicRun, SplitText.Head)
 		return RunDic
 	})
+
+	return result
+}
+
+// 运行网页词库
+func (m *dicImpl) WebDicRun(WD *dic_dto.WebDic) string {
+
+	// 返回数据
+	var result string
+
+	// t := &run.Build{
+	// 	Val: WD.Val,
+	// }
+
+	dicRun := dic_dto.NewRunDicEntry().
+		SetV(WD.Val)
+
+	// 解析成节点树
+	doc, err := html.Parse(strings.NewReader(WD.Text))
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	data := make(map[string]any)
+
+	// 1. 执行 nebula script，收集数据
+	for _, s := range findNebulaScripts(doc) {
+		lines := strings.Split(s.Text, "\n")
+		res := m.NewDicRunLine(dicRun, lines)
+		if s.Id != "" {
+			data[s.Id] = res
+		} else {
+			maps.Copy(data, dicRun.Val.P.GetAll())
+		}
+	}
+
+	// 2. 只移除 type="nebula" 的 script
+	removeNebulaScripts(doc)
+
+	var htmlBuf bytes.Buffer
+	html.Render(&htmlBuf, doc)
+
+	// 2. 使用 Go 模板引擎渲染
+	tpl, err := template.New("page").Parse(htmlBuf.String())
+	if err != nil {
+		fmt.Println("模板解析失败:", err)
+	}
+	if err == nil {
+		var buf bytes.Buffer
+		if err := tpl.Execute(&buf, data); err != nil {
+			fmt.Println("模板渲染失败:", err)
+		}
+		// 3. 模板渲染结果
+		result = buf.String()
+	}
 
 	return result
 }
@@ -84,9 +234,9 @@ func (m *dicImpl) DicRunPrivateVal(D *dic_dto.Dic, trigger string, v *dto.DicVal
 }
 
 // 新建运行
-func (m *dicImpl) NewDicRunLine(D *dic_dto.Dic, trigger string) string {
+func (m *dicImpl) NewDicRunLine(D *dic_dto.DicEntry, txt []string) string {
 	D.Set_v(dto.NewVal())
-	return m.DicRun(D, trigger)
+	return m.DicRunLine(D, txt)
 }
 
 // 运行词库(全局变量,词库文本,触发)

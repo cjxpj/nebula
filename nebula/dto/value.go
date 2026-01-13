@@ -3,6 +3,7 @@ package dto
 import (
 	"encoding/base64"
 	"fmt"
+	"maps"
 	"net/url"
 	"reflect"
 	"regexp"
@@ -112,6 +113,14 @@ func (v *DicVal) Get(key string) any {
 	if res == nil {
 		return v.G.Get(key)
 	}
+	return res
+}
+
+// 获取全部变量
+func (v *DicVal) GetAll() map[string]any {
+	res := v.P.GetAll()
+	gv := v.G.GetAll()
+	maps.Copy(res, gv)
 	return res
 }
 

@@ -166,6 +166,34 @@ func callDic(d *dto.DicInputs) (any, error) {
 }
 
 // 执行网页词库
+func runWebPHPDic(d *dto.DicInputs) (any, error) {
+	data := d.Inputs.String(1)
+	if data == "" {
+		return "", nil
+	}
+	dicPath := "执行"
+	webdic := dic_dto.NewWebDic(dicPath, data).
+		SetGlobal_v(d.V.G)
+	webdic.MyFunc = d.Dic.MyFunc
+	webdicRes := dic_api.Api.WebPHPDicRun(webdic)
+	return webdicRes, nil
+}
+
+// 执行网页词库文件
+func runWebPHPDicFile(d *dto.DicInputs) (any, error) {
+	dicPath := d.Inputs.String(1)
+	data, err := utils.NewFileQueue(dicPath).ReadFromFile()
+	if err != nil {
+		return "", nil
+	}
+	webdic := dic_dto.NewWebDic(dicPath, data).
+		SetGlobal_v(d.V.G)
+	webdic.MyFunc = d.Dic.MyFunc
+	webdicRes := dic_api.Api.WebPHPDicRun(webdic)
+	return webdicRes, nil
+}
+
+// 执行网页词库
 func runWebDic(d *dto.DicInputs) (any, error) {
 	data := d.Inputs.String(1)
 	if data == "" {

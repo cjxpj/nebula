@@ -147,10 +147,7 @@ func Entry(r *dic_dto.DicEntry, txt []string, funcV *dic_dto.DicFunc) error {
 				// 启动事件循环
 				loop.Start()
 
-				for k, v := range r.Val.G.GetAll() {
-					vm.Set(k, v)
-				}
-				for k, v := range r.Val.P.GetAll() {
+				for k, v := range r.Val.GetAll() {
 					vm.Set(k, v)
 				}
 
