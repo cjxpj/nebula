@@ -2,8 +2,10 @@ package funcs
 
 import (
 	"database/sql"
-	"path"
+	"errors"
+	"fmt"
 	"strings"
+	"time"
 
 	"github.com/cjxpj/nebula/dto"
 	"github.com/cjxpj/nebula/utils"
@@ -28,59 +30,106 @@ func (r *SqliteRes) r() string {
 	return string(j)
 }
 
-func sqliteConn(d *dto.DicInputs) (any, error) {
+func sqliteOpen(d *dto.DicInputs) (any, error) {
+	dbPath := d.Inputs.String(1)
+	if dbPath == "" || dbPath == ":内存:" {
+		dbPath = ":memory:"
+	}
+	dbf := utils.NewFileQueue(dbPath)
+	db, err := dbf.OpenSqlite()
+	if err == nil {
+		return db, nil
+	}
+	return d.Inputs.StringDefault(2, "打开失败"), nil
+}
+
+func sqliteWrite(d *dto.DicInputs) (any, error) {
+	db, ok := d.Inputs.Get(1).(*sql.DB)
+	if !ok || db == nil {
+		return nil, errors.New("未打开数据库")
+	}
+
+	rawTable := d.Inputs.String(2)
+	key := d.Inputs.String(3)
+	data := d.Inputs.Bytes(4)
+
+	if key == "" {
+		return nil, errors.New("文件名不能为空")
+	}
+
+	table, err := normalizeTableName(rawTable)
+	if err != nil {
+		return nil, err
+	}
+
+	// ★ 关键：确保表存在
+	if err := ensureFsTable(db, table); err != nil {
+		return nil, err
+	}
+
+	sqlWrite := fmt.Sprintf(`
+	INSERT INTO %s (key, data, updated_at)
+	VALUES (?, ?, ?)
+	ON CONFLICT(key) DO UPDATE SET
+		data = excluded.data,
+		updated_at = excluded.updated_at
+	`, table)
+
+	_, err = db.Exec(
+		sqlWrite,
+		key,
+		data,
+		time.Now().Unix(),
+	)
+	if err != nil {
+		return nil, err
+	}
+
+	return nil, nil
+}
+
+func sqliteRead(d *dto.DicInputs) (any, error) {
+	db, ok := d.Inputs.Get(1).(*sql.DB)
+	if !ok || db == nil {
+		return nil, errors.New("未打开数据库")
+	}
+
+	rawTable := d.Inputs.String(2)
+	key := d.Inputs.String(3)
+	defaultValue := d.Inputs.String(4)
+
+	table, err := normalizeTableName(rawTable)
+	if err != nil {
+		return defaultValue, nil
+	}
+
+	var data []byte
+	sqlRead := fmt.Sprintf(
+		`SELECT data FROM %s WHERE key=?`,
+		table,
+	)
+
+	err = db.QueryRow(sqlRead, key).Scan(&data)
+	if err != nil {
+		return defaultValue, nil
+	}
+
+	return string(data), nil
+}
+
+func sqliteExec(d *dto.DicInputs) (any, error) {
+	db, ok := d.Inputs.Get(1).(*sql.DB)
+	if !ok || db == nil {
+		return nil, errors.New("未打开数据库")
+	}
 
 	Output := SqliteRes{}
-	dbPath := path.Join(utils.GetAppDir(), d.Inputs.String(1))
-	dbPathName := ":memory:"
-	if d.Inputs.String(1) == ":内存:" || d.Inputs.String(1) == dbPathName {
-		dbPath = dbPathName
-	}
-	var db *sql.DB
-	var err error
-	// 内存数据库
-	if dbPath == dbPathName {
-		// 检查全局变量中是否已经存在数据库连接
-		if dbs, ok := dto.GV.Get("_DB_SQLITE").(*sql.DB); ok {
-			db = dbs
-		} else {
-			db, err = sql.Open("sqlite3", dbPath)
-			if err != nil {
-				Output.Error = err.Error()
-				return Output.r(), nil
-			}
-			dto.GV.Set("_DB_SQLITE", db)
-		}
-	} else {
-		db, err = sql.Open("sqlite3", dbPath)
-		if err != nil {
-			Output.Error = err.Error()
-			return Output.r(), nil
-		}
-	}
-
-	if dbPath != dbPathName && db != nil {
-		defer db.Close()
-	}
-
 	sqlr := d.Inputs.String(2)
-
-	if sqlr == "PING" {
-		// 检查数据库连接是否成功
-		if err = db.Ping(); err != nil {
-			return "false", nil
-		}
-		return "true", nil
-	}
-
 	// 判断是否是查询语句
-	if len(sqlr) <= 6 {
-		Output.Error = "sql is too short"
-		return Output.r(), nil
-	}
-	isQuery := strings.ToUpper(strings.TrimSpace(sqlr))[:6] == "SELECT"
+	isQuery := strings.HasPrefix(strings.ToUpper(strings.TrimSpace(sqlr))[:6], "SELECT")
 
 	var stmt *sql.Stmt
+	var err error
 	if stmt, err = db.Prepare(sqlr); err != nil {
 		Output.Error = err.Error()
 		return Output.r(), nil
@@ -124,7 +173,7 @@ func sqliteConn(d *dto.DicInputs) (any, error) {
 				return Output.r(), nil
 			}
 
-			rowData := make(map[string]interface{})
+			rowData := make(map[string]any)
 			for i, col := range columns {
 				rowData[col] = values[i]
 			}

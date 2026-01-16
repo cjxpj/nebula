@@ -4,6 +4,7 @@ import (
 	"archive/zip"
 	"bufio"
 	"crypto/rand"
+	"database/sql"
 	"encoding/base64"
 	"errors"
 	"fmt"
@@ -135,6 +136,12 @@ func (fq *FileQueue) SetPath(FileName string) *FileQueue {
 	}
 	fq.FileName = setfilePath
 	return fq
+}
+
+// 打开sqlite文件
+func (fq *FileQueue) OpenSqlite() (*sql.DB, error) {
+	conn, err := sql.Open("sqlite3", fq.FileName)
+	return conn, err
 }
 
 // FileExists 检查文件是否存在且是文件

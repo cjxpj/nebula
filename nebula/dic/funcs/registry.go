@@ -49,7 +49,6 @@ func Setup() {
 		f{Name: "随机文件名", L: "0|1", Fn: randomFileName},
 		f{Name: "随机文件夹名", L: "0|1", Fn: randomDirName},
 
-		f{Name: "sqlite", L: "3..", Fn: sqliteConn},
 		f{Name: "mysql", L: "3..", Fn: mysqlConn},
 
 		f{Name: "取前字符", L: "2", Fn: subStrHead},
@@ -145,6 +144,17 @@ func Setup() {
 		f{Name: "MIME类型", L: "1", Fn: getMime},
 
 		f{Name: "四舍五入", L: "1|2", Fn: round},
+
+		f{Name: "炫酷文字", L: "1|2", Fn: coolText},
+
+		f{Name: "sqlite.打开", L: "1|2", Fn: sqliteOpen},
+		f{Name: "sqlite.写", L: "3|4", Fn: sqliteWrite},
+		f{Name: "sqlite.读", L: "3|4", Fn: sqliteRead},
+		f{Name: "sqlite.执行", L: "2..", Fn: sqliteExec},
+		f{Name: "关闭数据库", L: "1", Fn: dbClose},
+
+		f{Name: "读.sqlite", L: "2|3", Fn: readSqlite},
+		f{Name: "写.sqlite", L: "2|3", Fn: writeSqlite},
 	); err != nil {
 		fmt.Println(err)
 	}

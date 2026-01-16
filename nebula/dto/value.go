@@ -126,6 +126,10 @@ func (v *DicVal) GetAll() map[string]any {
 
 // Get 返回指定键的值
 func (v *Val) Get(key string) any {
+	if name, ok := strings.CutPrefix(key, "__"); ok && name != "" {
+		value, _ := GV.obj.Load(name)
+		return value
+	}
 	value, _ := v.obj.Load(key)
 	return value
 }
@@ -223,6 +227,10 @@ func (v *Val) SetLock(key string, val bool) *Val {
 
 // Set 设置指定键的值，只有在键未被锁定时才设置
 func (v *Val) Set(key string, val any) *Val {
+	if name, ok := strings.CutPrefix(key, "__"); ok && name != "" {
+		GV.obj.Store(name, val)
+		return v
+	}
 	value, ok := v.objlock.Load(key)
 	if !ok || (ok && !value.(bool)) {
 		v.obj.Store(key, val)
@@ -252,6 +260,9 @@ func (v *Val) HeaderAdd(key string, val any) {
 
 // 获取变量值，优先从 P，再从 G
 func (v *DicVal) getVal(key string) (any, bool) {
+	if name, ok := strings.CutPrefix(key, "__"); ok && name != "" {
+		return GV.obj.Load(name)
+	}
 	value, ok := v.P.obj.Load(key)
 	if !ok && v.G != nil {
 		value, ok = v.G.obj.Load(key)

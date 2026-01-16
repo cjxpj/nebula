@@ -756,6 +756,12 @@ func Entry(r *dic_dto.DicEntry, txt []string, funcV *dic_dto.DicFunc) error {
 			return nil
 		}
 
+		if retretMsg, ok := strings.CutPrefix(text, ">终止 "); ok && retretMsg != "" {
+			r.Sys_v.Stop = true
+			r.Output.Add(retretMsg)
+			return nil
+		}
+
 		if textLen >= 7 && text[:7] == "函数>" {
 			if startIdx := strings.IndexByte(text, '='); startIdx != -1 {
 				endIdx := startIdx + 1
@@ -923,27 +929,23 @@ func Entry(r *dic_dto.DicEntry, txt []string, funcV *dic_dto.DicFunc) error {
 			continue
 		}
 
-		if textLen > 8 {
-			if text[:8] == ">跳行+" {
-				runText := utils.AnyIsString(r.Val.Text(text[8:]))
-				num, err := strconv.Atoi(runText)
-				if err != nil {
-					continue
+		if jumpPd, ok := strings.CutPrefix(text, ">跳行("); ok && jumpPd != "" {
+			// 分割")>>"
+			if PdText := strings.SplitN(jumpPd, ")>>", 2); len(PdText) == 2 {
+				if Pd(funcV, PdText[0]) {
+					runText := utils.AnyIsString(r.Val.Text(PdText[1]))
+					seti, err := strconv.Atoi(runText)
+					if err != nil {
+						continue
+					}
+					if seti < 0 {
+						seti -= 1
+					}
+					index = index + seti
 				}
-				index = index + num
 				continue
 			}
 
-			if text[:8] == ">跳行-" {
-				runText := utils.AnyIsString(r.Val.Text(text[8:]))
-				num, err := strconv.Atoi(runText)
-				if err != nil {
-					continue
-				}
-				index--
-				index = index - num
-				continue
-			}
 		}
 
 		if text == "--js" {

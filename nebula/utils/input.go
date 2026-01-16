@@ -108,6 +108,16 @@ func (i *DicInputs) GetType(ii int) string {
 	return reflect.TypeOf(i.List[ii]).String()
 }
 
+func (i *DicInputs) Bytes(ii int) []byte {
+	if ii >= len(i.List) {
+		return nil
+	}
+	if res, ok := i.List[ii].([]byte); ok {
+		return res
+	}
+	return nil
+}
+
 func (i *DicInputs) String(ii int) string {
 	if ii >= len(i.List) {
 		return ""

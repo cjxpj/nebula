@@ -25,10 +25,7 @@ func localVar(d *dto.DicInputs) (any, error) {
 		d.V.P.Set(d.Inputs.String(1), d.Inputs.Get(2))
 		return "", nil
 	}
-	if res := d.V.P.Get(d.Inputs.String(1)); res != nil {
-		return res, nil
-	}
-	if res := d.V.G.Get(d.Inputs.String(1)); res != nil {
+	if res := d.V.Get(d.Inputs.String(1)); res != nil {
 		return res, nil
 	}
 	return "", nil
@@ -63,8 +60,8 @@ func globalVar(d *dto.DicInputs) (any, error) {
 
 // 局部变量锁
 func localVarLock(d *dto.DicInputs) (any, error) {
-	str := strings.Split(d.Inputs.String(1), ",")
-	for _, s := range str {
+	str := strings.SplitSeq(d.Inputs.String(1), ",")
+	for s := range str {
 		d.V.P.SetLock(s, true)
 	}
 	return "", nil
