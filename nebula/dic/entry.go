@@ -852,12 +852,12 @@ func Entry(r *dic_dto.DicEntry, txt []string, funcV *dic_dto.DicFunc) error {
 			continue
 		}
 
-		if textLen >= 7 && text[:7] == "文本>" {
-			if startIdx := strings.IndexByte(text, '='); startIdx != -1 {
+		if getInput, ok := strings.CutPrefix(text, "文本>"); ok {
+			if startIdx := strings.IndexByte(getInput, '='); startIdx != -1 {
 				endIdx := startIdx + 1
 				if textLen >= endIdx {
-					key := text[7:startIdx]
-					value := text[endIdx:]
+					key := getInput[:startIdx]
+					value := getInput[endIdx:]
 					runText := utils.AnyIsString(r.Val.Text(value))
 					r.Sys_v.Text.Success = true
 					r.Sys_v.Text.ReadValue = true
@@ -867,7 +867,7 @@ func Entry(r *dic_dto.DicEntry, txt []string, funcV *dic_dto.DicFunc) error {
 					continue
 				}
 			}
-			runText := utils.AnyIsString(r.Val.Text(text[7:]))
+			runText := utils.AnyIsString(r.Val.Text(getInput))
 			r.Sys_v.Text.Success = true
 			r.Sys_v.Text.ReadValue = true
 			r.Sys_v.Text.VlaueName = ""
@@ -945,7 +945,6 @@ func Entry(r *dic_dto.DicEntry, txt []string, funcV *dic_dto.DicFunc) error {
 				}
 				continue
 			}
-
 		}
 
 		if text == "--js" {

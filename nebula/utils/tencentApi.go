@@ -50,7 +50,7 @@ func (api *TencentAPI) Request(payload map[string]any) ([]byte, error) {
 	canonicalHeaders := fmt.Sprintf("content-type:application/json; charset=utf-8\nhost:%s\n", api.Host)
 	signedHeaders := "content-type;host"
 
-	payloadJson, _ := json.Marshal(payload)
+	payloadJson, _ := Json.Marshal(payload)
 	hashedRequestPayload := sha256Hex(string(payloadJson))
 
 	canonicalRequest := fmt.Sprintf("%s\n%s\n%s\n%s\n%s\n%s",

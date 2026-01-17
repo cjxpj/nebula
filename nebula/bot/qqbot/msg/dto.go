@@ -159,10 +159,23 @@ type MessageToSend struct {
 	MsgType int    `json:"msg_type"`
 	Content string `json:"content"`
 	// 群富媒体
-	Media *GroupMessageFileResponse `json:"media"`
+	Media *GroupMessageFileResponse `json:"media,omitempty"`
 	// 被动消息必填
-	MsgId  string `json:"msg_id"`
-	MsgSeq int    `json:"msg_seq"`
+	MsgId    string    `json:"msg_id"`
+	MsgSeq   int       `json:"msg_seq"`
+	Markdown *Markdown `json:"markdown,omitempty"`
+}
+
+// Markdown
+type Markdown struct {
+	CustomTemplateId string            `json:"custom_template_id"`
+	Params           []*MarkdownParams `json:"params"`
+}
+
+// MarkdownParams
+type MarkdownParams struct {
+	Key    string   `json:"key"`
+	Values []string `json:"values"`
 }
 
 // MessageResponse 是发送成功后返回的结构体

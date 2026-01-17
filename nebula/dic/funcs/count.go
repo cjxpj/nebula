@@ -68,6 +68,44 @@ func (f *DicFunc) Count() string {
 				return "0"
 			}
 			sumFloat.Quo(oneFloat, twoFloat)
+		case "^", "幂", "次方":
+			// 幂运算：oneFloat ^ round(twoFloat)
+
+			// 1. 指数四舍五入
+			roundedExp := new(big.Float).SetPrec(128).Set(twoFloat)
+			roundedExp.Add(roundedExp, big.NewFloat(0.5))
+
+			expInt := new(big.Int)
+			roundedExp.Int(expInt)
+
+			// 2. 判断负指数
+			isNegative := expInt.Sign() < 0
+			if isNegative {
+				expInt.Abs(expInt)
+			}
+
+			// 3. 快速幂
+			result := new(big.Float).SetPrec(128).SetFloat64(1)
+			base := new(big.Float).SetPrec(128).Set(oneFloat)
+
+			for expInt.Sign() > 0 {
+				if expInt.Bit(0) == 1 {
+					result.Mul(result, base)
+				}
+				base.Mul(base, base)
+				expInt.Rsh(expInt, 1)
+			}
+
+			// 4. 负指数取倒数
+			if isNegative {
+				if result.Cmp(big.NewFloat(0)) == 0 {
+					return "Error"
+				}
+				result.Quo(big.NewFloat(1), result)
+			}
+
+			return result.Text('f', -1)
+
 		case "整除":
 			oneInt := new(big.Int)
 			twoInt := new(big.Int)

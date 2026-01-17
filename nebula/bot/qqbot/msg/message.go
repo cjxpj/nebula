@@ -194,6 +194,46 @@ func (b *QQBot) ReplyGroupVideoMessage(messageID, groupOpenID, video string) (*M
 	return &resp, nil
 }
 
+// 回复群markdown
+func (b *QQBot) ReplyGroupMarkdownMessage(messageID, groupOpenID string, md *Markdown) (*MessageResponse, error) {
+	url := fmt.Sprintf("/v2/groups/%s/messages", groupOpenID)
+
+	b.Count++
+
+	msg := MessageToSend{
+		MsgType:  2,
+		Markdown: md,
+		MsgId:    messageID,
+		MsgSeq:   b.Count,
+	}
+
+	var resp MessageResponse
+	if err := b.Send(url, msg, &resp); err != nil {
+		return nil, err
+	}
+	return &resp, nil
+}
+
+// 回复私聊markdown
+func (b *QQBot) ReplyPrivateMarkdownMessage(messageID, openID string, md *Markdown) (*MessageResponse, error) {
+	url := fmt.Sprintf("/v2/users/%s/messages", openID)
+
+	b.Count++
+
+	msg := MessageToSend{
+		MsgType:  2,
+		Markdown: md,
+		MsgId:    messageID,
+		MsgSeq:   b.Count,
+	}
+
+	var resp MessageResponse
+	if err := b.Send(url, msg, &resp); err != nil {
+		return nil, err
+	}
+	return &resp, nil
+}
+
 // 回复群聊图文
 func (b *QQBot) ReplyGroupImgMessage(messageID, groupOpenID, img, content string) (*MessageResponse, error) {
 	url := fmt.Sprintf("/v2/groups/%s/messages", groupOpenID)

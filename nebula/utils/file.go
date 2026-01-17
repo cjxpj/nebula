@@ -998,7 +998,8 @@ func (fq *FileQueue) WriteFileByte(data []byte) {
 	// 检查文件夹是否存在，不存在则创建
 	dir := filepath.Dir(fq.FileName)
 	if err := os.MkdirAll(dir, 0755); err != nil {
-		Error("创建文件夹失败")
+		fmt.Println("创建文件夹失败，可能是权限问题，也有可能是有相同名字的文件存在占用了。")
+		// Error("创建文件夹失败")
 		return
 	}
 

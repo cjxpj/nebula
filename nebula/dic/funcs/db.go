@@ -53,6 +53,25 @@ func readSqlite(d *dto.DicInputs) (any, error) {
 	}
 	defer db.Close()
 
+	// 仅传入数据库名：返回全部 key
+	if d.Inputs.LenOk(1) {
+		rows, err := db.Query(`SELECT key FROM fs_files`)
+		if err != nil {
+			return "[]", nil
+		}
+		defer rows.Close()
+
+		keys := make([]string, 0)
+		for rows.Next() {
+			var k string
+			if err := rows.Scan(&k); err == nil {
+				keys = append(keys, k)
+			}
+		}
+		return utils.AnyToString(keys), nil
+	}
+
+	// 读取指定 key
 	key := d.Inputs.String(2)
 	defaultValue := d.Inputs.String(3)
 

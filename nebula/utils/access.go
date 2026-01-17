@@ -59,7 +59,7 @@ func Post(inputs []string) string {
 
 		if inputsLen == 3 {
 			var headers map[string]string
-			if err := json.Unmarshal([]byte(inputs[2]), &headers); err == nil {
+			if err := Json.Unmarshal([]byte(inputs[2]), &headers); err == nil {
 				for key, value := range headers {
 					req.Header.Add(key, value)
 					req.Header.Set(key, value)

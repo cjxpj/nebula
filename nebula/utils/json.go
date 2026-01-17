@@ -1,8 +1,10 @@
 package utils
 
-import jsoniter "github.com/json-iterator/go"
+import (
+	jsoniter "github.com/json-iterator/go"
+)
 
-var json = jsoniter.Config{
+var Json = jsoniter.Config{
 	EscapeHTML: false, // 禁用 HTML 转义
 }.Froze()
 
@@ -10,7 +12,7 @@ var json = jsoniter.Config{
 func IsJSON(s string) bool {
 	var js map[string]any
 	var jss []any
-	if json.Unmarshal([]byte(s), &js) == nil || json.Unmarshal([]byte(s), &jss) == nil {
+	if Json.Unmarshal([]byte(s), &js) == nil || Json.Unmarshal([]byte(s), &jss) == nil {
 		return true
 	}
 	return false
@@ -20,10 +22,10 @@ func IsJSON(s string) bool {
 func IsJSONResult(s string) any {
 	var js map[string]any
 	var jss []any
-	if json.Unmarshal([]byte(s), &js) == nil {
+	if Json.Unmarshal([]byte(s), &js) == nil {
 		return js
 	}
-	if json.Unmarshal([]byte(s), &jss) == nil {
+	if Json.Unmarshal([]byte(s), &jss) == nil {
 		return jss
 	}
 	return nil
@@ -31,5 +33,5 @@ func IsJSONResult(s string) any {
 
 // 编码
 func Marshal(v any) ([]byte, error) {
-	return json.Marshal(v)
+	return Json.Marshal(v)
 }

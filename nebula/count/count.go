@@ -205,6 +205,34 @@ func (i *Interpreter) Eat(t string) {
 	i.next()
 }
 
+/* ---------- 工具 ---------- */
+
+func intToFloat(i *big.Int) *big.Float {
+	return new(big.Float).SetInt(i)
+}
+
+func floatToIntRound(f *big.Float) *big.Int {
+	tmp := new(big.Float).Copy(f)
+	if f.Sign() >= 0 {
+		tmp.Add(tmp, big.NewFloat(0.5))
+	} else {
+		tmp.Sub(tmp, big.NewFloat(0.5))
+	}
+	i, _ := tmp.Int(nil)
+	return i
+}
+
+func toIntRound(v any) (*big.Int, bool) {
+	switch n := v.(type) {
+	case *big.Int:
+		return n, true
+	case *big.Float:
+		return floatToIntRound(n), true
+	default:
+		return nil, false
+	}
+}
+
 /* ---------- Factor ---------- */
 
 func (i *Interpreter) Factor() any {
@@ -246,10 +274,6 @@ func (i *Interpreter) Factor() any {
 /* ---------- Power ---------- */
 
 func (i *Interpreter) Power() any {
-	if i.Err != nil || i.CurrentToken == nil {
-		return nil
-	}
-
 	left := i.Factor()
 	if i.Err != nil || i.CurrentToken == nil {
 		return left
@@ -259,25 +283,47 @@ func (i *Interpreter) Power() any {
 		i.Eat(POW)
 		right := i.Power()
 
-		l, ok1 := left.(*big.Int)
-		r, ok2 := right.(*big.Int)
-		if !ok1 || !ok2 {
-			i.Err = errors.New("^ 仅支持整数")
+		var lInt, rInt *big.Int
+
+		switch v := left.(type) {
+		case *big.Int:
+			lInt = v
+		case *big.Float:
+			lInt = floatToIntRound(v)
+		default:
+			i.Err = errors.New("^ 左操作数非法")
 			return nil
 		}
-		return new(big.Int).Exp(l, r, nil)
+
+		switch v := right.(type) {
+		case *big.Int:
+			rInt = v
+		case *big.Float:
+			rInt = floatToIntRound(v)
+		default:
+			i.Err = errors.New("^ 右操作数非法")
+			return nil
+		}
+
+		if rInt.Sign() < 0 {
+			i.Err = errors.New("幂指数不能为负数")
+			return nil
+		}
+
+		return new(big.Int).Exp(lInt, rInt, nil)
 	}
+
 	return left
 }
 
 /* ---------- Term ---------- */
 
 func (i *Interpreter) Term() any {
+	result := i.Power()
 	if i.Err != nil {
 		return nil
 	}
 
-	result := i.Power()
 	for i.CurrentToken != nil &&
 		(i.CurrentToken.Type == MUL || i.CurrentToken.Type == DIV) {
 
@@ -285,41 +331,63 @@ func (i *Interpreter) Term() any {
 		i.Eat(op)
 		rhs := i.Power()
 
-		if i.Err != nil {
-			return nil
-		}
-
 		switch l := result.(type) {
+
 		case *big.Int:
-			r := rhs.(*big.Int)
-			if op == MUL {
-				result = l.Mul(l, r)
-			} else {
-				result = l.Div(l, r)
+			switch r := rhs.(type) {
+			case *big.Int:
+				if op == MUL {
+					result = l.Mul(l, r)
+				} else {
+					result = l.Div(l, r)
+				}
+			case *big.Float:
+				lf := intToFloat(l)
+				if op == MUL {
+					result = lf.Mul(lf, r)
+				} else {
+					result = lf.Quo(lf, r)
+				}
+			default:
+				i.Err = errors.New("非法乘除")
+				return nil
 			}
+
 		case *big.Float:
-			r := rhs.(*big.Float)
-			if op == MUL {
-				result = l.Mul(l, r)
-			} else {
-				result = l.Quo(l, r)
+			var rf *big.Float
+			switch r := rhs.(type) {
+			case *big.Float:
+				rf = r
+			case *big.Int:
+				rf = intToFloat(r)
+			default:
+				i.Err = errors.New("非法乘除")
+				return nil
 			}
+
+			if op == MUL {
+				result = l.Mul(l, rf)
+			} else {
+				result = l.Quo(l, rf)
+			}
+
 		default:
 			i.Err = errors.New("非法 Term")
 			return nil
 		}
 	}
+
 	return result
 }
 
 /* ---------- Expr ---------- */
 
 func (i *Interpreter) Expr() any {
+	result := i.Term()
 	if i.Err != nil {
 		return nil
 	}
 
-	result := i.Term()
 	for i.CurrentToken != nil &&
 		(i.CurrentToken.Type == PLUS || i.CurrentToken.Type == MINUS) {
 
@@ -327,41 +395,63 @@ func (i *Interpreter) Expr() any {
 		i.Eat(op)
 		rhs := i.Term()
 
-		if i.Err != nil {
-			return nil
-		}
-
 		switch l := result.(type) {
+
 		case *big.Int:
-			r := rhs.(*big.Int)
-			if op == PLUS {
-				result = l.Add(l, r)
-			} else {
-				result = l.Sub(l, r)
+			switch r := rhs.(type) {
+			case *big.Int:
+				if op == PLUS {
+					result = l.Add(l, r)
+				} else {
+					result = l.Sub(l, r)
+				}
+			case *big.Float:
+				lf := intToFloat(l)
+				if op == PLUS {
+					result = lf.Add(lf, r)
+				} else {
+					result = lf.Sub(lf, r)
+				}
+			default:
+				i.Err = errors.New("非法加减")
+				return nil
 			}
+
 		case *big.Float:
-			r := rhs.(*big.Float)
-			if op == PLUS {
-				result = l.Add(l, r)
-			} else {
-				result = l.Sub(l, r)
+			var rf *big.Float
+			switch r := rhs.(type) {
+			case *big.Float:
+				rf = r
+			case *big.Int:
+				rf = intToFloat(r)
+			default:
+				i.Err = errors.New("非法加减")
+				return nil
 			}
+
+			if op == PLUS {
+				result = l.Add(l, rf)
+			} else {
+				result = l.Sub(l, rf)
+			}
+
 		default:
 			i.Err = errors.New("非法 Expr")
 			return nil
 		}
 	}
+
 	return result
 }
 
 /* ---------- Shift ---------- */
 
 func (i *Interpreter) Shift() any {
+	result := i.Expr()
 	if i.Err != nil {
 		return nil
 	}
 
-	result := i.Expr()
 	for i.CurrentToken != nil &&
 		(i.CurrentToken.Type == SHL || i.CurrentToken.Type == SHR) {
 
@@ -369,19 +459,25 @@ func (i *Interpreter) Shift() any {
 		i.Eat(op)
 		rhs := i.Expr()
 
-		l, ok1 := result.(*big.Int)
-		r, ok2 := rhs.(*big.Int)
+		l, ok1 := toIntRound(result)
+		r, ok2 := toIntRound(rhs)
 		if !ok1 || !ok2 {
-			i.Err = errors.New("位移仅支持整数")
+			i.Err = errors.New("位移操作数非法")
+			return nil
+		}
+
+		if r.Sign() < 0 {
+			i.Err = errors.New("位移位数不能为负")
 			return nil
 		}
 
 		if op == SHL {
-			result = l.Lsh(l, uint(r.Int64()))
+			result = new(big.Int).Lsh(l, uint(r.Int64()))
 		} else {
-			result = l.Rsh(l, uint(r.Int64()))
+			result = new(big.Int).Rsh(l, uint(r.Int64()))
 		}
 	}
+
 	return result
 }
 
@@ -411,8 +507,15 @@ func RunCountText(v *dto.DicVal, content any) any {
 		}
 		res, err := Count(raw)
 		if err != nil {
-			panic(fmt.Sprintf("Count 失败: %v", err))
-			// return "[" + val + "]"
+			switch err.Error() {
+			case "非法字符", "Factor 错误":
+				return "[" + val + "]"
+			}
+			if strings.HasPrefix(text, "[") && strings.HasSuffix(text, "]") {
+				fmt.Println("报错内容：", val)
+				panic(fmt.Sprintf("Count 失败: %v", err))
+			}
+			return "[" + val + "]"
 		}
 		switch n := res.(type) {
 		case *big.Int:

@@ -95,6 +95,47 @@ func sqliteRead(d *dto.DicInputs) (any, error) {
 	}
 
 	rawTable := d.Inputs.String(2)
+
+	if d.Inputs.LenOk(1) {
+		rows, err := db.Query(`
+		SELECT name
+		FROM sqlite_master
+		WHERE type='table'
+		  AND name NOT LIKE 'sqlite_%'
+		ORDER BY name
+	`)
+		if err != nil {
+			return nil, nil
+		}
+		defer rows.Close()
+
+		tables := make([]string, 0)
+		for rows.Next() {
+			var name string
+			if err := rows.Scan(&name); err == nil {
+				tables = append(tables, name)
+			}
+		}
+		return utils.AnyToString(tables), nil
+	}
+
+	if d.Inputs.LenOk(2) {
+		rows, err := db.Query(fmt.Sprintf(`SELECT key FROM %s`, rawTable))
+		if err != nil {
+			return "[]", nil
+		}
+		defer rows.Close()
+
+		keys := make([]string, 0)
+		for rows.Next() {
+			var k string
+			if err := rows.Scan(&k); err == nil {
+				keys = append(keys, k)
+			}
+		}
+		return utils.AnyToString(keys), nil
+	}
+
 	key := d.Inputs.String(3)
 	defaultValue := d.Inputs.String(4)
 
@@ -126,7 +167,7 @@ func sqliteExec(d *dto.DicInputs) (any, error) {
 	Output := SqliteRes{}
 	sqlr := d.Inputs.String(2)
 	// 判断是否是查询语句
-	isQuery := strings.HasPrefix(strings.ToUpper(strings.TrimSpace(sqlr))[:6], "SELECT")
+	isQuery := strings.HasPrefix(strings.ToUpper(strings.TrimSpace(sqlr)), "SELECT")
 
 	var stmt *sql.Stmt
 	var err error

@@ -463,8 +463,7 @@ func (v *DicVal) Text(content any) any {
 			}
 		}
 
-		if strings.HasPrefix(val, "val") && len(val) == 4 {
-			getstr := val[3:]
+		if getstr, ok := strings.CutPrefix(val, "val"); ok && getstr != "" {
 			switch getstr {
 			case "0":
 				return "$"
@@ -486,6 +485,8 @@ func (v *DicVal) Text(content any) any {
 				return "]"
 			case "9":
 				return "\r\n"
+			case "10":
+				return "\r"
 			}
 		}
 

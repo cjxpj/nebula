@@ -149,12 +149,14 @@ func Setup() {
 
 		f{Name: "sqlite.打开", L: "1|2", Fn: sqliteOpen},
 		f{Name: "sqlite.写", L: "3|4", Fn: sqliteWrite},
-		f{Name: "sqlite.读", L: "3|4", Fn: sqliteRead},
+		f{Name: "sqlite.读", L: "1|2|3|4", Fn: sqliteRead},
 		f{Name: "sqlite.执行", L: "2..", Fn: sqliteExec},
 		f{Name: "关闭数据库", L: "1", Fn: dbClose},
 
-		f{Name: "读.sqlite", L: "2|3", Fn: readSqlite},
+		f{Name: "读.sqlite", L: "1|2|3", Fn: readSqlite},
 		f{Name: "写.sqlite", L: "2|3", Fn: writeSqlite},
+
+		f{Name: "MD转义", L: "1", Fn: mdEscape},
 	); err != nil {
 		fmt.Println(err)
 	}

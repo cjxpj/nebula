@@ -1637,19 +1637,43 @@ $mysql 数据库名称 %sql% 绑定内容1 绑定内容2$
 ```
 
 ### SQLITE 📦
+
+记得文件是db后缀
+```
+连接:$sqlite.打开 [文件] [默认值]$
+$sqlite.读 [连接] [表单] [键] [值]$
+// 获取全部键
+$sqlite.读 [连接] [表单]$
+// 获取全部表单
+$sqlite.读 [连接]$
+$sqlite.写 [连接] [表单] [键] [值]$
+$sqlite.执行 [连接] [sql] [绑定]...$
+$关闭数据库 [连接]$
+```
+
+快捷读写操作
+```
+// 默认在fs_flies表单下读写
+$读.sqlite [文件] [键] [值]$
+// 获取全部键
+$读.sqlite [文件]$
+$写.sqlite [文件] [键] [值]$
+```
+
+执行语句示例
 ```
 查询语句
 c:"""
 SELECT name, email FROM users
 """
-$sqlite database/文件.db %c%$
+$sqlite.执行 %db% %c%$
 
 
 插入语句
 b:"""
 INSERT INTO users (name, email) VALUES (?, ?)
 """
-$sqlite database/文件.db %b% a b$
+$sqlite.执行 %db% %b% a b$
 
 创建表语句
 a:"""
@@ -1658,29 +1682,7 @@ CREATE TABLE IF NOT EXISTS users (
 	email TEXT NOT NULL UNIQUE
 )
 """
-$sqlite database/文件.db %a%$
-```
-
-将数据库存放在线程变量_DB_SQLITE，想要直接清空直接在线程变量设置空即可，或者在程序重新启动时候会自动清空。
-```
-a:"""
-CREATE TABLE IF NOT EXISTS users (
-	name TEXT NOT NULL,
-	email TEXT NOT NULL UNIQUE
-)
-"""
-b:"""
-INSERT INTO users (name, email) VALUES (?, ?)
-"""
-c:"""
-SELECT name, email FROM users
-"""
-// 获取全部表
-d:PRAGMA table_list
-$sqlite :内存: %a%$%换行%
-$sqlite :内存: %b% a b$%换行%
-$sqlite :内存: %c%$%换行%
-$sqlite :内存: %d%$
+$sqlite.执行 %db% %a%$
 ```
 
 ### 腾讯接口 🔗

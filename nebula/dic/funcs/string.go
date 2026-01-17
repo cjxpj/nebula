@@ -524,3 +524,8 @@ func coolText(d *dto.DicInputs) (any, error) {
 
 	return nil, errors.New("字体不存在")
 }
+
+// MD转义
+func mdEscape(d *dto.DicInputs) (any, error) {
+	return utils.MDEscape(d.Inputs.String(1)), nil
+}

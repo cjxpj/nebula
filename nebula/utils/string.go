@@ -8,6 +8,7 @@ import (
 	"math/big"
 	"regexp"
 	"strconv"
+	"strings"
 
 	"golang.org/x/text/encoding/charmap"
 	"golang.org/x/text/encoding/japanese"
@@ -70,7 +71,7 @@ func AnyToString(data any) string {
 		return strconv.Itoa(num)
 	}
 
-	b, err := json.Marshal(data)
+	b, err := Json.Marshal(data)
 	if err != nil {
 		return "" // 或者返回 fmt.Sprintf("%v", data) 做 fallback
 	}
@@ -141,4 +142,29 @@ func RandomString(str string, n int) string {
 		b[i] = str[idx.Int64()]
 	}
 	return string(b)
+}
+
+var mdEscaper = strings.NewReplacer(
+	`\`, `\\`, // 反斜杠本身
+	`*`, `\*`, // 强调、列表
+	`_`, `\_`, // 强调
+	`[`, `\[`, // 链接、图片
+	`]`, `\]`,
+	`(`, `\(`,
+	`)`, `\)`,
+	`#`, `\#`, // 标题
+	`+`, `\+`, // 列表
+	`-`, `\-`, // 列表、分隔线
+	`.`, `\.`, // 有序列表、段号
+	`!`, `\!`, // 图片
+	`<`, `\<`, // 自动链接、HTML
+	`>`, `\>`,
+	`|`, `\|`, // 表格
+	`{`, `\{`, // 某些扩展语法
+	`}`, `\}`,
+)
+
+// MDEscape 对任意文本做 Markdown 字符转义，返回可直接插入 .md 的字符串
+func MDEscape(s string) string {
+	return mdEscaper.Replace(s)
 }

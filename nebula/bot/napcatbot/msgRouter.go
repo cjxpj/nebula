@@ -576,13 +576,14 @@ func napCatBOTGroupRun(msgData *MessagePayload) {
 	}
 	for _, v := range botDicList {
 		go func() {
-			FileData, err := utils.NewFileQueue(dto.ServerConfig.NapCatBot.FilePath + "/dic/" + v).ReadFromFile()
+			dicPath := dto.ServerConfig.NapCatBot.FilePath + "/dic/" + v
+			FileData, err := utils.NewFileQueue(dicPath).ReadFromFile()
 			if err != nil {
 				return
 			}
 
 			// 回复消息
-			dic := dic_dto.NewDic(dto.ServerConfig.NapCatBot.FilePath, FileData).
+			dic := dic_dto.NewDic(dicPath, FileData).
 				SetGlobal_v(valData)
 
 			dic.SetFunc("调用", dto.DicFunc{

@@ -64,14 +64,17 @@ func LoadConfig_qq(QQBot_Config *ini.Section) {
 			API:      qqbot_msg.NewQQBot(appId, secret),
 		}
 		BotDic := utils.NewFileQueue(dicPath)
-		if !BotDic.FileExists() {
+		if !BotDic.DirExists() {
+			BotDic.SetPath(dicPath + "/dic/dic.n")
 			BotDic.WriteFileByte(appfiles.GetFile("dic/QQBot.n"))
+			// 主人文件
+			BotDic.SetPath(dicPath + "/admin.txt")
+			BotDic.WriteFileByte([]byte(""))
 		}
 	}
 }
 
 func LoadConfig_yunhu(YunHu_Config *ini.Section) {
-
 	if ok, _ := YunHu_Config.Key("启用").Bool(); ok {
 		secret := YunHu_Config.Key("密钥").String()
 		dicPath := YunHu_Config.Key("词库").String()
