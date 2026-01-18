@@ -14,7 +14,7 @@ import (
 
 // 启动服务器
 func Start(infoServerPath string) []string {
-	res := make([]string, 2)
+	res := make([]string, 0)
 	if dto.ServerConfig.Ngrok != nil {
 		authToken := dto.ServerConfig.Ngrok.Token
 		ngrokUrl := dto.ServerConfig.Ngrok.Addr

@@ -365,7 +365,7 @@ func RunFors(jsonData []*dto.BuildDic, trigger string, runNum int) ([]string, st
 }
 
 // 运行网页词库
-func (t *Build) Web(lines []string) *dto.BuildValue {
+func Web(dicPath string, lines []string) *dto.BuildValue {
 
 	var (
 		// 多行注释
@@ -453,7 +453,7 @@ func (t *Build) Web(lines []string) *dto.BuildValue {
 					FileData = str
 				}
 
-				z := t.SplitText(FileData)
+				z := BuildDic(dicPath, FileData)
 				funcText = append(funcText, z.LocalStatic...)
 
 				chajianText = append(chajianText, z.LocalFunc...)
@@ -477,11 +477,8 @@ func (t *Build) Web(lines []string) *dto.BuildValue {
 	return result
 }
 
-func (t *Build) SplitText(text string) *dto.BuildValue {
+func BuildDic(dicPath, text string) *dto.BuildValue {
 	// 词条总数据
-	// 将所有的\r\n替换为\n
-	// text = strings.ReplaceAll(text, "\r\n", "\n")
-
 	// 现在可以安全地使用\n作为分隔符
 	lines := strings.Split(text, "\n")
 
@@ -557,7 +554,7 @@ func (t *Build) SplitText(text string) *dto.BuildValue {
 				suojin = false
 			}
 			if lineLen > 10 && line[:10] == "//@打印=" {
-				fmt.Println("["+t.Path+"]", line[10:])
+				fmt.Println("["+dicPath+"]", line[10:])
 			}
 			if lineLen > 13 && line[:13] == "//@函数头=" {
 				fHeaderName = line[13:]
@@ -615,7 +612,7 @@ func (t *Build) SplitText(text string) *dto.BuildValue {
 						FileData = str
 					}
 
-					z := t.SplitText(FileData)
+					z := BuildDic(dicPath, FileData)
 					funcText = append(funcText, z.LocalStatic...)
 
 					if fHeaderName != "" {
@@ -776,7 +773,7 @@ func (t *Build) SplitText(text string) *dto.BuildValue {
 	}
 
 	// 打印普通json
-	// dd, derr := json.MarshalIndent(result, "", "  ")
+	// dd, derr := utils.Json.MarshalIndent(result, "", "  ")
 	// if derr != nil {
 	// 	fmt.Println("JSON 序列化失败:", derr)
 	// } else {

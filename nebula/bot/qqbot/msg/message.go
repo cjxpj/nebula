@@ -214,6 +214,54 @@ func (b *QQBot) ReplyGroupMarkdownMessage(messageID, groupOpenID string, md *Mar
 	return &resp, nil
 }
 
+// 回复群任意markdown
+func (b *QQBot) ReplyGroupAnyMarkdownMessage(messageID, groupOpenID, text string) (*MessageResponse, error) {
+	url := fmt.Sprintf("/v2/groups/%s/messages", groupOpenID)
+
+	b.Count++
+
+	md := &Markdown{
+		Content: text,
+	}
+
+	msg := MessageToSend{
+		MsgType:  2,
+		Markdown: md,
+		MsgId:    messageID,
+		MsgSeq:   b.Count,
+	}
+
+	var resp MessageResponse
+	if err := b.Send(url, msg, &resp); err != nil {
+		return nil, err
+	}
+	return &resp, nil
+}
+
+// 回复私聊任意markdown
+func (b *QQBot) ReplyPrivateAnyMarkdownMessage(messageID, openID, text string) (*MessageResponse, error) {
+	url := fmt.Sprintf("/v2/users/%s/messages", openID)
+
+	b.Count++
+
+	md := &Markdown{
+		Content: text,
+	}
+
+	msg := MessageToSend{
+		MsgType:  2,
+		Markdown: md,
+		MsgId:    messageID,
+		MsgSeq:   b.Count,
+	}
+
+	var resp MessageResponse
+	if err := b.Send(url, msg, &resp); err != nil {
+		return nil, err
+	}
+	return &resp, nil
+}
+
 // 回复私聊markdown
 func (b *QQBot) ReplyPrivateMarkdownMessage(messageID, openID string, md *Markdown) (*MessageResponse, error) {
 	url := fmt.Sprintf("/v2/users/%s/messages", openID)

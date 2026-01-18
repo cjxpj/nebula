@@ -168,8 +168,9 @@ type MessageToSend struct {
 
 // Markdown
 type Markdown struct {
-	CustomTemplateId string            `json:"custom_template_id"`
-	Params           []*MarkdownParams `json:"params"`
+	Content          string            `json:"content,omitempty"`
+	CustomTemplateId string            `json:"custom_template_id,omitempty"`
+	Params           []*MarkdownParams `json:"params,omitempty"`
 }
 
 // MarkdownParams

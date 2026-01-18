@@ -5,6 +5,7 @@ import (
 
 	"github.com/cjxpj/nebula/appfiles"
 	"github.com/cjxpj/nebula/dto"
+	"github.com/cjxpj/nebula/run"
 	"github.com/cjxpj/nebula/utils"
 )
 
@@ -117,16 +118,18 @@ func (WD *WebDic) Set_v(v *dto.Val) *WebDic {
 }
 
 func NewDic(path, text string) *Dic {
-	// 去除注释
-	// 解密
+	// 去除注释后解密
 	str, err := utils.Decrypt(utils.RemoveComments(text), appfiles.Key)
 	if err == nil {
 		text = str
 	}
 
+	val := dto.NewDicVal()
+	SplitText := run.BuildDic(path, text)
+
 	return &Dic{
-		Text:      text,
-		Val:       dto.NewDicVal(),
+		Data:      SplitText,
+		Val:       val,
 		Id:        0,
 		Path:      path,
 		FuncText:  nil,

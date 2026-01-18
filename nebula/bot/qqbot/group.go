@@ -128,8 +128,17 @@ func qqBOTGroupATRun(payload *qqbot_msg.Payload) {
 				}})
 
 			dic.SetFunc("发送MD", dto.DicFunc{
-				L: "2..",
+				L: "1..",
 				Fn: func(d *dto.DicInputs) (any, error) {
+
+					if d.Inputs.LenOk(1) {
+						_, mErr := dto.ServerConfig.QQBot.API.
+							ReplyGroupAnyMarkdownMessage(m.ID, m.GroupOpenID, d.Inputs.String(1))
+						if mErr != nil {
+							fmt.Println("QQBot回复失败", mErr)
+						}
+						return "", nil
+					}
 
 					// 2 开始，必须是 key-value 成对
 					if (d.Inputs.Len()-1)%2 != 0 {

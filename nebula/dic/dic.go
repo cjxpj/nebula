@@ -116,10 +116,6 @@ func (m *dicImpl) WebPHPDicRun(WD *dic_dto.WebDic) string {
 	// 返回数据
 	var result string
 
-	t := &run.Build{
-		Val: WD.Val,
-	}
-
 	dicRun := dic_dto.NewRunDicEntry().
 		SetV(WD.Val)
 
@@ -127,7 +123,7 @@ func (m *dicImpl) WebPHPDicRun(WD *dic_dto.WebDic) string {
 		// fmt.Println("词库文本:", text)
 		// 词条总数据
 		lines := strings.Split(text, "\n")
-		SplitText := t.Web(lines)
+		SplitText := run.Web(WD.Path, lines)
 		dicRun.SetDic(SplitText)
 		dicRun.Dic.MyFunc = WD.MyFunc
 		// fmt.Println("词库:", SplitText)
@@ -203,30 +199,23 @@ func (m *dicImpl) DicRunPrivate(D *dic_dto.Dic, trigger string) string {
 // 运行内部-自义定局部变量
 func (m *dicImpl) DicRunPrivateVal(D *dic_dto.Dic, trigger string, v *dto.DicVal) string {
 
-	t := &run.Build{
-		Val:  v,
-		Path: D.Path,
-	}
-
-	SplitText := t.SplitText(D.Text)
-
 	if D.FuncText != nil {
-		SplitText.LocalFunc = append(SplitText.LocalFunc, D.FuncText...)
+		D.Data.LocalFunc = append(D.Data.LocalFunc, D.FuncText...)
 	}
 
 	if D.ClassText != nil {
 		for key, val := range D.ClassText {
-			SplitText.LocalClass[key] = val
+			D.Data.LocalClass[key] = val
 		}
 	}
 
-	GetDic, GetDicTrigger, _, _ := run.RunFor(SplitText.LocalStatic, trigger, 0)
+	GetDic, GetDicTrigger, _, _ := run.RunFor(D.Data.LocalStatic, trigger, 0)
 	D.Val.P.Set("触发词", trigger)
 	D.Val.P.Set("触发", GetDicTrigger)
 
 	dicRun := dic_dto.NewRunDicEntry().
 		SetV(D.Val).
-		SetDic(SplitText)
+		SetDic(D.Data)
 	dicRun.Dic.MyFunc = D.MyFunc
 
 	return m.DicRunLine(dicRun, GetDic)
@@ -254,25 +243,19 @@ func (m *dicImpl) DicRun(D *dic_dto.Dic, trigger string) string {
 	// 执行返回数据
 	var RunDic string
 
-	t := &run.Build{
-		Val:  D.Val,
-		Path: D.Path,
-	}
-
-	SplitText := t.SplitText(D.Text)
 	// fmt.Println("词库文本:", SplitText)
 
 	if D.FuncText != nil {
-		SplitText.LocalFunc = append(SplitText.LocalFunc, D.FuncText...)
+		D.Data.LocalFunc = append(D.Data.LocalFunc, D.FuncText...)
 	}
 
 	if D.ClassText != nil {
-		maps.Copy(SplitText.LocalClass, D.ClassText)
+		maps.Copy(D.Data.LocalClass, D.ClassText)
 	}
 
-	DicHaderText = SplitText.Head
+	DicHaderText = D.Data.Head
 
-	DicText = SplitText.Dic
+	DicText = D.Data.Dic
 
 	GetDic, GetDicTrigger, _, _ := run.RunFor(DicText, trigger, 0)
 	D.Val.P.Set("触发词", trigger)
@@ -280,7 +263,7 @@ func (m *dicImpl) DicRun(D *dic_dto.Dic, trigger string) string {
 
 	dicRun := dic_dto.NewRunDicEntry().
 		SetV(D.Val).
-		SetDic(SplitText)
+		SetDic(D.Data)
 	dicRun.Dic.MyFunc = D.MyFunc
 
 	RunDichader := m.DicRunLine(dicRun, DicHaderText)

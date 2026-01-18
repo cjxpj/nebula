@@ -3,7 +3,7 @@ package dic_dto
 import "github.com/cjxpj/nebula/dto"
 
 type Dic struct {
-	Text      string
+	Data      *dto.BuildValue
 	Val       *dto.DicVal
 	Id        int16
 	Path      string
