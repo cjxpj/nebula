@@ -117,6 +117,14 @@ func (WD *WebDic) Set_v(v *dto.Val) *WebDic {
 	return WD
 }
 
+func RunDic(path string) (*Dic, error) {
+	d, err := utils.NewFileQueue(path).ReadFromFile()
+	if err != nil {
+		return nil, err
+	}
+	return NewDic(path, d), nil
+}
+
 func NewDic(path, text string) *Dic {
 	// 去除注释后解密
 	str, err := utils.Decrypt(utils.RemoveComments(text), appfiles.Key)

@@ -31,7 +31,7 @@ func dicWebRouter(w http.ResponseWriter, r *http.Request) {
 
 	queryParams := r.URL.Query()
 
-	ip := getClientIP(r)
+	ip := utils.GetClientIP(r)
 
 	if s.Ws != nil && s.Ws.Open && path == s.Ws.Addr {
 		// 检查是否为 WebSocket 升级请求

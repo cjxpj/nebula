@@ -52,9 +52,9 @@ func loadConfig() {
 		file.WriteFileByte(appfiles.GetFile("font.ttf"))
 	}
 
-	file.SetPath(dto.DIC_CONFIG_PATH)
+	file.SetPath(dto.CONFIG_SYSTEM_PATH)
 	if !file.FileExists() {
-		file.WriteFileByte(appfiles.GetFile("dic/system/config.ini"))
+		file.WriteFileByte(appfiles.GetFile("dic/system/system.ini"))
 	}
 
 	httpData, err := file.LoadIni()
@@ -87,9 +87,9 @@ func loadConfig() {
 		}
 	}
 
-	file.SetPath(dto.BOT_CONFIG_PATH)
+	file.SetPath(dto.CONFIG_PATH)
 	if !file.FileExists() {
-		file.WriteFileByte(appfiles.GetFile("dic/system/bot_config.ini"))
+		file.WriteFileByte(appfiles.GetFile("dic/system/config.ini"))
 	}
 
 	botData, err := file.LoadIni()

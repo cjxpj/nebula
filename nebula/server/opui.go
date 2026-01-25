@@ -92,7 +92,7 @@ func OpUI(w http.ResponseWriter, r *http.Request, getpath string) {
 		w.Header().Set("Content-Type", "application/json; charset=utf-8")
 		switch h.Type {
 		case "get_server":
-			ff := utils.NewFileQueue(dto.DIC_CONFIG_PATH)
+			ff := utils.NewFileQueue(dto.CONFIG_SYSTEM_PATH)
 			f, err := ff.LoadIni()
 			if err != nil {
 				utils.ErrorStop("系统配置不存在")
@@ -115,7 +115,7 @@ func OpUI(w http.ResponseWriter, r *http.Request, getpath string) {
 				http.Error(w, `{"status":"error","error":"invalid json"}`, http.StatusBadRequest)
 				return
 			}
-			ff := utils.NewFileQueue(dto.DIC_CONFIG_PATH)
+			ff := utils.NewFileQueue(dto.CONFIG_SYSTEM_PATH)
 			f, err := ff.LoadIni()
 			if err != nil {
 				utils.ErrorStop("系统配置不存在")
@@ -131,7 +131,7 @@ func OpUI(w http.ResponseWriter, r *http.Request, getpath string) {
 			return
 
 		case "get_websocket":
-			ff := utils.NewFileQueue(dto.DIC_CONFIG_PATH)
+			ff := utils.NewFileQueue(dto.CONFIG_SYSTEM_PATH)
 			f, err := ff.LoadIni()
 			if err != nil {
 				utils.ErrorStop("系统配置不存在")
@@ -151,7 +151,7 @@ func OpUI(w http.ResponseWriter, r *http.Request, getpath string) {
 				http.Error(w, `{"status":"error","error":"invalid json"}`, http.StatusBadRequest)
 				return
 			}
-			ff := utils.NewFileQueue(dto.DIC_CONFIG_PATH)
+			ff := utils.NewFileQueue(dto.CONFIG_SYSTEM_PATH)
 			f, err := ff.LoadIni()
 			if err != nil {
 				utils.ErrorStop("系统配置不存在")
@@ -175,7 +175,7 @@ func OpUI(w http.ResponseWriter, r *http.Request, getpath string) {
 			return
 
 		case "get_ngrok":
-			ff := utils.NewFileQueue(dto.DIC_CONFIG_PATH)
+			ff := utils.NewFileQueue(dto.CONFIG_SYSTEM_PATH)
 			f, err := ff.LoadIni()
 			if err != nil {
 				utils.ErrorStop("系统配置不存在")
@@ -195,7 +195,7 @@ func OpUI(w http.ResponseWriter, r *http.Request, getpath string) {
 				http.Error(w, `{"status":"error","error":"invalid json"}`, http.StatusBadRequest)
 				return
 			}
-			ff := utils.NewFileQueue(dto.DIC_CONFIG_PATH)
+			ff := utils.NewFileQueue(dto.CONFIG_PATH)
 			f, err := ff.LoadIni()
 			if err != nil {
 				utils.ErrorStop("系统配置不存在")
@@ -209,7 +209,7 @@ func OpUI(w http.ResponseWriter, r *http.Request, getpath string) {
 			return
 
 		case "get_qq":
-			ff := utils.NewFileQueue(dto.BOT_CONFIG_PATH)
+			ff := utils.NewFileQueue(dto.CONFIG_PATH)
 			f, err := ff.LoadIni()
 			if err != nil {
 				utils.ErrorStop("系统配置不存在")
@@ -231,7 +231,7 @@ func OpUI(w http.ResponseWriter, r *http.Request, getpath string) {
 				http.Error(w, `{"status":"error","error":"invalid json"}`, http.StatusBadRequest)
 				return
 			}
-			ff := utils.NewFileQueue(dto.BOT_CONFIG_PATH)
+			ff := utils.NewFileQueue(dto.CONFIG_PATH)
 			f, err := ff.LoadIni()
 			if err != nil {
 				utils.ErrorStop("系统配置不存在")
@@ -248,7 +248,7 @@ func OpUI(w http.ResponseWriter, r *http.Request, getpath string) {
 			return
 
 		case "get_napcat":
-			ff := utils.NewFileQueue(dto.BOT_CONFIG_PATH)
+			ff := utils.NewFileQueue(dto.CONFIG_PATH)
 			f, err := ff.LoadIni()
 			if err != nil {
 				utils.ErrorStop("系统配置不存在")
@@ -270,7 +270,7 @@ func OpUI(w http.ResponseWriter, r *http.Request, getpath string) {
 				http.Error(w, `{"status":"error","error":"invalid json"}`, http.StatusBadRequest)
 				return
 			}
-			ff := utils.NewFileQueue(dto.BOT_CONFIG_PATH)
+			ff := utils.NewFileQueue(dto.CONFIG_PATH)
 			f, err := ff.LoadIni()
 			if err != nil {
 				utils.ErrorStop("系统配置不存在")
@@ -287,7 +287,7 @@ func OpUI(w http.ResponseWriter, r *http.Request, getpath string) {
 			return
 
 		case "get_yunhu":
-			ff := utils.NewFileQueue(dto.BOT_CONFIG_PATH)
+			ff := utils.NewFileQueue(dto.CONFIG_PATH)
 			f, err := ff.LoadIni()
 			if err != nil {
 				utils.ErrorStop("系统配置不存在")
@@ -308,7 +308,7 @@ func OpUI(w http.ResponseWriter, r *http.Request, getpath string) {
 				http.Error(w, `{"status":"error","error":"invalid json"}`, http.StatusBadRequest)
 				return
 			}
-			ff := utils.NewFileQueue(dto.BOT_CONFIG_PATH)
+			ff := utils.NewFileQueue(dto.CONFIG_PATH)
 			f, err := ff.LoadIni()
 			if err != nil {
 				utils.ErrorStop("系统配置不存在")
@@ -324,7 +324,7 @@ func OpUI(w http.ResponseWriter, r *http.Request, getpath string) {
 			return
 
 		case "get_feishu":
-			ff := utils.NewFileQueue(dto.BOT_CONFIG_PATH)
+			ff := utils.NewFileQueue(dto.CONFIG_PATH)
 			f, err := ff.LoadIni()
 			if err != nil {
 				utils.ErrorStop("系统配置不存在")
@@ -346,7 +346,7 @@ func OpUI(w http.ResponseWriter, r *http.Request, getpath string) {
 				http.Error(w, `{"status":"error","error":"invalid json"}`, http.StatusBadRequest)
 				return
 			}
-			ff := utils.NewFileQueue(dto.BOT_CONFIG_PATH)
+			ff := utils.NewFileQueue(dto.CONFIG_PATH)
 			f, err := ff.LoadIni()
 			if err != nil {
 

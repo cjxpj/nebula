@@ -22,8 +22,8 @@ func init() {
 	mime.AddExtensionType(".silk", "audio/silk")
 }
 
-const DIC_CONFIG_PATH = "private/system/config.ini"
-const BOT_CONFIG_PATH = "private/system/bot_config.ini"
+const CONFIG_SYSTEM_PATH = "private/system/system.ini"
+const CONFIG_PATH = "private/system/bot_config.ini"
 
 func LoadConfig_napcat(NapCat_Config *ini.Section) {
 	if ok, _ := NapCat_Config.Key("启用").Bool(); ok {
