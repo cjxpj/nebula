@@ -11,8 +11,8 @@ type DicInputs struct {
 	List []any
 }
 
-func NewDicInputs() *DicInputs {
-	return &DicInputs{}
+func NewDicInputs() DicInputs {
+	return DicInputs{}
 }
 
 func (i *DicInputs) Len() int {
@@ -53,7 +53,7 @@ func (i *DicInputs) LenOk(rules ...any) bool {
 //   - 组合 "1|2|3.."
 func matchOne(l int, rule string) bool {
 	// 先按 | 切分组合规则
-	for _, part := range strings.Split(rule, "|") {
+	for part := range strings.SplitSeq(rule, "|") {
 		part = strings.TrimSpace(part)
 		if part == "" {
 			continue

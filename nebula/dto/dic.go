@@ -93,6 +93,51 @@ type BuildDic struct {
 	Text    []string `json:"text"`
 }
 
+// =================================================
+
+type DicLine []string
+
+type DicInfoData struct {
+	Data  *DicInfo `json:"data"`
+	Value *Val     `json:"value"`
+}
+
+type DicInfo struct {
+	Value       *Val                     `json:"变量"`
+	Path        string                   `json:"路径"`
+	Head        DicLine                  `json:"头部"`
+	Dic         []*RegDicLine            `json:"词库"`
+	LocalStatic []*RegDicLine            `json:"内部"`
+	LocalFunc   []*BuildDicFunc          `json:"函数"`
+	LocalClass  map[string]*DicClassInfo `json:"整合包"`
+}
+
+// 词库结构
+type RegDicLine struct {
+	Trigger    string  `json:"触发词"`
+	CodeBloack DicLine `json:"代码块"`
+}
+
+type BuildDicFunc struct {
+	Name   string                                                     `json:"name"`
+	Params []Param                                                    `json:"params"`
+	Text   DicLine                                                    `json:"text"`
+	Func   func(dic *DicInfoData, input utils.DicInputs) (any, error) `json:"-"`
+}
+
+type Param struct {
+	Name    string `json:"name"`
+	Default string `json:"default"`
+}
+
+type DicClassInfo struct {
+	LocalValue  *Val            `json:"变量"`
+	LocalStatic []*RegDicLine   `json:"内部"`
+	LocalFunc   []*BuildDicFunc `json:"函数"`
+}
+
+// =================================================
+
 type DicClass struct {
 	LocalValue  *Val        `json:"变量"`
 	LocalFunc   []*BuildDic `json:"函数"`

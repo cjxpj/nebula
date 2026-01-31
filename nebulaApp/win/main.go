@@ -5,14 +5,14 @@ package main
 import (
 	"context"
 	"fmt"
-	"io"
+	"log"
 	"net/http"
 	"os"
 	"os/exec"
 	"os/signal"
 	"path/filepath"
-	"strings"
 	"syscall"
+	"time"
 
 	"github.com/cjxpj/nebula/appfiles"
 	"github.com/cjxpj/nebula/dic"
@@ -295,32 +295,17 @@ func main() {
 		if argsLen == 4 {
 			triggerWord = args[3]
 		}
-
-		file, err := os.Open(cmdInput)
+		// 计时
+		start := time.Now()
+		d, err := dic_dto.NewDicPro(cmdInput)
 		if err != nil {
-			fmt.Println("打开文件失败:", err)
+			log.Fatal(err)
 			return
 		}
-		defer file.Close()
-
-		var result strings.Builder
-		buf := make([]byte, 1024)
-		for {
-			n, err := file.Read(buf)
-			if n > 0 {
-				result.Write(buf[:n])
-			}
-			if err != nil {
-				if err == io.EOF {
-					break
-				}
-				fmt.Println("读取文件失败:", err)
-				return
-			}
-		}
-
-		results := dic_api.Api.DicRun(dic_dto.NewDic(cmdInput, result.String()), triggerWord)
+		results := dic_api.Api.DicRunPro(d, triggerWord)
 		fmt.Print(results)
+		elapsed := time.Since(start)
+		fmt.Println("执行时间:", elapsed)
 		return
 	default:
 		fmt.Println("未知命令")

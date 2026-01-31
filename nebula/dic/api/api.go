@@ -9,6 +9,10 @@ var Api DicApi
 
 type DicApi = interface {
 	// 执行词库
+	DicRunPro(D *dto.DicInfoData, trigger string) any
+	// 执行词块
+	Execute(D *dto.DicInfoData, txt []string) any
+	// 执行词库
 	DicRun(D *dic_dto.Dic, trigger string) string
 	// 执行词库内部
 	DicRunPrivate(D *dic_dto.Dic, trigger string) string

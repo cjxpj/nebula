@@ -2,6 +2,7 @@ package dic_dto
 
 import (
 	"maps"
+	"os"
 
 	"github.com/cjxpj/nebula/appfiles"
 	"github.com/cjxpj/nebula/dto"
@@ -144,6 +145,15 @@ func NewDic(path, text string) *Dic {
 		ClassText: nil,
 		MyFunc:    make(map[string]dto.DicFunc),
 	}
+}
+
+func NewDicPro(dicPath string) (*dto.DicInfoData, error) {
+	openFile, err := os.Open(dicPath)
+	if err != nil {
+		return nil, err
+	}
+	buildDic := run.Parse(dicPath, openFile)
+	return buildDic, nil
 }
 
 // 执行词库

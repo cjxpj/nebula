@@ -20,11 +20,40 @@ import (
 )
 
 // 函数跟变量
-func Runs(d *dic_dto.DicFunc, text string) string {
+func RunLine(d *dto.DicInfoData, text string) any {
+	var resA any
 	output := run.BuildFuncStr(text, func(valStr []string) (string, bool) {
 		input := utils.NewDicInputs()
 		input.SetString(valStr)
-		resAny, err := Funcs(d, input)
+		resAny, err := RunFuncLine(d, input)
+		if err != nil {
+			log.Printf("[%s]%s：%v", d.Value.Get("_词库路径_"), valStr[0], err)
+		}
+		if resStr, ok := resAny.(string); ok {
+			return resStr, false
+		}
+		return "", false
+	}, func(s string) (string, bool) {
+		resAny := d.Data.Value.Text(d.Value, s)
+		if resStr, ok := resAny.(string); ok {
+			return resStr, false
+		}
+		resA = resAny
+		return "", true
+	})
+	if resA != nil {
+		return resA
+	}
+	return output
+}
+
+// 函数跟变量
+func Runs(d *dic_dto.DicFunc, text string) any {
+	var resA any
+	output := run.BuildFuncStr(text, func(valStr []string) (string, bool) {
+		input := utils.NewDicInputs()
+		input.SetString(valStr)
+		resAny, err := Funcs(d, &input)
 		if err != nil {
 			log.Printf("[%s]%s：%v", d.Val.Get("_词库路径_"), valStr[0], err)
 		}
@@ -33,8 +62,16 @@ func Runs(d *dic_dto.DicFunc, text string) string {
 		}
 		return "", false
 	}, func(s string) (string, bool) {
-		return utils.AnyIsString(d.Val.Text(s)), false
+		resAny := d.Val.Text(s)
+		if resStr, ok := resAny.(string); ok {
+			return resStr, false
+		}
+		resA = resAny
+		return "", true
 	})
+	if resA != nil {
+		return resA
+	}
 	return output
 }
 
@@ -45,7 +82,7 @@ func RunsAny(d *dic_dto.DicFunc, text string) any {
 	output := run.BuildFuncStr(text, func(valStr []string) (string, bool) {
 		input := utils.NewDicInputs()
 		input.SetString(valStr)
-		resAny, err := Funcs(d, input)
+		resAny, err := Funcs(d, &input)
 		if err != nil {
 			fmt.Println(err)
 		}
@@ -78,7 +115,7 @@ func RunsVal(d *dic_dto.DicFunc, text string, setVal string) (string, bool) {
 	output := run.BuildFuncStr(text, func(valStr []string) (string, bool) {
 		input := utils.NewDicInputs()
 		input.SetString(valStr)
-		resAny, err := Funcs(d, input)
+		resAny, err := Funcs(d, &input)
 		if err != nil {
 			fmt.Println(err)
 		}
@@ -89,7 +126,13 @@ func RunsVal(d *dic_dto.DicFunc, text string, setVal string) (string, bool) {
 		strNo = true
 		return "", false
 	}, func(s string) (string, bool) {
-		return utils.AnyIsString(d.Val.Text(s)), false
+		resAny := d.Val.Text(s)
+		if resStr, ok := resAny.(string); ok {
+			return resStr, false
+		}
+		strNo = true
+		d.Val.P.Set(setVal, resAny)
+		return "", true
 	})
 	return output, strNo
 }
@@ -99,7 +142,7 @@ func Run(d *dic_dto.DicFunc, text string) string {
 	output := run.BuildFuncStr(text, func(valStr []string) (string, bool) {
 		input := utils.NewDicInputs()
 		input.SetString(valStr)
-		resAny, err := Funcs(d, input)
+		resAny, err := Funcs(d, &input)
 		if err != nil {
 			log.Printf("[%s]%s：%v", d.Val.Get("_词库路径_"), valStr[0], err)
 		}
@@ -111,6 +154,29 @@ func Run(d *dic_dto.DicFunc, text string) string {
 		return s, false
 	})
 	return output
+}
+
+func RunFuncLine(d *dto.DicInfoData, dic_i utils.DicInputs) (any, error) {
+	if dic_i.LenOk(-1) {
+		return "$$", nil
+	}
+
+	inputs := utils.NewDicInputs()
+	inputs.Set(make([]any, dic_i.Len()+1))
+
+	for i, line := range dic_i.List {
+		inputs.List[i] = d.Data.Value.Text(d.Value, count.RunCountText(dto.NewDicVals(d.Value, d.Data.Value), line))
+	}
+
+	for _, fn := range d.Data.LocalFunc {
+		if fn.Name == dic_i.String(0) {
+			if fn.Func != nil {
+				return fn.Func(d, inputs)
+			}
+		}
+	}
+
+	return "$" + strings.Join(dic_i.StringList(), " ") + "$", nil
 }
 
 func Funcs(d *dic_dto.DicFunc, dic_i *utils.DicInputs) (any, error) {
@@ -220,7 +286,7 @@ func Funcs(d *dic_dto.DicFunc, dic_i *utils.DicInputs) (any, error) {
 	f := &funcs.DicFunc{
 		Len:       dic_i.Len(),
 		InputData: dic_i.List,
-		Inputs:    inputs,
+		Inputs:    &inputs,
 	}
 
 	// 局部变量函数
@@ -252,14 +318,14 @@ func Funcs(d *dic_dto.DicFunc, dic_i *utils.DicInputs) (any, error) {
 	// 自定义函数
 	if fn, ok := d.Dic.MyFunc[dic_i.String(0)]; ok {
 		if inputs.LenOk(fn.L) {
-			return fn.Fn(dto.NewDicInputs(d.Dic, d.Val, inputs))
+			return fn.Fn(dto.NewDicInputs(d.Dic, d.Val, &inputs))
 		}
 	}
 
 	// 系统函数
 	if fnInfo, ok := funcs.GetFunc(dic_i.String(0)); ok {
 		if inputs.LenOk(fnInfo.L) {
-			return fnInfo.Fn(dto.NewDicInputs(d.Dic, d.Val, inputs))
+			return fnInfo.Fn(dto.NewDicInputs(d.Dic, d.Val, &inputs))
 		}
 	}
 

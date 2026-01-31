@@ -4,12 +4,14 @@ import (
 	"bytes"
 	"crypto/rand"
 	"errors"
+	"fmt"
 	"io"
 	"math/big"
 	"regexp"
 	"strconv"
 	"strings"
 
+	"github.com/cjxpj/nebula/debugLog"
 	"golang.org/x/text/encoding/charmap"
 	"golang.org/x/text/encoding/japanese"
 	"golang.org/x/text/encoding/korean"
@@ -73,7 +75,8 @@ func AnyToString(data any) string {
 
 	b, err := Json.Marshal(data)
 	if err != nil {
-		return "" // 或者返回 fmt.Sprintf("%v", data) 做 fallback
+		debugLog.Error(err)
+		return fmt.Sprintf("%v", data)
 	}
 	return string(b)
 }

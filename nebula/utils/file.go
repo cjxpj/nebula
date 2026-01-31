@@ -813,6 +813,11 @@ func (fq *FileQueue) SaveIni(file *ini.File) error {
 	return file.SaveTo(fq.FileName)
 }
 
+// 打开文件
+func (fq *FileQueue) OpenFile() (*os.File, error) {
+	return os.Open(fq.FileName)
+}
+
 // ReadFromFile 从文件读取数据
 func (fq *FileQueue) ReadFromFile() (string, error) {
 	fileMutex.RLock()

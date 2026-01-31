@@ -9,6 +9,17 @@ import (
 	"github.com/cjxpj/nebula/dto"
 )
 
+func timeSince(d *dto.DicInputs) (any, error) {
+	sec, ok := d.Inputs.Get(1).(time.Time)
+	if !ok {
+		return nil, errors.New("传入参数要为时间")
+	}
+	// 计算距今多久
+	duration := time.Since(sec)
+
+	return duration.String(), nil
+}
+
 func appSleep(d *dto.DicInputs) (any, error) {
 	ms, ok := d.Inputs.IntOk(1)
 	if !ok {

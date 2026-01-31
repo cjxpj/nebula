@@ -28,6 +28,25 @@ import (
 	"github.com/buger/jsonparser"
 )
 
+// 执行词块
+func (m *dicImpl) Execute(r *dto.DicInfoData, txt []string) any {
+	fmt.Println("执行词块")
+	fmt.Println(utils.AnyToString(r))
+	runNum := 0
+
+	for index := 0; index < len(txt); index++ {
+		runNum++
+		vType, vPrefix, _ := dicBuild.ValTextTest(txt[index])
+		if vType == 6 {
+			switch vPrefix {
+			case "如果", "if":
+				// var ifval bool = PdPro(r, vSuffix)
+			}
+		}
+	}
+	return ""
+}
+
 // 执行
 func (m *dicImpl) DicRunLine(r *dic_dto.DicEntry, txt []string) string {
 	// 重置文本
@@ -882,7 +901,7 @@ func Entry(r *dic_dto.DicEntry, txt []string, funcV *dic_dto.DicFunc) error {
 				if textLen >= endIdx {
 					key := text[7:startIdx]
 					value := text[endIdx:]
-					runText := Runs(funcV, utils.AnyToString(count.RunCountText(r.Val, value)))
+					runText := utils.AnyToString(Runs(funcV, utils.AnyToString(count.RunCountText(r.Val, value))))
 					var testjs map[string]any
 					if json.Unmarshal([]byte(runText), &testjs) == nil {
 						r.Sys_v.ForEach.Run = []byte(runText)
@@ -909,7 +928,7 @@ func Entry(r *dic_dto.DicEntry, txt []string, funcV *dic_dto.DicFunc) error {
 				if textLen >= endIdx {
 					key := text[7:startIdx]
 					value := text[endIdx:]
-					runText := Runs(funcV, utils.AnyToString(count.RunCountText(r.Val, value)))
+					runText := utils.AnyToString(Runs(funcV, utils.AnyToString(count.RunCountText(r.Val, value))))
 					// 将字符串解析为整数
 					intValue, err := strconv.Atoi(runText)
 					if err == nil {
@@ -965,7 +984,7 @@ func Entry(r *dic_dto.DicEntry, txt []string, funcV *dic_dto.DicFunc) error {
 		}
 
 		if strings.HasPrefix(text, "https://") || strings.HasPrefix(text, "http://") {
-			r.Output.Add(Runs(funcV, text))
+			r.Output.Add(utils.AnyToString(Runs(funcV, text)))
 			continue
 		}
 
@@ -976,7 +995,7 @@ func Entry(r *dic_dto.DicEntry, txt []string, funcV *dic_dto.DicFunc) error {
 
 			switch vType {
 			case 1, 2, 7, 8:
-				vSetData = Runs(funcV, utils.AnyToString(count.RunCountText(r.Val, vSuffix)))
+				vSetData = utils.AnyToString(Runs(funcV, utils.AnyToString(count.RunCountText(r.Val, vSuffix))))
 			}
 
 			switch vType {
@@ -1051,7 +1070,7 @@ func Entry(r *dic_dto.DicEntry, txt []string, funcV *dic_dto.DicFunc) error {
 				r.Val.P.Set(vPrefix, Runs(funcV, vSuffix))
 				continue
 			case 4:
-				r.Val.P.Set(vPrefix, utils.AnyIsString(r.Val.Text(vSuffix)))
+				r.Val.P.Set(vPrefix, r.Val.Text(vSuffix))
 				continue
 			case 5:
 				r.Val.P.Set(vPrefix, vSuffix)
@@ -1059,7 +1078,7 @@ func Entry(r *dic_dto.DicEntry, txt []string, funcV *dic_dto.DicFunc) error {
 			case 6:
 				// fmt.Println("键：", vPrefix, "值：", vSuffix)
 				if vPrefix == "" {
-					r.Output.Add(Runs(funcV, text))
+					r.Output.Add(utils.AnyToString(Runs(funcV, text)))
 					continue
 				}
 
@@ -1075,7 +1094,7 @@ func Entry(r *dic_dto.DicEntry, txt []string, funcV *dic_dto.DicFunc) error {
 					if str, ok := r.Val.P.Get(vPrefix).(string); ok {
 						if j := utils.IsJSONResult(str); j != nil {
 							if j, ok := j.(map[string]any); ok {
-								vSetData := Runs(funcV, utils.AnyToString(count.RunCountText(r.Val, vSuffix)))
+								vSetData := utils.AnyToString(Runs(funcV, utils.AnyToString(count.RunCountText(r.Val, vSuffix))))
 								j := funcs.JsonSetValue(j, setJsonHead, vSetData, false)
 								if j, err := json.Marshal(j); err == nil {
 									r.Val.P.Set(vPrefix, string(j))
@@ -1084,7 +1103,7 @@ func Entry(r *dic_dto.DicEntry, txt []string, funcV *dic_dto.DicFunc) error {
 								r.Val.P.Set(vPrefix, vSetData)
 							}
 							if j, ok := j.([]any); ok {
-								vSetData := Runs(funcV, utils.AnyToString(count.RunCountText(r.Val, vSuffix)))
+								vSetData := utils.AnyToString(Runs(funcV, utils.AnyToString(count.RunCountText(r.Val, vSuffix))))
 								j := funcs.JsonSetValue(j, setJsonHead, vSetData, false)
 								if j, err := json.Marshal(j); err == nil {
 									r.Val.P.Set(vPrefix, string(j))
@@ -1237,7 +1256,7 @@ func Entry(r *dic_dto.DicEntry, txt []string, funcV *dic_dto.DicFunc) error {
 							continue
 						}
 					} else {
-						runText, stopSetVal := RunsVal(funcV, utils.AnyToString(count.RunCountText(r.Val, GetIfKey)), vPrefix)
+						runText, stopSetVal := RunsVal(funcV, GetIfKey, vPrefix)
 						if stopSetVal {
 							break
 						}
@@ -1258,7 +1277,7 @@ func Entry(r *dic_dto.DicEntry, txt []string, funcV *dic_dto.DicFunc) error {
 		if strings.HasSuffix(text, "\\r") {
 			text = text[:len(text)-2] + "\n"
 		}
-		r.Output.Add(Runs(funcV, text))
+		r.Output.Add(utils.AnyToString(Runs(funcV, text)))
 	}
 	return nil
 }

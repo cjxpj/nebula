@@ -111,6 +111,20 @@ func findNebulaScripts(doc *html.Node) []scriptNebula {
 	return result
 }
 
+// 新-词库运行
+func (m *dicImpl) DicRunPro(d *dto.DicInfoData, trigger string) any {
+	GetDic, GetDicTrigger, _, _ := run.GetTriggerCodeBlock(d.Data.Dic, trigger, 0)
+	d.Value.Set("触发词", trigger)
+	d.Value.Set("触发", GetDicTrigger)
+	// 生成参数跟括号
+	dto.RunTrigger(trigger, GetDicTrigger, d.Value)
+
+	fmt.Println(GetDic)
+
+	res := m.Execute(d, GetDic)
+	return res
+}
+
 func (m *dicImpl) WebPHPDicRun(WD *dic_dto.WebDic) string {
 
 	// 返回数据
@@ -204,9 +218,7 @@ func (m *dicImpl) DicRunPrivateVal(D *dic_dto.Dic, trigger string, v *dto.DicVal
 	}
 
 	if D.ClassText != nil {
-		for key, val := range D.ClassText {
-			D.Data.LocalClass[key] = val
-		}
+		maps.Copy(D.Data.LocalClass, D.ClassText)
 	}
 
 	GetDic, GetDicTrigger, _, _ := run.RunFor(D.Data.LocalStatic, trigger, 0)

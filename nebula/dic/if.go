@@ -7,6 +7,7 @@ import (
 
 	"github.com/cjxpj/nebula/count"
 	dic_dto "github.com/cjxpj/nebula/dic/dto"
+	"github.com/cjxpj/nebula/dto"
 	"github.com/cjxpj/nebula/utils"
 )
 
@@ -14,6 +15,14 @@ func Pd(dic *dic_dto.DicFunc, str string) bool {
 	it := &IfText{}
 	runstr := it.Run(str)
 	pdstr := it.Evaluate(dic, runstr)
+	sendstr := it.EvaluateExpression(pdstr)
+	return sendstr
+}
+
+func PdPro(d *dto.DicInfoData, str string) bool {
+	it := &IfText{}
+	runstr := it.Run(str)
+	pdstr := it.EvaluatePro(d, runstr)
 	sendstr := it.EvaluateExpression(pdstr)
 	return sendstr
 }
@@ -111,7 +120,7 @@ func (it *IfText) Run(input string) []map[string]string {
 	return parsed
 }
 
-func (it *IfText) Evaluate(dic *dic_dto.DicFunc, parsed []map[string]string) string {
+func (it *IfText) EvaluatePro(dic *dto.DicInfoData, parsed []map[string]string) string {
 	var result string
 	yes := "1"
 	no := "0"
@@ -120,7 +129,8 @@ func (it *IfText) Evaluate(dic *dic_dto.DicFunc, parsed []map[string]string) str
 			result += p["text"]
 			continue
 		}
-		a := Runs(dic, utils.AnyToString(count.RunCountText(dic.Val, p["a"])))
+		// a := utils.AnyToString(Runs(dic, utils.AnyToString(count.RunCountText(dic.Val, p["a"]))))
+		a := utils.AnyToString(RunLine(dic, p["a"]))
 		if len(p) == 1 {
 			switch a {
 			case "true", "1":
@@ -135,7 +145,219 @@ func (it *IfText) Evaluate(dic *dic_dto.DicFunc, parsed []map[string]string) str
 			continue
 		}
 
-		c := Runs(dic, utils.AnyToString(count.RunCountText(dic.Val, p["c"])))
+		c := utils.AnyToString(RunLine(dic, p["c"]))
+
+		switch p["b"] {
+		case " in ":
+			var jsonOk bool
+			var jsonMap []interface{}
+			if err := json.Unmarshal([]byte(a), &jsonMap); err == nil {
+				for _, v := range jsonMap {
+					switch jv := v.(type) {
+					case string:
+						if jv == c {
+							jsonOk = true
+							break
+						}
+					case []interface{}, map[string]interface{}:
+						if jvv, err := json.Marshal(jv); err == nil {
+							if string(jvv) == c {
+								jsonOk = true
+								break
+							}
+						}
+					default:
+						if fmt.Sprintf("%v", v) == c {
+							jsonOk = true
+							break
+						}
+					}
+				}
+			} else {
+				if err := json.Unmarshal([]byte(c), &jsonMap); err == nil {
+					for _, v := range jsonMap {
+						switch jv := v.(type) {
+						case string:
+							if jv == a {
+								jsonOk = true
+								break
+							}
+						case []interface{}, map[string]interface{}:
+							if jvv, err := json.Marshal(jv); err == nil {
+								if string(jvv) == a {
+									jsonOk = true
+									break
+								}
+							}
+						default:
+							if fmt.Sprintf("%v", v) == a {
+								jsonOk = true
+								break
+							}
+						}
+					}
+				}
+			}
+			if jsonOk {
+				result += yes
+			} else {
+				result += no
+			}
+		case "~=":
+			matches, _ := regexp.MatchString("^"+a+"$", c)
+			if matches {
+				result += yes
+			} else {
+				result += no
+			}
+		case "==":
+			if a == c {
+				result += yes
+			} else {
+				result += no
+			}
+		case "!=":
+			if a != c {
+				result += yes
+			} else {
+				result += no
+			}
+		case ">=":
+			if A, err := strconv.ParseFloat(a, 64); err == nil {
+				if C, err2 := strconv.ParseFloat(c, 64); err2 == nil {
+					if A >= C {
+						result += yes
+					} else {
+						result += no
+					}
+				} else {
+					if a >= c {
+						result += yes
+					} else {
+						result += no
+					}
+				}
+			} else {
+				if a >= c {
+					result += yes
+				} else {
+					result += no
+				}
+			}
+		case "<=":
+			if A, err := strconv.ParseFloat(a, 64); err == nil {
+				if C, err2 := strconv.ParseFloat(c, 64); err2 == nil {
+					if A <= C {
+						result += yes
+					} else {
+						result += no
+					}
+				} else {
+					if a <= c {
+						result += yes
+					} else {
+						result += no
+					}
+				}
+			} else {
+				if a <= c {
+					result += yes
+				} else {
+					result += no
+				}
+			}
+		case "~":
+			matches, _ := regexp.MatchString("^"+a+"$", c)
+			if !matches {
+				result += yes
+			} else {
+				result += no
+			}
+		case "!":
+			if len(a) == len(c) {
+				result += yes
+			} else {
+				result += no
+			}
+		case "<":
+			if A, err := strconv.ParseFloat(a, 64); err == nil {
+				if C, err2 := strconv.ParseFloat(c, 64); err2 == nil {
+					if A < C {
+						result += yes
+					} else {
+						result += no
+					}
+				} else {
+					if a < c {
+						result += yes
+					} else {
+						result += no
+					}
+				}
+			} else {
+				if a < c {
+					result += yes
+				} else {
+					result += no
+				}
+			}
+		case ">":
+			if A, err := strconv.ParseFloat(a, 64); err == nil {
+				if C, err2 := strconv.ParseFloat(c, 64); err2 == nil {
+					if A > C {
+						result += yes
+					} else {
+						result += no
+					}
+				} else {
+					if a > c {
+						result += yes
+					} else {
+						result += no
+					}
+				}
+			} else {
+				if a > c {
+					result += yes
+				} else {
+					result += no
+				}
+			}
+		}
+
+		if p["jump"] != "" {
+			result += p["jump"]
+		}
+	}
+
+	return result
+}
+
+func (it *IfText) Evaluate(dic *dic_dto.DicFunc, parsed []map[string]string) string {
+	var result string
+	yes := "1"
+	no := "0"
+	for _, p := range parsed {
+		if p["text"] != "" {
+			result += p["text"]
+			continue
+		}
+		a := utils.AnyToString(Runs(dic, utils.AnyToString(count.RunCountText(dic.Val, p["a"]))))
+		if len(p) == 1 {
+			switch a {
+			case "true", "1":
+				result += yes
+			case "false", "0":
+				result += no
+			}
+
+			if p["jump"] != "" {
+				result += p["jump"]
+			}
+			continue
+		}
+
+		c := utils.AnyToString(Runs(dic, utils.AnyToString(count.RunCountText(dic.Val, p["c"]))))
 
 		switch p["b"] {
 		case " in ":

@@ -24,6 +24,7 @@ func Start() {
 		file.WriteFileByte(appfiles.GetFile("dic/system/start.n"))
 	}
 
+	// start := time.Now()
 	FileData, err := file.ReadFromFile()
 	if err != nil {
 		utils.ErrorStop("启动词库不存在")
@@ -41,6 +42,7 @@ func Start() {
 			fmt.Println(dicRes)
 		}
 	}
+	// fmt.Println("启动成功，耗时：", time.Since(start))
 }
 
 func loadConfig() {

@@ -33,6 +33,13 @@ func NewDicVal() *DicVal {
 	}
 }
 
+func NewDicVals(g, v *Val) *DicVal {
+	return &DicVal{
+		G: g,
+		P: v,
+	}
+}
+
 // value变量
 type Val struct {
 	objlock sync.Map
@@ -259,7 +266,7 @@ func (v *Val) HeaderAdd(key string, val any) {
 }
 
 // 获取变量值，优先从 P，再从 G
-func (v *DicVal) getVal(key string) (any, bool) {
+func (v *DicVal) GetVal(key string) (any, bool) {
 	if name, ok := strings.CutPrefix(key, "__"); ok && name != "" {
 		return GV.obj.Load(name)
 	}
@@ -270,8 +277,24 @@ func (v *DicVal) getVal(key string) (any, bool) {
 	return value, ok
 }
 
+// 获取变量值，优先从 P，再从 G
+func (v *Val) GetVal(vv *Val, key string) (any, bool) {
+	if name, ok := strings.CutPrefix(key, "__"); ok && name != "" {
+		return GV.obj.Load(name)
+	}
+	value, ok := v.obj.Load(key)
+	if !ok && vv != nil {
+		value, ok = vv.obj.Load(key)
+	}
+	return value, ok
+}
+
 // 词库变量
 func (v *DicVal) Text(content any) any {
+	return v.P.Text(v.G, content)
+}
+
+func (v *Val) Text(vv *Val, content any) any {
 	str, ok := content.(string)
 	if !ok {
 		return content
@@ -279,7 +302,7 @@ func (v *DicVal) Text(content any) any {
 	result := replaceProcessedContent(str, "%", "%", func(val string) any {
 		// url编码
 		if strings.HasPrefix(val, "URL编码@") {
-			if value, ok := v.getVal(val[10:]); ok {
+			if value, ok := v.GetVal(vv, val[10:]); ok {
 				if strValue, isString := value.(string); isString {
 					return url.QueryEscape(strValue)
 				}
@@ -288,7 +311,7 @@ func (v *DicVal) Text(content any) any {
 		}
 		// B64编码
 		if strings.HasPrefix(val, "B64编码@") {
-			if value, ok := v.getVal(val[10:]); ok {
+			if value, ok := v.GetVal(vv, val[10:]); ok {
 				if strValue, isString := value.(string); isString {
 					return base64.StdEncoding.EncodeToString([]byte(strValue))
 				}
@@ -297,7 +320,7 @@ func (v *DicVal) Text(content any) any {
 		}
 		// url解码
 		if strings.HasPrefix(val, "URL@") {
-			if value, ok := v.getVal(val[4:]); ok {
+			if value, ok := v.GetVal(vv, val[4:]); ok {
 				if strValue, isString := value.(string); isString {
 					decoded, err := url.QueryUnescape(strValue)
 					if err != nil {
@@ -310,7 +333,7 @@ func (v *DicVal) Text(content any) any {
 		}
 		// B64解码
 		if strings.HasPrefix(val, "B64@") {
-			if value, ok := v.getVal(val[4:]); ok {
+			if value, ok := v.GetVal(vv, val[4:]); ok {
 				if strValue, isString := value.(string); isString {
 					decoded, err := base64.StdEncoding.DecodeString(strValue)
 					if err != nil {
@@ -324,7 +347,7 @@ func (v *DicVal) Text(content any) any {
 
 		// 类型
 		if strings.HasPrefix(val, "TYPE@") {
-			if value, ok := v.getVal(val[5:]); ok {
+			if value, ok := v.GetVal(vv, val[5:]); ok {
 				return reflect.TypeOf(value).String()
 			}
 			return ""
@@ -334,7 +357,7 @@ func (v *DicVal) Text(content any) any {
 			list := strings.Split(val[1:], "->")
 			if len(list) > 1 {
 				// 先取第一个变量
-				value, _ := v.getVal(list[0])
+				value, _ := v.GetVal(vv, list[0])
 				switch valueStr := value.(type) {
 				case string:
 					if j := utils.IsJSONResult(valueStr); j != nil {
@@ -381,7 +404,7 @@ func (v *DicVal) Text(content any) any {
 		}
 
 		if strings.HasPrefix(val, "!") {
-			value, _ := v.getVal(val[1:])
+			value, _ := v.GetVal(vv, val[1:])
 			if strValue, isString := value.(string); isString {
 				switch strValue {
 				case "true":
@@ -399,6 +422,8 @@ func (v *DicVal) Text(content any) any {
 		}
 
 		switch val {
+		case "时间":
+			return time.Now()
 		case "时间戳":
 			return strconv.FormatInt(time.Now().Unix(), 10)
 		case "毫秒时间戳":
@@ -417,7 +442,7 @@ func (v *DicVal) Text(content any) any {
 			return appfiles.Version
 		}
 
-		value, valueOk := v.getVal(val)
+		value, valueOk := v.GetVal(vv, val)
 		if valueOk {
 			strValue, isString := value.(string)
 			if isString {

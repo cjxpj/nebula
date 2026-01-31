@@ -1,11 +1,15 @@
 package run
 
 import (
+	"bufio"
 	"fmt"
+	"io"
 	"regexp"
 	"strings"
+	"sync"
 
 	"github.com/cjxpj/nebula/appfiles"
+	dicBuild "github.com/cjxpj/nebula/build"
 	"github.com/cjxpj/nebula/dto"
 	"github.com/cjxpj/nebula/utils"
 )
@@ -299,6 +303,34 @@ func ReplaceProcessedsContent(str, strStart, strEnd string, process func(string)
 	}
 
 	return result.String()
+}
+
+// 遍历触发词文本
+func GetTriggerCodeBlock(jsonData []*dto.RegDicLine, trigger string, runNum int) ([]string, string, int, *regexp.Regexp) {
+	jsonDataLen := len(jsonData)
+
+	if runNum > jsonDataLen {
+		return nil, "", 0, nil
+	}
+
+	// 遍历每个条目并输出
+	for i := runNum; i < jsonDataLen; i++ {
+		item := jsonData[i]
+		text := item.CodeBloack
+
+		// 使用动态编译的正则表达式
+		t := item.Trigger
+
+		regex, err := regexp.Compile("^(" + t + ")$")
+		if err != nil {
+			continue
+		}
+		if regex.MatchString(trigger) {
+			return text, t, i, regex
+		}
+	}
+
+	return nil, "", 0, nil
 }
 
 // 遍历触发词文本
@@ -785,4 +817,312 @@ func BuildDic(dicPath, text string) *dto.BuildValue {
 	// }
 
 	return result
+}
+
+func parseParams(parts []string) []dto.Param {
+	params := make([]dto.Param, 0, len(parts))
+	for _, p := range parts {
+		if p == "" {
+			continue
+		}
+		if name, def, ok := strings.Cut(p, "="); ok {
+			params = append(params, dto.Param{
+				Name:    name,
+				Default: def,
+			})
+		} else {
+			params = append(params, dto.Param{
+				Name:    p,
+				Default: "",
+			})
+		}
+	}
+	return params
+}
+
+func Parse(dicPath string, reader io.Reader) *dto.DicInfoData {
+	scanner := bufio.NewScanner(reader)
+	scanner.Buffer(make([]byte, 1024), 1024*1024)
+
+	var (
+		dicTrigger string
+		dicTexts   dto.DicLine
+
+		dicText  []*dto.RegDicLine
+		funcText []*dto.RegDicLine
+		funcFn   []*dto.BuildDicFunc
+
+		dicValue = dto.NewVal()
+		// []*dto.DicInfo
+
+		neibu   bool
+		chajian bool
+
+		runhead     = true
+		runheadtext dto.DicLine
+
+		zhushi  bool
+		duohang bool
+		fRunAll bool
+		suojin  bool
+
+		classText = make(map[string]*dto.DicClassInfo)
+		classN    string
+		isClassN  bool
+
+		fHeaderName string
+	)
+
+	commit := func() {
+		if dicTrigger == "" {
+			return
+		}
+
+		/* ===== 函数 ===== */
+		if chajian {
+			chajian = false
+
+			parts := strings.Split(dicTrigger, " ")
+			if len(parts) == 0 {
+				dicTrigger = ""
+				dicTexts = nil
+				return
+			}
+
+			fn := &dto.BuildDicFunc{
+				Name:   parts[0],
+				Params: parseParams(parts[1:]),
+				Text:   dicTexts,
+				Func:   nil,
+			}
+
+			if isClassN {
+				if classText[classN] == nil {
+					classText[classN] = &dto.DicClassInfo{
+						LocalValue: dto.NewVal(),
+					}
+				}
+				classText[classN].LocalFunc =
+					append(classText[classN].LocalFunc, fn)
+			} else {
+				funcFn = append(funcFn, fn)
+			}
+
+			dicTrigger = ""
+			dicTexts = nil
+			return
+		}
+
+		/* ===== 普通 / 内部 ===== */
+
+		item := &dto.RegDicLine{
+			Trigger:    dicTrigger,
+			CodeBloack: dicTexts,
+		}
+
+		if neibu {
+			neibu = false
+			if isClassN {
+				if classText[classN] == nil {
+					classText[classN] = &dto.DicClassInfo{
+						LocalValue: dto.NewVal(),
+					}
+				}
+				classText[classN].LocalStatic =
+					append(classText[classN].LocalStatic, item)
+			} else {
+				funcText = append(funcText, item)
+			}
+		} else {
+			dicText = append(dicText, item)
+		}
+
+		dicTrigger = ""
+		dicTexts = nil
+	}
+
+	for scanner.Scan() {
+		line := scanner.Text()
+		lineLen := len(line)
+
+		if line != "" && !suojin {
+			line = strings.TrimLeft(line, "\t")
+		}
+
+		/* ===== 多行注释 ===== */
+
+		if zhushi {
+			if lineLen >= 2 && line[lineLen-2:] == "*/" {
+				zhushi = false
+			}
+			continue
+		}
+		if strings.HasPrefix(line, "/*") {
+			zhushi = true
+			continue
+		}
+
+		/* ===== 单行注释 / 指令 ===== */
+
+		if strings.HasPrefix(line, "//") {
+			switch line {
+			case "//@关闭缩进":
+				suojin = true
+			case "//@启用缩进":
+				suojin = false
+			}
+
+			if sendMsg, ok := strings.CutPrefix(line, "//@打印="); ok {
+				fmt.Println("["+dicPath+"]", sendMsg)
+			}
+
+			if fRunAll, ok := strings.CutPrefix(line, "//@函数头="); ok && fRunAll != "" {
+				fHeaderName = fRunAll
+			}
+			continue
+		}
+
+		/* ===== Class 结束 ===== */
+
+		if isClassN && line == "#Class" {
+			isClassN = false
+			continue
+		}
+
+		/* ===== 头部 ===== */
+
+		if runhead {
+			if vType, vPrefix, vSuffix := dicBuild.ValTextTest(line); vType == 6 {
+				if packPath, ok := strings.CutPrefix(vSuffix, "#引入="); ok && packPath != "" {
+					var files []string
+					var wg sync.WaitGroup
+					if strings.HasSuffix(packPath, "/*") {
+						dir := "private/" + strings.TrimSuffix(packPath, "/*")
+						fq := utils.NewFileQueue(dir)
+						if fq.DirExists() {
+							list, _ := fq.GetFileList()
+							for _, v := range list {
+								files = append(files, dir+"/"+v)
+							}
+						}
+					} else {
+						if !strings.HasSuffix(packPath, ".n") {
+							packPath += ".n"
+						}
+						files = append(files, "private/"+packPath)
+					}
+					for _, fp := range files {
+						wg.Add(1)
+						go func() {
+							defer wg.Done()
+							data, err := utils.NewFileQueue(fp).OpenFile()
+							if err != nil {
+								return
+							}
+							defer data.Close()
+							sub := Parse(fp, data)
+							dicValue.Set(vPrefix, sub)
+						}()
+					}
+					wg.Wait()
+					continue
+				}
+			}
+
+			if line == "" {
+				runhead = false
+				continue
+			}
+			runheadtext = append(runheadtext, line)
+			continue
+		}
+
+		/* ===== 正文 ===== */
+
+		if dicTrigger != "" {
+			if fRunAll {
+				if line == "}#" {
+					fRunAll = false
+				} else {
+					dicTexts = append(dicTexts, line)
+				}
+				continue
+			}
+
+			if !duohang && line == "<?n" {
+				duohang = true
+				continue
+			}
+
+			if duohang {
+				if line == "?>" {
+					duohang = false
+				} else {
+					dicTexts = append(dicTexts, line)
+				}
+				continue
+			}
+
+			if line == "" {
+				commit()
+				continue
+			}
+
+			dicTexts = append(dicTexts, line)
+			continue
+		}
+
+		if line == "" {
+			continue
+		}
+
+		/* ===== 新触发 ===== */
+
+		dicTrigger = line
+
+		if after, ok := strings.CutPrefix(line, "#Class="); ok && after != "" {
+			isClassN = true
+			classN = after
+			dicTrigger = ""
+			continue
+		}
+
+		if strings.HasPrefix(line, "[F]") {
+			chajian = true
+			dicTrigger = line[3:]
+		} else if strings.HasPrefix(line, "[函数]") {
+			chajian = true
+			dicTrigger = line[8:]
+		} else if strings.HasPrefix(line, "[L]") {
+			neibu = true
+			dicTrigger = line[3:]
+		} else if strings.HasPrefix(line, "[内部]") {
+			neibu = true
+			dicTrigger = line[8:]
+		}
+
+		if fHeaderName != "" && chajian {
+			dicTrigger = fHeaderName + "." + dicTrigger
+		}
+
+		if strings.HasSuffix(dicTrigger, " #{") {
+			fRunAll = true
+			dicTrigger = dicTrigger[:len(dicTrigger)-3]
+		}
+	}
+
+	commit()
+
+	return &dto.DicInfoData{
+		Data: &dto.DicInfo{
+			Value:       dicValue,
+			Path:        dicPath,
+			Head:        runheadtext,
+			Dic:         dicText,
+			LocalStatic: funcText,
+			LocalFunc:   funcFn,
+			LocalClass:  classText,
+		},
+		Value: dto.NewVal(),
+	}
 }

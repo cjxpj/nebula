@@ -157,6 +157,8 @@ func Setup() {
 		f{Name: "写.sqlite", L: "2|3", Fn: writeSqlite},
 
 		f{Name: "MD转义", L: "1", Fn: mdEscape},
+
+		f{Name: "时间间隔", L: "1", Fn: timeSince},
 	); err != nil {
 		fmt.Println(err)
 	}
