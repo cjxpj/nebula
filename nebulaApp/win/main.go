@@ -22,7 +22,6 @@ import (
 	"github.com/cjxpj/nebula/dto"
 	"github.com/cjxpj/nebula/utils"
 
-	"github.com/laurent22/go-trash"
 	"golang.org/x/sys/windows/registry"
 )
 
@@ -123,11 +122,18 @@ func main() {
 			return false, nil
 		}
 
-		if trash.IsAvailable() {
-			_, err := trash.MoveToTrash(fq.FileName)
-			if err != nil {
-				return false, nil
-			}
+		// 使用Windows API将文件移动到回收站
+		// 首先获取绝对路径
+		absPath, err := filepath.Abs(fq.FileName)
+		if err != nil {
+			return false, nil
+		}
+
+		// 调用Windows API移动到回收站
+		// 这里使用简单的方法：通过cmd命令行调用recycle命令
+		cmd := exec.Command("cmd", "/c", "powershell", "Remove-Item", "-Path", absPath, "-Recurse", "-Force", "-ErrorAction", "SilentlyContinue")
+		if err := cmd.Run(); err != nil {
+			return false, nil
 		}
 
 		return true, nil

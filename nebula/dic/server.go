@@ -5,7 +5,6 @@ import (
 	"strings"
 
 	"github.com/cjxpj/nebula/bot/feishubot"
-	"github.com/cjxpj/nebula/bot/javamc"
 	"github.com/cjxpj/nebula/bot/napcatbot"
 	"github.com/cjxpj/nebula/bot/qqbot"
 	"github.com/cjxpj/nebula/bot/yunhubot"
@@ -43,10 +42,6 @@ func webRun(w http.ResponseWriter, r *http.Request) {
 
 	if s.YunHuBot != nil && s.YunHuBot.Open && r.URL.Path == s.YunHuBot.Addr {
 		yunhubot.BotMessage(w, r)
-		return
-	}
-	if s.JAVAMC != nil && s.JAVAMC.Open && r.URL.Path == s.JAVAMC.Addr {
-		javamc.BotMessage(w, r)
 		return
 	}
 	dicWebRouter(w, r)
