@@ -67,6 +67,7 @@ func Setup() {
 
 		f{Name: "终端.创建", L: "1..", Fn: runCommandNew},
 		f{Name: "终端.异步执行", L: "1", Fn: runCommandAsync},
+		f{Name: "终端.执行目录", L: "2", Fn: runCommandDir},
 		f{Name: "终端.执行", L: "1", Fn: runCommand},
 		f{Name: "终端等待输入", L: "0", Fn: runCommandInput},
 

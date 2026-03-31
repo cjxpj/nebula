@@ -14,8 +14,33 @@ import (
 
 // var websocket_connect *websocket.Conn
 
+// 跨域中间件检测
+func checkCors(w http.ResponseWriter, r *http.Request) bool {
+	if dto.ServerConfig.Router != nil && dto.ServerConfig.Router.Cors {
+		origin := dto.ServerConfig.Router.CorsOrigins
+		if origin == "" {
+			origin = "*"
+		}
+		w.Header().Set("Access-Control-Allow-Origin", origin)
+		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
+		w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization")
+		w.Header().Set("Access-Control-Allow-Credentials", "true")
+
+		if r.Method == http.MethodOptions {
+			w.WriteHeader(http.StatusOK)
+			return true
+		}
+	}
+	return false
+}
+
 // 路由
 func webRun(w http.ResponseWriter, r *http.Request) {
+	// 检测跨域配置
+	if checkCors(w, r) {
+		return
+	}
+
 	s := dto.ServerConfig
 
 	if s.OPUI != nil {

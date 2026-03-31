@@ -24,8 +24,9 @@ type ServerRouterWebSocket struct {
 }
 
 type ServerHTTP struct {
-	Cors bool
-	Http *http.Server
+	Http        *http.Server
+	Cors        bool
+	CorsOrigins string
 }
 
 type OPUI struct {
@@ -49,19 +50,6 @@ type ServerConfigInfo struct {
 	FeiShuBot *feishubot_msg.RouterFeishubot
 	// Ngrok地址
 	Ngrok *NgrokConfig
-	// JAVAMC
-	JAVAMC *JAVAMC
-}
-
-type JAVAMC struct {
-	// 启用
-	Open bool
-	// 地址
-	Addr string
-	// 词库地址
-	DicPath string
-	// WS
-	Conn *websocket.Upgrader
 }
 
 type NgrokConfig struct {

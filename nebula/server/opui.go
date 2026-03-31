@@ -20,8 +20,9 @@ type HttpOpUiData struct {
 }
 
 type HttpOpUiConfig_server struct {
-	Server string `json:"server"`
-	CORS   string `json:"cors"`
+	Server      string `json:"server"`
+	CORS        bool   `json:"cors"`
+	CORSOrigins string `json:"cors_origins"`
 }
 
 type HttpOpUiConfig_websocket struct {
@@ -98,12 +99,10 @@ func OpUI(w http.ResponseWriter, r *http.Request, getpath string) {
 				utils.ErrorStop("系统配置不存在")
 			}
 			d := f.Section("HTTP")
-			var j struct {
-				Server string `json:"server"`
-				CORS   string `json:"cors"`
-			}
+			var j HttpOpUiConfig_server
 			j.Server = d.Key("server").String()
-			j.CORS = d.Key("跨域").String()
+			j.CORS = d.Key("跨域").MustBool(false)
+			j.CORSOrigins = d.Key("跨域白名单").String()
 			if r, err := json.Marshal(j); err == nil {
 				w.Write(r)
 			}
@@ -122,10 +121,13 @@ func OpUI(w http.ResponseWriter, r *http.Request, getpath string) {
 			}
 			d := f.Section("HTTP")
 			d.Key("server").SetValue(j.Server)
-			d.Key("跨域").SetValue(j.CORS)
+			d.Key("跨域").SetValue(strconv.FormatBool(j.CORS))
+			d.Key("跨域白名单").SetValue(j.CORSOrigins)
 			if err := ff.SaveIni(f); err != nil {
 				utils.ErrorStop("系统配置保存失败")
 			}
+			dto.ServerConfig.Router.Cors = j.CORS
+			dto.ServerConfig.Router.CorsOrigins = j.CORSOrigins
 			// 处理配置请求
 			w.Write([]byte(`{"status":"ok"}`))
 			return
@@ -195,7 +197,7 @@ func OpUI(w http.ResponseWriter, r *http.Request, getpath string) {
 				http.Error(w, `{"status":"error","error":"invalid json"}`, http.StatusBadRequest)
 				return
 			}
-			ff := utils.NewFileQueue(dto.CONFIG_PATH)
+			ff := utils.NewFileQueue(dto.CONFIG_SYSTEM_PATH)
 			f, err := ff.LoadIni()
 			if err != nil {
 				utils.ErrorStop("系统配置不存在")

@@ -1,6 +1,6 @@
 module github.com/cjxpj/nebula
 
-go 1.24.0
+go 1.26.1
 
 require (
 	github.com/boombuler/barcode v1.0.1

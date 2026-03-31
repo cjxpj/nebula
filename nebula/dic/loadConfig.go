@@ -68,11 +68,12 @@ func loadConfig() {
 	infoServerPath := HTTP_Config.Key("server").String()
 	corsOk, _ := HTTP_Config.Key("跨域").Bool()
 	dto.ServerConfig.Router = &dto.ServerHTTP{
-		Cors: corsOk,
 		Http: &http.Server{
 			Addr:    infoServerPath,
 			Handler: http.HandlerFunc(webRun),
 		},
+		Cors:        corsOk,
+		CorsOrigins: HTTP_Config.Key("跨域白名单").String(),
 	}
 
 	opUi := httpData.Section("管理面板")

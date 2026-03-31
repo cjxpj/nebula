@@ -97,6 +97,21 @@ func (f *DicFunc) RunCommandVar() (string, error) {
 	return "", nil
 }
 
+// 终端执行目录
+func runCommandDir(d *dto.DicInputs) (any, error) {
+	if !d.Inputs.LenOk(2) {
+		return "", errors.New("参数错误")
+	}
+
+	cmd, ok := d.Inputs.Get(1).(*CmdConfig)
+	if !ok {
+		return "", errors.New("传入参数错误")
+	}
+
+	cmd.Cmd.Dir = d.Inputs.String(2)
+	return "", nil
+}
+
 // 断开终端
 func (f *DicFunc) RunCommandClose() (string, error) {
 	if !f.Inputs.LenOk(1) {
