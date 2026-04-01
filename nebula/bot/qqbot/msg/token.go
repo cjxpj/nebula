@@ -27,6 +27,8 @@ func GetAccessToken(appId, clientSecret string) (*AccessTokenResponse, error) {
 		"clientSecret": clientSecret,
 	}
 
+	// fmt.Println("GetAccessToken", url, body)
+
 	var res *AccessTokenResponse
 	if err := postJson(url, body, nil, &res); err != nil {
 		return nil, err

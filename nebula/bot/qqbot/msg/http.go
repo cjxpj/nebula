@@ -143,6 +143,8 @@ func postJson(url string, body any, headers http.Header, respObj any) error {
 		return fmt.Errorf("请求失败，状态码: %d", resp.StatusCode)
 	}
 
+	// content, _ := io.ReadAll(resp.Body)
+	// fmt.Println(string(content))
 	if respObj != nil {
 		if err := json.NewDecoder(resp.Body).Decode(respObj); err != nil {
 			return fmt.Errorf("解析响应失败: %w", err)
