@@ -19,18 +19,18 @@ import (
 	"github.com/cjxpj/nebula/utils"
 )
 
-func installPHP(destDir string) error {
+func installPHP(destDir string, output *[]string) error {
 	url := "https://windows.php.net/downloads/releases/php-7.4.33-Win32-vc15-x64.zip"
 
 	zipPath := utils.NewFileQueue("php_download.zip")
 	defer zipPath.DeleteFile() // 确保下载文件最终被删除
 
-	fmt.Println("正在分段下载 PHP ...")
+	*output = append(*output, "正在分段下载 PHP ...")
 	if err := zipPath.DownloadWithDynamicThreads(url, 8, true); err != nil {
 		return fmt.Errorf("下载失败: %w", err)
 	}
 
-	fmt.Println("下载完成，正在解压...")
+	*output = append(*output, "下载完成，正在解压...")
 	if err := os.MkdirAll(destDir, 0755); err != nil {
 		return fmt.Errorf("创建目录失败: %w", err)
 	}
@@ -38,7 +38,7 @@ func installPHP(destDir string) error {
 		return fmt.Errorf("解压失败")
 	}
 
-	fmt.Println("✅ PHP 安装成功，路径：" + destDir)
+	*output = append(*output, "✅ PHP 安装成功，路径：" + destDir)
 	return nil
 }
 

@@ -56,21 +56,24 @@ func AnyIsStringAndBytes(text any) []byte {
 
 // 统一将 any 类型转换为字符串（优先 JSON 编码）
 func AnyToString(data any) string {
-	if str, ok := data.(string); ok {
-		return str
-	}
-
-	// 打印类型
-	// fmt.Println("type", reflect.TypeOf(data))
-
-	// 小数
-	if num, ok := data.(float64); ok {
-		return strconv.FormatFloat(num, 'f', -1, 64)
-	}
-
-	// 整数
-	if num, ok := data.(int); ok {
-		return strconv.Itoa(num)
+	switch v := data.(type) {
+	case string:
+		return v
+	case float64:
+		return strconv.FormatFloat(v, 'f', -1, 64)
+	case float32:
+		return strconv.FormatFloat(float64(v), 'f', -1, 32)
+	case int:
+		return strconv.Itoa(v)
+	case int64:
+		return strconv.FormatInt(v, 10)
+	case int32:
+		return strconv.FormatInt(int64(v), 10)
+	case bool:
+		if v {
+			return "true"
+		}
+		return "false"
 	}
 
 	b, err := Json.Marshal(data)

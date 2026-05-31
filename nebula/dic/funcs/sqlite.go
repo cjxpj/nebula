@@ -51,7 +51,7 @@ func sqliteWrite(d *dto.DicInputs) (any, error) {
 
 	rawTable := d.Inputs.String(2)
 	key := d.Inputs.String(3)
-	data := d.Inputs.Bytes(4)
+	data := d.Inputs.String(4)
 
 	if key == "" {
 		return nil, errors.New("文件名不能为空")
@@ -63,12 +63,12 @@ func sqliteWrite(d *dto.DicInputs) (any, error) {
 	}
 
 	// ★ 关键：确保表存在
-	if err := ensureFsTable(db, table); err != nil {
+	if err = ensureFsTable(db, table); err != nil {
 		return nil, err
 	}
 
 	sqlWrite := fmt.Sprintf(`
-	INSERT INTO %s (key, data, updated_at)
+	INSERT INTO "%s" (key, data, updated_at)
 	VALUES (?, ?, ?)
 	ON CONFLICT(key) DO UPDATE SET
 		data = excluded.data,
@@ -112,7 +112,7 @@ func sqliteRead(d *dto.DicInputs) (any, error) {
 		tables := make([]string, 0)
 		for rows.Next() {
 			var name string
-			if err := rows.Scan(&name); err == nil {
+			if err = rows.Scan(&name); err == nil {
 				tables = append(tables, name)
 			}
 		}
@@ -120,7 +120,7 @@ func sqliteRead(d *dto.DicInputs) (any, error) {
 	}
 
 	if d.Inputs.LenOk(2) {
-		rows, err := db.Query(fmt.Sprintf(`SELECT key FROM %s`, rawTable))
+		rows, err := db.Query(fmt.Sprintf(`SELECT key FROM "%s"`, rawTable))
 		if err != nil {
 			return "[]", nil
 		}
@@ -129,7 +129,7 @@ func sqliteRead(d *dto.DicInputs) (any, error) {
 		keys := make([]string, 0)
 		for rows.Next() {
 			var k string
-			if err := rows.Scan(&k); err == nil {
+			if err = rows.Scan(&k); err == nil {
 				keys = append(keys, k)
 			}
 		}
@@ -146,7 +146,7 @@ func sqliteRead(d *dto.DicInputs) (any, error) {
 
 	var data []byte
 	sqlRead := fmt.Sprintf(
-		`SELECT data FROM %s WHERE key=?`,
+		`SELECT data FROM "%s" WHERE key=?`,
 		table,
 	)
 

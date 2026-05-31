@@ -6,6 +6,7 @@ import (
 	"net"
 	"net/http"
 
+	"github.com/cjxpj/nebula/debugLog"
 	"github.com/cjxpj/nebula/dto"
 	"github.com/cjxpj/nebula/utils"
 	"golang.ngrok.com/ngrok"
@@ -38,7 +39,7 @@ func Start(infoServerPath string) []string {
 			ngrok.WithAuthtoken(authToken),
 		); err == nil {
 			go func() {
-				if err := http.Serve(listener, dto.ServerConfig.Router.Http.Handler); err != nil {
+				if err = http.Serve(listener, dto.ServerConfig.Router.Http.Handler); err != nil {
 					utils.Error("Ngrok启动失败>" + err.Error())
 					panic(err)
 				}
@@ -47,7 +48,7 @@ func Start(infoServerPath string) []string {
 			// return fmt.Sprintf("Ngrok启动成功 %s", listener.URL())
 			res = append(res, fmt.Sprintf("Ngrok启动成功 %s", listener.URL()))
 		} else {
-			fmt.Println("Ngrok配置失败")
+			debugLog.Errorf("Ngrok配置失败>%v", err)
 		}
 	}
 

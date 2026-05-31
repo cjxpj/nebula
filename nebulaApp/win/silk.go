@@ -12,20 +12,20 @@ import (
 )
 
 // 安装 silk_v3
-func installSilkV3(destDir string) error {
+func installSilkV3(destDir string, output *[]string) error {
 	// silk_v3 下载地址
 	url := "https://cjxpj.com/download/silk_v3.zip"
 
 	zipPath := utils.NewFileQueue("silk_v3_download.zip")
 
-	fmt.Println("正在分段下载 silk_v3 ...")
+	*output = append(*output, "正在分段下载 silk_v3 ...")
 
 	// 下载 zip 包（多线程+进度）
 	if err := zipPath.DownloadWithDynamicThreads(url, 4, true); err != nil {
 		return fmt.Errorf("下载失败: %v", err)
 	}
 
-	fmt.Println("下载完成，正在解压...")
+	*output = append(*output, "下载完成，正在解压...")
 
 	// 解压
 	if !zipPath.UnZip(destDir) {
@@ -33,7 +33,7 @@ func installSilkV3(destDir string) error {
 	}
 	zipPath.DeleteFile()
 
-	fmt.Println("✅ silk_v3 安装成功，路径：" + destDir)
+	*output = append(*output, "✅ silk_v3 安装成功，路径："+destDir)
 	return nil
 }
 

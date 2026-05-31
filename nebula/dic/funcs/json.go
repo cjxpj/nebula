@@ -2,10 +2,12 @@ package funcs
 
 import (
 	"errors"
+	"regexp"
 	"strconv"
 	"strings"
 
 	"github.com/cjxpj/nebula/dto"
+	"github.com/cjxpj/nebula/utils"
 )
 
 func (f *DicFunc) QueryJson() (string, error) {
@@ -190,6 +192,78 @@ func (f *DicFunc) JsonIsKey() string {
 		}
 	}
 	return "false"
+}
+
+func jsonFindText(d *dto.DicInputs) (any, error) {
+	var obj any
+	if err := json.Unmarshal([]byte(d.Inputs.String(1)), &obj); err != nil {
+		return "-1", nil
+	}
+	target := d.Inputs.String(2)
+	switch v := obj.(type) {
+	case map[string]any:
+		for k, val := range v {
+			if str := utils.AnyToString(val); str == target {
+				return k, nil
+			}
+		}
+	case []any:
+		for i, val := range v {
+			if str := utils.AnyToString(val); str == target {
+				return strconv.Itoa(i), nil
+			}
+		}
+	}
+	return "-1", nil
+}
+
+func jsonFindTextFuzzy(d *dto.DicInputs) (any, error) {
+	var obj any
+	if err := json.Unmarshal([]byte(d.Inputs.String(1)), &obj); err != nil {
+		return "-1", nil
+	}
+	target := d.Inputs.String(2)
+	switch v := obj.(type) {
+	case map[string]any:
+		for k, val := range v {
+			if str := utils.AnyToString(val); strings.Contains(str, target) {
+				return k, nil
+			}
+		}
+	case []any:
+		for i, val := range v {
+			if str := utils.AnyToString(val); strings.Contains(str, target) {
+				return strconv.Itoa(i), nil
+			}
+		}
+	}
+	return "-1", nil
+}
+
+func jsonFindTextRegex(d *dto.DicInputs) (any, error) {
+	var obj any
+	if err := json.Unmarshal([]byte(d.Inputs.String(1)), &obj); err != nil {
+		return "-1", nil
+	}
+	re, err := regexp.Compile(d.Inputs.String(2))
+	if err != nil {
+		return "-1", nil
+	}
+	switch v := obj.(type) {
+	case map[string]any:
+		for k, val := range v {
+			if str := utils.AnyToString(val); re.MatchString(str) {
+				return k, nil
+			}
+		}
+	case []any:
+		for i, val := range v {
+			if str := utils.AnyToString(val); re.MatchString(str) {
+				return strconv.Itoa(i), nil
+			}
+		}
+	}
+	return "-1", nil
 }
 
 func (f *DicFunc) JsonPrettyPrint() (string, error) {

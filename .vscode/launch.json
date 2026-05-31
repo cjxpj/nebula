@@ -7,7 +7,9 @@
             "request": "launch",
             "mode": "auto",
             "program": "${workspaceFolder}/nebulaApp/win",
-            "env": {},
+            "env": {
+                // "CGO_ENABLED": "1",
+            },
             "args": [
                 // "run",
                 // "C:\\Users\\29609\\beer\\go\\nebula\\nebulaApp\\win\\NebulaData\\public\\test3.n"

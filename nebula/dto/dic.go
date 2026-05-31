@@ -161,6 +161,8 @@ type DicInputs struct {
 	V *DicVal
 	// 输入参数数据
 	Inputs *utils.DicInputs
+	// 输出数据
+	Output *SingleValue
 }
 
 func NewDicInputs(dic *BuildValue, v *DicVal, i *utils.DicInputs) *DicInputs {
@@ -168,6 +170,15 @@ func NewDicInputs(dic *BuildValue, v *DicVal, i *utils.DicInputs) *DicInputs {
 		Dic:    dic,
 		V:      v,
 		Inputs: i,
+	}
+}
+
+func NewDicInputsWithOutput(dic *BuildValue, v *DicVal, i *utils.DicInputs, output *SingleValue) *DicInputs {
+	return &DicInputs{
+		Dic:    dic,
+		V:      v,
+		Inputs: i,
+		Output: output,
 	}
 }
 

@@ -66,6 +66,7 @@ func qqBOTGroupATRun(payload *qqbot_msg.Payload) {
 		Set("来源", "群聊").
 		Set("昵称", "未知").
 		Set("群号", m.GroupOpenID).
+		Set("qq", userID).
 		Set("QQ", userID).
 		Set("主人", isAdmin).
 		Set("头像", "http://q.qlogo.cn/qqapp/"+dto.ServerConfig.QQBot.API.AppId+"/"+userID+"/640")
@@ -305,6 +306,7 @@ func qqBOTGroupPrivateRun(payload *qqbot_msg.Payload) {
 	valData := dto.NewVal().
 		Set("来源", "群私聊").
 		Set("昵称", "未知").
+		Set("qq", userID).
 		Set("QQ", userID).
 		Set("主人", isAdmin).
 		Set("头像", "http://q.qlogo.cn/qqapp/"+dto.ServerConfig.QQBot.API.AppId+"/"+userID+"/640")

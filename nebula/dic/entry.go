@@ -249,10 +249,9 @@ func Entry(r *dic_dto.DicEntry, txt []string, funcV *dic_dto.DicFunc) error {
 			if strings.HasSuffix(text, "{") || strings.HasSuffix(text, "[") {
 				r.Sys_v.SetNewJson.Len++
 			}
-			if text == "}" || text == "]" {
+			if text == "}" || text == "]" || text == "}," || text == "]," {
 				r.Sys_v.SetNewJson.Len--
-				if r.Sys_v.SetNewJson.Len == 0 {
-
+				if r.Sys_v.SetNewJson.Len == 0 && (text == "}" || text == "]") {
 					valName := r.Sys_v.SetNewJson.VlaueName
 					if valName != "" {
 						r.Val.P.Set(valName, NewJson(r, r.Val.P, r.Sys_v.SetNewJson.Json))

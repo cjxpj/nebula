@@ -209,47 +209,11 @@ func main() {
 		<-ctx.Done()
 		fmt.Println("主程序退出")
 		return
-	case "-napcat_bot":
-		if argsLen < 3 {
-			fmt.Println("用法: NebulaApp.exe -napcat_bot [QQ号]")
-			return
-		}
-		qq := args[2]
-
-		if !utils.NewFileQueue("private/NapCat.Shell/launcher.bat").FileExists() {
-			installDir := filepath.Join("private", "NapCat.Shell")
-			if err := installNapCatBot(installDir, qq); err != nil {
-				fmt.Println("napcat_bot 安装失败:", err)
-				return
-			}
-			if !utils.NewFileQueue(filepath.Join("private", "NapCat.Shell", "config", fmt.Sprintf("onebot11_%s.json", qq))).FileExists() {
-				initNapCatBotConfig(installDir, qq)
-			}
-		}
-
-		batPath := filepath.Join(utils.GetAppDir(), "private", "NapCat.Shell", "launcher.bat")
-		absPath, _ := filepath.Abs(batPath)
-		dir := filepath.Dir(absPath)
-
-		// 1. 新建独立窗口运行；2. 不继承本进程控制台；3. 立即返回
-		cmd := exec.Command("cmd", "/c", "start", "", absPath, qq)
-		cmd.Dir = dir
-		cmd.Start()
-
-		// 启动
-		dic.Start()
-		<-ctx.Done()
-		fmt.Println("主程序退出")
-		return
-
 	case "-help":
 		fmt.Println("-help               		（显示帮助）")
 		fmt.Println("-v                  		（显示版本）")
 		fmt.Println("-autostart          		（开机自启）")
 		fmt.Println("-noautostart        		（取消开机自启）")
-		fmt.Println("-install php        		（安装 PHP）")
-		fmt.Println("-install ffmpeg     		（安装 ffmpeg）")
-		fmt.Println("-napcat_bot [QQ号] 		（安装运行 napcat非官方机器人）")
 		fmt.Println("run [文件] [触发词] （运行文件）")
 	case "-v":
 		fmt.Print(appfiles.Version)
@@ -270,26 +234,7 @@ func main() {
 			fmt.Println("已取消开机启动")
 		}
 		return
-	case "-install":
-		if argsLen < 3 {
-			fmt.Println("用法: -install php")
-			return
-		}
-		install_name := args[2]
-		switch install_name {
-		case "php",
-			"silk_v3":
-			install(install_name)
-		case "ffmpeg":
-			install(install_name)
-			fmt.Println("准备安装附带silk_v3工具")
-			install("silk_v3")
-		case "napcat_bot":
-			install(install_name)
-		default:
-			fmt.Println("未知安装目标:", args[2])
-		}
-		return
+
 	case "run":
 		if argsLen < 3 || argsLen > 4 {
 			fmt.Println("用法: NebulaApp.exe run [文件路径] [触发词]")

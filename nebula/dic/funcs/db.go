@@ -16,7 +16,7 @@ var tableNameRe = regexp.MustCompile(`^[a-zA-Z0-9_]{1,32}$`)
 
 func normalizeTableName(name string) (string, error) {
 	if !tableNameRe.MatchString(name) {
-		return "", errors.New("非法表名")
+		return "", errors.New("非法表名：" + name)
 	}
 	return name, nil
 }
@@ -34,7 +34,7 @@ func dbClose(d *dto.DicInputs) (any, error) {
 
 func ensureFsTable(db *sql.DB, table string) error {
 	sql := fmt.Sprintf(`
-		CREATE TABLE IF NOT EXISTS %s (
+		CREATE TABLE IF NOT EXISTS "%s" (
 			key TEXT PRIMARY KEY,
 			data BLOB NOT NULL,
 			updated_at INTEGER NOT NULL
@@ -55,8 +55,8 @@ func readSqlite(d *dto.DicInputs) (any, error) {
 
 	// 仅传入数据库名：返回全部 key
 	if d.Inputs.LenOk(1) {
-		rows, err := db.Query(`SELECT key FROM fs_files`)
-		if err != nil {
+		rows, err2 := db.Query(`SELECT key FROM "fs_files"`)
+		if err2 != nil {
 			return "[]", nil
 		}
 		defer rows.Close()
@@ -65,6 +65,18 @@ func readSqlite(d *dto.DicInputs) (any, error) {
 		for rows.Next() {
 			var k string
 			if err := rows.Scan(&k); err == nil {
+				keys = append(keys, k)
+			}
+		}
+		if err = rows.Err(); err != nil {
+			return "[]", nil
+		}
+		defer rows.Close()
+
+		keys = make([]string, 0)
+		for rows.Next() {
+			var k string
+			if err = rows.Scan(&k); err == nil {
 				keys = append(keys, k)
 			}
 		}
@@ -77,7 +89,7 @@ func readSqlite(d *dto.DicInputs) (any, error) {
 
 	var data string
 	err = db.QueryRow(
-		`SELECT data FROM fs_files WHERE key=?`,
+		`SELECT data FROM "fs_files" WHERE key=?`,
 		key,
 	).Scan(&data)
 
@@ -97,7 +109,7 @@ func writeSqlite(d *dto.DicInputs) (any, error) {
 	defer db.Close()
 
 	// 确保表存在
-	if err := ensureFsTable(db, "fs_files"); err != nil {
+	if err = ensureFsTable(db, "fs_files"); err != nil {
 		return 0, nil
 	}
 
@@ -109,7 +121,7 @@ func writeSqlite(d *dto.DicInputs) (any, error) {
 	}
 
 	_, err = db.Exec(`
-		INSERT INTO fs_files (key, data, updated_at)
+		INSERT INTO "fs_files" (key, data, updated_at)
 		VALUES (?, ?, ?)
 		ON CONFLICT(key) DO UPDATE SET
 			data = excluded.data,

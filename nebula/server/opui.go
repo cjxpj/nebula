@@ -72,6 +72,17 @@ type HttpOpUiConfig_EncryptDic struct {
 	Text string `json:"text"`
 }
 
+type HttpOpUiConfig_install struct {
+	Component string            `json:"component"`
+	Params    map[string]string `json:"params,omitempty"`
+}
+
+type HttpOpUiInstallResponse struct {
+	Status string   `json:"status"`
+	Output []string `json:"output,omitempty"`
+	Error  string   `json:"error,omitempty"`
+}
+
 func OpUI(w http.ResponseWriter, r *http.Request, getpath string) {
 	if getpath == "" {
 		http.Redirect(w, r, dto.ServerConfig.OPUI.Addr+"/", http.StatusFound)
@@ -384,6 +395,84 @@ func OpUI(w http.ResponseWriter, r *http.Request, getpath string) {
 			rj.Text = encodeDic
 			r, _ := json.Marshal(rj)
 			w.Write(r)
+			return
+
+		case "install_php":
+			var output []string
+			appDir := utils.GetAppDir()
+			destDir := filepath.Join(appDir, "private", "php")
+			if err := installPHP(destDir, &output); err != nil {
+				w.Write([]byte(`{"status":"error","error":"` + err.Error() + `"}`))
+				return
+			}
+			resp := HttpOpUiInstallResponse{
+				Status: "ok",
+				Output: output,
+			}
+			jsonResp, _ := json.Marshal(resp)
+			w.Write(jsonResp)
+			return
+
+		case "install_ffmpeg":
+			var output []string
+			appDir := utils.GetAppDir()
+			destDir := filepath.Join(appDir, "private", "ffmpeg")
+			if err := installFFmpeg(destDir, &output); err != nil {
+				w.Write([]byte(`{"status":"error","error":"` + err.Error() + `"}`))
+				return
+			}
+			resp := HttpOpUiInstallResponse{
+				Status: "ok",
+				Output: output,
+			}
+			jsonResp, _ := json.Marshal(resp)
+			w.Write(jsonResp)
+			return
+
+		case "install_silk_v3":
+			var output []string
+			appDir := utils.GetAppDir()
+			destDir := filepath.Join(appDir, "private", "ffmpeg")
+			if err := installSilkV3(destDir, &output); err != nil {
+				w.Write([]byte(`{"status":"error","error":"` + err.Error() + `"}`))
+				return
+			}
+			resp := HttpOpUiInstallResponse{
+				Status: "ok",
+				Output: output,
+			}
+			jsonResp, _ := json.Marshal(resp)
+			w.Write(jsonResp)
+			return
+
+		case "install_napcat_bot":
+			var config HttpOpUiConfig_install
+			if err := json.Unmarshal(h.Data, &config); err != nil {
+				http.Error(w, `{"status":"error","error":"invalid json"}`, http.StatusBadRequest)
+				return
+			}
+			qq, ok := config.Params["qq"]
+			if !ok || qq == "" {
+				w.Write([]byte(`{"status":"error","error":"missing qq parameter"}`))
+				return
+			}
+			var output []string
+			appDir := utils.GetAppDir()
+			destDir := filepath.Join(appDir, "private", "NapCat.Shell")
+			if err := installNapCatBot(destDir, qq, &output); err != nil {
+				w.Write([]byte(`{"status":"error","error":"` + err.Error() + `"}`))
+				return
+			}
+			resp := HttpOpUiInstallResponse{
+				Status: "ok",
+				Output: output,
+			}
+			jsonResp, _ := json.Marshal(resp)
+			w.Write(jsonResp)
+			return
+
+		case "install_python":
+			w.Write([]byte(`{"status":"error","error":"Python installation not yet implemented"}`))
 			return
 
 		default:

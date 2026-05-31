@@ -96,8 +96,14 @@ func Setup() {
 
 		f{Name: "替换", L: "2|3|4", Fn: replaced},
 
-		f{Name: "AES加密", L: "3", Fn: aesEncrypt},
-		f{Name: "AES解密", L: "3", Fn: aesDecrypt},
+		f{Name: "AES.CBC加密", L: "3", Fn: aesCBCEncrypt},
+		f{Name: "AES.CBC解密", L: "3", Fn: aesCBCDecrypt},
+		f{Name: "AES.CFB加密", L: "3", Fn: aesCFBEncrypt},
+		f{Name: "AES.CFB解密", L: "3", Fn: aesCFBDecrypt},
+		f{Name: "AES.GCM加密", L: "2", Fn: aesGCMEncrypt},
+		f{Name: "AES.GCM解密", L: "2", Fn: aesGCMDecrypt},
+		f{Name: "AES.CTR加密", L: "3", Fn: aesCTREncrypt},
+		f{Name: "AES.CTR解密", L: "3", Fn: aesCTRDecrypt},
 
 		f{Name: "分割", L: "2|3", Fn: split},
 		f{Name: "字符切片", L: "1", Fn: stringSlice},
@@ -160,6 +166,109 @@ func Setup() {
 		f{Name: "MD转义", L: "1", Fn: mdEscape},
 
 		f{Name: "时间间隔", L: "1", Fn: timeSince},
+
+		f{Name: "json.查找文本", L: "2", Fn: jsonFindText},
+		f{Name: "json.模糊查找文本", L: "2", Fn: jsonFindTextFuzzy},
+		f{Name: "json.正则查找文本", L: "2", Fn: jsonFindTextRegex},
+
+		f{Name: "捕获输出", L: "0", Fn: captureOutput},
+		f{Name: "拦截输出", L: "0", Fn: interceptOutput},
+		f{Name: "STOP", L: "0", Fn: stopProgram},
+
+		f{Name: "大写字母", L: "1", Fn: toUpper},
+		f{Name: "小写字母", L: "1", Fn: toLower},
+
+		f{Name: "加密词库", L: "1", Fn: encodeDic},
+
+		f{Name: "ZIP压缩", L: "2", Fn: zipCompress},
+		f{Name: "ZIP解压", L: "2", Fn: zipDecompress},
+
+		f{Name: "文件夹大小", L: "1", Fn: dirSize},
+		f{Name: "文件大小", L: "1", Fn: fileSize},
+		f{Name: "重命名", L: "2", Fn: fileRename},
+		f{Name: "复制粘贴", L: "2", Fn: fileCopy},
+
+		f{Name: "计算", L: "2..", Fn: doCount},
+		f{Name: "随机数", L: "2", Fn: doRandNum},
+		f{Name: "随机大小字母", L: "1", Fn: randLetterUpperLower},
+		f{Name: "随机大写字母", L: "1", Fn: randLetterUpper},
+		f{Name: "随机小写字母", L: "1", Fn: randLetterLower},
+		f{Name: "随机大小字母数字", L: "1", Fn: randLetterUpperLowerNum},
+		f{Name: "随机小写字母数字", L: "1", Fn: randLetterLowerNum},
+		f{Name: "随机大写字母数字", L: "1", Fn: randLetterUpperNum},
+		f{Name: "随机数字", L: "1", Fn: randNumber},
+
+		f{Name: "时间戳格式化时间", L: "2|3", Fn: timestampFormattingTime},
+
+		f{Name: "JSON解析", L: "1|2", Fn: queryJson},
+		f{Name: "json解析", L: "1|2", Fn: queryJson},
+		f{Name: "JSON判断", L: "1", Fn: isJson},
+		f{Name: "JSON追加", L: "2", Fn: jsonAdd},
+		f{Name: "JSON追加字", L: "2", Fn: jsonAddString},
+		f{Name: "JSON删", L: "2", Fn: jsonDelete},
+		f{Name: "JSON存在", L: "2", Fn: jsonIsKey},
+		f{Name: "JSON长度", L: "1", Fn: jsonLen},
+		f{Name: "JSON美化", L: "1|2", Fn: jsonPrettyPrint},
+
+		f{Name: "HTML解析", L: "1", Fn: htmlParse},
+		f{Name: "HTML编码", L: "1", Fn: htmlEncode},
+		f{Name: "HTML解码", L: "1", Fn: htmlDecode},
+
+		f{Name: "编码", L: "1|2", Fn: enUtf8},
+		f{Name: "解码", L: "1|2", Fn: deUtf8},
+
+		f{Name: "GIF拆帧", L: "1", Fn: getGif},
+
+		f{Name: "绘图", L: "1", Fn: drawImg},
+
+		f{Name: "排序", L: "2|3", Fn: doSort},
+		f{Name: "范围", L: "2", Fn: doRange},
+
+		f{Name: "Ed25519从种子生成密钥", L: "1", Fn: ed25519NewKeyFromSeed},
+		f{Name: "Ed25519签名", L: "2", Fn: ed25519Sign},
+		f{Name: "Ed25519验证签名", L: "3", Fn: ed25519Verify},
+		f{Name: "Ed25519公钥转换为Curve25519", L: "1", Fn: ed25519PublicKeyToCurve25519},
+		f{Name: "Ed25519私钥转换为Curve25519", L: "1", Fn: ed25519PrivateKeyToCurve25519},
+		f{Name: "Ed25519从Curve25519生成密钥", L: "1", Fn: ed25519NewKeyFromCurve25519},
+
+		f{Name: "画笔.字体", L: "1", Fn: drawImgLoadFont},
+		f{Name: "画笔.大小", L: "2", Fn: drawImgSetSize},
+		f{Name: "绘制.文本", L: "6|7", Fn: drawImgText},
+		f{Name: "绘制.点", L: "3", Fn: drawImgPoint},
+		f{Name: "绘制.线", L: "6", Fn: drawImgLine},
+		f{Name: "绘制.喷漆", L: "6", Fn: drawImgBrushLine},
+		f{Name: "绘制.波浪", L: "7", Fn: drawImgWaveLine},
+		f{Name: "绘制.油漆桶", L: "6", Fn: drawImgFloodFill},
+		f{Name: "绘制.方形", L: "5|6", Fn: drawImgRectangleFill},
+		f{Name: "绘制.方形描边", L: "5|6", Fn: drawImgRectangleStroke},
+		f{Name: "绘制.椭圆", L: "5|6", Fn: drawImgEllipseFill},
+		f{Name: "绘制.椭圆描边", L: "4|5", Fn: drawImgEllipse},
+		f{Name: "绘制.圆形", L: "5|6", Fn: drawImgPieFill},
+		f{Name: "绘制.圆形描边", L: "4|5", Fn: drawImgPie},
+		f{Name: "绘制.多边形", L: "2..", Fn: drawImgPolygon},
+		f{Name: "绘制.多边形描边", L: "2..", Fn: drawImgPolygons},
+		f{Name: "绘制.图片", L: "3|4|5|6|7", Fn: drawImgPaste},
+		f{Name: "画布.旋转", L: "2", Fn: drawImgRotate},
+		f{Name: "画布.圆形", L: "2", Fn: drawImgRoundCorners},
+		f{Name: "绘制.随机点", L: "2", Fn: drawImgRandomDots},
+		f{Name: "绘制.随机线条", L: "2", Fn: drawImgRandomLines},
+		f{Name: "画布.灰度", L: "1", Fn: drawImgGrayscale},
+		f{Name: "绘制.高斯模糊", L: "2", Fn: drawImgGaussianBlur},
+		f{Name: "绘制.马赛克", L: "4|5", Fn: drawImgMosaic},
+		f{Name: "画布.马赛克", L: "1", Fn: drawImgAllMosaic},
+		f{Name: "绘制.圆弧", L: "6", Fn: drawImgArc},
+
+		f{Name: "图片相似度", L: "2", Fn: imageSimilarity},
+
+		f{Name: "GC回收", L: "0", Fn: gcCollect},
+
+		f{Name: "腾讯.接口", L: "6|7", Fn: tencentGetApi},
+		f{Name: "腾讯.调用", L: "2", Fn: tencentGetApiCall},
+
+		f{Name: "终端.解码器", L: "2", Fn: runCommandDecoder},
+		f{Name: "终端.变量", L: "2", Fn: runCommandVar},
+		f{Name: "终端.断开", L: "1", Fn: runCommandClose},
+		f{Name: "终端.输入", L: "2", Fn: runCommandInputText},
 	); err != nil {
 		fmt.Println(err)
 	}
