@@ -1,7 +1,7 @@
 package funcs
 
 import (
-	"fmt"
+	"log"
 
 	"github.com/cjxpj/nebula/dto"
 )
@@ -270,6 +270,6 @@ func Setup() {
 		f{Name: "终端.断开", L: "1", Fn: runCommandClose},
 		f{Name: "终端.输入", L: "2", Fn: runCommandInputText},
 	); err != nil {
-		fmt.Println(err)
+		log.Printf("注册函数失败：%v", err)
 	}
 }

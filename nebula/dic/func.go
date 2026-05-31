@@ -2,7 +2,6 @@ package dic
 
 import (
 	"errors"
-	"fmt"
 	"log"
 	"regexp"
 	"strings"
@@ -83,7 +82,7 @@ func RunsAny(d *dic_dto.DicFunc, text string) any {
 		input.SetString(valStr)
 		resAny, err := Funcs(d, &input)
 		if err != nil {
-			fmt.Println(err)
+			log.Printf("[%s]%s：%v", d.Val.Get("_词库路径_"), valStr[0], err)
 		}
 		if resAny == nil {
 			return "", false
@@ -116,7 +115,7 @@ func RunsVal(d *dic_dto.DicFunc, text string, setVal string) (string, bool) {
 		input.SetString(valStr)
 		resAny, err := Funcs(d, &input)
 		if err != nil {
-			fmt.Println(err)
+			log.Printf("[%s]%s：%v", d.Val.Get("_词库路径_"), valStr[0], err)
 		}
 		if resStr, ok := resAny.(string); ok {
 			return resStr, false

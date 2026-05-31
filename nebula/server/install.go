@@ -68,6 +68,9 @@ func installSilkV3(destDir string, output *[]string) error {
 	}
 
 	*output = append(*output, "下载完成，正在解压...")
+	if err := os.MkdirAll(destDir, 0755); err != nil {
+		return fmt.Errorf("创建目录失败: %w", err)
+	}
 	if !zipPath.UnZip(destDir) {
 		return fmt.Errorf("解压失败")
 	}

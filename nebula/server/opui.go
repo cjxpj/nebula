@@ -432,8 +432,8 @@ func OpUI(w http.ResponseWriter, r *http.Request, getpath string) {
 		case "install_silk_v3":
 			var output []string
 			appDir := utils.GetAppDir()
-			destDir := filepath.Join(appDir, "private", "ffmpeg")
-			if err := installSilkV3(destDir, &output); err != nil {
+			destDir := filepath.Join(appDir, "private", "ffmpeg", "silk_v3")
+			if err := installSilkV3(destDir, &amp;output); err != nil {
 				w.Write([]byte(`{"status":"error","error":"` + err.Error() + `"}`))
 				return
 			}
