@@ -7,6 +7,7 @@ import (
 
 	"github.com/cjxpj/nebula/count"
 	dic_dto "github.com/cjxpj/nebula/dic/dto"
+	"github.com/cjxpj/nebula/debugLog"
 	"github.com/cjxpj/nebula/dto"
 	"github.com/cjxpj/nebula/utils"
 )
@@ -106,7 +107,7 @@ func (it *IfText) Run(input string) []map[string]string {
 		parsed = append(parsed, current)
 		dieNum++
 		if dieNum > 5000 {
-			fmt.Println("错误判断", input)
+			debugLog.Infof("错误判断: %v", input)
 			return []map[string]string{
 				{
 					"a": "",

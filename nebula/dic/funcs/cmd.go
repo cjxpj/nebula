@@ -5,9 +5,10 @@ import (
 	"bytes"
 	"errors"
 	"io"
-	"log"
 	"os"
 	"os/exec"
+
+	"github.com/cjxpj/nebula/debugLog"
 
 	"github.com/cjxpj/nebula/dto"
 	"github.com/cjxpj/nebula/utils"
@@ -184,7 +185,7 @@ func runCommandAsync(d *dto.DicInputs) (any, error) {
 
 	go func() {
 		if err := cmd.Cmd.Run(); err != nil {
-			log.Println(err)
+			debugLog.Info(err)
 		}
 	}()
 	return "", nil

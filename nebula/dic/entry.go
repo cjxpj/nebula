@@ -4,13 +4,13 @@ import (
 	"errors"
 	"fmt"
 	"maps"
-	"time"
-
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/cjxpj/nebula/bot/napcatbot"
 	dicBuild "github.com/cjxpj/nebula/build"
+	"github.com/cjxpj/nebula/debugLog"
 	"github.com/cjxpj/nebula/count"
 	dic_api "github.com/cjxpj/nebula/dic/api"
 	dic_dto "github.com/cjxpj/nebula/dic/dto"
@@ -30,8 +30,8 @@ import (
 
 // 执行词块
 func (m *dicImpl) Execute(r *dto.DicInfoData, txt []string) any {
-	fmt.Println("执行词块")
-	fmt.Println(utils.AnyToString(r))
+	debugLog.Infof("执行词块")
+	debugLog.Infof("%v", utils.AnyToString(r))
 	runNum := 0
 
 	for index := 0; index < len(txt); index++ {

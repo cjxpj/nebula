@@ -64,7 +64,7 @@ func readSqlite(d *dto.DicInputs) (any, error) {
 		keys := make([]string, 0)
 		for rows.Next() {
 			var k string
-			if err := rows.Scan(&amp;k); err == nil {
+			if err := rows.Scan(&k); err == nil {
 				keys = append(keys, k)
 			}
 		}

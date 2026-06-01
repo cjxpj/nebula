@@ -2,10 +2,10 @@ package funcs
 
 import (
 	"encoding/hex"
-	"fmt"
 	"strconv"
 	"strings"
 
+	"github.com/cjxpj/nebula/debugLog"
 	"golang.org/x/text/encoding/charmap"
 	"golang.org/x/text/encoding/simplifiedchinese"
 	"golang.org/x/text/transform"
@@ -81,7 +81,7 @@ func (f *DicFunc) DeUtf8() string {
 
 	case "二进制":
 		if len(utf8Str)%8 != 0 {
-			fmt.Println(len(utf8Str))
+			debugLog.Infof("%v", len(utf8Str))
 			return "error1"
 		}
 		var bytes []byte

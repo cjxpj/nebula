@@ -10,6 +10,7 @@ import (
 
 	"github.com/cjxpj/nebula/appfiles"
 	dicBuild "github.com/cjxpj/nebula/build"
+	"github.com/cjxpj/nebula/debugLog"
 	"github.com/cjxpj/nebula/dto"
 	"github.com/cjxpj/nebula/utils"
 )
@@ -447,11 +448,11 @@ func Web(dicPath string, lines []string) *dto.BuildValue {
 			var filesToLoad []string
 
 			// 判断是目录还是文件
-			if strings.HasSuffix(path, "/*") {
-				dirPath := "private/" + strings.TrimSuffix(path, "/*")
+			if dirName, ok := strings.CutSuffix(path, "/*"); ok {
+				dirPath := "private/" + dirName
 				fileLoad := utils.NewFileQueue(dirPath)
 				if !fileLoad.DirExists() {
-					fmt.Println("加载目录不存在：", dirPath)
+					debugLog.Infof("加载目录不存在：%v", dirPath)
 					continue
 				}
 				filesToLoad2, err := fileLoad.GetFileList()
@@ -586,7 +587,7 @@ func BuildDic(dicPath, text string) *dto.BuildValue {
 				suojin = false
 			}
 			if lineLen > 10 && line[:10] == "//@打印=" {
-				fmt.Println("["+dicPath+"]", line[10:])
+				debugLog.Infof("[%v]%v", dicPath, line[10:])
 			}
 			if lineLen > 13 && line[:13] == "//@函数头=" {
 				fHeaderName = line[13:]
@@ -606,11 +607,11 @@ func BuildDic(dicPath, text string) *dto.BuildValue {
 				var filesToLoad []string
 
 				// 判断是目录还是文件
-				if strings.HasSuffix(path, "/*") {
-					dirPath := "private/" + strings.TrimSuffix(path, "/*")
+				if dirName, ok := strings.CutSuffix(path, "/*"); ok {
+					dirPath := "private/" + dirName
 					fileLoad := utils.NewFileQueue(dirPath)
 					if !fileLoad.DirExists() {
-						fmt.Println("加载目录不存在：", dirPath)
+						debugLog.Infof("加载目录不存在：%v", dirPath)
 						continue
 					}
 					filesToLoad2, err := fileLoad.GetFileList()
@@ -996,8 +997,8 @@ func Parse(dicPath string, reader io.Reader) *dto.DicInfoData {
 				if packPath, ok := strings.CutPrefix(vSuffix, "#引入="); ok && packPath != "" {
 					var files []string
 					var wg sync.WaitGroup
-					if strings.HasSuffix(packPath, "/*") {
-						dir := "private/" + strings.TrimSuffix(packPath, "/*")
+					if dirName, ok := strings.CutSuffix(packPath, "/*"); ok {
+						dir := "private/" + dirName
 						fq := utils.NewFileQueue(dir)
 						if fq.DirExists() {
 							list, _ := fq.GetFileList()
@@ -1109,6 +1110,10 @@ func Parse(dicPath string, reader io.Reader) *dto.DicInfoData {
 			fRunAll = true
 			dicTrigger = dicTrigger[:len(dicTrigger)-3]
 		}
+	}
+
+	if err := scanner.Err(); err != nil {
+		debugLog.Infof("Scanner error for %s: %v", dicPath, err)
 	}
 
 	commit()

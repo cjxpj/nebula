@@ -2,11 +2,11 @@ package dic
 
 import (
 	"errors"
-	"log"
 	"regexp"
 	"strings"
 
 	"github.com/cjxpj/nebula/count"
+	"github.com/cjxpj/nebula/debugLog"
 	dic_api "github.com/cjxpj/nebula/dic/api"
 	dic_dto "github.com/cjxpj/nebula/dic/dto"
 	"github.com/cjxpj/nebula/dic/funcs"
@@ -25,7 +25,7 @@ func RunLine(d *dto.DicInfoData, text string) any {
 		input.SetString(valStr)
 		resAny, err := RunFuncLine(d, input)
 		if err != nil {
-			log.Printf("[%s]%s：%v", d.Value.Get("_词库路径_"), valStr[0], err)
+			debugLog.Infof("[%s]%s：%v", d.Value.Get("_词库路径_"), valStr[0], err)
 		}
 		if resStr, ok := resAny.(string); ok {
 			return resStr, false
@@ -53,7 +53,7 @@ func Runs(d *dic_dto.DicFunc, text string) any {
 		input.SetString(valStr)
 		resAny, err := Funcs(d, &input)
 		if err != nil {
-			log.Printf("[%s]%s：%v", d.Val.Get("_词库路径_"), valStr[0], err)
+			debugLog.Infof("[%s]%s：%v", d.Val.Get("_词库路径_"), valStr[0], err)
 		}
 		if resStr, ok := resAny.(string); ok {
 			return resStr, false
@@ -82,7 +82,7 @@ func RunsAny(d *dic_dto.DicFunc, text string) any {
 		input.SetString(valStr)
 		resAny, err := Funcs(d, &input)
 		if err != nil {
-			log.Printf("[%s]%s：%v", d.Val.Get("_词库路径_"), valStr[0], err)
+			debugLog.Infof("[%s]%s：%v", d.Val.Get("_词库路径_"), valStr[0], err)
 		}
 		if resAny == nil {
 			return "", false
@@ -115,7 +115,7 @@ func RunsVal(d *dic_dto.DicFunc, text string, setVal string) (string, bool) {
 		input.SetString(valStr)
 		resAny, err := Funcs(d, &input)
 		if err != nil {
-			log.Printf("[%s]%s：%v", d.Val.Get("_词库路径_"), valStr[0], err)
+			debugLog.Infof("[%s]%s：%v", d.Val.Get("_词库路径_"), valStr[0], err)
 		}
 		if resStr, ok := resAny.(string); ok {
 			return resStr, false
@@ -142,7 +142,7 @@ func Run(d *dic_dto.DicFunc, text string) string {
 		input.SetString(valStr)
 		resAny, err := Funcs(d, &input)
 		if err != nil {
-			log.Printf("[%s]%s：%v", d.Val.Get("_词库路径_"), valStr[0], err)
+			debugLog.Infof("[%s]%s：%v", d.Val.Get("_词库路径_"), valStr[0], err)
 		}
 		if resStr, ok := resAny.(string); ok {
 			return resStr, false

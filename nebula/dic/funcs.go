@@ -3,9 +3,7 @@ package dic
 import (
 	"bufio"
 	"errors"
-	"fmt"
 	"io"
-	"log"
 	"os"
 	"regexp"
 	"strings"
@@ -14,6 +12,7 @@ import (
 	dic_api "github.com/cjxpj/nebula/dic/api"
 	dic_dto "github.com/cjxpj/nebula/dic/dto"
 	"github.com/cjxpj/nebula/dic/funcs"
+	"github.com/cjxpj/nebula/debugLog"
 	"github.com/cjxpj/nebula/dto"
 	"github.com/cjxpj/nebula/run"
 	"github.com/cjxpj/nebula/utils"
@@ -45,7 +44,7 @@ func runDic(d *dto.DicInputs) (any, error) {
 				time.Sleep(time.Duration(sleepTime) * time.Millisecond)
 				rMsg := dic_api.Api.DicRunPrivate(calldicrun, d.Inputs.StringAfter(2))
 				if rMsg != "" {
-					fmt.Println(rMsg)
+					debugLog.Infof("%v", rMsg)
 				}
 			}()
 			return "", nil
@@ -98,7 +97,7 @@ func runDicFile(d *dto.DicInputs) (any, error) {
 				time.Sleep(time.Duration(sleepTime) * time.Millisecond)
 				rMsg := dic_api.Api.DicRunPrivate(calldicrun, d.Inputs.StringAfter(2))
 				if rMsg != "" {
-					fmt.Println(rMsg)
+					debugLog.Infof("%v", rMsg)
 				}
 			}()
 			return "", nil
@@ -234,7 +233,8 @@ func cmdListenRun(d *dto.DicInputs) (any, error) {
 	stderr, _ := cmd.Cmd.StderrPipe()
 
 	if err := cmd.Cmd.Start(); err != nil {
-		log.Fatal(err)
+		debugLog.Error(err)
+		return "", err
 	}
 
 	// 注册动作：断开连接
@@ -270,11 +270,11 @@ func cmdListenRun(d *dto.DicInputs) (any, error) {
 				}})
 
 			if res := dic_api.Api.DicRun(dd, line); res != "" {
-				fmt.Println(res)
+				debugLog.Infof("%v", res)
 			}
 		}
 		if err := scanner.Err(); err != nil {
-			fmt.Println("终端断开:", err)
+			debugLog.Infof("终端断开: %v", err)
 		}
 	}()
 	return "", nil
@@ -320,7 +320,7 @@ func wsConnect(d *dto.DicInputs) (any, error) {
 		resData := dic_api.Api.DicRunPrivate(dic, "连接成功")
 		if resData != "" {
 			if err := conn.WriteMessage(websocket.TextMessage, []byte(resData)); err != nil {
-				fmt.Println("发送消息时出错:", err)
+				debugLog.Infof("发送消息时出错: %v", err)
 			}
 		}
 	}
@@ -339,7 +339,7 @@ func wsConnect(d *dto.DicInputs) (any, error) {
 			if readMsgErr != nil {
 				// 判断是否是正常关闭
 				if websocket.IsUnexpectedCloseError(readMsgErr, websocket.CloseGoingAway, websocket.CloseNormalClosure) {
-					fmt.Println("读取消息时出错:", readMsgErr)
+					debugLog.Infof("读取消息时出错: %v", readMsgErr)
 					Tstr = "断开连接"
 					wsClose = true
 				} else {
@@ -359,7 +359,7 @@ func wsConnect(d *dto.DicInputs) (any, error) {
 			wsfile := utils.NewFileQueue(dicpath)
 			wsfileData, err := wsfile.ReadFromFile()
 			if err != nil {
-				fmt.Println("读取文件时出错:", err)
+				debugLog.Infof("读取文件时出错: %v", err)
 				conn.Close() // 关闭连接
 				break
 			}
@@ -380,15 +380,15 @@ func wsConnect(d *dto.DicInputs) (any, error) {
 			// 拦截并处理错误
 			if readMsgErr != nil {
 				if rStr != "" {
-					fmt.Println(rStr)
+					debugLog.Infof("%v", rStr)
 					break
 				}
 			}
 			if rStr != "" {
 				if wsClose {
-					fmt.Println(rStr)
+					debugLog.Infof("%v", rStr)
 				} else if err := conn.WriteMessage(websocket.TextMessage, []byte(rStr)); err != nil {
-					fmt.Println("发送消息时出错:", err)
+					debugLog.Infof("发送消息时出错: %v", err)
 				}
 			}
 		}

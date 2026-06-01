@@ -2,13 +2,12 @@ package dic
 
 import (
 	"bytes"
-	"fmt"
 	"html/template"
-	"log"
 	"maps"
 	"strings"
 
 	dic_dto "github.com/cjxpj/nebula/dic/dto"
+	"github.com/cjxpj/nebula/debugLog"
 	"github.com/cjxpj/nebula/dto"
 	"github.com/cjxpj/nebula/run"
 	"golang.org/x/net/html"
@@ -119,7 +118,7 @@ func (m *dicImpl) DicRunPro(d *dto.DicInfoData, trigger string) any {
 	// 生成参数跟括号
 	dto.RunTrigger(trigger, GetDicTrigger, d.Value)
 
-	fmt.Println(GetDic)
+	debugLog.Infof("%v", GetDic)
 
 	res := m.Execute(d, GetDic)
 	return res
@@ -164,7 +163,7 @@ func (m *dicImpl) WebDicRun(WD *dic_dto.WebDic) string {
 	// 解析成节点树
 	doc, err := html.Parse(strings.NewReader(WD.Text))
 	if err != nil {
-		log.Fatal(err)
+		debugLog.Error(err)
 	}
 
 	data := make(map[string]any)
@@ -189,12 +188,12 @@ func (m *dicImpl) WebDicRun(WD *dic_dto.WebDic) string {
 	// 2. 使用 Go 模板引擎渲染
 	tpl, err := template.New("page").Parse(htmlBuf.String())
 	if err != nil {
-		fmt.Println("模板解析失败:", err)
+		debugLog.Infof("模板解析失败: %v", err)
 	}
 	if err == nil {
 		var buf bytes.Buffer
 		if err := tpl.Execute(&buf, data); err != nil {
-			fmt.Println("模板渲染失败:", err)
+			debugLog.Infof("模板渲染失败: %v", err)
 		}
 		// 3. 模板渲染结果
 		result = buf.String()

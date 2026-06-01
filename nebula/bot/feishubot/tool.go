@@ -52,9 +52,13 @@ func extractText(content string) string {
 				case "text":
 					sb.WriteString(b.Text)
 				case "at":
-					sb.WriteString("@" + b.UserName + " ")
+					sb.WriteString("@")
+					sb.WriteString(b.UserName)
+					sb.WriteString(" ")
 				case "img":
-					sb.WriteString("[img=" + b.ImageKey + "]")
+					sb.WriteString("[img=")
+					sb.WriteString(b.ImageKey)
+					sb.WriteString("]")
 				case "emotion":
 					sb.WriteString("[表情]")
 				case "code_block":

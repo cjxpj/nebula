@@ -22,6 +22,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/cjxpj/nebula/debugLog"
 	"gopkg.in/ini.v1"
 )
 
@@ -206,7 +207,7 @@ func (fq *FileQueue) GetDirSize() (int64, error) {
 	// 使用 filepath.Walk 遍历目录
 	err := filepath.Walk(fq.FileName, func(path string, info os.FileInfo, err error) error {
 		if err != nil {
-			fmt.Printf("遍历 '%s' 时出错: %v\n", path, err)
+			debugLog.Infof("遍历 \"%s\" 时出错: %v\n", path, err)
 			return err
 		}
 		if !info.IsDir() {
@@ -344,7 +345,7 @@ func (fq *FileQueue) DownloadWithDynamicThreads(url string, maxThreads int, show
 	acceptRanges := strings.EqualFold(resp.Header.Get("Accept-Ranges"), "bytes")
 	if !acceptRanges {
 		if showProgress {
-			fmt.Println("⚠️  服务器不支持 Range，强制单线程")
+			debugLog.Infof("⚠️  服务器不支持 Range，强制单线程")
 		}
 		maxThreads = 1
 	}
@@ -390,9 +391,9 @@ func (fq *FileQueue) DownloadWithDynamicThreads(url string, maxThreads int, show
 					percent := float64(d) * 100 / float64(length)
 					speed := float64(d) / 1048576 / time.Since(startT).Seconds()
 					eta := time.Duration(float64(length-d)/1048576/speed) * time.Second
-					fmt.Printf("\r[%.1f%%] %.2f MB/s  eta %s ", percent, speed, eta.Round(time.Second))
+					fmt.Printf("\r[%.1f%%] %.2f MB/s  eta %v ", percent, speed, eta.Round(time.Second))
 				case <-stopBar:
-					fmt.Printf("\r[100.0%%] %.2f MB/s  total %s \n",
+					debugLog.Infof("[100.0%%] %.2f MB/s  total %s \n",
 						float64(length)/1048576/time.Since(startT).Seconds(),
 						time.Since(startT).Round(time.Millisecond))
 					return
@@ -1003,7 +1004,7 @@ func (fq *FileQueue) WriteFileByte(data []byte) {
 	// 检查文件夹是否存在，不存在则创建
 	dir := filepath.Dir(fq.FileName)
 	if err := os.MkdirAll(dir, 0755); err != nil {
-		fmt.Println("创建文件夹失败，可能是权限问题，也有可能是有相同名字的文件存在占用了。")
+		debugLog.Infof("创建文件夹失败，可能是权限问题，也有可能是有相同名字的文件存在占用了。")
 		// Error("创建文件夹失败")
 		return
 	}

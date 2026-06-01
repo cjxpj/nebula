@@ -2,13 +2,13 @@ package yunhubot
 
 import (
 	"encoding/json"
-	"fmt"
 	"io"
 	"net/http"
 	"strings"
 
 	dic_api "github.com/cjxpj/nebula/dic/api"
 	dic_dto "github.com/cjxpj/nebula/dic/dto"
+	"github.com/cjxpj/nebula/debugLog"
 	"github.com/cjxpj/nebula/dto"
 	"github.com/cjxpj/nebula/utils"
 )
@@ -44,9 +44,9 @@ func yunHuBOTGroupRun(payload *Payload) {
 	rMsg := dic_api.Api.DicRun(dic, content)
 	rMsg = strings.ReplaceAll(rMsg, "\\r", "\n")
 	if rMsg != "" {
-		fmt.Println(rMsg)
+		debugLog.Infof("%v", rMsg)
 		if err := SendText(groupID, "group", rMsg); err != nil {
-			fmt.Println(err)
+			debugLog.Infof("%v", err)
 		}
 	}
 }
@@ -63,14 +63,14 @@ func BotMessage(w http.ResponseWriter, r *http.Request) {
 		w.Write([]byte("Bot ErrorData"))
 		return
 	}
-	fmt.Println(string(httpBody))
+	debugLog.Infof("%v", string(httpBody))
 	switch payload.Header.EventType {
 	case "message.receive.normal":
 		yunHuBOTGroupRun(payload)
 		w.Write([]byte("Bot Message"))
 
 	default:
-		fmt.Println("Bot消息类型未支持")
+		debugLog.Infof("Bot消息类型未支持")
 		return
 	}
 

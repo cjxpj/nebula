@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/cjxpj/nebula/appfiles"
+	"github.com/cjxpj/nebula/debugLog"
 	"github.com/cjxpj/nebula/utils"
 )
 
@@ -82,7 +83,7 @@ func RunTrigger(msg, trigger string, v *Val) {
 			v.Set(key, val)
 		}
 	} else {
-		fmt.Println("正则语法错误:", err)
+		debugLog.Infof("正则语法错误:%v", err)
 	}
 	triggerSplit := strings.Split(msg, " ")
 	for i, val := range triggerSplit {
@@ -105,7 +106,7 @@ func ValRunTrigger(msg, trigger string, setV, v *DicVal) {
 			setV.P.Set(key, v.Text(val))
 		}
 	} else {
-		fmt.Println("正则语法错误:", err)
+		debugLog.Infof("正则语法错误:%v", err)
 	}
 	triggerSplit := strings.Split(msg, " ")
 	for i, val := range triggerSplit {

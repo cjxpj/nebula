@@ -1,12 +1,12 @@
 package run
 
 import (
-	"fmt"
 	"strings"
 	"testing"
 
 	"os"
 
+	"github.com/cjxpj/nebula/debugLog"
 	"github.com/cjxpj/nebula/utils"
 )
 
@@ -35,8 +35,8 @@ func Test_log(t *testing.T) {
 
 		`)
 		r := Parse("test.n", text)
-		fmt.Println("===========词库===========")
-		fmt.Println(utils.AnyToString(r))
-		fmt.Println("===========结尾===========")
+		debugLog.Infof("===========词库===========")
+		debugLog.Infof("%v", utils.AnyToString(r))
+		debugLog.Infof("===========结尾===========")
 	})
 }

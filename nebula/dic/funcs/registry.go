@@ -1,8 +1,7 @@
 package funcs
 
 import (
-	"log"
-
+	"github.com/cjxpj/nebula/debugLog"
 	"github.com/cjxpj/nebula/dto"
 )
 
@@ -270,6 +269,6 @@ func Setup() {
 		f{Name: "终端.断开", L: "1", Fn: runCommandClose},
 		f{Name: "终端.输入", L: "2", Fn: runCommandInputText},
 	); err != nil {
-		log.Printf("注册函数失败：%v", err)
+		debugLog.Infof("注册函数失败：%v", err)
 	}
 }

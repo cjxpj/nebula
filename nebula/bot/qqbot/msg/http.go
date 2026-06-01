@@ -8,6 +8,8 @@ import (
 	"mime/multipart"
 	"net/http"
 	"time"
+
+	"github.com/cjxpj/nebula/debugLog"
 )
 
 func (b *QQBot) Send(path string, body any, respObj any) error {
@@ -65,7 +67,7 @@ func postImageWithJsonDataAsFormFields(
 	// 遍历 map，写入普通表单字段
 	for key, val := range fieldsMap {
 		strVal := fmt.Sprintf("%v", val)
-		fmt.Println("key:", key, "val:", strVal)
+		debugLog.Infof("key:%v val:%v", key, strVal)
 		if err := writer.WriteField(key, strVal); err != nil {
 			return fmt.Errorf("写入字段 %s 失败: %w", key, err)
 		}

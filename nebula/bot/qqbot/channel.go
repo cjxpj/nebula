@@ -9,6 +9,7 @@ import (
 	qqbot_msg "github.com/cjxpj/nebula/bot/qqbot/msg"
 	dic_api "github.com/cjxpj/nebula/dic/api"
 	dic_dto "github.com/cjxpj/nebula/dic/dto"
+	"github.com/cjxpj/nebula/debugLog"
 	"github.com/cjxpj/nebula/dto"
 	"github.com/cjxpj/nebula/utils"
 )
@@ -19,7 +20,7 @@ func qqBOTChannelRun(payload *qqbot_msg.Payload) {
 	m := &qqbot_msg.GuildMessageEvent{}
 	err := json.Unmarshal([]byte(payload.Data), m)
 	if err != nil {
-		fmt.Println("QQBot消息数据验证失败")
+		debugLog.Infof("QQBot消息数据验证失败")
 		return
 	}
 
@@ -81,14 +82,14 @@ func qqBOTChannelRun(payload *qqbot_msg.Payload) {
 	if img := dic.Val.P.GetStr("发送图片"); img != "" {
 		_, mErr := dto.ServerConfig.QQBot.API.ReplyChannelImgMessage(m.ID, m.ChannelID, img, rMsg)
 		if mErr != nil {
-			fmt.Println("QQBot回复图文失败", mErr)
+			debugLog.Infof("QQBot回复图文失败%v", mErr)
 		}
 		return
 	}
 	if rMsg != "" {
 		_, mErr := dto.ServerConfig.QQBot.API.ReplyChannelMessage(m.ID, m.ChannelID, rMsg)
 		if mErr != nil {
-			fmt.Println("QQBot回复失败", mErr)
+			debugLog.Infof("QQBot回复失败%v", mErr)
 		}
 	}
 }
@@ -99,7 +100,7 @@ func qqBOTChannelPrivateRun(payload *qqbot_msg.Payload) {
 	m := &qqbot_msg.GuildMessageEvent{}
 	err := json.Unmarshal([]byte(payload.Data), m)
 	if err != nil {
-		fmt.Println("QQBot消息数据验证失败")
+		debugLog.Infof("QQBot消息数据验证失败")
 		return
 	}
 
@@ -164,14 +165,14 @@ func qqBOTChannelPrivateRun(payload *qqbot_msg.Payload) {
 	if img := dic.Val.P.GetStr("发送图片"); img != "" {
 		_, mErr := dto.ServerConfig.QQBot.API.ReplyChannelPrivateMessage(m.ID, m.GuildID, img, rMsg)
 		if mErr != nil {
-			fmt.Println("QQBot回复图文失败", mErr)
+			debugLog.Infof("QQBot回复图文失败%v", mErr)
 		}
 		return
 	}
 	if rMsg != "" {
 		_, mErr := dto.ServerConfig.QQBot.API.ReplyPrivateMessage(m.ID, m.GuildID, rMsg)
 		if mErr != nil {
-			fmt.Println("QQBot回复失败", mErr)
+			debugLog.Infof("QQBot回复失败%v", mErr)
 		}
 	}
 }

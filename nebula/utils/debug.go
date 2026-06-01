@@ -1,8 +1,10 @@
 package utils
 
-import "fmt"
+import (
+	"github.com/cjxpj/nebula/debugLog"
+)
 
 func FmtResult(i any) any {
-	fmt.Println(i)
+	debugLog.Infof("%v", i)
 	return i
 }

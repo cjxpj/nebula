@@ -11,6 +11,7 @@ import (
 	"github.com/cjxpj/nebula/appfiles"
 	dic_api "github.com/cjxpj/nebula/dic/api"
 	dic_dto "github.com/cjxpj/nebula/dic/dto"
+	"github.com/cjxpj/nebula/debugLog"
 	"github.com/cjxpj/nebula/dto"
 	"github.com/cjxpj/nebula/utils"
 	"github.com/gorilla/websocket"
@@ -69,7 +70,7 @@ func dicWebRouter(w http.ResponseWriter, r *http.Request) {
 				resData := dic_api.Api.DicRunPrivate(dic, "连接成功")
 				if resData != "" {
 					if err := conn.WriteMessage(websocket.TextMessage, []byte(resData)); err != nil {
-						fmt.Println("发送消息时出错:", err)
+						debugLog.Infof("发送消息时出错: %v", err)
 					}
 				}
 			}
@@ -88,7 +89,7 @@ func dicWebRouter(w http.ResponseWriter, r *http.Request) {
 					if readMsgErr != nil {
 						// 判断是否是正常关闭
 						if websocket.IsUnexpectedCloseError(readMsgErr, websocket.CloseGoingAway, websocket.CloseNormalClosure) {
-							fmt.Println("读取消息时出错:", readMsgErr)
+							debugLog.Infof("读取消息时出错: %v", readMsgErr)
 							Tstr = "断开连接"
 							wsClose = true
 						} else {
@@ -108,7 +109,7 @@ func dicWebRouter(w http.ResponseWriter, r *http.Request) {
 					wsfile := utils.NewFileQueue("private/websocket/server.n")
 					wsfileData, err := wsfile.ReadFromFile()
 					if err != nil {
-						fmt.Println("读取文件时出错:", err)
+						debugLog.Infof("读取文件时出错: %v", err)
 						conn.Close() // 关闭连接
 						break
 					}
@@ -131,15 +132,15 @@ func dicWebRouter(w http.ResponseWriter, r *http.Request) {
 					// 拦截并处理错误
 					if readMsgErr != nil {
 						if rStr != "" {
-							fmt.Println(rStr)
+							debugLog.Infof("%v", rStr)
 							break
 						}
 					}
 					if rStr != "" {
 						if wsClose {
-							fmt.Println(rStr)
+							debugLog.Infof("%v", rStr)
 						} else if err := conn.WriteMessage(websocket.TextMessage, []byte(rStr)); err != nil {
-							fmt.Println("发送消息时出错:", err)
+							debugLog.Infof("发送消息时出错: %v", err)
 						}
 					}
 				}

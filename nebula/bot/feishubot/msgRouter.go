@@ -2,12 +2,12 @@ package feishubot
 
 import (
 	"encoding/json"
-	"fmt"
 	"io"
-	"log"
 	"net/http"
 	"strings"
 	"time"
+
+	"github.com/cjxpj/nebula/debugLog"
 
 	feishubot_msg "github.com/cjxpj/nebula/bot/feishubot/msg"
 	dic_api "github.com/cjxpj/nebula/dic/api"
@@ -85,10 +85,10 @@ func groupMsg(m *feishubot_msg.ImMessageReceiveV1) {
 			rMsg := dic_api.Api.DicRun(dic, content)
 			if rMsg != "" {
 				rMsg = strings.ReplaceAll(rMsg, "\\r", "\n")
-				fmt.Println(rMsg)
+				debugLog.Infof("%v", rMsg)
 				_, err := SendGroupMsg(groupID, rMsg)
 				if err != nil {
-					fmt.Println(err)
+					debugLog.Infof("%v", err)
 				}
 			}
 		}()
@@ -96,19 +96,19 @@ func groupMsg(m *feishubot_msg.ImMessageReceiveV1) {
 }
 
 func p2pMsg(m *feishubot_msg.ImMessageReceiveV1) {
-	fmt.Println("私聊", m)
+	debugLog.Infof("私聊%v", m)
 }
 
 // BotMessage 统一入口：只负责路由层逻辑
 func BotMessage(w http.ResponseWriter, r *http.Request) {
 	body, err := io.ReadAll(r.Body)
 	if err != nil {
-		log.Println("read body failed:", err)
+		debugLog.Info("read body failed:", err)
 		return
 	}
 	defer r.Body.Close()
 
-	fmt.Println(string(body))
+	debugLog.Infof("%v", string(body))
 
 	// 处理验证码
 	plain, err := parseAndDecrypt(body)
@@ -124,7 +124,7 @@ func BotMessage(w http.ResponseWriter, r *http.Request) {
 	// 处理事件
 	ev, err := parseGroupMessage(body)
 	if err != nil {
-		log.Println("parse failed:", err)
+		debugLog.Info("parse failed:", err)
 		return
 	}
 	switch ev.Event.Message.ChatType {

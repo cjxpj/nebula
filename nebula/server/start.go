@@ -61,7 +61,7 @@ func Start(infoServerPath string) []string {
 	}()
 
 	if _, port, err := net.SplitHostPort(dto.ServerConfig.Router.Http.Addr); err == nil {
-		fmt.Println("WebUi：", fmt.Sprintf("http://%s:%s%s", "localhost", port, dto.ServerConfig.OPUI.Addr))
+		fmt.Printf("WebUi: %v\n", fmt.Sprintf("http://%s:%s%s", "localhost", port, dto.ServerConfig.OPUI.Addr))
 	}
 
 	res = append(res, "Main")

@@ -12,6 +12,7 @@ import (
 	napcatbot_dto "github.com/cjxpj/nebula/bot/napcatbot/dto"
 	dic_api "github.com/cjxpj/nebula/dic/api"
 	dic_dto "github.com/cjxpj/nebula/dic/dto"
+	"github.com/cjxpj/nebula/debugLog"
 	"github.com/cjxpj/nebula/dto"
 	"github.com/cjxpj/nebula/utils"
 )
@@ -103,12 +104,12 @@ func napCatBOTGroupUploadFileRun(msgData *MessagePayload) {
 			rMsg := dic_api.Api.DicRunPrivate(dic, "上传文件")
 			if rMsg != "" {
 				rMsg = strings.ReplaceAll(rMsg, "\\r", "\n")
-				fmt.Println(rMsg)
+				debugLog.Infof("%v", rMsg)
 				body, err := SendGroupText(groupID, rMsg)
 				if err != nil {
-					fmt.Println(err)
+					debugLog.Infof("%v", err)
 				}
-				fmt.Println(string(body))
+				debugLog.Infof("%v", string(body))
 			}
 		}()
 	}
@@ -208,12 +209,12 @@ func napCatBOTGroupRecallRun(msgData *MessagePayload) {
 			rMsg := dic_api.Api.DicRunPrivate(dic, "撤回")
 			if rMsg != "" {
 				rMsg = strings.ReplaceAll(rMsg, "\\r", "\n")
-				fmt.Println(rMsg)
+				debugLog.Infof("%v", rMsg)
 				body, err := SendGroupText(groupID, rMsg)
 				if err != nil {
-					fmt.Println(err)
+					debugLog.Infof("%v", err)
 				}
-				fmt.Println(string(body))
+				debugLog.Infof("%v", string(body))
 			}
 		}()
 	}
@@ -376,12 +377,12 @@ func napCatBOTGroupNudgeRun(msgData *MessagePayload) {
 			rMsg := dic_api.Api.DicRunPrivate(dic, "戳一戳")
 			if rMsg != "" {
 				rMsg = strings.ReplaceAll(rMsg, "\\r", "\n")
-				fmt.Println(rMsg)
+				debugLog.Infof("%v", rMsg)
 				body, err := SendGroupText(groupID, rMsg)
 				if err != nil {
-					fmt.Println(err)
+					debugLog.Infof("%v", err)
 				}
-				fmt.Println(string(body))
+				debugLog.Infof("%v", string(body))
 			}
 		}()
 	}
@@ -607,12 +608,12 @@ func napCatBOTGroupRun(msgData *MessagePayload) {
 			rMsg := dic_api.Api.DicRun(dic, content)
 			if rMsg != "" {
 				rMsg = strings.ReplaceAll(rMsg, "\\r", "\n")
-				fmt.Println(rMsg)
+				debugLog.Infof("%v", rMsg)
 				body, err := SendGroupText(groupID, rMsg)
 				if err != nil {
-					fmt.Println(err)
+					debugLog.Infof("%v", err)
 				}
-				fmt.Println(string(body))
+				debugLog.Infof("%v", string(body))
 			}
 		}()
 	}
@@ -625,7 +626,7 @@ func BotMessage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	fmt.Println(string(httpBody))
+	debugLog.Infof("%v", string(httpBody))
 	payload := &MessagePayload{}
 	if err = json.Unmarshal(httpBody, payload); err != nil {
 		w.Write([]byte("Bot ErrorData"))
@@ -675,5 +676,5 @@ func BotMessage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	fmt.Println("Bot消息类型未支持")
+	debugLog.Infof("Bot消息类型未支持")
 }

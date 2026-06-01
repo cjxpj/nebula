@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	dic_dto "github.com/cjxpj/nebula/dic/dto"
+	"github.com/cjxpj/nebula/debugLog"
 	"github.com/cjxpj/nebula/dto"
 )
 
@@ -14,7 +15,7 @@ func NewJson(r *dic_dto.DicEntry, v *dto.Val, jsonStr string) string {
 	// 解析 JSON 字符串为 map
 	var data interface{}
 	if err := json.Unmarshal([]byte(jsonStr), &data); err != nil {
-		fmt.Println("Error parsing JSON:", err)
+		debugLog.Infof("Error parsing JSON:%v", err)
 		return "error"
 	}
 
@@ -83,7 +84,7 @@ func NewJson(r *dic_dto.DicEntry, v *dto.Val, jsonStr string) string {
 	// 将更新后的 map 转换回 JSON 字符串
 	newJsonStr, err := json.Marshal(data)
 	if err != nil {
-		fmt.Println("Error marshaling JSON:", err)
+		debugLog.Infof("Error marshaling JSON:%v", err)
 		return ""
 	}
 

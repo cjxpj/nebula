@@ -7,6 +7,7 @@ import (
 	"net/http"
 
 	qqbot_msg "github.com/cjxpj/nebula/bot/qqbot/msg"
+	"github.com/cjxpj/nebula/debugLog"
 	"github.com/cjxpj/nebula/dto"
 )
 
@@ -22,9 +23,10 @@ func BotMessage(w http.ResponseWriter, r *http.Request) {
 		w.Write([]byte("Bot ErrorData"))
 		return
 	}
-	// fmt.Println("QQBot收到消息")
-	// fmt.Println("QQBot消息内容:", string(httpBody))
-	// fmt.Println("处理:", qqbot.Op(payload.Op))
+	fmt.Println("QQBot收到消息")
+	fmt.Println("QQBot消息内容:", string(httpBody))
+	fmt.Println("处理:", qqbot_msg.Op(payload.Op))
+
 	switch qqbot_msg.Op(payload.Op) {
 	case "开放平台对机器人服务端进行验证":
 		// 验证数据
@@ -34,13 +36,13 @@ func BotMessage(w http.ResponseWriter, r *http.Request) {
 			if sign, err := qqbot_msg.GenerateValidationResult(dto.ServerConfig.QQBot.API.ClientSecret, data.Event, data.Token); err == nil {
 				// 返回效验结果
 				w.Write([]byte(sign))
-				fmt.Println("QQBot数据验证成功")
+				debugLog.Infof("QQBot数据验证成功")
 				return
 			}
-			fmt.Println("QQBot数据签名失败")
+			debugLog.Infof("QQBot数据签名失败")
 			return
 		}
-		fmt.Println("QQBot数据验证失败")
+		debugLog.Infof("QQBot数据验证失败")
 		return
 	case "服务端进行消息推送":
 		// 处理消息
@@ -67,9 +69,8 @@ func BotMessage(w http.ResponseWriter, r *http.Request) {
 			w.Write([]byte("Bot Message"))
 
 		default:
-			fmt.Println("QQBot消息类型未支持")
+			debugLog.Infof("QQBot消息类型未支持")
 			return
 		}
-
 	}
 }

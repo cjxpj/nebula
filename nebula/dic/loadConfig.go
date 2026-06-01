@@ -5,6 +5,7 @@ import (
 	"net/http"
 
 	"github.com/cjxpj/nebula/appfiles"
+	"github.com/cjxpj/nebula/debugLog"
 	dic_api "github.com/cjxpj/nebula/dic/api"
 	dic_dto "github.com/cjxpj/nebula/dic/dto"
 	"github.com/cjxpj/nebula/dto"
@@ -39,7 +40,7 @@ func Start() {
 	// 遍历res
 	for _, t := range res {
 		if dicRes := dic_api.Api.DicRun(infoDic, t); dicRes != "" {
-			fmt.Println(dicRes)
+			fmt.Printf("%v\n", dicRes)
 		}
 	}
 	// fmt.Println("启动成功，耗时：", time.Since(start))
@@ -80,7 +81,7 @@ func loadConfig() {
 	if ok, _ := opUi.Key("启用").Bool(); ok {
 		path := opUi.Key("访问路径").String()
 		if path == "nebula" {
-			fmt.Println("管理面板的密码忘记可以去配置文件看或者自己改，请不要泄漏导致服务器被攻击！")
+			debugLog.Infof("管理面板的密码忘记可以去配置文件看或者自己改，请不要泄漏导致服务器被攻击！")
 			path = fmt.Sprintf("%s/%s", path, utils.RandomString("大小字母", 12))
 			opUi.Key("访问路径").SetValue(path)
 			file.SaveIni(httpData)

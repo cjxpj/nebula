@@ -6,6 +6,7 @@ import (
 	"math/big"
 	"strings"
 
+	"github.com/cjxpj/nebula/debugLog"
 	"github.com/cjxpj/nebula/dto"
 	"github.com/cjxpj/nebula/run"
 )
@@ -512,7 +513,7 @@ func RunCountText(v *dto.DicVal, content any) any {
 				return "[" + val + "]"
 			}
 			if strings.HasPrefix(text, "[") && strings.HasSuffix(text, "]") {
-				fmt.Println("报错内容：", val)
+				debugLog.Infof("报错内容：%v", val)
 				panic(fmt.Sprintf("Count 失败: %v", err))
 			}
 			return "[" + val + "]"
