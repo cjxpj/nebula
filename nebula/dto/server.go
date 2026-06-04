@@ -7,6 +7,7 @@ import (
 	feishubot_msg "github.com/cjxpj/nebula/bot/feishubot/msg"
 	napcatbot_dto "github.com/cjxpj/nebula/bot/napcatbot/dto"
 	qqbot_msg "github.com/cjxpj/nebula/bot/qqbot/msg"
+	secludedbot_dto "github.com/cjxpj/nebula/bot/secludedbot/dto"
 	yunhubot_dto "github.com/cjxpj/nebula/bot/yunhubot/dto"
 	"github.com/gorilla/websocket"
 )
@@ -48,6 +49,8 @@ type ServerConfigInfo struct {
 	// NapCatBot地址
 	NapCatBot *napcatbot_dto.RouterNapCatBot
 	FeiShuBot *feishubot_msg.RouterFeishubot
+	// SecludedBot 对接
+	SecludedBot *secludedbot_dto.RouterSecludedBot
 	// Ngrok地址
 	Ngrok *NgrokConfig
 }

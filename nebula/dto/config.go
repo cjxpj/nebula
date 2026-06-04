@@ -3,12 +3,15 @@ package dto
 import (
 	"mime"
 	"net/http"
+	"os"
+	"path/filepath"
 	"time"
 
 	"github.com/cjxpj/nebula/appfiles"
 	feishubot_msg "github.com/cjxpj/nebula/bot/feishubot/msg"
 	napcatbot_dto "github.com/cjxpj/nebula/bot/napcatbot/dto"
 	qqbot_msg "github.com/cjxpj/nebula/bot/qqbot/msg"
+	secludedbot_dto "github.com/cjxpj/nebula/bot/secludedbot/dto"
 	yunhubot_dto "github.com/cjxpj/nebula/bot/yunhubot/dto"
 	"github.com/cjxpj/nebula/utils"
 	"github.com/gorilla/websocket"
@@ -138,5 +141,27 @@ func LoadConfig_websocket(WebSocket_Config *ini.Section) {
 			wsfile.SetPath("private/websocket/app.n")
 			wsfile.WriteToFile(appfiles.GetFileString("dic/websocket/app.n"))
 		}
+	}
+}
+
+func LoadConfig_secluded(Secluded_Config *ini.Section) {
+	if ok, _ := Secluded_Config.Key("启用").Bool(); ok {
+		addr := Secluded_Config.Key("对接地址").String()
+		token := Secluded_Config.Key("令牌").String()
+		dicPath := Secluded_Config.Key("词库").String()
+		ServerConfig.SecludedBot = &secludedbot_dto.RouterSecludedBot{
+			Open:     true,
+			Addr:     addr,
+			Token:    token,
+			FilePath: dicPath,
+		}
+		BotDic := utils.NewFileQueue(filepath.Join(dicPath, "dic"))
+		if !BotDic.DirExists() {
+			os.MkdirAll(BotDic.FileName, 0755)
+			BotDic.SetPath(filepath.Join(dicPath, "dic", "dic.n"))
+			BotDic.WriteFileByte(appfiles.GetFile("dic/SecludedBot.n"))
+		}
+	} else if ServerConfig.SecludedBot != nil {
+		ServerConfig.SecludedBot.Open = false
 	}
 }

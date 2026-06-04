@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"github.com/cjxpj/nebula/appfiles"
+	"github.com/cjxpj/nebula/bot/secludedbot"
 	"github.com/cjxpj/nebula/dto"
 	"github.com/cjxpj/nebula/utils"
 	"github.com/gorilla/websocket"
@@ -66,6 +67,13 @@ type HttpOpUiConfig_feishu struct {
 	Path   string `json:"path"`
 	Appid  string `json:"appid"`
 	Secret string `json:"secret"`
+}
+
+type HttpOpUiConfig_secluded struct {
+	Open    bool   `json:"open"`
+	Dic     string `json:"dic"`
+	Address string `json:"address"`
+	Token   string `json:"token"`
 }
 
 type HttpOpUiConfig_EncryptDic struct {
@@ -373,6 +381,50 @@ func OpUI(w http.ResponseWriter, r *http.Request, getpath string) {
 			d.Key("密钥").SetValue(j.Secret)
 			dto.LoadConfig_feishu(d)
 			ff.SaveIni(f)
+			w.Write([]byte(`{"status":"ok"}`))
+			return
+
+		case "get_secluded":
+			ff := utils.NewFileQueue(dto.CONFIG_PATH)
+			f, err := ff.LoadIni()
+			if err != nil {
+				utils.ErrorStop("系统配置不存在")
+			}
+			d := f.Section("Secluded")
+			var j HttpOpUiConfig_secluded
+			j.Open = d.Key("启用").MustBool(false)
+			j.Dic = d.Key("词库").String()
+			j.Address = d.Key("对接地址").String()
+			j.Token = d.Key("令牌").String()
+			r, _ := json.Marshal(j)
+			w.Write(r)
+			return
+
+		case "save_secluded":
+			var j HttpOpUiConfig_secluded
+			if err := json.Unmarshal(h.Data, &j); err != nil {
+				http.Error(w, `{"status":"error","error":"invalid json"}`, http.StatusBadRequest)
+				return
+			}
+			ff := utils.NewFileQueue(dto.CONFIG_PATH)
+			f, err := ff.LoadIni()
+			if err != nil {
+				utils.ErrorStop("系统配置不存在")
+			}
+			d := f.Section("Secluded")
+			d.Key("启用").SetValue(strconv.FormatBool(j.Open))
+			d.Key("词库").SetValue(j.Dic)
+			d.Key("对接地址").SetValue(j.Address)
+			d.Key("令牌").SetValue(j.Token)
+			dto.LoadConfig_secluded(d)
+			ff.SaveIni(f)
+			if j.Open {
+				if dto.ServerConfig.SecludedBot != nil && dto.ServerConfig.SecludedBot.Addr != "" {
+					secludedbot.Start(dto.ServerConfig.SecludedBot.Addr, dto.ServerConfig.SecludedBot.Token)
+				}
+			} else {
+				secludedbot.Stop()
+			}
 			w.Write([]byte(`{"status":"ok"}`))
 			return
 

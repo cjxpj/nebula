@@ -2,7 +2,6 @@ package qqbot
 
 import (
 	"encoding/json"
-	"fmt"
 	"io"
 	"net/http"
 
@@ -23,9 +22,9 @@ func BotMessage(w http.ResponseWriter, r *http.Request) {
 		w.Write([]byte("Bot ErrorData"))
 		return
 	}
-	fmt.Println("QQBot收到消息")
-	fmt.Println("QQBot消息内容:", string(httpBody))
-	fmt.Println("处理:", qqbot_msg.Op(payload.Op))
+	// fmt.Println("QQBot收到消息")
+	// fmt.Println("QQBot消息内容:", string(httpBody))
+	// fmt.Println("处理:", qqbot_msg.Op(payload.Op))
 
 	switch qqbot_msg.Op(payload.Op) {
 	case "开放平台对机器人服务端进行验证":
@@ -62,6 +61,10 @@ func BotMessage(w http.ResponseWriter, r *http.Request) {
 
 		case "GROUP_AT_MESSAGE_CREATE": // 群-艾特消息
 			qqBOTGroupATRun(payload)
+			w.Write([]byte("Bot Message"))
+
+		case "GROUP_MESSAGE_CREATE": // 群-全部消息
+			qqBOTGroupRun(payload)
 			w.Write([]byte("Bot Message"))
 
 		case "C2C_MESSAGE_CREATE": // 群-私聊

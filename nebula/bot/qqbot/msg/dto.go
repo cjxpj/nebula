@@ -113,12 +113,27 @@ type GroupMessageScene struct {
 	Source string `json:"source"`
 }
 
+// 附件
+type Attachment struct {
+	URL         string `json:"url"`
+	Filename    string `json:"filename"`
+	Width       int    `json:"width"`
+	Height      int    `json:"height"`
+	Size        int    `json:"size"`
+	ContentType string `json:"content_type"`
+	Content     string `json:"content"`
+}
+
 // 群消息事件
 type GroupMessageEvent struct {
-	ID        string      `json:"id"`
-	Content   string      `json:"content"`
-	Timestamp string      `json:"timestamp"`
-	Author    GroupAuthor `json:"author"`
+	ID          string       `json:"id"`
+	Content     string       `json:"content"`
+	Timestamp   string       `json:"timestamp"`
+	Author      GroupAuthor  `json:"author"`
+	// 被@的用户列表
+	Mentions    []Mention    `json:"mentions"`
+	// 附件列表
+	Attachments []Attachment `json:"attachments"`
 	// 群
 	GroupID string `json:"group_id"`
 	// 群

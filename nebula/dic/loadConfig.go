@@ -10,6 +10,7 @@ import (
 	dic_dto "github.com/cjxpj/nebula/dic/dto"
 	"github.com/cjxpj/nebula/dto"
 	dic_server "github.com/cjxpj/nebula/server"
+	"github.com/cjxpj/nebula/bot/secludedbot"
 	"github.com/cjxpj/nebula/utils"
 )
 
@@ -148,5 +149,11 @@ func loadConfig() {
 
 	FeiShu_Config := botData.Section("飞书")
 	dto.LoadConfig_feishu(FeiShu_Config)
+
+	Secluded_Config := botData.Section("Secluded")
+	dto.LoadConfig_secluded(Secluded_Config)
+	if dto.ServerConfig.SecludedBot != nil && dto.ServerConfig.SecludedBot.Open {
+		secludedbot.Start(dto.ServerConfig.SecludedBot.Addr, dto.ServerConfig.SecludedBot.Token)
+	}
 
 }

@@ -5,6 +5,7 @@ import (
 	"regexp"
 	"strings"
 
+	qqbot_msg "github.com/cjxpj/nebula/bot/qqbot/msg"
 	"github.com/cjxpj/nebula/utils"
 )
 
@@ -29,6 +30,39 @@ func RemoveLeadingMention(s string, qq int) string {
 		return after // 移除开头
 	}
 	return s
+}
+
+// 艾特消息格式转换（十六进制ID格式）
+func ConvertATMessageToMD(s string) string {
+	re := regexp.MustCompile(`<@([0-9A-Fa-f]+)>`)
+	return re.ReplaceAllString(s, "@$1")
+}
+
+var atMentionRe = regexp.MustCompile(`<@([^>]+)>`)
+
+// ConvertATMessageWithMentions 将消息中的 <@ID> 替换为实际用户名，并返回替换后的消息、ID列表和用户名列表
+func ConvertATMessageWithMentions(s string, mentions []qqbot_msg.Mention) (string, []string, []string) {
+	var ids []string
+	var usernames []string
+	if len(mentions) == 0 {
+		return s, ids, usernames
+	}
+
+	mentionMap := make(map[string]string, len(mentions))
+	for _, m := range mentions {
+		mentionMap[m.ID] = m.Username
+	}
+
+	s = atMentionRe.ReplaceAllStringFunc(s, func(match string) string {
+		id := match[2 : len(match)-1] // 去掉 <@ 和 >
+		if username, ok := mentionMap[id]; ok {
+			ids = append(ids, id)
+			usernames = append(usernames, username)
+			return "@" + username
+		}
+		return match
+	})
+	return s, ids, usernames
 }
 
 // 移除开头一个空格
