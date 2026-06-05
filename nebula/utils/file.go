@@ -500,7 +500,11 @@ func (fq *FileQueue) DownloadWithDynamicThreads(url string, maxThreads int, show
 
 // ZipFolder 将文件夹压缩成 ZIP 文件
 func (fq *FileQueue) ZipFolder(destZip string) bool {
-	destZip = NewFileQueue(destZip).FileName
+	if absDest, err := filepath.Abs(destZip); err == nil {
+		destZip = NewFileQueue(absDest).FileName
+	} else {
+		destZip = NewFileQueue(destZip).FileName
+	}
 	// 创建 ZIP 文件
 	zipFile, err := os.Create(destZip)
 	if err != nil {
@@ -567,7 +571,11 @@ func (fq *FileQueue) ZipFolder(destZip string) bool {
 
 // 解压zip
 func (fq *FileQueue) UnZip(dest string) bool {
-	dest = NewFileQueue(dest).FileName
+	if absDest, err := filepath.Abs(dest); err == nil {
+		dest = NewFileQueue(absDest).FileName
+	} else {
+		dest = NewFileQueue(dest).FileName
+	}
 
 	r, err := zip.OpenReader(fq.FileName)
 	if err != nil {

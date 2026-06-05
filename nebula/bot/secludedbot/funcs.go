@@ -3,11 +3,13 @@ package secludedbot
 import (
 	"encoding/json"
 	"fmt"
+	"slices"
 	"strings"
 	"time"
 
 	"github.com/cjxpj/nebula/debugLog"
 	"github.com/cjxpj/nebula/dto"
+	"github.com/cjxpj/nebula/utils"
 )
 
 // Funcs 是 Secluded 插件向词库暴露的函数集合
@@ -226,12 +228,12 @@ var Funcs = map[string]dto.DicFunc{
 			return string(rsp.Data), nil
 		},
 	},
-	"群禁言": {
+	"禁": {
 		L: "2|3",
 		Fn: func(d *dto.DicInputs) (any, error) {
 			groupId := d.Inputs.String(1)
-			muteTime := d.Inputs.String(2)
-			uin := d.Inputs.String(3)
+			uin := d.Inputs.String(2)
+			muteTime := d.Inputs.String(3)
 			account := getCurrentAccount()
 			if account == "" || groupId == "" || muteTime == "" {
 				return "", nil
@@ -245,6 +247,7 @@ var Funcs = map[string]dto.DicFunc{
 				"Time":          muteTime,
 			}
 			if uin != "" {
+				dataMap["People"] = "People"
 				dataMap["Uin"] = uin
 			}
 			packet := map[string]any{
@@ -450,31 +453,6 @@ var Funcs = map[string]dto.DicFunc{
 				"cmd":  "SendOicqMsg",
 				"rsp":  true,
 				"data": []any{dataMap},
-			}
-			sendRaw(packet)
-			return "", nil
-		},
-	},
-	"匿名消息": {
-		L: "2",
-		Fn: func(d *dto.DicInputs) (any, error) {
-			groupId := d.Inputs.String(1)
-			text := d.Inputs.String(2)
-			account := getCurrentAccount()
-			if account == "" || groupId == "" || text == "" {
-				return "", nil
-			}
-			packet := map[string]any{
-				"seq": nextSeq(),
-				"cmd": "SendOicqMsg",
-				"rsp": true,
-				"data": []any{map[string]string{
-					"Account":           account,
-					"Group":             "Group",
-					"GroupId":           groupId,
-					"GroupMsgAnonymous": "GroupMsgAnonymous",
-					"Text":              text,
-				}},
 			}
 			sendRaw(packet)
 			return "", nil
@@ -708,17 +686,20 @@ var Funcs = map[string]dto.DicFunc{
 		},
 	},
 	"群待办": {
-		L: "2",
+		L: "3",
 		Fn: func(d *dto.DicInputs) (any, error) {
-			msgId := d.Inputs.String(1)
-			action := d.Inputs.String(2)
+			groupId := d.Inputs.String(1)
+			msgId := d.Inputs.String(2)
+			action := d.Inputs.String(3)
 			account := getCurrentAccount()
-			if account == "" || msgId == "" || action == "" {
+			if account == "" || groupId == "" || msgId == "" || action == "" {
 				return "", nil
 			}
 
 			dataMap := map[string]string{
 				"Account":    account,
+				"Group":      "Group",
+				"GroupId":    groupId,
 				"GroupTodos": "GroupTodos",
 				"MsgId":      msgId,
 			}
@@ -806,6 +787,220 @@ var Funcs = map[string]dto.DicFunc{
 					"Uin":     uin,
 					"MsgId":   msgId,
 				}},
+			}
+			sendRaw(packet)
+			return "", nil
+		},
+	},
+	"添加群白名单": {
+		L: "1",
+		Fn: func(d *dto.DicInputs) (any, error) {
+			groupId := d.Inputs.String(1)
+			if groupId == "" || dto.ServerConfig.SecludedBot == nil {
+				return "", nil
+			}
+			path := dto.ServerConfig.SecludedBot.FilePath + "/groups.txt"
+			groupFile := utils.NewFileQueue(path)
+			content, err := groupFile.ReadFromFile()
+			if err != nil {
+				return "", nil
+			}
+			content = strings.TrimSpace(content)
+			if content == "all" {
+				groupFile.WriteFileByte([]byte(groupId))
+				return "添加成功", nil
+			}
+			groups := strings.Split(content, ",")
+			for _, g := range groups {
+				if strings.TrimSpace(g) == groupId {
+					return "已存在", nil
+				}
+			}
+			groups = append(groups, groupId)
+			groupFile.WriteFileByte([]byte(strings.Join(groups, ",")))
+			return "添加成功", nil
+		},
+	},
+	"删除群白名单": {
+		L: "1",
+		Fn: func(d *dto.DicInputs) (any, error) {
+			groupId := d.Inputs.String(1)
+			if groupId == "" || dto.ServerConfig.SecludedBot == nil {
+				return "", nil
+			}
+			path := dto.ServerConfig.SecludedBot.FilePath + "/groups.txt"
+			groupFile := utils.NewFileQueue(path)
+			content, err := groupFile.ReadFromFile()
+			if err != nil {
+				return "", nil
+			}
+			content = strings.TrimSpace(content)
+			if content == "all" {
+				return "当前为全部允许", nil
+			}
+			groups := strings.Split(content, ",")
+			newGroups := slices.DeleteFunc(groups, func(g string) bool {
+				return strings.TrimSpace(g) == groupId
+			})
+			if len(newGroups) == 0 {
+				groupFile.WriteFileByte([]byte("all"))
+				return "已清空，恢复全部允许", nil
+			}
+			groupFile.WriteFileByte([]byte(strings.Join(newGroups, ",")))
+			return "删除成功", nil
+		},
+	},
+	"全体禁言": {
+		L: "1",
+		Fn: func(d *dto.DicInputs) (any, error) {
+			groupId := d.Inputs.String(1)
+			account := getCurrentAccount()
+			if account == "" || groupId == "" {
+				return "", nil
+			}
+			packet := map[string]any{
+				"seq": nextSeq(),
+				"cmd": "SendOicqMsg",
+				"rsp": true,
+				"data": []any{map[string]string{
+					"Account":       account,
+					"All":           "All",
+					"Group":         "Group",
+					"GroupId":       groupId,
+					"GroupProhibit": "GroupProhibit",
+					"Open":          "Open",
+				}},
+			}
+			sendRaw(packet)
+			return "", nil
+		},
+	},
+	"全体解禁": {
+		L: "1",
+		Fn: func(d *dto.DicInputs) (any, error) {
+			groupId := d.Inputs.String(1)
+			account := getCurrentAccount()
+			if account == "" || groupId == "" {
+				return "", nil
+			}
+			packet := map[string]any{
+				"seq": nextSeq(),
+				"cmd": "SendOicqMsg",
+				"rsp": true,
+				"data": []any{map[string]string{
+					"Account":       account,
+					"All":           "All",
+					"Group":         "Group",
+					"GroupId":       groupId,
+					"GroupProhibit": "GroupProhibit",
+					"Close":         "Close",
+				}},
+			}
+			sendRaw(packet)
+			return "", nil
+		},
+	},
+	"贴表情": {
+		L: "3",
+		Fn: func(d *dto.DicInputs) (any, error) {
+			groupId := d.Inputs.String(1)
+			msgId := d.Inputs.String(2)
+			emoReply := d.Inputs.String(3)
+			account := getCurrentAccount()
+			if account == "" || groupId == "" || msgId == "" || emoReply == "" {
+				return "", nil
+			}
+			packet := map[string]any{
+				"seq": nextSeq(),
+				"cmd": "SendOicqMsg",
+				"rsp": true,
+				"data": []any{map[string]string{
+					"Account":  account,
+					"Group":    "Group",
+					"GroupId":  groupId,
+					"MsgId":    msgId,
+					"EmoReply": emoReply,
+				}},
+			}
+			sendRaw(packet)
+			return "", nil
+		},
+	},
+	"创建群聊": {
+		L: "1",
+		Fn: func(d *dto.DicInputs) (any, error) {
+			groupName := d.Inputs.String(1)
+			account := getCurrentAccount()
+			if account == "" || groupName == "" {
+				return "", nil
+			}
+			seq := nextSeq()
+			packet := map[string]any{
+				"seq": seq,
+				"cmd": "SendOicqMsg",
+				"rsp": true,
+				"data": []any{map[string]string{
+					"Account":     account,
+					"GroupCreate": "GroupCreate",
+					"GroupName":   groupName,
+				}},
+			}
+			rsp, err := sendAndWait(packet, seq)
+			if err != nil {
+				debugLog.Infof("[secluded] 创建群聊失败: %v", err)
+				return "", err
+			}
+			return string(rsp.Data), nil
+		},
+	},
+	"点赞": {
+		L: "3",
+		Fn: func(d *dto.DicInputs) (any, error) {
+			uin := d.Inputs.String(1)
+			uid := d.Inputs.String(2)
+			value := d.Inputs.String(3)
+			account := getCurrentAccount()
+			if account == "" || uin == "" || uid == "" || value == "" {
+				return "", nil
+			}
+			packet := map[string]any{
+				"seq": nextSeq(),
+				"cmd": "SendOicqMsg",
+				"rsp": true,
+				"data": []any{map[string]string{
+					"Account":      account,
+					"FavoriteCard": "FavoriteCard",
+					"Uin":          uin,
+					"Uid":          uid,
+					"Value":        value,
+				}},
+			}
+			sendRaw(packet)
+			return "", nil
+		},
+	},
+	"加群": {
+		L: "1|2",
+		Fn: func(d *dto.DicInputs) (any, error) {
+			groupId := d.Inputs.String(1)
+			info := d.Inputs.String(2)
+			account := getCurrentAccount()
+			if account == "" || groupId == "" {
+				return "", nil
+			}
+			dataMap := map[string]string{
+				"Account":       account,
+				"UserJoinGroup": "UserJoinGroup",
+				"GroupId":       groupId,
+			}
+			if info != "" {
+				dataMap["Info"] = info
+			}
+			packet := map[string]any{
+				"seq":  nextSeq(),
+				"cmd":  "SendOicqMsg",
+				"rsp":  true,
+				"data": []any{dataMap},
 			}
 			sendRaw(packet)
 			return "", nil

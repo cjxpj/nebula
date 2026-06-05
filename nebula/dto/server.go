@@ -25,9 +25,10 @@ type ServerRouterWebSocket struct {
 }
 
 type ServerHTTP struct {
-	Http        *http.Server
-	Cors        bool
-	CorsOrigins string
+	Http                *http.Server
+	Cors                bool
+	CorsOrigins         string
+	TempCleanupInterval int
 }
 
 type OPUI struct {

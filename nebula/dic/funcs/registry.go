@@ -24,6 +24,9 @@ func Setup() {
 		f{Name: "数字转中文", L: "1", Fn: numToString},
 
 		f{Name: "线程变量", L: "1|2", Fn: threadVar},
+		f{Name: "临时写", L: "2|3", Fn: tempWrite},
+		f{Name: "临时读", L: "1|2", Fn: tempRead},
+
 		f{Name: "变量", L: "1|2", Fn: localVar},
 		f{Name: "存在变量", L: "1", Fn: localVarExist},
 		f{Name: "全局变量", L: "1|2", Fn: globalVar},

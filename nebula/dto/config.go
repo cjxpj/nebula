@@ -39,7 +39,7 @@ func LoadConfig_napcat(NapCat_Config *ini.Section) {
 			Secret:   secret,
 			FilePath: dicPath,
 		}
-		BotDic := utils.NewFileQueue(dicPath)
+		BotDic := utils.NewFileQueue(filepath.Join(dicPath, "dic"))
 		if !BotDic.DirExists() {
 			BotDic.SetPath(dicPath + "/dic/dic.n")
 			BotDic.WriteFileByte(appfiles.GetFile("dic/NapCatBot.n"))
@@ -74,6 +74,8 @@ func LoadConfig_qq(QQBot_Config *ini.Section) {
 			BotDic.SetPath(dicPath + "/admin.txt")
 			BotDic.WriteFileByte([]byte(""))
 		}
+	} else if ServerConfig.QQBot != nil {
+		ServerConfig.QQBot.Open = false
 	}
 }
 
@@ -155,11 +157,21 @@ func LoadConfig_secluded(Secluded_Config *ini.Section) {
 			Token:    token,
 			FilePath: dicPath,
 		}
-		BotDic := utils.NewFileQueue(filepath.Join(dicPath, "dic"))
+		BotDic := utils.NewFileQueue(dicPath)
 		if !BotDic.DirExists() {
 			os.MkdirAll(BotDic.FileName, 0755)
 			BotDic.SetPath(filepath.Join(dicPath, "dic", "dic.n"))
 			BotDic.WriteFileByte(appfiles.GetFile("dic/SecludedBot.n"))
+		}
+		// 初始化主人列表
+		adminPath := utils.NewFileQueue(filepath.Join(dicPath, "admin.txt"))
+		if !adminPath.FileExists() {
+			adminPath.WriteFileByte([]byte(""))
+		}
+		// 初始化群白名单（默认all允许所有群）
+		groupPath := utils.NewFileQueue(filepath.Join(dicPath, "groups.txt"))
+		if !groupPath.FileExists() {
+			groupPath.WriteFileByte([]byte("all"))
 		}
 	} else if ServerConfig.SecludedBot != nil {
 		ServerConfig.SecludedBot.Open = false

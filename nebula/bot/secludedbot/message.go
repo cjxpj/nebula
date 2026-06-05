@@ -90,7 +90,7 @@ func handleMessage(_ []byte, header *rawPacketHeader) {
 			debugLog.Infof("[secluded] parse PushOicqMsg: %v", err)
 			return
 		}
-		dispatchPush(elems)
+		dispatchPush(elems, header.Data)
 	case "Response":
 		// 响应包，发送到等待的 channel
 		handleResponse(header)
@@ -113,6 +113,14 @@ type pushElem struct {
 	UinName   string `json:"UinName"`
 	Text      string `json:"Text"`
 	Img       string `json:"Img"`
+	AtUin     string `json:"AtUin"`
+	AtName    string `json:"AtName"`
+	Uid       string `json:"Uid"`
+	All       string `json:"All"`
+	Time      string `json:"Time"`
+	People    string `json:"People"`
+	Op        string `json:"Op"`
+	Url       string `json:"Url"`
 }
 
 // parsePushOicqData 解析 PushOicqMsg 的 data 数组
@@ -140,7 +148,7 @@ func parsePushOicqData(data json.RawMessage) ([]pushElem, error) {
 }
 
 // dispatchPush 运行词库并回写消息
-func dispatchPush(elems []pushElem) {
+func dispatchPush(elems []pushElem, rawData json.RawMessage) {
 	if len(elems) == 0 {
 		return
 	}
@@ -153,12 +161,33 @@ func dispatchPush(elems []pushElem) {
 		return
 	}
 	content := ""
+	// 收集图片URL列表
+	var imgUrls []string
 	if len(elems) > 1 {
 		for _, e := range elems[1:] {
 			if e.Text != "" {
 				content += e.Text
 			}
+			if e.Img != "" && e.Url != "" {
+				content += "[图片]"
+				imgUrls = append(imgUrls, e.Url)
+			}
 		}
+	}
+	// 全体禁言事件
+	isInternalEvent := false
+	if content == "" && meta.All == "All" && meta.Time != "" {
+		isInternalEvent = true
+		if meta.Time == "0" {
+			content = "全体禁言关闭"
+		} else {
+			content = "全体禁言开启"
+		}
+	}
+	// 成员禁言/解禁事件
+	if content == "" && meta.People == "People" && meta.Time != "" {
+		isInternalEvent = true
+		content = "成员禁言 " + meta.Time
 	}
 	// 如果第一段就包含 Text（某些实现），也取
 	if content == "" && meta.Text != "" {
@@ -170,8 +199,10 @@ func dispatchPush(elems []pushElem) {
 	switch {
 	case meta.Friend != "":
 		sourceType = "私聊"
+		content = "#私聊#" + content
 	case meta.Temp != "":
 		sourceType = "临时"
+		content = "#临时#" + content
 	}
 
 	// 群号 / QQ
@@ -193,15 +224,70 @@ func dispatchPush(elems []pushElem) {
 		return
 	}
 
+	uid := meta.Uid
+
+	// 主人列表
+	isAdmin := "null"
+	adminPath := dto.ServerConfig.SecludedBot.FilePath + "/admin.txt"
+	if adminList, err := utils.NewFileQueue(adminPath).ReadFromFile(); err == nil {
+		for s := range strings.SplitSeq(adminList, ",") {
+			if userId == strings.TrimSpace(s) || uid == strings.TrimSpace(s) {
+				isAdmin = strings.TrimSpace(s)
+				break
+			}
+		}
+	}
+
+	// 群白名单
+	if sourceType == "群聊" {
+		groupPath := dto.ServerConfig.SecludedBot.FilePath + "/groups.txt"
+		if groupList, err := utils.NewFileQueue(groupPath).ReadFromFile(); err == nil && groupList != "" {
+			if strings.TrimSpace(groupList) == "all" {
+				goto skipGroupCheck
+			}
+			allowed := false
+			for s := range strings.SplitSeq(groupList, ",") {
+				if targetId == strings.TrimSpace(s) {
+					allowed = true
+					break
+				}
+			}
+			if !allowed {
+				return
+			}
+		}
+	}
+skipGroupCheck:
+
+	// 提取 AT 信息
+	var atUins, atNames []string
+	for _, e := range elems[1:] {
+		if e.AtUin != "" {
+			atUins = append(atUins, e.AtUin)
+			atNames = append(atNames, e.AtName)
+		}
+	}
+
 	valData := dto.NewVal().
 		Set("来源", sourceType).
 		Set("群号", targetId).
 		Set("QQ", userId).
 		Set("qq", userId).
+		Set("uid", uid).
 		Set("昵称", nick).
+		Set("主人", isAdmin).
 		Set("MsgId", meta.MsgId).
+		Set("Op", meta.Op).
 		Set("robot", meta.Account).
-		Set("Robot", meta.Account)
+		Set("Robot", meta.Account).
+		Set("data", string(rawData))
+
+	for i, uin := range atUins {
+		valData.Set(fmt.Sprintf("AT%d", i), uin)
+	}
+	for i, name := range atNames {
+		valData.Set(fmt.Sprintf("AtName%d", i), name)
+	}
 
 	for _, v := range botDicList {
 		if !strings.HasSuffix(v, ".n") {
@@ -211,6 +297,8 @@ func dispatchPush(elems []pushElem) {
 		dicFile := v
 		msgMeta := meta
 		msgContent := content
+		msgIsInternal := isInternalEvent
+		msgImgUrls := imgUrls
 		msgValData := valData
 
 		go func() {
@@ -249,7 +337,30 @@ func dispatchPush(elems []pushElem) {
 					return "", nil
 				}})
 
-			rMsg := dic_api.Api.DicRun(dic, msgContent)
+			dic.SetFunc("IMG", dto.DicFunc{
+				L: "0|1",
+				Fn: func(d *dto.DicInputs) (any, error) {
+					if d.Inputs.Len() == 0 {
+						if len(msgImgUrls) == 0 {
+							return "[]", nil
+						}
+						data, _ := json.Marshal(msgImgUrls)
+						return string(data), nil
+					}
+					index := d.Inputs.Int(1)
+					if index <= 0 || index > len(msgImgUrls) {
+						return "null", nil
+					}
+					return msgImgUrls[index-1], nil
+				},
+			})
+
+			var rMsg string
+			if msgIsInternal {
+				rMsg = dic_api.Api.DicRunPrivate(dic, msgContent)
+			} else {
+				rMsg = dic_api.Api.DicRun(dic, msgContent)
+			}
 			rMsg = strings.ReplaceAll(rMsg, "\\r", "\n")
 			if rMsg != "" {
 				debugLog.Infof("[secluded] %v", rMsg)

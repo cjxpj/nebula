@@ -1,6 +1,7 @@
 package napcatbot
 
 import (
+	"strconv"
 	"strings"
 
 	"github.com/cjxpj/nebula/dto"
@@ -218,6 +219,32 @@ var Funcs = map[string]dto.DicFunc{
 				SendPrivateText(d.Inputs.Int64(1), rMsg)
 			}
 			return "", nil
+		},
+	},
+
+	"构造聊天记录": {
+		L: "2",
+		Fn: func(d *dto.DicInputs) (any, error) {
+			id := MultiMsgPut(
+				d.Inputs.String(1),
+				d.Inputs.String(2),
+			)
+			return strconv.FormatInt(id, 10), nil
+		},
+	},
+
+	"发送聊天记录": {
+		L: "3..",
+		Fn: func(d *dto.DicInputs) (any, error) {
+			groupId := d.Inputs.Int64(1)
+			timestamp := d.Inputs.Int64(2)
+			n := d.Inputs.Len()
+			ids := make([]int64, 0, n-2)
+			for i := 3; i <= n; i++ {
+				ids = append(ids, d.Inputs.Int64(i))
+			}
+			res, err := MultiMsg(groupId, timestamp, ids)
+			return res, err
 		},
 	},
 }

@@ -19,4 +19,4 @@ func GetFile(filename string) []byte {
 var Key []byte = []byte("cjxpj2960965389 nebula0051 juice") // 32 字节用于 AES-256
 
 // 版本号
-var Version string = "16.3.0"
+var Version string = "16.5.0"

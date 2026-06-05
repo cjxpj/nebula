@@ -74,8 +74,9 @@ func loadConfig() {
 			Addr:    infoServerPath,
 			Handler: http.HandlerFunc(webRun),
 		},
-		Cors:        corsOk,
-		CorsOrigins: HTTP_Config.Key("跨域白名单").String(),
+		Cors:                corsOk,
+		CorsOrigins:         HTTP_Config.Key("跨域白名单").String(),
+		TempCleanupInterval: HTTP_Config.Key("临时读写清理周期").MustInt(60),
 	}
 
 	opUi := httpData.Section("管理面板")

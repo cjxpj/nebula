@@ -1,8 +1,87 @@
 package napcatbot
 
-import "regexp"
+import (
+	"encoding/json"
+	"regexp"
+	"sync"
+)
 
 var reMsgData = regexp.MustCompile(`±(at|img|atMsg)=([^±]+)±|([^±]+)`)
+
+// =============== 聊天记录（合并转发）构建器 ===============
+
+type forwardNode struct {
+	Name    string
+	Content string
+}
+
+var forwardBuilder = struct {
+	mu    sync.Mutex
+	nodes map[int64]forwardNode
+	seq   int64
+}{nodes: make(map[int64]forwardNode)}
+
+// MultiMsgPut 将一条消息放入合并转发构建器，返回节点序号
+func MultiMsgPut(name, content string) int64 {
+	forwardBuilder.mu.Lock()
+	defer forwardBuilder.mu.Unlock()
+
+	forwardBuilder.seq++
+	id := forwardBuilder.seq
+	forwardBuilder.nodes[id] = forwardNode{Name: name, Content: content}
+	return id
+}
+
+// MultiMsg 发送合并转发消息，返回 resId|fileName
+func MultiMsg(groupId int64, timestamp int64, ids []int64) (string, error) {
+	forwardBuilder.mu.Lock()
+	var messages []map[string]any
+	for _, id := range ids {
+		if node, ok := forwardBuilder.nodes[id]; ok {
+			messages = append(messages, map[string]any{
+				"type": "node",
+				"data": map[string]any{
+					"name":    node.Name,
+					"content": node.Content,
+					"time":    timestamp,
+				},
+			})
+			delete(forwardBuilder.nodes, id)
+		}
+	}
+	// 清空所有节点，防止 MultiMsgPut 后未调用 MultiMsg 导致的内存泄漏
+	forwardBuilder.nodes = make(map[int64]forwardNode)
+	forwardBuilder.mu.Unlock()
+
+	if len(messages) == 0 {
+		return "", nil
+	}
+
+	body := map[string]any{
+		"group_id": groupId,
+		"messages": messages,
+	}
+
+	data, err := postJson("/send_forward_msg", body)
+	if err != nil {
+		return "", err
+	}
+
+	// 解析返回包，截取 Id 和 Name（m_fileName 和 m_resid）
+	var resp struct {
+		Data struct {
+			MFileName string `json:"m_fileName"`
+			MResid    string `json:"m_resid"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(data, &resp); err == nil {
+		if resp.Data.MResid != "" && resp.Data.MFileName != "" {
+			return resp.Data.MResid + "|" + resp.Data.MFileName, nil
+		}
+	}
+
+	return string(data), nil
+}
 
 // ParseMixedText 把一段带 ±at=xxx± / ±img=url± 的混合文本
 // 解析成 []map[string]any 的切片。
@@ -118,7 +197,7 @@ func GetGroupList() ([]byte, error) {
 	return postJson(url, nil)
 }
 
-// 群禁言
+// 禁
 func GroupMute(groupId, userId, duration int64) ([]byte, error) {
 	url := "/set_group_ban"
 	body := map[string]any{

@@ -10,8 +10,8 @@ import (
 
 	"github.com/cjxpj/nebula/bot/napcatbot"
 	dicBuild "github.com/cjxpj/nebula/build"
-	"github.com/cjxpj/nebula/debugLog"
 	"github.com/cjxpj/nebula/count"
+	"github.com/cjxpj/nebula/debugLog"
 	dic_api "github.com/cjxpj/nebula/dic/api"
 	dic_dto "github.com/cjxpj/nebula/dic/dto"
 	"github.com/cjxpj/nebula/dic/funcs"
@@ -83,6 +83,45 @@ func (m *dicImpl) DicRunLine(r *dic_dto.DicEntry, txt []string) string {
 	Entry(r, txt, funcV)
 
 	return r.Output.Get()
+}
+
+// handleLoopControl 统一处理循环控制状态（停止、跳转）检查。
+// 返回 shouldBreak（跳出当前循环）和 shouldReturn（直接返回 nil）。
+// loopType: "ForEach" 或 "For"
+func handleLoopControl(r, runDic *dic_dto.DicEntry, loopType string) (shouldBreak, shouldReturn bool) {
+	switch loopType {
+	case "ForEach":
+		if runDic.Sys_v.Stop {
+			runDic.Close()
+			r.Sys_v.Stop = true
+			return true, false
+		}
+		if !runDic.Sys_v.ForEach.IsFor && runDic.Sys_v.Stop {
+			runDic.Close()
+			return false, true
+		}
+		if runDic.Sys_v.ForEach.Jump {
+			runDic.Close()
+			r.Sys_v.ForEach.Jump = false
+			return true, false
+		}
+	case "For":
+		if !runDic.Sys_v.For.IsFor && runDic.Sys_v.Stop {
+			runDic.Close()
+			return false, true
+		}
+		if runDic.Sys_v.For.Jump {
+			runDic.Close()
+			r.Sys_v.For.Jump = false
+			return true, false
+		}
+		if runDic.Sys_v.Stop {
+			runDic.Close()
+			r.Sys_v.Stop = true
+			return false, true
+		}
+	}
+	return false, false
 }
 
 func Entry(r *dic_dto.DicEntry, txt []string, funcV *dic_dto.DicFunc) error {
@@ -422,20 +461,12 @@ func Entry(r *dic_dto.DicEntry, txt []string, funcV *dic_dto.DicFunc) error {
 							resRun := dic_api.Api.DicRunLine(RunDic, content)
 							r.Output.Add(resRun)
 
-							if RunDic.Sys_v.Stop {
-								RunDic.Close()
-								r.Sys_v.Stop = true
+							shouldBreak, shouldReturn := handleLoopControl(r, RunDic, "ForEach")
+							if shouldBreak {
 								break
 							}
-
-							if !RunDic.Sys_v.ForEach.IsFor && RunDic.Sys_v.Stop {
-								RunDic.Close()
+							if shouldReturn {
 								return nil
-							}
-							if RunDic.Sys_v.ForEach.Jump {
-								RunDic.Close()
-								r.Sys_v.ForEach.Jump = false
-								break
 							}
 						}
 					default:
@@ -478,19 +509,11 @@ func Entry(r *dic_dto.DicEntry, txt []string, funcV *dic_dto.DicFunc) error {
 							r.Val.P.Set(valName, strNum)
 							resRun := dic_api.Api.DicRunLine(RunDic, content)
 							r.Output.Add(resRun)
-							if !r.Sys_v.For.IsFor && RunDic.Sys_v.Stop {
-								RunDic.Close()
-								return nil
-							}
-
-							if RunDic.Sys_v.For.Jump {
-								RunDic.Close()
-								r.Sys_v.For.Jump = false
+							shouldBreak, shouldReturn := handleLoopControl(r, RunDic, "For")
+							if shouldBreak {
 								break
 							}
-							if RunDic.Sys_v.Stop {
-								RunDic.Close()
-								r.Sys_v.Stop = true
+							if shouldReturn {
 								return nil
 							}
 							if setNum := r.Val.P.Get(valName).(string); setNum != strNum {
@@ -507,19 +530,11 @@ func Entry(r *dic_dto.DicEntry, txt []string, funcV *dic_dto.DicFunc) error {
 							r.Val.P.Set(valName, strNum)
 							resRun := dic_api.Api.DicRunLine(RunDic, content)
 							r.Output.Add(resRun)
-							if !r.Sys_v.For.IsFor && RunDic.Sys_v.Stop {
-								RunDic.Close()
-								return nil
-							}
-
-							if RunDic.Sys_v.For.Jump {
-								RunDic.Close()
-								r.Sys_v.For.Jump = false
+							shouldBreak, shouldReturn := handleLoopControl(r, RunDic, "For")
+							if shouldBreak {
 								break
 							}
-							if RunDic.Sys_v.Stop {
-								RunDic.Close()
-								r.Sys_v.Stop = true
+							if shouldReturn {
 								return nil
 							}
 							if setNum := r.Val.P.Get(valName).(string); setNum != strNum {

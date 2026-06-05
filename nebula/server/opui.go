@@ -12,6 +12,7 @@ import (
 	"github.com/cjxpj/nebula/bot/secludedbot"
 	"github.com/cjxpj/nebula/dto"
 	"github.com/cjxpj/nebula/utils"
+	"github.com/gomarkdown/markdown"
 	"github.com/gorilla/websocket"
 )
 
@@ -21,9 +22,10 @@ type HttpOpUiData struct {
 }
 
 type HttpOpUiConfig_server struct {
-	Server      string `json:"server"`
-	CORS        bool   `json:"cors"`
-	CORSOrigins string `json:"cors_origins"`
+	Server              string `json:"server"`
+	CORS                bool   `json:"cors"`
+	CORSOrigins         string `json:"cors_origins"`
+	TempCleanupInterval int    `json:"temp_cleanup_interval"`
 }
 
 type HttpOpUiConfig_websocket struct {
@@ -91,6 +93,18 @@ type HttpOpUiInstallResponse struct {
 	Error  string   `json:"error,omitempty"`
 }
 
+type HttpOpUiConfig_installStatus struct {
+	Component string `json:"component"`
+	TaskID    string `json:"task_id,omitempty"`
+}
+
+type HttpOpUiInstallStatusResponse struct {
+	Installed bool     `json:"installed"`
+	Output    []string `json:"output,omitempty"`
+	Status    string   `json:"status,omitempty"`
+	Error     string   `json:"error,omitempty"`
+}
+
 func OpUI(w http.ResponseWriter, r *http.Request, getpath string) {
 	if getpath == "" {
 		http.Redirect(w, r, dto.ServerConfig.OPUI.Addr+"/", http.StatusFound)
@@ -122,6 +136,7 @@ func OpUI(w http.ResponseWriter, r *http.Request, getpath string) {
 			j.Server = d.Key("server").String()
 			j.CORS = d.Key("跨域").MustBool(false)
 			j.CORSOrigins = d.Key("跨域白名单").String()
+			j.TempCleanupInterval = d.Key("临时读写清理周期").MustInt(60)
 			if r, err := json.Marshal(j); err == nil {
 				w.Write(r)
 			}
@@ -142,11 +157,13 @@ func OpUI(w http.ResponseWriter, r *http.Request, getpath string) {
 			d.Key("server").SetValue(j.Server)
 			d.Key("跨域").SetValue(strconv.FormatBool(j.CORS))
 			d.Key("跨域白名单").SetValue(j.CORSOrigins)
+			d.Key("临时读写清理周期").SetValue(strconv.Itoa(j.TempCleanupInterval))
 			if err := ff.SaveIni(f); err != nil {
 				utils.ErrorStop("系统配置保存失败")
 			}
 			dto.ServerConfig.Router.Cors = j.CORS
 			dto.ServerConfig.Router.CorsOrigins = j.CORSOrigins
+			dto.ServerConfig.Router.TempCleanupInterval = j.TempCleanupInterval
 			// 处理配置请求
 			w.Write([]byte(`{"status":"ok"}`))
 			return
@@ -484,7 +501,7 @@ func OpUI(w http.ResponseWriter, r *http.Request, getpath string) {
 		case "install_silk_v3":
 			var output []string
 			appDir := utils.GetAppDir()
-			destDir := filepath.Join(appDir, "private", "ffmpeg", "silk_v3")
+			destDir := filepath.Join(appDir, "private", "ffmpeg")
 			if err := installSilkV3(destDir, &output); err != nil {
 				w.Write([]byte(`{"status":"error","error":"` + err.Error() + `"}`))
 				return
@@ -525,6 +542,40 @@ func OpUI(w http.ResponseWriter, r *http.Request, getpath string) {
 
 		case "install_python":
 			w.Write([]byte(`{"status":"error","error":"Python installation not yet implemented"}`))
+			return
+
+		case "get_install_status":
+			allStatus := map[string]bool{
+				"php":        utils.NewFileQueue(filepath.Join("private", "php", "php.exe")).FileExists(),
+				"python":     utils.NewFileQueue(filepath.Join("private", "python", "python.exe")).FileExists(),
+				"napcat_bot": utils.NewFileQueue(filepath.Join("private", "NapCat.Shell", "NapCatWinBootMain.exe")).FileExists(),
+				"ffmpeg":     utils.NewFileQueue(filepath.Join("private", "ffmpeg", "bin", "ffmpeg.exe")).FileExists(),
+				"silk_v3":    utils.NewFileQueue(filepath.Join("private", "ffmpeg", "silk_v3", "silk_v3_encoder.exe")).FileExists(),
+			}
+			jsonResp, _ := json.Marshal(allStatus)
+			w.Write(jsonResp)
+			return
+
+		case "install_status":
+			var j HttpOpUiConfig_installStatus
+			if err := json.Unmarshal(h.Data, &j); err != nil {
+				http.Error(w, `{"status":"error","error":"invalid json"}`, http.StatusBadRequest)
+				return
+			}
+			resp := HttpOpUiInstallStatusResponse{
+				Installed: true,
+				Status:    "completed",
+			}
+			jsonResp, _ := json.Marshal(resp)
+			w.Write(jsonResp)
+			return
+
+		case "get_dic_doc":
+			data := appfiles.GetFile("dic.md")
+			html := markdown.ToHTML(data, nil, nil)
+			resp := map[string]string{"content": string(html)}
+			jsonResp, _ := json.Marshal(resp)
+			w.Write(jsonResp)
 			return
 
 		default:
