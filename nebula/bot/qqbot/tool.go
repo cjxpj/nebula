@@ -73,6 +73,13 @@ func RemoveLeadingSpace(s string) string {
 	return s
 }
 
+var reLeadingAt = regexp.MustCompile(`^(@\S+\s*)+`)
+
+// RemoveLeadingAtMentions 移除消息开头的 @用户名 前缀，用于全量消息艾特兼容
+func RemoveLeadingAtMentions(s string) string {
+	return reLeadingAt.ReplaceAllString(s, "")
+}
+
 // 去掉所有 ±img=...± 段，并返回净化后文本 + 提取到的 img 值列表
 func stripImgTags(s string) (string, []string) {
 	re := regexp.MustCompile(`±img=(.+?)±`)

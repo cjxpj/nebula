@@ -4,12 +4,14 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	stdjson "encoding/json"
 
 	"github.com/cjxpj/nebula/dto"
 
 	"sort"
 
 	"github.com/gomarkdown/markdown"
+	"html/template"
 	"golang.org/x/net/html"
 )
 
@@ -134,4 +136,39 @@ func (f *DicFunc) HtmlDecode() (string, error) {
 		return html.UnescapeString(f.Inputs.String(1)), nil
 	}
 	return "", errors.New("参数数量错误")
+}
+
+func htmlParse(d *dto.DicInputs) (any, error) {
+	doc, err := html.Parse(strings.NewReader(d.Inputs.String(1)))
+	if err != nil {
+		return "", fmt.Errorf("解析HTML时出错: %v", err)
+	}
+
+	if d.Inputs.Len() > 1 {
+		var path []string
+		for _, p := range d.Inputs.List[2:] {
+			if strP, ok := p.(string); ok {
+				path = append(path, strP)
+			}
+		}
+		doc = FindNodeByPath(doc, path)
+
+		if doc == nil {
+			return "{}", nil
+		}
+	}
+
+	jsonD, err := stdjson.MarshalIndent(ConvertToJSON(doc), "", "  ")
+	if err != nil {
+		return "", fmt.Errorf("转换JSON时出错: %v", err)
+	}
+	return string(jsonD), nil
+}
+
+func htmlEncode(d *dto.DicInputs) (any, error) {
+	return template.HTMLEscapeString(d.Inputs.String(1)), nil
+}
+
+func htmlDecode(d *dto.DicInputs) (any, error) {
+	return html.UnescapeString(d.Inputs.String(1)), nil
 }

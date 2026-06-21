@@ -20,7 +20,7 @@ var mdRe = regexp.MustCompile(`(?s)\[((?:\\.|[^\]\\])+)\]\(((?:\\.|[^)\\])+)\)`)
 var mdReAt = regexp.MustCompile(`<(.+?)(\/)?>`)
 
 // 群消息处理
-func qqBOTGroupRun(payload *qqbot_msg.Payload) {
+func qqBOTGroupRun(payload *qqbot_msg.Payload, bot *qqbot_msg.RouterQQBot) {
 	// 解析消息数据
 	m := &qqbot_msg.GroupMessageEvent{}
 	err := json.Unmarshal([]byte(payload.Data), m)
@@ -29,7 +29,7 @@ func qqBOTGroupRun(payload *qqbot_msg.Payload) {
 		return
 	}
 
-	botDicPath := utils.NewFileQueue(filepath.Join(dto.ServerConfig.QQBot.FilePath, "dic"))
+	botDicPath := utils.NewFileQueue(filepath.Join(bot.FilePath, "dic"))
 	botDicList, err := botDicPath.GetFileList()
 	if err != nil {
 		return
@@ -40,7 +40,7 @@ func qqBOTGroupRun(payload *qqbot_msg.Payload) {
 
 	isAdmin := "null" // 是否是管理员
 	// 主人列表
-	if adminList, err := utils.NewFileQueue(dto.ServerConfig.QQBot.FilePath + "/admin.txt").ReadFromFile(); err == nil {
+	if adminList, err := utils.NewFileQueue(filepath.Join(bot.FilePath, "admin.txt")).ReadFromFile(); err == nil {
 		for s := range strings.SplitSeq(adminList, ",") {
 			if userID == s {
 				isAdmin = s
@@ -50,7 +50,7 @@ func qqBOTGroupRun(payload *qqbot_msg.Payload) {
 	}
 
 	// 处理重复消息ID
-	if !dto.ServerConfig.QQBot.CheckOnce(m.ID) {
+	if !bot.CheckOnce(m.ID) {
 		// fmt.Println("QQBot消息ID重复", m.ID)
 		return
 	}
@@ -66,14 +66,26 @@ func qqBOTGroupRun(payload *qqbot_msg.Payload) {
 	var atUsernames []string
 	msg, atIDs, atUsernames = ConvertATMessageWithMentions(msg, m.Mentions)
 
+	// 全量消息艾特兼容：去除开头 @用户名 并调整 AT 顺序
+	if bot.AtCompat {
+		msg = RemoveLeadingAtMentions(msg)
+		// 反转 AT 列表，使 AT0 对应最后一个 @（实际触发者）
+		for i, j := 0, len(atIDs)-1; i < j; i, j = i+1, j-1 {
+			atIDs[i], atIDs[j] = atIDs[j], atIDs[i]
+			atUsernames[i], atUsernames[j] = atUsernames[j], atUsernames[i]
+		}
+	}
+
 	valData := dto.NewVal().
 		Set("来源", "群聊").
-		Set("昵称", "未知").
+		Set("昵称", m.Author.Username).
 		Set("群号", m.GroupOpenID).
 		Set("qq", userID).
 		Set("QQ", userID).
 		Set("主人", isAdmin).
-		Set("头像", "http://q.qlogo.cn/qqapp/"+dto.ServerConfig.QQBot.API.AppId+"/"+userID+"/640")
+		Set("robot", bot.API.AppId).
+		Set("Robot", bot.API.AppId).
+		Set("头像", "http://q.qlogo.cn/qqapp/"+bot.API.AppId+"/"+userID+"/640")
 
 	for i, id := range atIDs {
 		valData.Set(fmt.Sprintf("AT%d", i), id)
@@ -85,7 +97,7 @@ func qqBOTGroupRun(payload *qqbot_msg.Payload) {
 	// 词库
 	for _, v := range botDicList {
 		go func(v string) {
-			dicPath := dto.ServerConfig.QQBot.FilePath + "/dic/" + v
+			dicPath := filepath.Join(bot.FilePath, "dic", v)
 			FileData, err := utils.NewFileQueue(dicPath).ReadFromFile()
 			if err != nil {
 				return
@@ -128,7 +140,7 @@ func qqBOTGroupRun(payload *qqbot_msg.Payload) {
 
 						// 调用参数2
 						rMsg := dic_api.Api.DicRunPrivateVal(dic, d.Inputs.StringAfter(2), qqVal)
-						// 替换‘\r’换行
+						// 替换'\r'换行
 						rMsg = strings.ReplaceAll(rMsg, "\\r", "\n")
 
 						// fmt.Println("QQBot回复:", rMsg)
@@ -137,7 +149,7 @@ func qqBOTGroupRun(payload *qqbot_msg.Payload) {
 								if i == 1 {
 									rMsg = ""
 								}
-								_, mErr := dto.ServerConfig.QQBot.API.ReplyGroupImgMessage(m.ID, m.GroupOpenID, img, rMsg)
+								_, mErr := bot.API.ReplyGroupImgMessage(m.ID, m.GroupOpenID, img, rMsg)
 								if mErr != nil {
 									debugLog.Infof("QQBot回复图文失败%v", mErr)
 								}
@@ -146,7 +158,7 @@ func qqBOTGroupRun(payload *qqbot_msg.Payload) {
 						}
 
 						if rMsg != "" {
-							_, mErr := dto.ServerConfig.QQBot.API.ReplyGroupMessage(m.ID, m.GroupOpenID, rMsg)
+							_, mErr := bot.API.ReplyGroupMessage(m.ID, m.GroupOpenID, rMsg)
 							if mErr != nil {
 								fmt.Println("QQBot回复失败", mErr)
 							}
@@ -160,7 +172,7 @@ func qqBOTGroupRun(payload *qqbot_msg.Payload) {
 				Fn: func(d *dto.DicInputs) (any, error) {
 
 					if d.Inputs.LenOk(1) {
-						_, mErr := dto.ServerConfig.QQBot.API.
+						_, mErr := bot.API.
 							ReplyGroupAnyMarkdownMessage(m.ID, m.GroupOpenID, d.Inputs.String(1))
 						if mErr != nil {
 							fmt.Println("QQBot回复失败", mErr)
@@ -200,7 +212,7 @@ func qqBOTGroupRun(payload *qqbot_msg.Payload) {
 						Params:           params,
 					}
 
-					_, mErr := dto.ServerConfig.QQBot.API.
+					_, mErr := bot.API.
 						ReplyGroupMarkdownMessage(m.ID, m.GroupOpenID, md)
 
 					if mErr != nil {
@@ -218,13 +230,13 @@ func qqBOTGroupRun(payload *qqbot_msg.Payload) {
 						rMsg := strings.ReplaceAll(d.Inputs.String(1), "\\r", "\n")
 						if d.Inputs.LenOk(1) {
 							if rMsg != "" {
-								_, mErr := dto.ServerConfig.QQBot.API.ReplyGroupMessage(m.ID, m.GroupOpenID, "\n"+rMsg)
+								_, mErr := bot.API.ReplyGroupMessage(m.ID, m.GroupOpenID, "\n"+rMsg)
 								if mErr != nil {
 									fmt.Println("QQBot回复失败", mErr)
 								}
 							}
 						} else {
-							_, mErr := dto.ServerConfig.QQBot.API.ReplyGroupImgMessage(m.ID, m.GroupOpenID, d.Inputs.String(2), rMsg)
+							_, mErr := bot.API.ReplyGroupImgMessage(m.ID, m.GroupOpenID, d.Inputs.String(2), rMsg)
 							if mErr != nil {
 								fmt.Println("QQBot回复图文失败", mErr)
 							}
@@ -236,7 +248,7 @@ func qqBOTGroupRun(payload *qqbot_msg.Payload) {
 				L: "1",
 				Fn: func(d *dto.DicInputs) (any, error) {
 					go func() {
-						_, mErr := dto.ServerConfig.QQBot.API.ReplyGroupVideoMessage(m.ID, m.GroupOpenID, d.Inputs.String(1))
+						_, mErr := bot.API.ReplyGroupVideoMessage(m.ID, m.GroupOpenID, d.Inputs.String(1))
 						if mErr != nil {
 							fmt.Println("QQBot回复语音失败", mErr)
 						}
@@ -247,7 +259,7 @@ func qqBOTGroupRun(payload *qqbot_msg.Payload) {
 				L: "1",
 				Fn: func(d *dto.DicInputs) (any, error) {
 					go func() {
-						_, mErr := dto.ServerConfig.QQBot.API.ReplyGroupVoiceMessage(m.ID, m.GroupOpenID, d.Inputs.String(1))
+						_, mErr := bot.API.ReplyGroupVoiceMessage(m.ID, m.GroupOpenID, d.Inputs.String(1))
 						if mErr != nil {
 							fmt.Println("QQBot回复语音失败", mErr)
 						}
@@ -255,7 +267,7 @@ func qqBOTGroupRun(payload *qqbot_msg.Payload) {
 					return "", nil
 				}})
 			rMsg := dic_api.Api.DicRun(dic, msg)
-			// 替换‘\r’换行
+			// 替换'\r'换行
 			rMsg = strings.ReplaceAll(rMsg, "\\r", "\n")
 
 			// fmt.Println("QQBot回复:", rMsg)
@@ -265,7 +277,7 @@ func qqBOTGroupRun(payload *qqbot_msg.Payload) {
 					if i == 1 {
 						rMsg = ""
 					}
-					_, mErr := dto.ServerConfig.QQBot.API.ReplyGroupImgMessage(m.ID, m.GroupOpenID, img, rMsg)
+					_, mErr := bot.API.ReplyGroupImgMessage(m.ID, m.GroupOpenID, img, rMsg)
 					if mErr != nil {
 						fmt.Println("QQBot回复图文失败", mErr)
 					}
@@ -274,7 +286,7 @@ func qqBOTGroupRun(payload *qqbot_msg.Payload) {
 			}
 
 			if rMsg != "" {
-				_, mErr := dto.ServerConfig.QQBot.API.ReplyGroupMessage(m.ID, m.GroupOpenID, rMsg)
+				_, mErr := bot.API.ReplyGroupMessage(m.ID, m.GroupOpenID, rMsg)
 				if mErr != nil {
 					debugLog.Infof("QQBot回复失败%v", mErr)
 				}
@@ -283,7 +295,7 @@ func qqBOTGroupRun(payload *qqbot_msg.Payload) {
 	}
 }
 
-func qqBOTGroupATRun(payload *qqbot_msg.Payload) {
+func qqBOTGroupATRun(payload *qqbot_msg.Payload, bot *qqbot_msg.RouterQQBot) {
 	// 解析消息数据
 	m := &qqbot_msg.GroupMessageEvent{}
 	err := json.Unmarshal([]byte(payload.Data), m)
@@ -292,7 +304,7 @@ func qqBOTGroupATRun(payload *qqbot_msg.Payload) {
 		return
 	}
 
-	botDicPath := utils.NewFileQueue(dto.ServerConfig.QQBot.FilePath + "/dic")
+	botDicPath := utils.NewFileQueue(filepath.Join(bot.FilePath, "dic"))
 	botDicList, err := botDicPath.GetFileList()
 	if err != nil {
 		return
@@ -303,7 +315,7 @@ func qqBOTGroupATRun(payload *qqbot_msg.Payload) {
 
 	isAdmin := "null" // 是否是管理员
 	// 主人列表
-	if adminList, err := utils.NewFileQueue(dto.ServerConfig.QQBot.FilePath + "/admin.txt").ReadFromFile(); err == nil {
+	if adminList, err := utils.NewFileQueue(filepath.Join(bot.FilePath, "admin.txt")).ReadFromFile(); err == nil {
 		for s := range strings.SplitSeq(adminList, ",") {
 			if userID == s {
 				isAdmin = s
@@ -313,7 +325,7 @@ func qqBOTGroupATRun(payload *qqbot_msg.Payload) {
 	}
 
 	// 处理重复消息ID
-	if !dto.ServerConfig.QQBot.CheckOnce(m.ID) {
+	if !bot.CheckOnce(m.ID) {
 		// fmt.Println("QQBot消息ID重复", m.ID)
 		return
 	}
@@ -334,12 +346,12 @@ func qqBOTGroupATRun(payload *qqbot_msg.Payload) {
 		Set("qq", userID).
 		Set("QQ", userID).
 		Set("主人", isAdmin).
-		Set("头像", "http://q.qlogo.cn/qqapp/"+dto.ServerConfig.QQBot.API.AppId+"/"+userID+"/640")
+		Set("头像", "http://q.qlogo.cn/qqapp/"+bot.API.AppId+"/"+userID+"/640")
 
 	// 词库
 	for _, v := range botDicList {
 		go func() {
-			dicPath := dto.ServerConfig.QQBot.FilePath + "/dic/" + v
+			dicPath := filepath.Join(bot.FilePath, "dic", v)
 			FileData, err := utils.NewFileQueue(dicPath).ReadFromFile()
 			if err != nil {
 				return
@@ -361,7 +373,7 @@ func qqBOTGroupATRun(payload *qqbot_msg.Payload) {
 
 						// 调用参数2
 						rMsg := dic_api.Api.DicRunPrivateVal(dic, d.Inputs.StringAfter(2), qqVal)
-						// 替换‘\r’换行
+						// 替换'\r'换行
 						rMsg = strings.ReplaceAll(rMsg, "\\r", "\n")
 
 						// fmt.Println("QQBot回复:", rMsg)
@@ -373,7 +385,7 @@ func qqBOTGroupATRun(payload *qqbot_msg.Payload) {
 								if i == 1 {
 									rMsg = ""
 								}
-								_, mErr := dto.ServerConfig.QQBot.API.ReplyGroupImgMessage(m.ID, m.GroupOpenID, img, rMsg)
+								_, mErr := bot.API.ReplyGroupImgMessage(m.ID, m.GroupOpenID, img, rMsg)
 								if mErr != nil {
 									debugLog.Infof("QQBot回复图文失败%v", mErr)
 								}
@@ -384,7 +396,7 @@ func qqBOTGroupATRun(payload *qqbot_msg.Payload) {
 						if rMsg != "" {
 							// 开头附带\n
 							rMsg = "\n" + rMsg
-							_, mErr := dto.ServerConfig.QQBot.API.ReplyGroupMessage(m.ID, m.GroupOpenID, rMsg)
+							_, mErr := bot.API.ReplyGroupMessage(m.ID, m.GroupOpenID, rMsg)
 							if mErr != nil {
 								fmt.Println("QQBot回复失败", mErr)
 							}
@@ -398,7 +410,7 @@ func qqBOTGroupATRun(payload *qqbot_msg.Payload) {
 				Fn: func(d *dto.DicInputs) (any, error) {
 
 					if d.Inputs.LenOk(1) {
-						_, mErr := dto.ServerConfig.QQBot.API.
+						_, mErr := bot.API.
 							ReplyGroupAnyMarkdownMessage(m.ID, m.GroupOpenID, d.Inputs.String(1))
 						if mErr != nil {
 							fmt.Println("QQBot回复失败", mErr)
@@ -438,7 +450,7 @@ func qqBOTGroupATRun(payload *qqbot_msg.Payload) {
 						Params:           params,
 					}
 
-					_, mErr := dto.ServerConfig.QQBot.API.
+					_, mErr := bot.API.
 						ReplyGroupMarkdownMessage(m.ID, m.GroupOpenID, md)
 
 					if mErr != nil {
@@ -456,7 +468,7 @@ func qqBOTGroupATRun(payload *qqbot_msg.Payload) {
 						rMsg := strings.ReplaceAll(d.Inputs.String(1), "\\r", "\n")
 						if d.Inputs.LenOk(1) {
 							if rMsg != "" {
-								_, mErr := dto.ServerConfig.QQBot.API.ReplyGroupMessage(m.ID, m.GroupOpenID, "\n"+rMsg)
+								_, mErr := bot.API.ReplyGroupMessage(m.ID, m.GroupOpenID, "\n"+rMsg)
 								if mErr != nil {
 									fmt.Println("QQBot回复失败", mErr)
 								}
@@ -465,7 +477,7 @@ func qqBOTGroupATRun(payload *qqbot_msg.Payload) {
 							if rMsg != "" {
 								rMsg = "\n" + rMsg
 							}
-							_, mErr := dto.ServerConfig.QQBot.API.ReplyGroupImgMessage(m.ID, m.GroupOpenID, d.Inputs.String(2), rMsg)
+							_, mErr := bot.API.ReplyGroupImgMessage(m.ID, m.GroupOpenID, d.Inputs.String(2), rMsg)
 							if mErr != nil {
 								fmt.Println("QQBot回复图文失败", mErr)
 							}
@@ -477,7 +489,7 @@ func qqBOTGroupATRun(payload *qqbot_msg.Payload) {
 				L: "1",
 				Fn: func(d *dto.DicInputs) (any, error) {
 					go func() {
-						_, mErr := dto.ServerConfig.QQBot.API.ReplyGroupVideoMessage(m.ID, m.GroupOpenID, d.Inputs.String(1))
+						_, mErr := bot.API.ReplyGroupVideoMessage(m.ID, m.GroupOpenID, d.Inputs.String(1))
 						if mErr != nil {
 							fmt.Println("QQBot回复语音失败", mErr)
 						}
@@ -488,7 +500,7 @@ func qqBOTGroupATRun(payload *qqbot_msg.Payload) {
 				L: "1",
 				Fn: func(d *dto.DicInputs) (any, error) {
 					go func() {
-						_, mErr := dto.ServerConfig.QQBot.API.ReplyGroupVoiceMessage(m.ID, m.GroupOpenID, d.Inputs.String(1))
+						_, mErr := bot.API.ReplyGroupVoiceMessage(m.ID, m.GroupOpenID, d.Inputs.String(1))
 						if mErr != nil {
 							fmt.Println("QQBot回复语音失败", mErr)
 						}
@@ -496,7 +508,7 @@ func qqBOTGroupATRun(payload *qqbot_msg.Payload) {
 					return "", nil
 				}})
 			rMsg := dic_api.Api.DicRun(dic, msg)
-			// 替换‘\r’换行
+			// 替换'\r'换行
 			rMsg = strings.ReplaceAll(rMsg, "\\r", "\n")
 
 			// fmt.Println("QQBot回复:", rMsg)
@@ -509,7 +521,7 @@ func qqBOTGroupATRun(payload *qqbot_msg.Payload) {
 					if i == 1 {
 						rMsg = ""
 					}
-					_, mErr := dto.ServerConfig.QQBot.API.ReplyGroupImgMessage(m.ID, m.GroupOpenID, img, rMsg)
+					_, mErr := bot.API.ReplyGroupImgMessage(m.ID, m.GroupOpenID, img, rMsg)
 					if mErr != nil {
 						fmt.Println("QQBot回复图文失败", mErr)
 					}
@@ -520,7 +532,7 @@ func qqBOTGroupATRun(payload *qqbot_msg.Payload) {
 			if rMsg != "" {
 				// 开头附带\n
 				rMsg = "\n" + rMsg
-				_, mErr := dto.ServerConfig.QQBot.API.ReplyGroupMessage(m.ID, m.GroupOpenID, rMsg)
+				_, mErr := bot.API.ReplyGroupMessage(m.ID, m.GroupOpenID, rMsg)
 				if mErr != nil {
 					debugLog.Infof("QQBot回复失败%v", mErr)
 				}
@@ -530,7 +542,7 @@ func qqBOTGroupATRun(payload *qqbot_msg.Payload) {
 }
 
 // 群私聊处理
-func qqBOTGroupPrivateRun(payload *qqbot_msg.Payload) {
+func qqBOTGroupPrivateRun(payload *qqbot_msg.Payload, bot *qqbot_msg.RouterQQBot) {
 	// 解析消息数据
 	m := &qqbot_msg.GroupMessageEvent{}
 	err := json.Unmarshal([]byte(payload.Data), m)
@@ -539,7 +551,7 @@ func qqBOTGroupPrivateRun(payload *qqbot_msg.Payload) {
 		return
 	}
 
-	botDicPath := utils.NewFileQueue(dto.ServerConfig.QQBot.FilePath + "/dic")
+	botDicPath := utils.NewFileQueue(filepath.Join(bot.FilePath, "dic"))
 	botDicList, err := botDicPath.GetFileList()
 	if err != nil {
 		return
@@ -550,7 +562,7 @@ func qqBOTGroupPrivateRun(payload *qqbot_msg.Payload) {
 
 	isAdmin := "null" // 是否是管理员
 	// 主人列表
-	if adminList, err := utils.NewFileQueue(dto.ServerConfig.QQBot.FilePath + "/admin.txt").ReadFromFile(); err == nil {
+	if adminList, err := utils.NewFileQueue(filepath.Join(bot.FilePath, "admin.txt")).ReadFromFile(); err == nil {
 		for s := range strings.SplitSeq(adminList, ",") {
 			if userID == s {
 				isAdmin = s
@@ -560,7 +572,7 @@ func qqBOTGroupPrivateRun(payload *qqbot_msg.Payload) {
 	}
 
 	// 处理重复消息ID
-	if !dto.ServerConfig.QQBot.CheckOnce(m.ID) {
+	if !bot.CheckOnce(m.ID) {
 		// fmt.Println("QQBot消息ID重复", m.ID)
 		return
 	}
@@ -574,12 +586,12 @@ func qqBOTGroupPrivateRun(payload *qqbot_msg.Payload) {
 		Set("qq", userID).
 		Set("QQ", userID).
 		Set("主人", isAdmin).
-		Set("头像", "http://q.qlogo.cn/qqapp/"+dto.ServerConfig.QQBot.API.AppId+"/"+userID+"/640")
+		Set("头像", "http://q.qlogo.cn/qqapp/"+bot.API.AppId+"/"+userID+"/640")
 
 	// 词库
 	for _, v := range botDicList {
 		go func() {
-			dicPath := dto.ServerConfig.QQBot.FilePath + "/dic/" + v
+			dicPath := filepath.Join(bot.FilePath, "dic", v)
 			FileData, err := utils.NewFileQueue(dicPath).ReadFromFile()
 			if err != nil {
 				return
@@ -604,13 +616,13 @@ func qqBOTGroupPrivateRun(payload *qqbot_msg.Payload) {
 								if i == 1 {
 									rMsg = ""
 								}
-								dto.ServerConfig.QQBot.API.ReplyGroupPrivateImgMessage(m.ID, userID, img, rMsg)
+								bot.API.ReplyGroupPrivateImgMessage(m.ID, userID, img, rMsg)
 							}
 							return
 						}
 
 						if rMsg != "" {
-							dto.ServerConfig.QQBot.API.ReplyGroupPrivateMessage(m.ID, userID, rMsg)
+							bot.API.ReplyGroupPrivateMessage(m.ID, userID, rMsg)
 						}
 					}()
 					return "", nil
@@ -652,7 +664,7 @@ func qqBOTGroupPrivateRun(payload *qqbot_msg.Payload) {
 						Params:           params,
 					}
 
-					_, mErr := dto.ServerConfig.QQBot.API.
+					_, mErr := bot.API.
 						ReplyPrivateMarkdownMessage(m.ID, userID, md)
 
 					if mErr != nil {
@@ -670,10 +682,10 @@ func qqBOTGroupPrivateRun(payload *qqbot_msg.Payload) {
 						rMsg := strings.ReplaceAll(d.Inputs.String(1), "\\r", "\n")
 						if d.Inputs.LenOk(1) {
 							if rMsg != "" {
-								dto.ServerConfig.QQBot.API.ReplyGroupPrivateMessage(m.ID, userID, rMsg)
+								bot.API.ReplyGroupPrivateMessage(m.ID, userID, rMsg)
 							}
 						} else {
-							dto.ServerConfig.QQBot.API.ReplyGroupPrivateImgMessage(m.ID, userID, d.Inputs.String(2), rMsg)
+							bot.API.ReplyGroupPrivateImgMessage(m.ID, userID, d.Inputs.String(2), rMsg)
 						}
 					}()
 					return "", nil
@@ -682,7 +694,7 @@ func qqBOTGroupPrivateRun(payload *qqbot_msg.Payload) {
 				L: "1",
 				Fn: func(d *dto.DicInputs) (any, error) {
 					go func() {
-						dto.ServerConfig.QQBot.API.ReplyGroupPrivateVoiceMessage(m.ID, userID, d.Inputs.String(1))
+						bot.API.ReplyGroupPrivateVoiceMessage(m.ID, userID, d.Inputs.String(1))
 					}()
 					return "", nil
 				}})
@@ -690,13 +702,13 @@ func qqBOTGroupPrivateRun(payload *qqbot_msg.Payload) {
 				L: "1",
 				Fn: func(d *dto.DicInputs) (any, error) {
 					go func() {
-						dto.ServerConfig.QQBot.API.ReplyGroupPrivateVideoMessage(m.ID, userID, d.Inputs.String(1))
+						bot.API.ReplyGroupPrivateVideoMessage(m.ID, userID, d.Inputs.String(1))
 					}()
 					return "", nil
 				}})
 
 			rMsg := dic_api.Api.DicRun(dic, "#私聊#"+m.Content)
-			// 替换‘\r’换行
+			// 替换'\r'换行
 			rMsg = strings.ReplaceAll(rMsg, "\\r", "\n")
 
 			// fmt.Println("QQBot回复:", rMsg)
@@ -705,12 +717,12 @@ func qqBOTGroupPrivateRun(payload *qqbot_msg.Payload) {
 					if i == 1 {
 						rMsg = ""
 					}
-					dto.ServerConfig.QQBot.API.ReplyGroupPrivateImgMessage(m.ID, userID, img, rMsg)
+					bot.API.ReplyGroupPrivateImgMessage(m.ID, userID, img, rMsg)
 				}
 				return
 			}
 			if rMsg != "" {
-				dto.ServerConfig.QQBot.API.ReplyGroupPrivateMessage(m.ID, userID, rMsg)
+				bot.API.ReplyGroupPrivateMessage(m.ID, userID, rMsg)
 			}
 		}()
 	}

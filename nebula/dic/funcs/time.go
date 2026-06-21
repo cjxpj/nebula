@@ -85,3 +85,30 @@ func (f *DicFunc) TimestampFormattingTime() string {
 	}
 	return ""
 }
+
+func timestampFormattingTime(d *dto.DicInputs) (any, error) {
+	if d.Inputs.Len() == 2 {
+		layout := d.Inputs.String(2)
+		replacements := map[string]string{
+			"yyyy":   "2006",
+			"MM":     "01",
+			"dd":     "02",
+			"hh":     "03",
+			"HH":     "15",
+			"mm":     "04",
+			"ss":     "05",
+			"Mon":    "Mon",
+			"Monday": "Monday",
+		}
+		for key, value := range replacements {
+			layout = strings.ReplaceAll(layout, key, value)
+		}
+
+		timestampInt, _ := strconv.ParseInt(d.Inputs.String(1), 10, 64)
+		timeObj := time.Unix(timestampInt, 0)
+
+		timeStr := timeObj.Format(layout)
+		return timeStr, nil
+	}
+	return "", nil
+}

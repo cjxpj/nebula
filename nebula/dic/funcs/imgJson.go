@@ -11,6 +11,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/cjxpj/nebula/dto"
 	"github.com/cjxpj/nebula/utils"
 
 	"github.com/boombuler/barcode"
@@ -805,4 +806,12 @@ func (j *JsonImage) Draw(jsonData []map[string]interface{}) string {
 		}
 	}
 	return ""
+}
+
+func drawImg(d *dto.DicInputs) (any, error) {
+	var imgData []map[string]any
+	if err := json.Unmarshal([]byte(d.Inputs.String(1)), &imgData); err != nil {
+		return "解析JSON失败", nil
+	}
+	return (&JsonImage{}).Draw(imgData), nil
 }

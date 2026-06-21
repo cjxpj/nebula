@@ -27,3 +27,6 @@ $%启动%$
 
 Ngrok启动成功 https?://.+
 NgrokUrl：%参数1%
+
+BeerWebFrp启动成功 https?://.+
+BeerWebFrp：%参数1%

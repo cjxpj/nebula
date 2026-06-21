@@ -11,18 +11,25 @@ import (
 	"github.com/cjxpj/nebula/utils"
 )
 
-func installPHP(destDir string, output *[]string) error {
-	url := "https://windows.php.net/downloads/releases/php-7.4.33-Win32-vc15-x64.zip"
+func installPHP(destDir string, output *[]string, progressFn func(float64)) error {
+	urls := []string{
+		"https://cjxpj.com/download/php-7.4.33-Win32-vc15-x64.zip",
+		"https://windows.php.net/downloads/releases/archives/php-7.4.33-Win32-vc15-x64.zip",
+	}
 
 	zipPath := utils.NewFileQueue("php_download.zip")
 	defer zipPath.DeleteFile() // 确保下载文件最终被删除
 
-	*output = append(*output, "正在分段下载 PHP ...")
-	if err := zipPath.DownloadWithDynamicThreads(url, 8, true); err != nil {
+	if output != nil {
+		*output = append(*output, "正在分段下载 PHP ...")
+	}
+	if err := zipPath.DownloadWithMirrors(urls, 8, true, progressFn); err != nil {
 		return fmt.Errorf("下载失败: %w", err)
 	}
 
-	*output = append(*output, "下载完成，正在解压...")
+	if output != nil {
+		*output = append(*output, "下载完成，正在解压...")
+	}
 	if err := os.MkdirAll(destDir, 0755); err != nil {
 		return fmt.Errorf("创建目录失败: %w", err)
 	}
@@ -30,22 +37,31 @@ func installPHP(destDir string, output *[]string) error {
 		return fmt.Errorf("解压失败")
 	}
 
-	*output = append(*output, "✅ PHP 安装成功，路径："+destDir)
+	if output != nil {
+		*output = append(*output, "✅ PHP 安装成功，路径："+destDir)
+	}
 	return nil
 }
 
-func installFFmpeg(destDir string, output *[]string) error {
-	url := "https://www.gyan.dev/ffmpeg/builds/ffmpeg-release-essentials.zip"
+func installFFmpeg(destDir string, output *[]string, progressFn func(float64)) error {
+	urls := []string{
+		"https://cjxpj.com/download/ffmpeg-release-essentials.zip",
+		"https://www.gyan.dev/ffmpeg/builds/ffmpeg-release-essentials.zip",
+	}
 
 	zipPath := utils.NewFileQueue("ffmpeg_download.zip")
 	defer zipPath.DeleteFile() // 确保最后清理
 
-	*output = append(*output, "正在分段下载 FFmpeg ...")
-	if err := zipPath.DownloadWithDynamicThreads(url, 8, true); err != nil {
+	if output != nil {
+		*output = append(*output, "正在分段下载 FFmpeg ...")
+	}
+	if err := zipPath.DownloadWithMirrors(urls, 8, true, progressFn); err != nil {
 		return fmt.Errorf("下载失败: %w", err)
 	}
 
-	*output = append(*output, "下载完成，正在解压...")
+	if output != nil {
+		*output = append(*output, "下载完成，正在解压...")
+	}
 	if err := os.MkdirAll(destDir, 0755); err != nil {
 		return fmt.Errorf("创建目录失败: %w", err)
 	}
@@ -53,35 +69,49 @@ func installFFmpeg(destDir string, output *[]string) error {
 		return fmt.Errorf("解压失败")
 	}
 
-	*output = append(*output, "✅ FFmpeg 安装成功，路径：" + destDir)
+	if output != nil {
+		*output = append(*output, "✅ FFmpeg 安装成功，路径："+destDir)
+	}
 	return nil
 }
 
-func installSilkV3(destDir string, output *[]string) error {
-	url := "https://cjxpj.com/download/silk_v3.zip"
+func installSilkV3(destDir string, output *[]string, progressFn func(float64)) error {
+	urls := []string{
+		"https://cjxpj.com/download/silk_v3.zip",
+		"https://mirror.cjxpj.com/silk_v3.zip",
+	}
 
 	zipPath := utils.NewFileQueue("silk_v3_download.zip")
+	defer zipPath.DeleteFile() // 确保下载文件最终被删除
 
-	*output = append(*output, "正在分段下载 silk_v3 ...")
-	if err := zipPath.DownloadWithDynamicThreads(url, 4, true); err != nil {
-		return fmt.Errorf("下载失败: %v", err)
+	if output != nil {
+		*output = append(*output, "正在分段下载 silk_v3 ...")
+	}
+	if err := zipPath.DownloadWithMirrors(urls, 4, true, progressFn); err != nil {
+		return fmt.Errorf("下载失败: %w", err)
 	}
 
-	*output = append(*output, "下载完成，正在解压...")
+	if output != nil {
+		*output = append(*output, "下载完成，正在解压...")
+	}
 	if err := os.MkdirAll(destDir, 0755); err != nil {
 		return fmt.Errorf("创建目录失败: %w", err)
 	}
 	if !zipPath.UnZip(destDir) {
 		return fmt.Errorf("解压失败")
 	}
-	zipPath.DeleteFile()
 
-	*output = append(*output, "✅ silk_v3 安装成功，路径："+destDir)
+	if output != nil {
+		*output = append(*output, "✅ silk_v3 安装成功，路径："+filepath.Join(destDir, "silk_v3"))
+	}
 	return nil
 }
 
-func installNapCatBot(destDir string, qq string, output *[]string) error {
-	url := "https://gh-proxy.org/https://github.com/NapNeko/NapCatQQ/releases/download/v4.9.81/NapCat.Shell.zip"
+func installNapCatBot(destDir string, qq string, output *[]string, progressFn func(float64)) error {
+	urls := []string{
+		"https://gh-proxy.org/github.com/NapNeko/NapCatQQ/releases/download/v4.9.81/NapCat.Shell.zip",
+		"https://cjxpj.com/download/NapCat.Shell.zip",
+	}
 
 	zipPath := utils.NewFileQueue("napcat_download.zip")
 	defer zipPath.DeleteFile() // 确保下载文件最终被删除
@@ -89,7 +119,7 @@ func installNapCatBot(destDir string, qq string, output *[]string) error {
 	if output != nil {
 		*output = append(*output, "正在分段下载 NapCat ...")
 	}
-	if err := zipPath.DownloadWithDynamicThreads(url, 8, true); err != nil {
+	if err := zipPath.DownloadWithMirrors(urls, 8, true, progressFn); err != nil {
 		return fmt.Errorf("下载失败: %w", err)
 	}
 
@@ -102,13 +132,45 @@ func installNapCatBot(destDir string, qq string, output *[]string) error {
 	}
 
 	if output != nil {
-		*output = append(*output, "✅ NapCat 安装成功，路径：" + utils.NewFileQueue(destDir).FileName)
+		*output = append(*output, "✅ NapCat 安装成功，路径："+utils.NewFileQueue(destDir).FileName)
 	}
 
 	if err := initNapCatBotConfig(destDir, qq, output); err != nil {
 		return fmt.Errorf("初始化配置失败: %w", err)
 	}
 
+	return nil
+}
+
+func installPython(destDir string, output *[]string, progressFn func(float64)) error {
+	urls := []string{
+		"https://registry.npmmirror.com/-/binary/python/3.12.8/python-3.12.8-embed-amd64.zip",
+		"https://cjxpj.com/download/python-3.12.8-embed-amd64.zip",
+	}
+
+	zipPath := utils.NewFileQueue("python_download.zip")
+	defer zipPath.DeleteFile() // 确保下载文件最终被删除
+
+	if output != nil {
+		*output = append(*output, "正在分段下载 Python ...")
+	}
+	if err := zipPath.DownloadWithMirrors(urls, 8, true, progressFn); err != nil {
+		return fmt.Errorf("下载失败: %w", err)
+	}
+
+	if output != nil {
+		*output = append(*output, "下载完成，正在解压...")
+	}
+	if err := os.MkdirAll(destDir, 0755); err != nil {
+		return fmt.Errorf("创建目录失败: %w", err)
+	}
+	if !zipPath.UnZip(destDir) {
+		return fmt.Errorf("解压失败")
+	}
+
+	if output != nil {
+		*output = append(*output, "✅ Python 安装成功，路径："+destDir)
+	}
 	return nil
 }
 
@@ -180,14 +242,14 @@ func initNapCatBotConfig(destDir string, qq string, output *[]string) error {
 
 	destPath := utils.NewFileQueue(filepath.Join(destDir, "config", fmt.Sprintf("onebot11_%s.json", qq)))
 	if output != nil {
-		*output = append(*output, "配置文件路径：" + destPath.FileName)
+		*output = append(*output, "配置文件路径："+destPath.FileName)
 	}
 	destPath.WriteFileByte(outConfig)
 
 	if output != nil {
 		*output = append(*output, "✅ 配置文件写入成功")
 		*output = append(*output, "每个账号的HTTP服务器Token都是独立的，切换账号时候需要重新配置。")
-		*output = append(*output, "HTTP服务器Token：" + httpServerToken)
+		*output = append(*output, "HTTP服务器Token："+httpServerToken)
 		*output = append(*output, "请前往填写配置：NebulaData/private/system/config.n")
 		*output = append(*output, "✅ 填写完配置后关掉此窗口，重新运行程序即可")
 	}

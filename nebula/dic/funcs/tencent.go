@@ -2,7 +2,9 @@ package funcs
 
 import (
 	"fmt"
+	stdjson "encoding/json"
 
+	"github.com/cjxpj/nebula/dto"
 	"github.com/cjxpj/nebula/utils"
 )
 
@@ -38,6 +40,34 @@ func (f *DicFunc) TencentGetApiCall() (string, error) {
 			}
 			return string(result), nil
 		}
+	}
+	return "", fmt.Errorf("参数类型错误")
+}
+
+func tencentGetApi(d *dto.DicInputs) (any, error) {
+	api := &utils.TencentAPI{
+		SecretId:  d.Inputs.String(1),
+		SecretKey: d.Inputs.String(2),
+		Host:      d.Inputs.String(3),
+		Service:   d.Inputs.String(4),
+		Action:    d.Inputs.String(5),
+		Version:   d.Inputs.String(6),
+		Region:    d.Inputs.String(7),
+	}
+	return api, nil
+}
+
+func tencentGetApiCall(d *dto.DicInputs) (any, error) {
+	if api, ok := d.Inputs.Get(1).(*utils.TencentAPI); ok {
+		var payload map[string]any
+		if err := stdjson.Unmarshal([]byte(d.Inputs.String(2)), &payload); err != nil {
+			return "", fmt.Errorf("json解析失败: %v", err)
+		}
+		result, err := api.Request(payload)
+		if err != nil {
+			return "", err
+		}
+		return string(result), nil
 	}
 	return "", fmt.Errorf("参数类型错误")
 }

@@ -219,7 +219,11 @@ func dicWebRouter(w http.ResponseWriter, r *http.Request) {
 
 	routerFile := utils.NewFileQueue("private/system/router.n")
 	if !routerFile.FileExists() {
-		routerFile.WriteFileByte(appfiles.GetFile("dic/router.n"))
+		if data, err := appfiles.GetFile("dic/system/router.n"); err == nil {
+			routerFile.WriteFileByte(data)
+		} else {
+			fmt.Println("embed err:", err)
+		}
 	}
 
 	FileData, err = routerFile.ReadFromFile()

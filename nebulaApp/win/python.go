@@ -5,48 +5,55 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 
 	"github.com/cjxpj/nebula/dto"
 	"github.com/cjxpj/nebula/utils"
 )
 
-// RunPythonCode 执行一段 Python 脚本，返回输出或错误
+func installPython(destDir string, output *[]string) error {
+	urls := []string{
+		"https://registry.npmmirror.com/-/binary/python/3.12.8/python-3.12.8-embed-amd64.zip",
+		"https://cjxpj.com/download/python-3.12.8-embed-amd64.zip",
+	}
+
+	zipPath := utils.NewFileQueue("python_download.zip")
+	defer zipPath.DeleteFile() // 确保下载文件最终被删除
+
+	*output = append(*output, "正在分段下载 Python ...")
+	if err := zipPath.DownloadWithMirrors(urls, 8, true, nil); err != nil {
+		return fmt.Errorf("下载失败: %w", err)
+	}
+
+	*output = append(*output, "下载完成，正在解压...")
+	if err := os.MkdirAll(destDir, 0755); err != nil {
+		return fmt.Errorf("创建目录失败: %w", err)
+	}
+	if !zipPath.UnZip(destDir) {
+		return fmt.Errorf("解压失败")
+	}
+
+	*output = append(*output, "✅ Python 安装成功，路径："+destDir)
+	return nil
+}
+
+// RunPythonCode 执行一段 Python 脚本（通过 stdin 传入，无临时文件）
 func runPythonCode(code string) (string, error) {
-	// 获取当前可执行文件所在目录
 	appDir := utils.GetAppDir()
-	pythonDir := filepath.Join(appDir, "private", "python")
+	pythonDir := filepath.Join(appDir, "private", "extensions", "python")
 
-	// 确保目录存在
-	if _, err := os.Stat(pythonDir); os.IsNotExist(err) {
-		if err := os.MkdirAll(pythonDir, 0755); err != nil {
-			return "", fmt.Errorf("创建目录失败: %v", err)
-		}
-	}
+	// 确保目录存在（脚本内 import 本地模块时可能需要）
+	_ = os.MkdirAll(pythonDir, 0755)
 
-	// 创建临时 Python 文件
-	tmpFile, err := os.CreateTemp("", "tempscript-*.py")
-	if err != nil {
-		return "", fmt.Errorf("创建临时文件失败: %v", err)
-	}
-	defer os.Remove(tmpFile.Name())
-
-	// 写入脚本内容
-	if _, err := tmpFile.WriteString(code); err != nil {
-		return "", fmt.Errorf("写入脚本失败: %v", err)
-	}
-	tmpFile.Close()
-
-	// 获取 Python 执行路径
 	pythonExec := dto.GV.GetStr("_PythonPath_")
 	if pythonExec == "" {
 		return "", fmt.Errorf("未设置 Python 执行路径 (_PythonPath_)")
 	}
 
-	// 执行命令
-	cmd := exec.Command(pythonExec, tmpFile.Name())
-	cmd.Dir = pythonDir // 保证 import 本地模块时在正确目录
+	cmd := exec.Command(pythonExec, "-")
+	cmd.Dir = pythonDir
+	cmd.Stdin = strings.NewReader(code)
 
-	// 获取输出
 	output, err := cmd.CombinedOutput()
 	if err != nil {
 		return fmt.Sprintf("Python 执行失败: %v\n输出:\n%s", err, output), nil

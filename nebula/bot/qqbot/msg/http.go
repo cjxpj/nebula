@@ -17,7 +17,25 @@ func (b *QQBot) Send(path string, body any, respObj any) error {
 		return err
 	}
 	headers := GetQQBotAuthHeader(b.Key.AccessToken)
-	return postJson(APIURL+path, body, headers, respObj)
+
+	if b.Debug {
+		bodyJson, _ := json.Marshal(body)
+		debugLog.Infof("[QQBot 发送] %s%s\n", APIURL, path)
+		debugLog.Infof("[QQBot 请求] %s\n", string(bodyJson))
+	}
+
+	err := postJson(APIURL+path, body, headers, respObj)
+
+	if b.Debug {
+		if respObj != nil {
+			respJson, _ := json.Marshal(respObj)
+			debugLog.Infof("[QQBot 返回] %s\n", string(respJson))
+		}
+		if err != nil {
+			debugLog.Infof("[QQBot 错误] %v\n", err)
+		}
+	}
+	return err
 }
 
 func (b *QQBot) SendChannelImage(path string, imgData []byte, body any, respObj any) error {
@@ -25,7 +43,25 @@ func (b *QQBot) SendChannelImage(path string, imgData []byte, body any, respObj 
 		return err
 	}
 	headers := GetQQBotAuthHeader(b.Key.AccessToken)
-	return postImageWithJsonDataAsFormFields(APIURL+path, imgData, "NebulaImage", body, headers, respObj)
+
+	if b.Debug {
+		bodyJson, _ := json.Marshal(body)
+		debugLog.Infof("[QQBot 发送图片] %s%s\n", APIURL, path)
+		debugLog.Infof("[QQBot 请求] %s | 图片大小: %d bytes\n", string(bodyJson), len(imgData))
+	}
+
+	err := postImageWithJsonDataAsFormFields(APIURL+path, imgData, "NebulaImage", body, headers, respObj)
+
+	if b.Debug {
+		if respObj != nil {
+			respJson, _ := json.Marshal(respObj)
+			debugLog.Infof("[QQBot 返回] %s\n", string(respJson))
+		}
+		if err != nil {
+			debugLog.Infof("[QQBot 错误] %v\n", err)
+		}
+	}
+	return err
 }
 
 // postImageWithJsonMultipart 上传图片同时传 JSON 参数

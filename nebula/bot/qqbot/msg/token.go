@@ -9,8 +9,8 @@ import (
 // 去重 true 表示首次，false 表示重复
 func (d *RouterQQBot) CheckOnce(key string) bool {
 	if d.LastMsg == nil {
-		// 报错
-		panic("LastMsg is nil")
+		// 未初始化的 LastMsg，当作不重复处理（跳过去重）
+		return true
 	}
 	if _, found := d.LastMsg.Get(key); found {
 		return false

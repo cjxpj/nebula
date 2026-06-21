@@ -2,7 +2,6 @@ package count
 
 import (
 	"errors"
-	"fmt"
 	"math/big"
 	"strings"
 
@@ -513,8 +512,9 @@ func RunCountText(v *dto.DicVal, content any) any {
 				return "[" + val + "]"
 			}
 			if strings.HasPrefix(text, "[") && strings.HasSuffix(text, "]") {
-				debugLog.Infof("报错内容：%v", val)
-				panic(fmt.Sprintf("Count 失败: %v", err))
+				debugLog.Infof("Count 报错内容：%v", val)
+				debugLog.Errorf("Count 失败: %v", err)
+				return "[" + val + "]"
 			}
 			return "[" + val + "]"
 		}

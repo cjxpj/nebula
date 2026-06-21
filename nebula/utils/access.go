@@ -57,6 +57,8 @@ func Post(inputs []string) string {
 			req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 		}
 
+		req.Header.Set("User-Agent", "Nebula-Client/1.0")
+		
 		if inputsLen == 3 {
 			var headers map[string]string
 			if err := Json.Unmarshal([]byte(inputs[2]), &headers); err == nil {
@@ -67,7 +69,6 @@ func Post(inputs []string) string {
 			}
 		}
 
-		req.Header.Set("User-Agent", "Nebula-Client/1.0")
 
 		client := &http.Client{
 			Transport: &http.Transport{

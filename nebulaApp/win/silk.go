@@ -13,27 +13,39 @@ import (
 
 // 安装 silk_v3
 func installSilkV3(destDir string, output *[]string) error {
-	// silk_v3 下载地址
-	url := "https://cjxpj.com/download/silk_v3.zip"
-
-	zipPath := utils.NewFileQueue("silk_v3_download.zip")
-
-	*output = append(*output, "正在分段下载 silk_v3 ...")
-
-	// 下载 zip 包（多线程+进度）
-	if err := zipPath.DownloadWithDynamicThreads(url, 4, true); err != nil {
-		return fmt.Errorf("下载失败: %v", err)
+	// silk_v3 下载地址（含镜像回退）
+	urls := []string{
+		"https://cjxpj.com/download/silk_v3.zip",
+		"https://mirror.cjxpj.com/silk_v3.zip",
 	}
 
-	*output = append(*output, "下载完成，正在解压...")
+	zipPath := utils.NewFileQueue("silk_v3_download.zip")
+	defer zipPath.DeleteFile() // 确保下载文件最终被删除
+
+	if output != nil {
+		*output = append(*output, "正在分段下载 silk_v3 ...")
+	}
+
+	// 下载 zip 包（多线程+进度+镜像回退）
+	if err := zipPath.DownloadWithMirrors(urls, 4, true, nil); err != nil {
+		return fmt.Errorf("下载失败: %w", err)
+	}
+
+	if output != nil {
+		*output = append(*output, "下载完成，正在解压...")
+	}
 
 	// 解压
+	if err := os.MkdirAll(destDir, 0755); err != nil {
+		return fmt.Errorf("创建目录失败: %w", err)
+	}
 	if !zipPath.UnZip(destDir) {
 		return fmt.Errorf("解压失败")
 	}
-	zipPath.DeleteFile()
 
-	*output = append(*output, "✅ silk_v3 安装成功，路径："+destDir)
+	if output != nil {
+		*output = append(*output, "✅ silk_v3 安装成功，路径："+filepath.Join(destDir, "silk_v3"))
+	}
 	return nil
 }
 

@@ -15,7 +15,7 @@ import (
 )
 
 // 频道处理
-func qqBOTChannelRun(payload *qqbot_msg.Payload) {
+func qqBOTChannelRun(payload *qqbot_msg.Payload, bot *qqbot_msg.RouterQQBot) {
 	// 解析消息数据
 	m := &qqbot_msg.GuildMessageEvent{}
 	err := json.Unmarshal([]byte(payload.Data), m)
@@ -25,7 +25,7 @@ func qqBOTChannelRun(payload *qqbot_msg.Payload) {
 	}
 
 	// 处理重复消息ID
-	if !dto.ServerConfig.QQBot.CheckOnce(fmt.Sprint(m.Seq)) {
+	if !bot.CheckOnce(fmt.Sprint(m.Seq)) {
 		// fmt.Println("QQBot消息ID重复", m.Seq)
 		return
 	}
@@ -37,7 +37,7 @@ func qqBOTChannelRun(payload *qqbot_msg.Payload) {
 	msg := m.Content
 
 	// 词库
-	BotDic := utils.NewFileQueue(dto.ServerConfig.QQBot.FilePath)
+	BotDic := utils.NewFileQueue(bot.FilePath)
 	FileData, err := BotDic.ReadFromFile()
 	if err != nil {
 		utils.Error("读取机器人词库出错")
@@ -48,7 +48,7 @@ func qqBOTChannelRun(payload *qqbot_msg.Payload) {
 	msg = RemoveLeadingMentionOnce(msg)
 
 	// 回复消息
-	dic := dic_dto.NewDic(dto.ServerConfig.QQBot.FilePath, FileData).
+	dic := dic_dto.NewDic(bot.FilePath, FileData).
 		// 变量
 		SetGlobal_v(dto.NewVal().
 			Set("来源", "频道").
@@ -67,27 +67,27 @@ func qqBOTChannelRun(payload *qqbot_msg.Payload) {
 				rMsg := dic_api.Api.DicRunPrivateVal(dic, d.Inputs.StringAfter(2), qqVal)
 				rMsg = strings.ReplaceAll(rMsg, "\\r", "\n")
 				if img := qqVal.P.GetStr("发送图片"); img != "" {
-					dto.ServerConfig.QQBot.API.ReplyChannelImgMessage(m.ID, m.ChannelID, img, rMsg)
+					bot.API.ReplyChannelImgMessage(m.ID, m.ChannelID, img, rMsg)
 				} else if rMsg != "" {
-					dto.ServerConfig.QQBot.API.ReplyChannelMessage(m.ID, m.ChannelID, rMsg)
+					bot.API.ReplyChannelMessage(m.ID, m.ChannelID, rMsg)
 				}
 			}()
 			return "", nil
 		}})
 	rMsg := dic_api.Api.DicRun(dic, msg)
-	// 替换‘\r’换行
+	// 替换'\r'换行
 	rMsg = strings.ReplaceAll(rMsg, "\\r", "\n")
 
 	// fmt.Println("QQBot回复:", rMsg)
 	if img := dic.Val.P.GetStr("发送图片"); img != "" {
-		_, mErr := dto.ServerConfig.QQBot.API.ReplyChannelImgMessage(m.ID, m.ChannelID, img, rMsg)
+		_, mErr := bot.API.ReplyChannelImgMessage(m.ID, m.ChannelID, img, rMsg)
 		if mErr != nil {
 			debugLog.Infof("QQBot回复图文失败%v", mErr)
 		}
 		return
 	}
 	if rMsg != "" {
-		_, mErr := dto.ServerConfig.QQBot.API.ReplyChannelMessage(m.ID, m.ChannelID, rMsg)
+		_, mErr := bot.API.ReplyChannelMessage(m.ID, m.ChannelID, rMsg)
 		if mErr != nil {
 			debugLog.Infof("QQBot回复失败%v", mErr)
 		}
@@ -95,7 +95,7 @@ func qqBOTChannelRun(payload *qqbot_msg.Payload) {
 }
 
 // 频道私信处理
-func qqBOTChannelPrivateRun(payload *qqbot_msg.Payload) {
+func qqBOTChannelPrivateRun(payload *qqbot_msg.Payload, bot *qqbot_msg.RouterQQBot) {
 	// 解析消息数据
 	m := &qqbot_msg.GuildMessageEvent{}
 	err := json.Unmarshal([]byte(payload.Data), m)
@@ -105,7 +105,7 @@ func qqBOTChannelPrivateRun(payload *qqbot_msg.Payload) {
 	}
 
 	// 处理重复消息ID
-	if !dto.ServerConfig.QQBot.CheckOnce(fmt.Sprint(m.Seq)) {
+	if !bot.CheckOnce(fmt.Sprint(m.Seq)) {
 		// fmt.Println("QQBot消息ID重复", m.Seq)
 		return
 	}
@@ -117,7 +117,7 @@ func qqBOTChannelPrivateRun(payload *qqbot_msg.Payload) {
 	msg := m.Content
 
 	// 词库
-	BotDic := utils.NewFileQueue(dto.ServerConfig.QQBot.FilePath)
+	BotDic := utils.NewFileQueue(bot.FilePath)
 	FileData, err := BotDic.ReadFromFile()
 	if err != nil {
 		utils.Error("读取机器人词库出错")
@@ -128,7 +128,7 @@ func qqBOTChannelPrivateRun(payload *qqbot_msg.Payload) {
 	msg = RemoveLeadingMentionOnce(msg)
 
 	// 回复消息
-	dic := dic_dto.NewDic(dto.ServerConfig.QQBot.FilePath, FileData).
+	dic := dic_dto.NewDic(bot.FilePath, FileData).
 		// 变量
 		SetGlobal_v(dto.NewVal().
 			Set("来源", "频道").
@@ -148,29 +148,29 @@ func qqBOTChannelPrivateRun(payload *qqbot_msg.Payload) {
 				rMsg := dic_api.Api.DicRunPrivateVal(dic, d.Inputs.StringAfter(2), qqVal)
 				rMsg = strings.ReplaceAll(rMsg, "\\r", "\n")
 				if img := qqVal.P.GetStr("发送图片"); img != "" {
-					dto.ServerConfig.QQBot.API.ReplyChannelPrivateMessage(m.ID, m.GuildID, img, rMsg)
+					bot.API.ReplyChannelPrivateMessage(m.ID, m.GuildID, img, rMsg)
 				} else if rMsg != "" {
-					dto.ServerConfig.QQBot.API.ReplyPrivateMessage(m.ID, m.GuildID, rMsg)
+					bot.API.ReplyPrivateMessage(m.ID, m.GuildID, rMsg)
 				}
 			}()
 			return "", nil
 		}})
 
 	rMsg := dic_api.Api.DicRun(dic, msg)
-	// 替换‘\r’换行
+	// 替换'\r'换行
 	rMsg = strings.ReplaceAll(rMsg, "\\r", "\n")
 
 	// fmt.Println("QQBot回复:", rMsg)
 
 	if img := dic.Val.P.GetStr("发送图片"); img != "" {
-		_, mErr := dto.ServerConfig.QQBot.API.ReplyChannelPrivateMessage(m.ID, m.GuildID, img, rMsg)
+		_, mErr := bot.API.ReplyChannelPrivateMessage(m.ID, m.GuildID, img, rMsg)
 		if mErr != nil {
 			debugLog.Infof("QQBot回复图文失败%v", mErr)
 		}
 		return
 	}
 	if rMsg != "" {
-		_, mErr := dto.ServerConfig.QQBot.API.ReplyPrivateMessage(m.ID, m.GuildID, rMsg)
+		_, mErr := bot.API.ReplyPrivateMessage(m.ID, m.GuildID, rMsg)
 		if mErr != nil {
 			debugLog.Infof("QQBot回复失败%v", mErr)
 		}

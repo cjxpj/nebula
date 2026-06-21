@@ -63,7 +63,7 @@ func sqliteWrite(d *dto.DicInputs) (any, error) {
 	}
 
 	// ★ 关键：确保表存在
-	if err = ensureFsTable(db, table); err != nil {
+	if err = EnsureFsTable(db, table); err != nil {
 		return nil, err
 	}
 
@@ -156,6 +156,34 @@ func sqliteRead(d *dto.DicInputs) (any, error) {
 	}
 
 	return string(data), nil
+}
+
+func sqliteDeleteFile(d *dto.DicInputs) (any, error) {
+	db, ok := d.Inputs.Get(1).(*sql.DB)
+	if !ok || db == nil {
+		return nil, errors.New("未打开数据库")
+	}
+	table := "fs_files"
+	EnsureFsTable(db, table)
+	_, err := db.Exec(fmt.Sprintf(`DELETE FROM "%s" WHERE key=?`, table), d.Inputs.String(2))
+	if err != nil {
+		return nil, err
+	}
+	return nil, nil
+}
+
+func sqliteDeleteDir(d *dto.DicInputs) (any, error) {
+	db, ok := d.Inputs.Get(1).(*sql.DB)
+	if !ok || db == nil {
+		return nil, errors.New("未打开数据库")
+	}
+	table := "fs_files"
+	EnsureFsTable(db, table)
+	_, err := db.Exec(fmt.Sprintf(`DELETE FROM "%s" WHERE key=?`, table), d.Inputs.String(2))
+	if err != nil {
+		return nil, err
+	}
+	return nil, nil
 }
 
 func sqliteExec(d *dto.DicInputs) (any, error) {

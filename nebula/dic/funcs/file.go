@@ -240,3 +240,48 @@ func (f *DicFunc) FileCopy() string {
 	}
 	return ""
 }
+
+func dirSize(d *dto.DicInputs) (any, error) {
+	path := d.Inputs.String(1)
+	file := utils.NewFileQueue(path)
+	fileSize, err := file.GetDirSize()
+	if err != nil {
+		return "0", nil
+	}
+	return strconv.FormatInt(fileSize, 10), nil
+}
+
+func fileSize(d *dto.DicInputs) (any, error) {
+	path := d.Inputs.String(1)
+	file := utils.NewFileQueue(path)
+	fileSize, err := file.GetFileSize()
+	if err != nil {
+		return "0", nil
+	}
+	return strconv.FormatInt(fileSize, 10), nil
+}
+
+func fileRename(d *dto.DicInputs) (any, error) {
+	path := d.Inputs.String(1)
+	path2 := d.Inputs.String(2)
+	file := utils.NewFileQueue(path)
+	ok := file.Rename(path2)
+	if ok {
+		return "true", nil
+	}
+	return "false", nil
+}
+
+func fileCopy(d *dto.DicInputs) (any, error) {
+	if d.Inputs.String(1) == d.Inputs.String(2) {
+		return "false", nil
+	}
+	path := d.Inputs.String(1)
+	path2 := d.Inputs.String(2)
+	file := utils.NewFileQueue(path)
+	ok := file.Copy(path2)
+	if ok {
+		return "true", nil
+	}
+	return "false", nil
+}

@@ -30,7 +30,7 @@ func downloadFile(d *dto.DicInputs) (any, error) {
 		if d.Inputs.String(4) == "true" {
 			printOpen = true
 		}
-		if err := file.DownloadWithDynamicThreads(d.Inputs.String(1), d.Inputs.Int(3), printOpen); err != nil {
+		if err := file.DownloadWithDynamicThreads(d.Inputs.String(1), d.Inputs.Int(3), printOpen, nil); err != nil {
 			return "false", err
 		}
 		return "true", nil
@@ -123,10 +123,8 @@ func accessPost(d *dto.DicInputs) (any, error) {
 
 	client := &http.Client{
 		// 超时限制
-		Timeout: 15 * time.Second,
-		Transport: &http.Transport{
-			TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
-		},
+		Timeout:   15 * time.Second,
+		Transport: &http.Transport{},
 	}
 	resp, err := client.Do(req)
 	if err != nil {
@@ -142,6 +140,95 @@ func accessPost(d *dto.DicInputs) (any, error) {
 	res := string(body)
 
 	return res, nil
+}
+
+// =======================
+// 访问转发
+// 将当前请求的 GET/POST 数据及头部原样转发到指定链接
+// =======================
+
+func requestForward(d *dto.DicInputs) (any, error) {
+	targetURL := d.Inputs.String(1)
+	if !regexp.MustCompile(`^https?://`).MatchString(targetURL) {
+		targetURL = "http://" + targetURL
+	}
+
+	// 从 dic 线程变量中获取原始请求
+	reqVal := d.V.G.Get("_请求数据_")
+	if reqVal == nil {
+		return "", errors.New("无法获取原始请求")
+	}
+	origReq, ok := reqVal.(*http.Request)
+	if !ok {
+		return "", errors.New("原始请求类型错误")
+	}
+
+	// 读取原始请求体
+	var reqBody []byte
+	if origReq.Body != nil {
+		var err error
+		reqBody, err = io.ReadAll(origReq.Body)
+		if err != nil {
+			return "", err
+		}
+		// 重建原始请求体，以便后续处理
+		origReq.Body = io.NopCloser(bytes.NewBuffer(reqBody))
+	}
+
+	// 创建转发请求
+	forwardReq, err := http.NewRequest(origReq.Method, targetURL, bytes.NewBuffer(reqBody))
+	if err != nil {
+		return nil, err
+	}
+
+	// 复制原始请求头部（排除部分不需要转发的头部）
+	skipHeaders := map[string]bool{
+		"Host":              true,
+		"Content-Length":    true,
+		"Transfer-Encoding": true,
+		"Connection":        true,
+		"Keep-Alive":        true,
+		"Proxy-Connection":  true,
+		"Upgrade":           true,
+	}
+	for key, values := range origReq.Header {
+		if skipHeaders[key] {
+			continue
+		}
+		for _, value := range values {
+			forwardReq.Header.Add(key, value)
+		}
+	}
+
+	// 复制 URL 查询参数
+	q := forwardReq.URL.Query()
+	for key, values := range origReq.URL.Query() {
+		for _, value := range values {
+			q.Add(key, value)
+		}
+	}
+	forwardReq.URL.RawQuery = q.Encode()
+
+	// 发送转发请求
+	client := &http.Client{
+		Timeout: 15 * time.Second,
+		Transport: &http.Transport{
+			TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
+		},
+	}
+	resp, err := client.Do(forwardReq)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		utils.Error(err.Error())
+		return "获取转发响应失败", nil
+	}
+
+	return string(body), nil
 }
 
 // =======================

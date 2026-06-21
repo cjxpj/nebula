@@ -23,7 +23,7 @@ func checkCors(w http.ResponseWriter, r *http.Request) bool {
 		}
 		w.Header().Set("Access-Control-Allow-Origin", origin)
 		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
-		w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization")
+		w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization, X-OPUI-Key")
 		w.Header().Set("Access-Control-Allow-Credentials", "true")
 
 		if r.Method == http.MethodOptions {
@@ -55,9 +55,13 @@ func webRun(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if s.QQBot != nil && s.QQBot.Open && r.URL.Path == s.QQBot.Addr {
-		qqbot.BotMessage(w, r)
-		return
+	if s.QQBots != nil {
+		for _, bot := range s.QQBots {
+			if bot != nil && bot.Open && r.URL.Path == bot.Addr {
+				qqbot.BotMessage(w, r, bot)
+				return
+			}
+		}
 	}
 
 	if s.NapCatBot != nil && s.NapCatBot.Open && r.URL.Path == s.NapCatBot.Addr {

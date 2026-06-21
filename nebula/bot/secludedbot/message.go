@@ -18,6 +18,13 @@ import (
 // startupOnce 确保启动回调在整个客户端生命周期中只触发一次
 var startupOnce sync.Once
 
+// dbgLog 调试打印辅助函数，仅在 Debug 开启时输出
+func dbgLog(format string, a ...any) {
+	if dto.ServerConfig.SecludedBot != nil && dto.ServerConfig.SecludedBot.Debug {
+		debugLog.Infof(format, a...)
+	}
+}
+
 var reMsgData = regexp.MustCompile(`±(atMsg|at|img)=([^±]+)±|([^±]+)`)
 
 // parseMixedTextResult 解析结果
@@ -57,14 +64,14 @@ func Start(wsUrl, token string) {
 			}
 			if err := connectAndLogin(wsUrl, token); err != nil {
 				if firstAttempt {
-					debugLog.Infof("[secluded] Secluded 插件启动，将连接到: %s", wsUrl)
+					dbgLog("[secluded] Secluded 插件启动，将连接到: %s", wsUrl)
 					firstAttempt = false
 				}
-				debugLog.Infof("[secluded] 连接失败: %v，5秒后重试...", err)
+				dbgLog("[secluded] 连接失败: %v，5秒后重试...", err)
 				time.Sleep(5 * time.Second)
 				continue
 			}
-			debugLog.Infof("[secluded] 已成功连接到 Secluded，等待消息...")
+			dbgLog("[secluded] 已成功连接到 Secluded，等待消息...")
 
 			// 启动触发每个词库只会触发一次并且伴随客户端，不会因为断开重新连接重新触发
 			startupOnce.Do(func() {
@@ -87,7 +94,7 @@ func handleMessage(_ []byte, header *rawPacketHeader) {
 		// 但我们这里简单地：合并 Text 字段，用 dic 跑
 		elems, err := parsePushOicqData(header.Data)
 		if err != nil {
-			debugLog.Infof("[secluded] parse PushOicqMsg: %v", err)
+			dbgLog("[secluded] parse PushOicqMsg: %v", err)
 			return
 		}
 		dispatchPush(elems, header.Data)
@@ -100,27 +107,38 @@ func handleMessage(_ []byte, header *rawPacketHeader) {
 }
 
 // pushElem 是 PushOicqMsg 的 data 数组中一个元素的通用表示
+// 协议规定 data 是 []map[string]string，通过遍历检测 key 存在性来解析，不能依赖数组下标
 type pushElem struct {
-	Account   string `json:"Account"`
-	Group     string `json:"Group"`
-	Friend    string `json:"Friend"`
-	Temp      string `json:"Temp"`
-	GroupId   string `json:"GroupId"`
-	Uin       string `json:"Uin"`
-	MsgId     string `json:"MsgId"`
-	GroupName string `json:"GroupName"`
-	OpName    string `json:"OpName"`
-	UinName   string `json:"UinName"`
-	Text      string `json:"Text"`
-	Img       string `json:"Img"`
-	AtUin     string `json:"AtUin"`
-	AtName    string `json:"AtName"`
-	Uid       string `json:"Uid"`
-	All       string `json:"All"`
-	Time      string `json:"Time"`
-	People    string `json:"People"`
-	Op        string `json:"Op"`
-	Url       string `json:"Url"`
+	Account    string `json:"Account"`
+	Group      string `json:"Group"`
+	Friend     string `json:"Friend"`
+	Temp       string `json:"Temp"`
+	GroupId    string `json:"GroupId"`
+	Uin        string `json:"Uin"`
+	MsgId      string `json:"MsgId"`
+	GroupName  string `json:"GroupName"`
+	OpName     string `json:"OpName"`
+	UinName    string `json:"UinName"`
+	Text       string `json:"Text"`
+	Img        string `json:"Img"`
+	AtUin      string `json:"AtUin"`
+	AtName     string `json:"AtName"`
+	Uid        string `json:"Uid"`
+	All        string `json:"All"`
+	Time       string `json:"Time"`
+	People     string `json:"People"`
+	Op         string `json:"Op"`
+	Url        string `json:"Url"`
+	GolineMode string `json:"GolineMode"`
+	Debug      string `json:"Debug"`
+	Size       string `json:"Size"`
+	Height     string `json:"Height"`
+	Width      string `json:"Width"`
+	MD5        string `json:"MD5"`
+	Ptt        string `json:"Ptt"`
+	Video      string `json:"Video"`
+	Bubble     string `json:"Bubble"`
+	Typeface   string `json:"Typeface"`
 }
 
 // parsePushOicqData 解析 PushOicqMsg 的 data 数组
@@ -149,6 +167,9 @@ func parsePushOicqData(data json.RawMessage) ([]pushElem, error) {
 
 // dispatchPush 运行词库并回写消息
 func dispatchPush(elems []pushElem, rawData json.RawMessage) {
+	// 调试打印全部data数据
+	dbgLog("[secluded] 收到消息数据: %s", string(rawData))
+
 	if len(elems) == 0 {
 		return
 	}
@@ -171,6 +192,12 @@ func dispatchPush(elems []pushElem, rawData json.RawMessage) {
 			if e.Img != "" && e.Url != "" {
 				content += "[图片]"
 				imgUrls = append(imgUrls, e.Url)
+			}
+			if e.Ptt != "" {
+				content += "[语音]"
+			}
+			if e.Video != "" {
+				content += "[视频]"
 			}
 		}
 	}
@@ -220,7 +247,7 @@ func dispatchPush(elems []pushElem, rawData json.RawMessage) {
 	botDicPath := utils.NewFileQueue(dto.ServerConfig.SecludedBot.FilePath + "/dic")
 	botDicList, err := botDicPath.GetFileList()
 	if err != nil {
-		debugLog.Infof("[secluded] get dic list failed: %v", err)
+		dbgLog("[secluded] get dic list failed: %v", err)
 		return
 	}
 
@@ -280,7 +307,8 @@ skipGroupCheck:
 		Set("Op", meta.Op).
 		Set("robot", meta.Account).
 		Set("Robot", meta.Account).
-		Set("data", string(rawData))
+		Set("data", string(rawData)).
+		Set("GolineMode", meta.GolineMode)
 
 	for i, uin := range atUins {
 		valData.Set(fmt.Sprintf("AT%d", i), uin)

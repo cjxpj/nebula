@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"errors"
 	"strconv"
+	stdjson "encoding/json"
 
 	"github.com/cjxpj/nebula/dto"
 	"golang.org/x/crypto/curve25519"
@@ -25,7 +26,7 @@ func ed25519_GenerateKey(d *dto.DicInputs) (any, error) {
 		"私钥": string(privateKey),
 	}
 
-	jsonResult, err := json.Marshal(result)
+	jsonResult, err := stdjson.Marshal(result)
 	if err != nil {
 		return "", errors.New("转换 JSON 失败")
 	}
@@ -174,5 +175,104 @@ func (f *DicFunc) Ed25519_NewKeyFromCurve25519() (string, error) {
 		return "", errors.New("转换 JSON 失败")
 	}
 
+	return string(jsonResult), nil
+}
+
+// ========== Ed25519 free functions ==========
+
+func ed25519NewKeyFromSeed(d *dto.DicInputs) (any, error) {
+	seed := []byte(d.Inputs.String(1))
+	if len(seed) != ed25519.SeedSize {
+		return nil, errors.New("seed 长度错误，必须为32字节")
+	}
+	privateKey := ed25519.NewKeyFromSeed(seed)
+	publicKey := privateKey.Public().(ed25519.PublicKey)
+	result := map[string]string{
+		"公钥": string(publicKey),
+		"私钥": string(privateKey),
+	}
+	return result, nil
+}
+
+func ed25519Sign(d *dto.DicInputs) (any, error) {
+	var privateKey ed25519.PrivateKey
+	switch v := d.Inputs.Get(1).(type) {
+	case ed25519.PrivateKey:
+		privateKey = v
+	case string:
+		data := []byte(v)
+		switch len(data) {
+		case ed25519.SeedSize:
+			privateKey = ed25519.NewKeyFromSeed(data)
+		case ed25519.PrivateKeySize:
+			privateKey = ed25519.PrivateKey(data)
+		default:
+			return "", errors.New("字符串私钥长度必须为32或64字节")
+		}
+	default:
+		return "", errors.New("参数1必须是字符串或ed25519.PrivateKey类型")
+	}
+	message := []byte(d.Inputs.String(2))
+	signature := ed25519.Sign(privateKey, message)
+	return string(signature), nil
+}
+
+func ed25519Verify(d *dto.DicInputs) (any, error) {
+	publicKey := []byte(d.Inputs.String(1))
+	message := []byte(d.Inputs.String(2))
+	signature := []byte(d.Inputs.String(3))
+	if len(publicKey) != ed25519.PublicKeySize {
+		return "", errors.New("公钥长度错误，必须为32字节")
+	}
+	if len(signature) != ed25519.SignatureSize {
+		return "", errors.New("签名长度错误，必须为64字节")
+	}
+	if ed25519.Verify(publicKey, message, signature) {
+		return "true", nil
+	}
+	return "false", nil
+}
+
+func ed25519PublicKeyToCurve25519(d *dto.DicInputs) (any, error) {
+	publicKey := []byte(d.Inputs.String(1))
+	if len(publicKey) != 32 {
+		return "", errors.New("公钥长度必须为32字节")
+	}
+	var curvePub [32]byte
+	copy(curvePub[:], publicKey)
+	return string(curvePub[:]), nil
+}
+
+func ed25519PrivateKeyToCurve25519(d *dto.DicInputs) (any, error) {
+	privateKey := []byte(d.Inputs.String(1))
+	if len(privateKey) < 32 {
+		return "", errors.New("私钥长度不足，必须至少32字节")
+	}
+	var curvePriv [32]byte
+	copy(curvePriv[:], privateKey[:32])
+	return string(curvePriv[:]), nil
+}
+
+func ed25519NewKeyFromCurve25519(d *dto.DicInputs) (any, error) {
+	if d.Inputs.Len() != 2 {
+		return "", errors.New("参数数量错误")
+	}
+	c25519Pub := []byte(d.Inputs.String(1))
+	c25519Priv := []byte(d.Inputs.String(2))
+	if len(c25519Pub) != 32 || len(c25519Priv) != 32 {
+		return "", errors.New("curve25519 公私钥必须都是32字节")
+	}
+	pub, err := curve25519.X25519(c25519Priv, c25519Pub)
+	if err != nil {
+		return "", errors.New("生成 ed25519 公钥失败")
+	}
+	result := map[string]string{
+		"公钥": string(pub),
+		"私钥": string(c25519Priv),
+	}
+	jsonResult, err := stdjson.Marshal(result)
+	if err != nil {
+		return "", errors.New("转换 JSON 失败")
+	}
 	return string(jsonResult), nil
 }

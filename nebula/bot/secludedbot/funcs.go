@@ -70,15 +70,19 @@ var Funcs = map[string]dto.DicFunc{
 				"seq": seq,
 				"cmd": "SendOicqMsg",
 				"rsp": true,
-				"data": []any{map[string]string{
-					"Account":      account,
-					"Group":        "Group",
-					"GroupId":      groupId,
-					"Ptt":          pttUrl,
-					"Time":         duration,
-					"Value":        "0",
-					"ProgressPush": fmt.Sprintf("%d", time.Now().UnixNano()),
-				}},
+				"data": []any{
+					map[string]string{
+						"Account": account,
+						"Group":   "Group",
+						"GroupId": groupId,
+					},
+					map[string]string{
+						"Ptt":          pttUrl,
+						"Time":         duration,
+						"SilkEncode":   "SilkEncode",
+						"ProgressPush": fmt.Sprintf("%d", time.Now().UnixNano()),
+					},
+				},
 			}
 			// debugLog.Infof("[secluded] 发送语音: groupId=%s, url=%s, duration=%s", groupId, pttUrl, duration)
 			sendRaw(packet)
@@ -99,24 +103,28 @@ var Funcs = map[string]dto.DicFunc{
 			if account == "" {
 				return "", nil
 			}
-			data := []any{map[string]string{
-				"Account":      account,
-				"Group":        "Group",
-				"GroupId":      groupId,
+			videoContent := map[string]string{
 				"Video":        videoUrl,
 				"Time":         duration,
 				"Name":         "video",
 				"ProgressPush": fmt.Sprintf("%d", time.Now().UnixNano()),
-			}}
+			}
 			if coverUrl != "" {
-				data = append(data, map[string]string{"Img": coverUrl})
+				videoContent["Img"] = coverUrl
 			}
 			seq := nextSeq()
 			packet := map[string]any{
-				"seq":  seq,
-				"cmd":  "SendOicqMsg",
-				"rsp":  true,
-				"data": data,
+				"seq": seq,
+				"cmd": "SendOicqMsg",
+				"rsp": true,
+				"data": []any{
+					map[string]string{
+						"Account": account,
+						"Group":   "Group",
+						"GroupId": groupId,
+					},
+					videoContent,
+				},
 			}
 			// debugLog.Infof("[secluded] 发送视频: groupId=%s, duration=%s, coverUrl=%s", groupId, duration, coverUrl)
 			sendRaw(packet)
@@ -141,13 +149,13 @@ var Funcs = map[string]dto.DicFunc{
 					"GroupId":      "0",
 				}},
 			}
-			debugLog.Infof("[secluded] 获取群列表: account=%s", account)
+			dbgLog("[secluded] 获取群列表: account=%s", account)
 			rsp, err := sendAndWait(packet, seq)
 			if err != nil {
 				debugLog.Infof("[secluded] 获取群列表失败: %v", err)
 				return "", err
 			}
-			debugLog.Infof("[secluded] 获取群列表成功: %s", string(rsp.Data))
+			dbgLog("[secluded] 获取群列表成功: %s", string(rsp.Data))
 			return string(rsp.Data), nil
 		},
 	},
@@ -578,7 +586,7 @@ var Funcs = map[string]dto.DicFunc{
 				debugLog.Infof("[secluded] 获取好友列表失败: %v", err)
 				return "", err
 			}
-			debugLog.Infof("[secluded] 获取好友列表成功: %s", string(rsp.Data))
+			dbgLog("[secluded] 获取好友列表成功: %s", string(rsp.Data))
 			return string(rsp.Data), nil
 		},
 	},

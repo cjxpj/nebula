@@ -295,7 +295,7 @@ func (fq *FileQueue) Download(url string) bool {
 }
 
 // 下载文件
-func (fq *FileQueue) DownloadWithDynamicThreads(url string, maxThreads int, showProgress bool) error {
+func (fq *FileQueue) DownloadWithDynamicThreads(url string, maxThreads int, showProgress bool, progressFn func(percent float64)) error {
 	// ------------------------  可调常量区 ------------------------
 	const (
 		chunkSize     = 4 * 1024 * 1024 // 4 MB
@@ -380,7 +380,8 @@ func (fq *FileQueue) DownloadWithDynamicThreads(url string, maxThreads int, show
 	var mu sync.Mutex
 	startT := time.Now()
 	stopBar := make(chan struct{})
-	if showProgress {
+	showProgressBar := showProgress || progressFn != nil
+	if showProgressBar {
 		go func() {
 			tick := time.NewTicker(100 * time.Millisecond)
 			defer tick.Stop()
@@ -389,13 +390,22 @@ func (fq *FileQueue) DownloadWithDynamicThreads(url string, maxThreads int, show
 				case <-tick.C:
 					d := atomic.LoadInt64(&downloaded)
 					percent := float64(d) * 100 / float64(length)
-					speed := float64(d) / 1048576 / time.Since(startT).Seconds()
-					eta := time.Duration(float64(length-d)/1048576/speed) * time.Second
-					fmt.Printf("\r[%.1f%%] %.2f MB/s  eta %v ", percent, speed, eta.Round(time.Second))
+					if percent > 100 {
+						percent = 100
+					}
+					if progressFn != nil {
+						progressFn(percent)
+					} else {
+						speed := float64(d) / 1048576 / time.Since(startT).Seconds()
+						eta := time.Duration(float64(length-d)/1048576/speed) * time.Second
+						fmt.Printf("\r[%.1f%%] %.2f MB/s  eta %v ", percent, speed, eta.Round(time.Second))
+					}
 				case <-stopBar:
-					debugLog.Infof("[100.0%%] %.2f MB/s  total %s \n",
-						float64(length)/1048576/time.Since(startT).Seconds(),
-						time.Since(startT).Round(time.Millisecond))
+					if progressFn == nil {
+						debugLog.Infof("[100.0%%] %.2f MB/s  total %s \n",
+							float64(length)/1048576/time.Since(startT).Seconds(),
+							time.Since(startT).Round(time.Millisecond))
+					}
 					return
 				}
 			}
@@ -496,6 +506,23 @@ func (fq *FileQueue) DownloadWithDynamicThreads(url string, maxThreads int, show
 		}
 	}
 	return nil
+}
+
+// DownloadWithMirrors 依次尝试多个 URL 下载，首个成功即返回
+func (fq *FileQueue) DownloadWithMirrors(urls []string, maxThreads int, showProgress bool, progressFn func(percent float64)) error {
+	var lastErr error
+	for i, url := range urls {
+		if i > 0 {
+			debugLog.Infof("回退至镜像: %s", url)
+		}
+		if err := fq.DownloadWithDynamicThreads(url, maxThreads, showProgress, progressFn); err != nil {
+			lastErr = err
+			_ = os.Remove(fq.FileName) // 清理失败残留
+			continue
+		}
+		return nil
+	}
+	return lastErr
 }
 
 // ZipFolder 将文件夹压缩成 ZIP 文件
@@ -1227,4 +1254,14 @@ func (fq *FileQueue) ReadLines(start, count int) ([]string, error) {
 		return lines, err
 	}
 	return lines, nil
+}
+
+// FindFfmpegExe 在 baseDir 下搜索 ffmpeg-*-essentials_build/bin 目录，返回 bin 路径或空串
+func FindFfmpegExe(baseDir string) string {
+	pattern := filepath.Join(baseDir, "ffmpeg-*essentials_build", "bin")
+	matches, _ := filepath.Glob(pattern)
+	if len(matches) > 0 {
+		return matches[0]
+	}
+	return ""
 }

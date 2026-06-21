@@ -3,6 +3,7 @@ package secludedbot
 import (
 	"encoding/json"
 	"fmt"
+	"net/http"
 	"strings"
 	"sync"
 	"time"
@@ -49,10 +50,9 @@ func nextSeq() int64 {
 	return seqCounter
 }
 
-// connectAndLogin 连接到 Secluded 并发送上线包，等待 Response 确认
+// connectAndLogin 连接到 Secluded：HTTP Header Bearer Token 鉴权，服务端下发 Sync 确认
 func connectAndLogin(wsUrl, token string) error {
 	mu.Lock()
-	// 先关闭旧连接
 	if conn != nil {
 		_ = conn.Close()
 		conn = nil
@@ -60,7 +60,11 @@ func connectAndLogin(wsUrl, token string) error {
 	connected = false
 	mu.Unlock()
 
-	c, _, err := websocket.DefaultDialer.Dial(wsUrl, nil)
+	// HTTP Header 鉴权
+	headers := http.Header{}
+	headers.Set("Authorization", "Bearer "+token)
+
+	c, _, err := websocket.DefaultDialer.Dial(wsUrl, headers)
 	if err != nil {
 		return fmt.Errorf("dial secluded %s: %w", wsUrl, err)
 	}
@@ -69,60 +73,39 @@ func connectAndLogin(wsUrl, token string) error {
 	conn = c
 	mu.Unlock()
 
-	// 发送上线包
-	seq := nextSeq()
-	loginPacket := map[string]any{
-		"seq": seq,
-		"cmd": "SyncOicq",
-		"rsp": true,
-		"data": map[string]string{
-			"pid":   "nebula.secluded.plugin",
-			"name":  "nebula-secluded",
-			"token": token,
-		},
-	}
-	if err := sendRaw(loginPacket); err != nil {
-		_ = c.Close()
-		return fmt.Errorf("send SyncOicq: %w", err)
-	}
-
-	// 读取一个应答包
+	// 鉴权成功后，服务端下发 Sync 包
 	c.SetReadDeadline(time.Now().Add(10 * time.Second))
 	_, raw, err := c.ReadMessage()
 	c.SetReadDeadline(time.Time{})
 	if err != nil {
 		_ = c.Close()
-		return fmt.Errorf("read SyncOicq response: %w", err)
+		return fmt.Errorf("read Sync: %w", err)
 	}
 
-	packet := &struct {
-		Seq  int64           `json:"seq"`
-		Cmd  string          `json:"cmd"`
-		Data json.RawMessage `json:"data"`
+	syncResp := &struct {
+		Cmd  string `json:"cmd"`
+		Data struct {
+			Time     int64   `json:"time"`
+			Version  string  `json:"version"`
+			Platform string  `json:"platform"`
+			List     []int64 `json:"list"`
+		} `json:"data"`
 	}{}
-	if err := json.Unmarshal(raw, packet); err != nil {
+	if err := json.Unmarshal(raw, syncResp); err != nil {
 		_ = c.Close()
-		return fmt.Errorf("parse login response: %w", err)
+		return fmt.Errorf("parse Sync: %w", err)
 	}
-	if packet.Cmd != "Response" {
+	if syncResp.Cmd != "Sync" {
 		_ = c.Close()
-		return fmt.Errorf("unexpected login response cmd: %s", packet.Cmd)
+		return fmt.Errorf("expected Sync, got %s", syncResp.Cmd)
 	}
 
-	resp := &struct {
-		Status  bool   `json:"status"`
-		Account string `json:"account"`
-	}{}
-	_ = json.Unmarshal(packet.Data, resp)
-	if !resp.Status {
-		_ = c.Close()
-		return fmt.Errorf("secluded token rejected")
+	if len(syncResp.Data.List) > 0 && dto.ServerConfig.SecludedBot != nil {
+		dto.ServerConfig.SecludedBot.Account = fmt.Sprintf("%d", syncResp.Data.List[0])
 	}
 
-	// 保存机器人账户
-	if resp.Account != "" && dto.ServerConfig.SecludedBot != nil {
-		dto.ServerConfig.SecludedBot.Account = resp.Account
-	}
+	dbgLog("[secluded] 已连接: version=%s, platform=%s, accounts=%v",
+		syncResp.Data.Version, syncResp.Data.Platform, syncResp.Data.List)
 
 	mu.Lock()
 	connected = true

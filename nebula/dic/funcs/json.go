@@ -3,6 +3,7 @@ package funcs
 import (
 	"errors"
 	"regexp"
+	stdjson "encoding/json"
 	"strconv"
 	"strings"
 
@@ -357,4 +358,378 @@ func JsonSetValue(data any, keys []string, dvalue string, str bool) any {
 		}
 	}
 	return data
+}
+
+// 不指定值时：$JSON重名解析 [json] [键->子键...]$ 等同于 JSON解析
+// jsonUnmarshalDup 解析含重名key的JSON，重名值合并为数组
+func jsonUnmarshalDup(raw string) (any, error) {
+	dec := stdjson.NewDecoder(strings.NewReader(raw))
+	return parseValue(dec)
+}
+
+func parseValue(dec *stdjson.Decoder) (any, error) {
+	t, err := dec.Token()
+	if err != nil {
+		return nil, err
+	}
+	switch v := t.(type) {
+	case stdjson.Delim:
+		if v == '{' {
+			return parseObject(dec)
+		}
+		if v == '[' {
+			var arr []any
+			for dec.More() {
+				elem, err := parseValue(dec)
+				if err != nil {
+					return nil, err
+				}
+				arr = append(arr, elem)
+			}
+			return arr, nil
+		}
+	case bool, float64, string:
+		return v, nil
+	case nil:
+		return nil, nil
+	}
+	return t, nil
+}
+
+func parseObject(dec *stdjson.Decoder) (any, error) {
+	result := make(map[string]any)
+	dupKeys := make(map[string]bool)
+	for dec.More() {
+		kt, err := dec.Token()
+		if err != nil {
+			return nil, err
+		}
+		key := kt.(string)
+		val, err := parseValue(dec)
+		if err != nil {
+			return nil, err
+		}
+		if existing, ok := result[key]; ok {
+			if !dupKeys[key] {
+				result[key] = []any{existing, val}
+				dupKeys[key] = true
+			} else {
+				result[key] = append(result[key].([]any), val)
+			}
+		} else {
+			result[key] = val
+		}
+	}
+	return result, nil
+}
+
+func jsonQueryByName(d *dto.DicInputs) (any, error) {
+	if !d.Inputs.LenOk(2) {
+		return "", errors.New("参数错误")
+	}
+	var obj any
+	parsed, err := jsonUnmarshalDup(d.Inputs.String(1))
+	if err != nil {
+		return "", errors.New("不是json格式")
+	}
+	obj = parsed
+	keys := strings.Split(d.Inputs.String(2), "->")
+
+	switch data := obj.(type) {
+	case []any:
+		// 第一段是数字 → 按索引访问: 0->age, 1->name
+		if idx, err := strconv.Atoi(keys[0]); err == nil {
+			if idx < 0 || idx >= len(data) {
+				return "", errors.New("索引超出范围")
+			}
+			obj = data[idx]
+			for _, k := range keys[1:] {
+				switch sub := obj.(type) {
+				case map[string]any:
+					obj = sub[k]
+				case []any:
+					if idx2, err := strconv.Atoi(k); err == nil && idx2 >= 0 && idx2 < len(sub) {
+						obj = sub[idx2]
+					} else {
+						return "", nil
+					}
+				default:
+					return "", nil
+				}
+			}
+		} else {
+			// 否则按 key=value 匹配: name->Bob->age
+			if len(keys) < 2 {
+				return "", errors.New("数组查询至少需要 键->值")
+			}
+			seekKey := keys[0]
+			seekVal := keys[1]
+			for _, elem := range data {
+				if m, ok := elem.(map[string]any); ok {
+					if v, exists := m[seekKey]; exists {
+						if utils.AnyIsString(v) == seekVal {
+							obj = elem
+							for _, k := range keys[2:] {
+								switch sub := obj.(type) {
+								case map[string]any:
+									obj = sub[k]
+								case []any:
+									if idx, err := strconv.Atoi(k); err == nil && idx >= 0 && idx < len(sub) {
+										obj = sub[idx]
+									} else {
+										return "", nil
+									}
+								default:
+									return "", nil
+								}
+							}
+							break
+						}
+					}
+				}
+			}
+		}
+	default:
+		// 非数组，等同于 JSON解析
+		for _, key := range keys {
+			switch d := obj.(type) {
+			case map[string]any:
+				if val, ok := d[key]; ok {
+					obj = val
+				} else {
+					return "", nil
+				}
+			case []any:
+				if idx, err := strconv.Atoi(key); err == nil && idx >= 0 && idx < len(d) {
+					obj = d[idx]
+				} else {
+					return "", nil
+				}
+			}
+		}
+	}
+
+	switch v := obj.(type) {
+	case string:
+		return v, nil
+	case map[string]any, []any:
+		b, err := json.Marshal(v)
+		if err != nil {
+			return "", err
+		}
+		return string(b), nil
+	}
+	return "", nil
+}
+
+func queryJson(d *dto.DicInputs) (any, error) {
+	if !d.Inputs.LenOk(2) {
+		return "", errors.New("参数错误")
+	}
+	var obj any
+	if err := json.Unmarshal([]byte(d.Inputs.String(1)), &obj); err != nil {
+		return "", errors.New("不是json格式")
+	}
+	keys := strings.Split(d.Inputs.String(2), "->")
+	for _, key := range keys {
+		switch d := obj.(type) {
+		case map[string]any:
+			if val, ok := d[key]; ok {
+				obj = val
+			} else {
+				return "", nil
+			}
+		case []any:
+			if idx, err := strconv.Atoi(key); err == nil && idx >= 0 && idx < len(d) {
+				obj = d[idx]
+			} else {
+				return "", nil
+			}
+		}
+	}
+	switch v := obj.(type) {
+	case string:
+		return v, nil
+	case float64:
+		if v == float64(int64(v)) {
+			return strconv.FormatInt(int64(v), 10), nil
+		}
+		return strconv.FormatFloat(v, 'f', -1, 64), nil
+	case map[string]any, []any:
+		b, err := json.Marshal(v)
+		if err != nil {
+			return "", err
+		}
+		return string(b), nil
+	}
+	return "", nil
+}
+
+func isJson(d *dto.DicInputs) (any, error) {
+	var js any
+	if err := json.Unmarshal([]byte(d.Inputs.String(1)), &js); err != nil {
+		return "false", nil
+	}
+	return "true", nil
+}
+
+func jsonAdd(d *dto.DicInputs) (any, error) {
+	var obj map[string]any
+	if err := json.Unmarshal([]byte(d.Inputs.String(1)), &obj); err != nil {
+		return "", errors.New("不是json格式")
+	}
+	keys := strings.Split(d.Inputs.String(2), ".")
+	curr := obj
+	for i, key := range keys {
+		if i == len(keys)-1 {
+			if d.Inputs.Len() > 2 {
+				var val any
+				if err := json.Unmarshal([]byte(d.Inputs.String(3)), &val); err != nil {
+					curr[key] = d.Inputs.String(3)
+				} else {
+					curr[key] = val
+				}
+			} else {
+				curr[key] = nil
+			}
+		} else {
+			if next, ok := curr[key]; ok {
+				if m, ok := next.(map[string]any); ok {
+					curr = m
+				} else {
+					return "", errors.New("路径中存在非对象类型")
+				}
+			} else {
+				newObj := make(map[string]any)
+				curr[key] = newObj
+				curr = newObj
+			}
+		}
+	}
+	b, err := json.Marshal(obj)
+	if err != nil {
+		return "", err
+	}
+	return string(b), nil
+}
+
+func jsonAddString(d *dto.DicInputs) (any, error) {
+	var obj map[string]any
+	if err := json.Unmarshal([]byte(d.Inputs.String(1)), &obj); err != nil {
+		return "", errors.New("不是json格式")
+	}
+	keys := strings.Split(d.Inputs.String(2), ".")
+	curr := obj
+	for i, key := range keys {
+		if i == len(keys)-1 {
+			if d.Inputs.Len() > 2 {
+				curr[key] = d.Inputs.String(3)
+			} else {
+				curr[key] = ""
+			}
+		} else {
+			if next, ok := curr[key]; ok {
+				if m, ok := next.(map[string]any); ok {
+					curr = m
+				} else {
+					return "", errors.New("路径中存在非对象类型")
+				}
+			} else {
+				newObj := make(map[string]any)
+				curr[key] = newObj
+				curr = newObj
+			}
+		}
+	}
+	b, err := json.Marshal(obj)
+	if err != nil {
+		return "", err
+	}
+	return string(b), nil
+}
+
+func jsonDelete(d *dto.DicInputs) (any, error) {
+	var obj map[string]any
+	if err := json.Unmarshal([]byte(d.Inputs.String(1)), &obj); err != nil {
+		return "", errors.New("不是json格式")
+	}
+	keys := strings.Split(d.Inputs.String(2), ".")
+	curr := obj
+	for i, key := range keys {
+		if i == len(keys)-1 {
+			delete(curr, key)
+		} else {
+			if next, ok := curr[key]; ok {
+				if m, ok := next.(map[string]any); ok {
+					curr = m
+				} else {
+					return "", errors.New("路径中存在非对象类型")
+				}
+			} else {
+				return "", errors.New("路径不存在")
+			}
+		}
+	}
+	b, err := json.Marshal(obj)
+	if err != nil {
+		return "", err
+	}
+	return string(b), nil
+}
+
+func jsonIsKey(d *dto.DicInputs) (any, error) {
+	var obj map[string]any
+	if err := json.Unmarshal([]byte(d.Inputs.String(1)), &obj); err != nil {
+		return "", errors.New("不是json格式")
+	}
+	keys := strings.Split(d.Inputs.String(2), ".")
+	curr := obj
+	for i, key := range keys {
+		if i == len(keys)-1 {
+			if _, ok := curr[key]; ok {
+				return "true", nil
+			}
+			return "false", nil
+		}
+		if next, ok := curr[key]; ok {
+			if m, ok := next.(map[string]any); ok {
+				curr = m
+			} else {
+				return "false", nil
+			}
+		} else {
+			return "false", nil
+		}
+	}
+	return "false", nil
+}
+
+func jsonLen(d *dto.DicInputs) (any, error) {
+	var obj any
+	if err := json.Unmarshal([]byte(d.Inputs.String(1)), &obj); err != nil {
+		return "", errors.New("不是json格式")
+	}
+	switch v := obj.(type) {
+	case map[string]any:
+		return strconv.Itoa(len(v)), nil
+	case []any:
+		return strconv.Itoa(len(v)), nil
+	}
+	return "0", nil
+}
+
+func jsonPrettyPrint(d *dto.DicInputs) (any, error) {
+	var obj any
+	if err := json.Unmarshal([]byte(d.Inputs.String(1)), &obj); err != nil {
+		return "", errors.New("不是json格式")
+	}
+	indent := "  "
+	if d.Inputs.LenOk(2) {
+		indent = d.Inputs.String(2)
+	}
+	b, err := json.MarshalIndent(obj, "", indent)
+	if err != nil {
+		return "", err
+	}
+	return string(b), nil
 }

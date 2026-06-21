@@ -18,4 +18,8 @@ type RouterQQBot struct {
 	LastMsg *cache.Cache
 	// 接口
 	API *QQBot
+	// 全量消息艾特兼容
+	AtCompat bool
+	// 调试打印
+	Debug bool
 }

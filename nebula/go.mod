@@ -1,6 +1,6 @@
 module github.com/cjxpj/nebula
 
-go 1.26.1
+go 1.26
 
 require (
 	github.com/boombuler/barcode v1.0.1
@@ -21,15 +21,31 @@ require (
 	github.com/patrickmn/go-cache v2.1.0+incompatible
 	github.com/shirou/gopsutil v3.21.11+incompatible
 	golang.ngrok.com/ngrok v1.9.1
-	golang.org/x/crypto v0.41.0
+	golang.org/x/crypto v0.45.0
 	golang.org/x/image v0.18.0
-	golang.org/x/net v0.42.0
-	golang.org/x/text v0.28.0
+	golang.org/x/net v0.47.0
+	golang.org/x/text v0.31.0
 )
 
 require (
 	github.com/common-nighthawk/go-figure v0.0.0-20210622060536-734e95fb86be
 	gopkg.in/ini.v1 v1.67.0
+	modernc.org/sqlite v1.52.0
+)
+
+require (
+	github.com/dustin/go-humanize v1.0.1 // indirect
+	github.com/google/uuid v1.6.0 // indirect
+	github.com/ncruces/go-strftime v1.0.0 // indirect
+	github.com/remyoudompheng/bigfft v0.0.0-20230129092748-24d4a6f8daec // indirect
+	modernc.org/libc v1.72.3 // indirect
+	modernc.org/mathutil v1.7.1 // indirect
+	modernc.org/memory v1.11.0 // indirect
+)
+
+require (
+	github.com/kr/fs v0.1.0 // indirect
+	github.com/pkg/sftp v1.13.10
 )
 
 require (
@@ -56,9 +72,9 @@ require (
 	github.com/yusufpapurcu/wmi v1.2.4 // indirect
 	go.uber.org/multierr v1.11.0 // indirect
 	golang.ngrok.com/muxado/v2 v2.0.0 // indirect
-	golang.org/x/sync v0.16.0 // indirect
-	golang.org/x/sys v0.36.0 // indirect
-	golang.org/x/term v0.34.0 // indirect
+	golang.org/x/sync v0.20.0 // indirect
+	golang.org/x/sys v0.42.0 // indirect
+	golang.org/x/term v0.37.0 // indirect
 	google.golang.org/protobuf v1.31.0 // indirect
 	gopkg.in/yaml.v2 v2.4.0 // indirect
 )

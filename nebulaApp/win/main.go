@@ -20,56 +20,19 @@ import (
 	dic_dto "github.com/cjxpj/nebula/dic/dto"
 	"github.com/cjxpj/nebula/dic/funcs"
 	"github.com/cjxpj/nebula/dto"
+	dic_server "github.com/cjxpj/nebula/server"
 	"github.com/cjxpj/nebula/utils"
-
-	"golang.org/x/sys/windows/registry"
 )
 
 func init() {
 	if len(os.Args) > 1 && os.Args[1] == "--autostart" {
 		exePath, _ := os.Executable()
 		exeDir := filepath.Dir(exePath)
-		// 打印./位置
-		// fmt.Println("启动位置:", exeDir)
 		err := os.Chdir(exeDir) // 强制切换为 exe 所在目录
 		if err != nil {
 			fmt.Println("自动启动失败:", err)
 		}
 	}
-}
-
-// 设置开机启动
-func setAutoStart(appName string) error {
-	exePath, err := os.Executable()
-	if err != nil {
-		return err
-	}
-	k, _, err := registry.CreateKey(
-		registry.CURRENT_USER,
-		`Software\Microsoft\Windows\CurrentVersion\Run`,
-		registry.SET_VALUE,
-	)
-	if err != nil {
-		return err
-	}
-	defer k.Close()
-
-	// 注册表里写入带参数的启动命令
-	return k.SetStringValue(appName, fmt.Sprintf(`"%s" --autostart`, exePath))
-}
-
-// 取消开机启动
-func cancelAutoStart(appName string) error {
-	k, err := registry.OpenKey(
-		registry.CURRENT_USER,
-		`Software\Microsoft\Windows\CurrentVersion\Run`,
-		registry.SET_VALUE,
-	)
-	if err != nil {
-		return err
-	}
-	defer k.Close()
-	return k.DeleteValue(appName)
 }
 
 func main() {
@@ -79,27 +42,34 @@ func main() {
 	dto.GV.Set("_PythonPath_", "python")
 
 	// 检测文件是否存在ffmpeg.exe
-	if utils.NewFileQueue("private/ffmpeg/ffmpeg-7.1.1-essentials_build/bin/ffmpeg.exe").FileExists() {
-		dto.GV.Set("_Ffmpeg_", filepath.Join(utils.GetAppDir(), "private", "ffmpeg", "ffmpeg-7.1.1-essentials_build", "bin", "ffmpeg.exe"))
+	ffmpegPath := utils.FindFfmpegExe("private/extensions/ffmpeg")
+	if ffmpegPath != "" {
+		dto.GV.Set("_Ffmpeg_", filepath.Join(utils.GetAppDir(), ffmpegPath))
 	} else {
 		dto.GV.Set("_Ffmpeg_", "ffmpeg")
 	}
 
 	// 检测文件是否存在silk_v3.exe
-	if utils.NewFileQueue("private/ffmpeg/silk_v3").DirExists() {
-		dto.GV.Set("_SilkPath_", filepath.Join(utils.GetAppDir(), "private", "ffmpeg", "silk_v3"))
+	if utils.NewFileQueue("private/extensions/silk_v3").DirExists() {
+		dto.GV.Set("_SilkPath_", filepath.Join(utils.GetAppDir(), "private", "extensions", "silk_v3"))
 	}
 
 	// 检测文件是否存在php.exe
-	if utils.NewFileQueue("private/php/php.exe").FileExists() {
-		dto.GV.Set("_PhpPath_", filepath.Join(utils.GetAppDir(), "private", "php", "php.exe"))
+	if utils.NewFileQueue("private/extensions/php/php.exe").FileExists() {
+		dto.GV.Set("_PhpPath_", filepath.Join(utils.GetAppDir(), "private", "extensions", "php", "php.exe"))
 	} else {
 		dto.GV.Set("_PhpPath_", "php")
+	}
+
+	// 检测文件是否存在python.exe
+	if utils.NewFileQueue("private/extensions/python/python.exe").FileExists() {
+		dto.GV.Set("_PythonPath_", filepath.Join(utils.GetAppDir(), "private", "extensions", "python", "python.exe"))
 	}
 
 	// 用主上下文控制整个进程生命周期
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
+	defer ShutdownPhp() // 确保退出时同步 kill PHP 进程
 
 	// 监听系统信号，退出时取消 ctx
 	sigCh := make(chan os.Signal, 1)
@@ -219,7 +189,7 @@ func main() {
 		fmt.Print(appfiles.Version)
 		return
 	case "-autostart":
-		err := setAutoStart("NebulaApp")
+		err := dic_server.SetAutoStart()
 		if err != nil {
 			fmt.Println("设置开机启动失败:", err)
 		} else {
@@ -227,7 +197,7 @@ func main() {
 		}
 		return
 	case "-noautostart":
-		err := cancelAutoStart("NebulaApp")
+		err := dic_server.CancelAutoStart()
 		if err != nil {
 			fmt.Println("取消开机启动失败:", err)
 		} else {

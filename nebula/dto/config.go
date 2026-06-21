@@ -1,6 +1,7 @@
 package dto
 
 import (
+	"fmt"
 	"mime"
 	"net/http"
 	"os"
@@ -42,7 +43,11 @@ func LoadConfig_napcat(NapCat_Config *ini.Section) {
 		BotDic := utils.NewFileQueue(filepath.Join(dicPath, "dic"))
 		if !BotDic.DirExists() {
 			BotDic.SetPath(dicPath + "/dic/dic.n")
-			BotDic.WriteFileByte(appfiles.GetFile("dic/NapCatBot.n"))
+			if data, err := appfiles.GetFile("dic/NapCatBot.n"); err == nil {
+				BotDic.WriteFileByte(data)
+			} else {
+				fmt.Println("embed err:", err)
+			}
 			// 群白名单
 			BotDic.SetPath(dicPath + "/groups.txt")
 			BotDic.WriteFileByte([]byte("all"))
@@ -53,29 +58,42 @@ func LoadConfig_napcat(NapCat_Config *ini.Section) {
 	}
 }
 
-func LoadConfig_qq(QQBot_Config *ini.Section) {
+func LoadConfig_qq(QQBot_Config *ini.Section, sectionName string) {
+	if ServerConfig.QQBots == nil {
+		ServerConfig.QQBots = make(map[string]*qqbot_msg.RouterQQBot)
+	}
 	if ok, _ := QQBot_Config.Key("启用").Bool(); ok {
 		appId := QQBot_Config.Key("APPID").String()
 		secret := QQBot_Config.Key("密钥").String()
 		dicPath := QQBot_Config.Key("词库").String()
-		ServerConfig.QQBot = &qqbot_msg.RouterQQBot{
+		atCompat, _ := QQBot_Config.Key("全量艾特兼容").Bool()
+		debug, _ := QQBot_Config.Key("调试打印").Bool()
+		api := qqbot_msg.NewQQBot(appId, secret)
+		api.Debug = debug
+		ServerConfig.QQBots[sectionName] = &qqbot_msg.RouterQQBot{
 			// 缓存 50 秒，3 分钟内没有访问就删除
-			LastMsg:  cache.New(50*time.Second, 3*time.Minute),
-			Open:     true,
-			Addr:     "/" + QQBot_Config.Key("访问路径").String(),
-			FilePath: dicPath,
-			API:      qqbot_msg.NewQQBot(appId, secret),
+			LastMsg:   cache.New(50*time.Second, 3*time.Minute),
+			Open:      true,
+			Addr:      "/" + QQBot_Config.Key("访问路径").String(),
+			FilePath:  dicPath,
+			API:       api,
+			AtCompat:  atCompat,
+			Debug:     debug,
 		}
 		BotDic := utils.NewFileQueue(dicPath)
 		if !BotDic.DirExists() {
 			BotDic.SetPath(dicPath + "/dic/dic.n")
-			BotDic.WriteFileByte(appfiles.GetFile("dic/QQBot.n"))
+			if data, err := appfiles.GetFile("dic/QQBot.n"); err == nil {
+				BotDic.WriteFileByte(data)
+			} else {
+				fmt.Println("embed err:", err)
+			}
 			// 主人文件
 			BotDic.SetPath(dicPath + "/admin.txt")
 			BotDic.WriteFileByte([]byte(""))
 		}
-	} else if ServerConfig.QQBot != nil {
-		ServerConfig.QQBot.Open = false
+	} else if bot, exists := ServerConfig.QQBots[sectionName]; exists {
+		bot.Open = false
 	}
 }
 
@@ -91,7 +109,11 @@ func LoadConfig_yunhu(YunHu_Config *ini.Section) {
 		}
 		BotDic := utils.NewFileQueue(dicPath)
 		if !BotDic.FileExists() {
-			BotDic.WriteFileByte(appfiles.GetFile("dic/YunHuBot.n"))
+			if data, err := appfiles.GetFile("dic/YunHuBot.n"); err == nil {
+				BotDic.WriteFileByte(data)
+			} else {
+				fmt.Println("embed err:", err)
+			}
 		}
 	}
 }
@@ -110,7 +132,11 @@ func LoadConfig_feishu(FeiShu_Config *ini.Section) {
 		BotDic := utils.NewFileQueue(dicPath)
 		if !BotDic.DirExists() {
 			BotDic.SetPath(dicPath + "/dic/dic.n")
-			BotDic.WriteFileByte(appfiles.GetFile("dic/NapCatBot.n"))
+			if data, err := appfiles.GetFile("dic/NapCatBot.n"); err == nil {
+				BotDic.WriteFileByte(data)
+			} else {
+				fmt.Println("embed err:", err)
+			}
 			// 主人文件
 			BotDic.SetPath(dicPath + "/admin.txt")
 			BotDic.WriteFileByte([]byte(""))
@@ -138,10 +164,18 @@ func LoadConfig_websocket(WebSocket_Config *ini.Section) {
 		if !wsfile.DirExists() {
 			// 服务器
 			wsfile.SetPath("private/websocket/server.n")
-			wsfile.WriteToFile(appfiles.GetFileString("dic/websocket/server.n"))
+			if s, err := appfiles.GetFileString("dic/websocket/server.n"); err == nil {
+				wsfile.WriteToFile(s)
+			} else {
+				fmt.Println("embed err:", err)
+			}
 			// 客户端
 			wsfile.SetPath("private/websocket/app.n")
-			wsfile.WriteToFile(appfiles.GetFileString("dic/websocket/app.n"))
+			if s, err := appfiles.GetFileString("dic/websocket/app.n"); err == nil {
+				wsfile.WriteToFile(s)
+			} else {
+				fmt.Println("embed err:", err)
+			}
 		}
 	}
 }
@@ -151,17 +185,23 @@ func LoadConfig_secluded(Secluded_Config *ini.Section) {
 		addr := Secluded_Config.Key("对接地址").String()
 		token := Secluded_Config.Key("令牌").String()
 		dicPath := Secluded_Config.Key("词库").String()
+		debug, _ := Secluded_Config.Key("调试打印").Bool()
 		ServerConfig.SecludedBot = &secludedbot_dto.RouterSecludedBot{
 			Open:     true,
 			Addr:     addr,
 			Token:    token,
 			FilePath: dicPath,
+			Debug:    debug,
 		}
 		BotDic := utils.NewFileQueue(dicPath)
 		if !BotDic.DirExists() {
 			os.MkdirAll(BotDic.FileName, 0755)
 			BotDic.SetPath(filepath.Join(dicPath, "dic", "dic.n"))
-			BotDic.WriteFileByte(appfiles.GetFile("dic/SecludedBot.n"))
+			if data, err := appfiles.GetFile("dic/SecludedBot.n"); err == nil {
+				BotDic.WriteFileByte(data)
+			} else {
+				fmt.Println("embed err:", err)
+			}
 		}
 		// 初始化主人列表
 		adminPath := utils.NewFileQueue(filepath.Join(dicPath, "admin.txt"))

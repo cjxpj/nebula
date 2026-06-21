@@ -15,6 +15,8 @@ type QQBot struct {
 	TokenTime    time.Time
 	// 处理次数
 	Count int
+	// 调试打印
+	Debug bool
 }
 
 // AccessTokenResponse 表示 access_token 响应
@@ -100,7 +102,8 @@ type GuildMessageEvent struct {
 
 // 群用户
 type GroupAuthor struct {
-	ID string `json:"id"`
+	ID       string `json:"id"`
+	Username string `json:"username"`
 	// 群
 	MemberOpenID string `json:"member_openid"`
 	// 私聊

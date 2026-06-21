@@ -26,7 +26,11 @@ func regexpFind(d *dto.DicInputs) (any, error) {
 
 // 正则匹配
 func regexpMatche(d *dto.DicInputs) (any, error) {
-	matches, _ := regexp.MatchString("^"+d.Inputs.String(1)+"$", d.Inputs.String(2))
+	matches, err := regexp.MatchString("^"+d.Inputs.String(1)+"$", d.Inputs.String(2))
+	if err != nil {
+		return "", err
+	}
+
 	if matches {
 		return "true", nil
 	}

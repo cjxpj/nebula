@@ -7,6 +7,8 @@ import (
 	"image"
 	"image/png"
 	"os"
+
+	"github.com/cjxpj/nebula/debugLog"
 )
 
 // 固定头部标识
@@ -17,6 +19,9 @@ var nebulaHeader = []byte("Nebula")
 // SetImgData 把 data 写入 inPath 图片，返回新的 PNG 图片字节
 func SetImgData(inPath string, data []byte) ([]byte, error) {
 	img := mustOpen(inPath)
+	if img == nil {
+		return nil, errors.New("无法打开或解码图片文件")
+	}
 
 	// 带上头部
 	payload := append(nebulaHeader, data...)
@@ -34,6 +39,9 @@ func SetImgData(inPath string, data []byte) ([]byte, error) {
 // ReadImgData 从图片 path 中读取隐藏的数据
 func ReadImgData(path string) ([]byte, error) {
 	img := mustOpen(path)
+	if img == nil {
+		return nil, errors.New("无法打开或解码图片文件")
+	}
 	data := extract(img)
 
 	// 校验头部
@@ -82,7 +90,8 @@ func embed(img image.Image, data []byte) *image.RGBA {
 		}
 	}
 	if idx < totalBits {
-		panic("图片太小，写不下")
+		debugLog.Infof("图片太小，写不下隐藏数据 (需要 %d bits，实际 %d bits)", totalBits, idx)
+		return nil
 	}
 	return rgba
 }
@@ -133,12 +142,14 @@ func coords(n int, bounds image.Rectangle) (int, int) {
 func mustOpen(name string) image.Image {
 	f, err := os.Open(name)
 	if err != nil {
-		panic(err)
+		debugLog.Errorf("打开图片文件失败 %s: %v", name, err)
+		return nil
 	}
 	defer f.Close()
 	img, _, err := image.Decode(f)
 	if err != nil {
-		panic(err)
+		debugLog.Errorf("解码图片失败 %s: %v", name, err)
+		return nil
 	}
 	return img
 }

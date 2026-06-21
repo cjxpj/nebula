@@ -305,13 +305,21 @@ func Funcs(d *dic_dto.DicFunc, dic_i *utils.DicInputs) (any, error) {
 
 	if fn, ok := d.Dic.MyFunc[dic_i.String(0)]; ok {
 		if inputs.LenOk(fn.L) {
-			return fn.Fn(dto.NewDicInputsWithOutput(d.Dic, d.Val, &inputs, d.Output))
+			res, err := fn.Fn(dto.NewDicInputsWithOutput(d.Dic, d.Val, &inputs, d.Output))
+			if err != nil && err.Error() == "stop" {
+				d.Sys.Stop = true
+			}
+			return res, err
 		}
 	}
 
 	if fnInfo, ok := funcs.GetFunc(dic_i.String(0)); ok {
 		if inputs.LenOk(fnInfo.L) {
-			return fnInfo.Fn(dto.NewDicInputsWithOutput(d.Dic, d.Val, &inputs, d.Output))
+			res, err := fnInfo.Fn(dto.NewDicInputsWithOutput(d.Dic, d.Val, &inputs, d.Output))
+			if err != nil && err.Error() == "stop" {
+				d.Sys.Stop = true
+			}
+			return res, err
 		}
 	}
 

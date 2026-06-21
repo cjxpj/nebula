@@ -1876,3 +1876,1139 @@ func (i *NDrawImg) Close() {
 		i.img = nil
 	}
 }
+
+// ========== 以下为 migration.go 迁移来的 free function 版本 ==========
+
+func getDrawImg(d *dto.DicInputs, idx int) (*NDrawImg, error) {
+	img, ok := d.Inputs.Get(idx).(*NDrawImg)
+	if !ok {
+		return nil, errors.New("参数必须是画布")
+	}
+	if img == nil {
+		return nil, errors.New("图片不能为空")
+	}
+	return img, nil
+}
+
+func drawImgLoadFont(d *dto.DicInputs) (any, error) {
+	img, err := getDrawImg(d, 1)
+	if err != nil {
+		return nil, err
+	}
+	ttfDir := "private/ttf/"
+	ttfFile := d.Inputs.String(2)
+	imgTtf, err := utils.NewFileQueue(ttfDir + ttfFile).ReadFileByte()
+	if err != nil {
+		return nil, fmt.Errorf("加载字体失败：%s", err)
+	}
+	fontParsed, err := opentype.Parse(imgTtf)
+	if err != nil {
+		return nil, fmt.Errorf("解析字体失败：%s", err)
+	}
+	img.font = fontParsed
+	return nil, nil
+}
+
+func drawImgSetSize(d *dto.DicInputs) (any, error) {
+	img, err := getDrawImg(d, 1)
+	if err != nil {
+		return nil, err
+	}
+	size := d.Inputs.Float64(2)
+	if size <= 0 {
+		return nil, errors.New("线条宽度必须大于0")
+	}
+	img.size = size
+	return nil, nil
+}
+
+func drawImgText(d *dto.DicInputs) (any, error) {
+	img, err := getDrawImg(d, 1)
+	if err != nil {
+		return nil, err
+	}
+	x := int(d.Inputs.Float64(2))
+	y := int(d.Inputs.Float64(3))
+	text := d.Inputs.String(4)
+	rotateDeg := 0.0
+	if deg, ok := d.Inputs.Float64Ok(5); ok {
+		rotateDeg = deg
+	}
+	c := img.GetColor()
+	if cc, ok := d.Inputs.Get(6).(*color.NRGBA); ok {
+		c = cc
+	}
+	strokeColor, hasStroke := d.Inputs.Get(7).(*color.NRGBA)
+	strokeWidth := 2.0
+	if hasStroke {
+		if sw, ok := d.Inputs.Float64Ok(8); ok {
+			strokeWidth = sw
+		}
+	}
+	face, err := opentype.NewFace(img.font, &opentype.FaceOptions{
+		Size:    img.size,
+		DPI:     72,
+		Hinting: font.HintingFull,
+	})
+	if err != nil {
+		return nil, err
+	}
+	defer face.Close()
+
+	drawTextFunc := func(dst draw.Image, col color.Color, ox, oy int) {
+		d := &font.Drawer{
+			Dst:  dst,
+			Src:  image.NewUniform(col),
+			Face: face,
+			Dot:  fixed.P(x+ox, y+oy),
+		}
+		d.DrawString(text)
+	}
+
+	if rotateDeg == 0 {
+		if hasStroke {
+			for dx := -1; dx <= 1; dx++ {
+				for dy := -1; dy <= 1; dy++ {
+					if dx != 0 || dy != 0 {
+						ox := int(float64(dx) * strokeWidth)
+						oy := int(float64(dy) * strokeWidth)
+						drawTextFunc(img.img, strokeColor, ox, oy)
+					}
+				}
+			}
+		}
+		drawTextFunc(img.img, c, 0, 0)
+	} else {
+		textWidth := font.MeasureString(face, text).Ceil()
+		metrics := face.Metrics()
+		textHeight := (metrics.Ascent + metrics.Descent).Ceil()
+		textImg := image.NewNRGBA(image.Rect(0, 0, textWidth+int(strokeWidth*2), textHeight+int(strokeWidth*2)))
+		if hasStroke {
+			for dx := -1; dx <= 1; dx++ {
+				for dy := -1; dy <= 1; dy++ {
+					if dx != 0 || dy != 0 {
+						ox := int(float64(dx) * strokeWidth)
+						oy := int(float64(dy) * strokeWidth)
+						fd := &font.Drawer{
+							Dst:  textImg,
+							Src:  image.NewUniform(strokeColor),
+							Face: face,
+							Dot:  fixed.P(ox, metrics.Ascent.Ceil()+oy),
+						}
+						fd.DrawString(text)
+					}
+				}
+			}
+		}
+		fd := &font.Drawer{
+			Dst:  textImg,
+			Src:  image.NewUniform(c),
+			Face: face,
+			Dot:  fixed.P(0, metrics.Ascent.Ceil()),
+		}
+		fd.DrawString(text)
+		rotated := imaging.Rotate(textImg, rotateDeg, color.NRGBA{0, 0, 0, 0})
+		offset := image.Pt(x, y)
+		draw.Draw(img.img, rotated.Bounds().Add(offset), rotated, image.Point{}, draw.Over)
+	}
+	return nil, nil
+}
+
+func drawImgPoint(d *dto.DicInputs) (any, error) {
+	img, err := getDrawImg(d, 1)
+	if err != nil {
+		return nil, err
+	}
+	x := int(d.Inputs.Float64(2))
+	y := int(d.Inputs.Float64(3))
+	c := img.GetColor()
+	if cc, ok := d.Inputs.Get(4).(*color.NRGBA); ok {
+		c = cc
+	}
+	if x >= 0 && x < img.img.Bounds().Dx() && y >= 0 && y < img.img.Bounds().Dy() {
+		img.img.Set(x, y, c)
+	}
+	return nil, nil
+}
+
+func drawImgLine(d *dto.DicInputs) (any, error) {
+	img, err := getDrawImg(d, 1)
+	if err != nil {
+		return nil, err
+	}
+	x1 := d.Inputs.Float64(2)
+	y1 := d.Inputs.Float64(3)
+	x2 := d.Inputs.Float64(4)
+	y2 := d.Inputs.Float64(5)
+	c := img.GetColor()
+	if cc, ok := d.Inputs.Get(6).(*color.NRGBA); ok {
+		c = cc
+	}
+	gc := draw2dimg.NewGraphicContext(img.img)
+	gc.SetStrokeColor(c)
+	gc.SetLineWidth(img.size)
+	gc.MoveTo(x1, y1)
+	gc.LineTo(x2, y2)
+	gc.Stroke()
+	return nil, nil
+}
+
+func drawImgBrushLine(d *dto.DicInputs) (any, error) {
+	img, err := getDrawImg(d, 1)
+	if err != nil {
+		return nil, err
+	}
+	rangeRadius := int(img.size)
+	if val, ok := d.Inputs.IntOk(6); ok && val > 0 {
+		rangeRadius = val
+	}
+	if rangeRadius <= 0 {
+		rangeRadius = 3
+	}
+	density := 50
+	if val, ok := d.Inputs.IntOk(7); ok {
+		if val < 1 {
+			density = 1
+		} else if val > 100 {
+			density = 100
+		} else {
+			density = val
+		}
+	}
+	pointRadius := 1
+	if val, ok := d.Inputs.IntOk(9); ok && val > 0 {
+		pointRadius = val
+	}
+	x1 := d.Inputs.Float64(2)
+	y1 := d.Inputs.Float64(3)
+	x2 := d.Inputs.Float64(4)
+	y2 := d.Inputs.Float64(5)
+	c := img.GetColor()
+	if cc, ok := d.Inputs.Get(8).(*color.NRGBA); ok {
+		c = cc
+	}
+	dx := x2 - x1
+	dy := y2 - y1
+	length := math.Hypot(dx, dy)
+	steps := max(int(length), 1)
+	prob := float64(density) / 100.0
+
+	drawPoint := func(imgRGBA *image.RGBA, px, py, radius int, cl color.NRGBA) {
+		for ox := -radius; ox <= radius; ox++ {
+			for oy := -radius; oy <= radius; oy++ {
+				if ox*ox+oy*oy <= radius*radius {
+					nx := px + ox
+					ny := py + oy
+					if image.Pt(nx, ny).In(imgRGBA.Bounds()) {
+						imgRGBA.Set(nx, ny, cl)
+					}
+				}
+			}
+		}
+	}
+
+	for i := 0; i <= steps; i++ {
+		t := float64(i) / float64(steps)
+		cx := int(x1 + t*dx)
+		cy := int(y1 + t*dy)
+		if density == 100 {
+			for ox := -rangeRadius; ox <= rangeRadius; ox++ {
+				for oy := -rangeRadius; oy <= rangeRadius; oy++ {
+					if ox*ox+oy*oy <= rangeRadius*rangeRadius {
+						drawPoint(img.img, cx+ox, cy+oy, pointRadius, *c)
+					}
+				}
+			}
+		} else {
+			if rand.Float64() < prob {
+				pointsCount := density * 20 / 100
+				if pointsCount < 1 {
+					pointsCount = 1
+				}
+				for j := 0; j < pointsCount; j++ {
+					offsetX := rand.Intn(2*rangeRadius+1) - rangeRadius
+					offsetY := rand.Intn(2*rangeRadius+1) - rangeRadius
+					drawPoint(img.img, cx+offsetX, cy+offsetY, pointRadius, *c)
+				}
+			}
+		}
+	}
+	return nil, nil
+}
+
+func drawImgWaveLine(d *dto.DicInputs) (any, error) {
+	img, err := getDrawImg(d, 1)
+	if err != nil {
+		return nil, err
+	}
+	x1 := d.Inputs.Float64(2)
+	y1 := d.Inputs.Float64(3)
+	x2 := d.Inputs.Float64(4)
+	y2 := d.Inputs.Float64(5)
+	c := img.GetColor()
+	waveAmplitude := 5.0
+	if val, ok := d.Inputs.Float64Ok(6); ok {
+		waveAmplitude = val
+	}
+	waveLength := 20.0
+	if val, ok := d.Inputs.Float64Ok(7); ok {
+		waveLength = val
+	}
+	step := 2.0
+	if val, ok := d.Inputs.Float64Ok(8); ok && val > 0 {
+		step = val
+	}
+	dx := x2 - x1
+	dy := y2 - y1
+	length := math.Hypot(dx, dy)
+	angle := math.Atan2(dy, dx)
+
+	gc := draw2dimg.NewGraphicContext(img.img)
+	gc.SetStrokeColor(*c)
+	gc.SetLineWidth(img.size)
+
+	for t := 0.0; t <= length; t += step {
+		baseX := x1 + math.Cos(angle)*t
+		baseY := y1 + math.Sin(angle)*t
+		offset := waveAmplitude * math.Sin(2*math.Pi*t/waveLength)
+		normalAngle := angle + math.Pi/2
+		waveX := baseX + math.Cos(normalAngle)*offset
+		waveY := baseY + math.Sin(normalAngle)*offset
+		if t == 0 {
+			gc.MoveTo(waveX, waveY)
+		} else {
+			gc.LineTo(waveX, waveY)
+		}
+	}
+	gc.Stroke()
+	return nil, nil
+}
+
+func drawImgFloodFill(d *dto.DicInputs) (any, error) {
+	img, err := getDrawImg(d, 1)
+	if err != nil {
+		return nil, err
+	}
+	x := int(d.Inputs.Float64(2))
+	y := int(d.Inputs.Float64(3))
+	fillColor := img.GetColor()
+	if c, ok := d.Inputs.Get(4).(*color.NRGBA); ok {
+		fillColor = c
+	}
+	bounds := img.img.Bounds()
+	if !image.Pt(x, y).In(bounds) {
+		return nil, errors.New("起始点不在图像范围内")
+	}
+	startColor := img.img.At(x, y)
+	if colorsEqualRGBA(startColor, fillColor) {
+		return nil, nil
+	}
+	visited := make(map[image.Point]bool)
+	queue := []image.Point{{x, y}}
+	for len(queue) > 0 {
+		p := queue[0]
+		queue = queue[1:]
+		if !p.In(bounds) || visited[p] {
+			continue
+		}
+		if !colorsEqualRGBA(img.img.At(p.X, p.Y), startColor) {
+			continue
+		}
+		img.img.Set(p.X, p.Y, fillColor)
+		visited[p] = true
+		queue = append(queue,
+			image.Pt(p.X+1, p.Y),
+			image.Pt(p.X-1, p.Y),
+			image.Pt(p.X, p.Y+1),
+			image.Pt(p.X, p.Y-1),
+		)
+	}
+	return nil, nil
+}
+
+func colorsEqualRGBA(c1, c2 color.Color) bool {
+	r1, g1, b1, a1 := c1.RGBA()
+	r2, g2, b2, a2 := c2.RGBA()
+	return r1 == r2 && g1 == g2 && b1 == b2 && a1 == a2
+}
+
+func drawImgRectangleFill(d *dto.DicInputs) (any, error) {
+	img, err := getDrawImg(d, 1)
+	if err != nil {
+		return nil, err
+	}
+	x := d.Inputs.Float64(2)
+	y := d.Inputs.Float64(3)
+	width := d.Inputs.Float64(4)
+	height := d.Inputs.Float64(5)
+	radii := [4]float64{}
+	if r, ok := d.Inputs.Float64Ok(6); ok {
+		radii = [4]float64{r, r, r, r}
+	} else if s, ok := d.Inputs.StringOk(6); ok && s != "" {
+		parts := strings.Split(s, ",")
+		for i := 0; i < len(parts) && i < 4; i++ {
+			if val, err := strconv.ParseFloat(strings.TrimSpace(parts[i]), 64); err == nil {
+				radii[i] = val
+			}
+		}
+	}
+	c := img.GetColor()
+	if cc, ok := d.Inputs.Get(7).(*color.NRGBA); ok {
+		c = cc
+	}
+	for i := range radii {
+		if radii[i]*2 > width {
+			radii[i] = width / 2
+		}
+		if radii[i]*2 > height {
+			radii[i] = height / 2
+		}
+	}
+	r0, r1, r2, r3 := radii[0], radii[1], radii[2], radii[3]
+	gc := draw2dimg.NewGraphicContext(img.img)
+	gc.SetFillColor(c)
+	gc.BeginPath()
+	x0, y0 := x, y
+	x1, y1 := x+width, y+height
+	gc.MoveTo(x0+r0, y0)
+	gc.LineTo(x1-r1, y0)
+	if r1 > 0 {
+		gc.ArcTo(x1-r1, y0+r1, r1, r1, -math.Pi/2, math.Pi/2)
+	}
+	gc.LineTo(x1, y1-r2)
+	if r2 > 0 {
+		gc.ArcTo(x1-r2, y1-r2, r2, r2, 0, math.Pi/2)
+	}
+	gc.LineTo(x0+r3, y1)
+	if r3 > 0 {
+		gc.ArcTo(x0+r3, y1-r3, r3, r3, math.Pi/2, math.Pi/2)
+	}
+	gc.LineTo(x0, y0+r0)
+	if r0 > 0 {
+		gc.ArcTo(x0+r0, y0+r0, r0, r0, math.Pi, math.Pi/2)
+	}
+	gc.Close()
+	gc.Fill()
+	return nil, nil
+}
+
+func drawImgRectangleStroke(d *dto.DicInputs) (any, error) {
+	img, err := getDrawImg(d, 1)
+	if err != nil {
+		return nil, err
+	}
+	x := d.Inputs.Float64(2)
+	y := d.Inputs.Float64(3)
+	width := d.Inputs.Float64(4)
+	height := d.Inputs.Float64(5)
+	radii := [4]float64{}
+	if r, ok := d.Inputs.Float64Ok(6); ok {
+		radii = [4]float64{r, r, r, r}
+	} else if s, ok := d.Inputs.StringOk(6); ok && s != "" {
+		parts := strings.Split(s, ",")
+		for i := 0; i < len(parts) && i < 4; i++ {
+			if val, err := strconv.ParseFloat(strings.TrimSpace(parts[i]), 64); err == nil {
+				radii[i] = val
+			}
+		}
+	}
+	c := img.GetColor()
+	if cc, ok := d.Inputs.Get(7).(*color.NRGBA); ok {
+		c = cc
+	}
+	for i := range radii {
+		if radii[i]*2 > width {
+			radii[i] = width / 2
+		}
+		if radii[i]*2 > height {
+			radii[i] = height / 2
+		}
+	}
+	r0, r1, r2, r3 := radii[0], radii[1], radii[2], radii[3]
+	gc := draw2dimg.NewGraphicContext(img.img)
+	gc.SetStrokeColor(c)
+	gc.SetLineWidth(img.size)
+	gc.BeginPath()
+	x0, y0 := x, y
+	x1, y1 := x+width, y+height
+	gc.MoveTo(x0+r0, y0)
+	gc.LineTo(x1-r1, y0)
+	if r1 > 0 {
+		gc.ArcTo(x1-r1, y0+r1, r1, r1, -math.Pi/2, math.Pi/2)
+	}
+	gc.LineTo(x1, y1-r2)
+	if r2 > 0 {
+		gc.ArcTo(x1-r2, y1-r2, r2, r2, 0, math.Pi/2)
+	}
+	gc.LineTo(x0+r3, y1)
+	if r3 > 0 {
+		gc.ArcTo(x0+r3, y1-r3, r3, r3, math.Pi/2, math.Pi/2)
+	}
+	gc.LineTo(x0, y0+r0)
+	if r0 > 0 {
+		gc.ArcTo(x0+r0, y0+r0, r0, r0, math.Pi, math.Pi/2)
+	}
+	gc.Close()
+	gc.Stroke()
+	return nil, nil
+}
+
+func drawImgPaste(d *dto.DicInputs) (any, error) {
+	target, err := getDrawImg(d, 1)
+	if err != nil {
+		return nil, err
+	}
+	param2 := d.Inputs.Get(2)
+	var srcImg image.Image
+	switch v := param2.(type) {
+	case *NDrawImg:
+		if v == nil {
+			return nil, errors.New("参数2画布不能为空")
+		}
+		srcImg = v.img
+	case string:
+		if strings.HasPrefix(v, "http://") || strings.HasPrefix(v, "https://") {
+			resp, err := http.Get(v)
+			if err != nil {
+				return nil, fmt.Errorf("下载网络图片失败: %v", err)
+			}
+			defer resp.Body.Close()
+			imgDecoded, _, err := image.Decode(resp.Body)
+			if err != nil {
+				return nil, fmt.Errorf("解码网络图片失败: %v", err)
+			}
+			srcImg = imgDecoded
+		} else {
+			imgDecoded, _, err := image.Decode(strings.NewReader(v))
+			if err != nil {
+				fileData, fileErr := utils.NewFileQueue(v).ReadFileByte()
+				if fileErr != nil {
+					return nil, fmt.Errorf("读取本地文件失败: %v", fileErr)
+				}
+				var decodeErr error
+				imgDecoded, _, decodeErr = image.Decode(bytes.NewReader(fileData))
+				if decodeErr != nil {
+					return nil, fmt.Errorf("解码本地图片失败: %v", decodeErr)
+				}
+			}
+			srcImg = imgDecoded
+		}
+	case image.Image:
+		srcImg = v
+	default:
+		return nil, fmt.Errorf("参数2格式错误")
+	}
+	bounds := srcImg.Bounds()
+	origW := bounds.Dx()
+	origH := bounds.Dy()
+	p3, p3ok := d.Inputs.IntOk(3)
+	p4, p4ok := d.Inputs.IntOk(4)
+	if !p3ok || p3 <= 0 {
+		p3 = origH
+	}
+	if !p4ok || p4 <= 0 {
+		p4 = origW
+	}
+	resized := imaging.Resize(srcImg, p4, p3, imaging.Lanczos)
+	rotateDeg := 0.0
+	if deg, ok := d.Inputs.Float64Ok(5); ok {
+		rotateDeg = deg
+	}
+	if rotateDeg != 0 {
+		resized = imaging.Rotate(resized, rotateDeg, color.NRGBA{0, 0, 0, 0})
+	}
+	if radius, ok := d.Inputs.IntOk(9); ok && radius > 0 {
+		resized = applyRoundedCorners(resized, radius)
+	}
+	px := int(d.Inputs.Float64(6))
+	py := int(d.Inputs.Float64(7))
+	alpha := 1.0
+	if a, ok := d.Inputs.Float64Ok(8); ok {
+		alpha = a
+	}
+	overlayed := imaging.Overlay(target.img, resized, image.Pt(px, py), alpha)
+	rgba := image.NewRGBA(overlayed.Bounds())
+	draw.Draw(rgba, rgba.Bounds(), overlayed, image.Point{}, draw.Src)
+	target.img = rgba
+	return nil, nil
+}
+
+func drawImgRotate(d *dto.DicInputs) (any, error) {
+	img, err := getDrawImg(d, 1)
+	if err != nil {
+		return nil, err
+	}
+	rotateDeg := d.Inputs.Float64(2)
+	if rotateDeg == 0 {
+		return nil, nil
+	}
+	c := img.GetColor()
+	if cc, ok := d.Inputs.Get(3).(*color.NRGBA); ok {
+		c = cc
+	}
+	rotated := imaging.Rotate(img.img, rotateDeg, c)
+	rgba := image.NewRGBA(rotated.Bounds())
+	draw.Draw(rgba, rgba.Bounds(), rotated, image.Point{}, draw.Src)
+	img.img = rgba
+	return nil, nil
+}
+
+func drawImgRoundCorners(d *dto.DicInputs) (any, error) {
+	img, err := getDrawImg(d, 1)
+	if err != nil {
+		return nil, err
+	}
+	c := img.GetColor()
+	if cc, ok := d.Inputs.Get(3).(*color.NRGBA); ok {
+		c = cc
+	}
+	radius := 0
+	if r, ok := d.Inputs.IntOk(2); ok && r > 0 {
+		radius = r
+	}
+	if radius <= 0 {
+		return nil, nil
+	}
+	bounds := img.img.Bounds()
+	dst := image.NewNRGBA(bounds)
+	for y := bounds.Min.Y; y < bounds.Max.Y; y++ {
+		for x := bounds.Min.X; x < bounds.Max.X; x++ {
+			dst.SetNRGBA(x, y, *c)
+		}
+	}
+	for y := bounds.Min.Y; y < bounds.Max.Y; y++ {
+		for x := bounds.Min.X; x < bounds.Max.X; x++ {
+			if inRoundedRect(x-bounds.Min.X, y-bounds.Min.Y, bounds.Dx(), bounds.Dy(), radius) {
+				dst.Set(x, y, img.img.At(x, y))
+			}
+		}
+	}
+	rgba := image.NewRGBA(dst.Bounds())
+	draw.Draw(rgba, rgba.Bounds(), dst, image.Point{}, draw.Src)
+	img.img = rgba
+	return nil, nil
+}
+
+func drawImgRandomDots(d *dto.DicInputs) (any, error) {
+	img, err := getDrawImg(d, 1)
+	if err != nil {
+		return nil, err
+	}
+	dotCount := 20
+	if dc, ok := d.Inputs.IntOk(2); ok && dc > 0 {
+		dotCount = dc
+	}
+	radius := int(math.Max(img.size, 1))
+	canvas := img.img
+	bounds := canvas.Bounds()
+	width := bounds.Dx()
+	height := bounds.Dy()
+	for i := 0; i < dotCount; i++ {
+		col := img.GetColor()
+		x := rand.Intn(width)
+		y := rand.Intn(height)
+		drawFilledCircle(canvas, x, y, radius, col)
+	}
+	return nil, nil
+}
+
+func drawImgRandomLines(d *dto.DicInputs) (any, error) {
+	img, err := getDrawImg(d, 1)
+	if err != nil {
+		return nil, err
+	}
+	lineCount := 20
+	if lc, ok := d.Inputs.IntOk(2); ok && lc > 0 {
+		lineCount = lc
+	}
+	thickness := max(int(img.size), 1)
+	canvas := img.img
+	bounds := canvas.Bounds()
+	width := bounds.Dx()
+	height := bounds.Dy()
+	for i := 0; i < lineCount; i++ {
+		x1 := rand.Intn(width)
+		y1 := rand.Intn(height)
+		x2 := rand.Intn(width)
+		y2 := rand.Intn(height)
+		col := img.GetColor()
+		drawThickLine(canvas, x1, y1, x2, y2, thickness, col)
+	}
+	return nil, nil
+}
+
+func drawImgGrayscale(d *dto.DicInputs) (any, error) {
+	img, err := getDrawImg(d, 1)
+	if err != nil {
+		return nil, err
+	}
+	canvas := img.img
+	bounds := canvas.Bounds()
+	for y := bounds.Min.Y; y < bounds.Max.Y; y++ {
+		for x := bounds.Min.X; x < bounds.Max.X; x++ {
+			r, g, b, a := canvas.At(x, y).RGBA()
+			r8 := float64(r >> 8)
+			g8 := float64(g >> 8)
+			b8 := float64(b >> 8)
+			a8 := uint8(a >> 8)
+			gray := uint8(0.299*r8 + 0.587*g8 + 0.114*b8)
+			canvas.Set(x, y, color.NRGBA{gray, gray, gray, a8})
+		}
+	}
+	return nil, nil
+}
+
+func drawImgGaussianBlur(d *dto.DicInputs) (any, error) {
+	img, err := getDrawImg(d, 1)
+	if err != nil {
+		return nil, err
+	}
+	x := d.Inputs.Int(2)
+	y := d.Inputs.Int(3)
+	width := d.Inputs.Int(4)
+	height := d.Inputs.Int(5)
+	if width <= 0 || height <= 0 {
+		return nil, errors.New("宽度和高度必须大于0")
+	}
+	x2 := x + width
+	y2 := y + height
+	canvas := img.img
+	bounds := canvas.Bounds()
+	if x < bounds.Min.X {
+		x = bounds.Min.X
+	}
+	if y < bounds.Min.Y {
+		y = bounds.Min.Y
+	}
+	if x2 > bounds.Max.X {
+		x2 = bounds.Max.X
+	}
+	if y2 > bounds.Max.Y {
+		y2 = bounds.Max.Y
+	}
+	blurRect := image.Rect(x, y, x2, y2)
+	cropped := imaging.Crop(canvas, blurRect)
+	sigma := img.size
+	if sigma <= 0 {
+		sigma = 3.0
+	}
+	blurred := imaging.Blur(cropped, sigma)
+	draw.Draw(canvas, blurRect, blurred, image.Point{}, draw.Over)
+	return nil, nil
+}
+
+func drawImgMosaic(d *dto.DicInputs) (any, error) {
+	img, err := getDrawImg(d, 1)
+	if err != nil {
+		return nil, err
+	}
+	x := d.Inputs.Int(2)
+	y := d.Inputs.Int(3)
+	width := d.Inputs.Int(4)
+	height := d.Inputs.Int(5)
+	if width <= 0 || height <= 0 {
+		return nil, errors.New("宽度和高度必须大于0")
+	}
+	x2 := x + width
+	y2 := y + height
+	canvas := img.img
+	bounds := canvas.Bounds()
+	if x < bounds.Min.X {
+		x = bounds.Min.X
+	}
+	if y < bounds.Min.Y {
+		y = bounds.Min.Y
+	}
+	if x2 > bounds.Max.X {
+		x2 = bounds.Max.X
+	}
+	if y2 > bounds.Max.Y {
+		y2 = bounds.Max.Y
+	}
+	blockSize := int(img.size)
+	if blockSize <= 0 {
+		blockSize = 8
+	}
+	for yy := y; yy < y2; yy += blockSize {
+		for xx := x; xx < x2; xx += blockSize {
+			xEnd := xx + blockSize
+			yEnd := yy + blockSize
+			if xEnd > x2 {
+				xEnd = x2
+			}
+			if yEnd > y2 {
+				yEnd = y2
+			}
+			var rSum, gSum, bSum, aSum, count uint32
+			for py := yy; py < yEnd; py++ {
+				for px := xx; px < xEnd; px++ {
+					r, g, b, a := canvas.At(px, py).RGBA()
+					rSum += r
+					gSum += g
+					bSum += b
+					aSum += a
+					count++
+				}
+			}
+			if count == 0 {
+				continue
+			}
+			rAvg := uint8((rSum / count) >> 8)
+			gAvg := uint8((gSum / count) >> 8)
+			bAvg := uint8((bSum / count) >> 8)
+			aAvg := uint8((aSum / count) >> 8)
+			avgColor := color.NRGBA{rAvg, gAvg, bAvg, aAvg}
+			for py := yy; py < yEnd; py++ {
+				for px := xx; px < xEnd; px++ {
+					canvas.Set(px, py, avgColor)
+				}
+			}
+		}
+	}
+	return nil, nil
+}
+
+func drawImgAllMosaic(d *dto.DicInputs) (any, error) {
+	img, err := getDrawImg(d, 1)
+	if err != nil {
+		return nil, err
+	}
+	blockSize := int(img.size)
+	if bs, ok := d.Inputs.IntOk(2); ok && bs > 0 {
+		blockSize = bs
+	}
+	canvas := img.img
+	bounds := canvas.Bounds()
+	for y := bounds.Min.Y; y < bounds.Max.Y; y += blockSize {
+		for x := bounds.Min.X; x < bounds.Max.X; x += blockSize {
+			xEnd := min(x+blockSize, bounds.Max.X)
+			yEnd := min(y+blockSize, bounds.Max.Y)
+			var rSum, gSum, bSum, aSum, count uint32
+			for yy := y; yy < yEnd; yy++ {
+				for xx := x; xx < xEnd; xx++ {
+					r, g, b, a := canvas.At(xx, yy).RGBA()
+					rSum += r
+					gSum += g
+					bSum += b
+					aSum += a
+					count++
+				}
+			}
+			if count == 0 {
+				continue
+			}
+			rAvg := uint8((rSum / count) >> 8)
+			gAvg := uint8((gSum / count) >> 8)
+			bAvg := uint8((bSum / count) >> 8)
+			aAvg := uint8((aSum / count) >> 8)
+			avgColor := color.NRGBA{rAvg, gAvg, bAvg, aAvg}
+			for yy := y; yy < yEnd; yy++ {
+				for xx := x; xx < xEnd; xx++ {
+					canvas.Set(xx, yy, avgColor)
+				}
+			}
+		}
+	}
+	return nil, nil
+}
+
+func drawImgArc(d *dto.DicInputs) (any, error) {
+	img, err := getDrawImg(d, 1)
+	if err != nil {
+		return nil, err
+	}
+	cx := d.Inputs.Float64(2)
+	cy := d.Inputs.Float64(3)
+	radius := d.Inputs.Float64(4)
+	startDeg := d.Inputs.Float64(5)
+	endDeg := d.Inputs.Float64(6)
+	c := img.GetColor()
+	if cc, ok := d.Inputs.Get(7).(*color.NRGBA); ok {
+		c = cc
+	}
+	gc := draw2dimg.NewGraphicContext(img.img)
+	gc.SetStrokeColor(c)
+	gc.SetLineWidth(img.size)
+	startRad := startDeg * math.Pi / 180
+	endRad := endDeg * math.Pi / 180
+	startX := cx + radius*math.Cos(startRad)
+	startY := cy + radius*math.Sin(startRad)
+	gc.BeginPath()
+	gc.MoveTo(startX, startY)
+	gc.ArcTo(cx, cy, radius, radius, startRad, endRad-startRad)
+	gc.Stroke()
+	return nil, nil
+}
+
+// ========== 绘制额外图形 (free function 版本) ==========
+
+func drawImgEllipseFill(d *dto.DicInputs) (any, error) {
+	img, ok := d.Inputs.Get(1).(*NDrawImg)
+	if !ok {
+		return nil, errors.New("参数1必须是画布")
+	}
+	if img == nil {
+		return nil, errors.New("图片不能为空")
+	}
+
+	x := d.Inputs.Float64(2)
+	y := d.Inputs.Float64(3)
+	width := d.Inputs.Float64(4)
+	height := d.Inputs.Float64(5)
+	c := img.GetColor()
+	if cc, ok := d.Inputs.Get(6).(*color.NRGBA); ok {
+		c = cc
+	}
+
+	gc := draw2dimg.NewGraphicContext(img.img)
+	gc.SetFillColor(c)
+
+	centerX := x + width/2
+	centerY := y + height/2
+	radiusX := width / 2
+	radiusY := height / 2
+
+	points := ellipsePoints(centerX, centerY, radiusX, radiusY, 40)
+	if len(points) > 0 {
+		gc.MoveTo(points[0][0], points[0][1])
+		for _, p := range points[1:] {
+			gc.LineTo(p[0], p[1])
+		}
+		gc.Close()
+		gc.Fill()
+	}
+	return nil, nil
+}
+
+func drawImgEllipse(d *dto.DicInputs) (any, error) {
+	img, ok := d.Inputs.Get(1).(*NDrawImg)
+	if !ok {
+		return nil, errors.New("参数1必须是画布")
+	}
+	if img == nil {
+		return nil, errors.New("图片不能为空")
+	}
+
+	x := d.Inputs.Float64(2)
+	y := d.Inputs.Float64(3)
+	width := d.Inputs.Float64(4)
+	height := d.Inputs.Float64(5)
+	c := img.GetColor()
+	if cc, ok := d.Inputs.Get(6).(*color.NRGBA); ok {
+		c = cc
+	}
+
+	gc := draw2dimg.NewGraphicContext(img.img)
+	gc.SetStrokeColor(c)
+	gc.SetLineWidth(img.size)
+
+	centerX := x + width/2
+	centerY := y + height/2
+	radiusX := width / 2
+	radiusY := height / 2
+
+	points := ellipsePoints(centerX, centerY, radiusX, radiusY, 40)
+	if len(points) > 0 {
+		gc.MoveTo(points[0][0], points[0][1])
+		for _, p := range points[1:] {
+			gc.LineTo(p[0], p[1])
+		}
+		gc.Close()
+		gc.Stroke()
+	}
+	return nil, nil
+}
+
+func drawImgPieFill(d *dto.DicInputs) (any, error) {
+	img, ok := d.Inputs.Get(1).(*NDrawImg)
+	if !ok || img == nil {
+		return nil, errors.New("参数1必须是画布")
+	}
+
+	cx := d.Inputs.Float64(2)
+	cy := d.Inputs.Float64(3)
+
+	radius := 50.0
+	if val, ok := d.Inputs.Float64Ok(4); ok && val > 0 {
+		radius = val
+	}
+
+	startDeg := 0.0
+	if val, ok := d.Inputs.Float64Ok(5); ok {
+		startDeg = val
+	}
+
+	endDeg := 360.0
+	if val, ok := d.Inputs.Float64Ok(6); ok {
+		endDeg = val
+	}
+
+	c := img.GetColor()
+	if cc, ok := d.Inputs.Get(7).(*color.NRGBA); ok {
+		c = cc
+	}
+
+	gc := draw2dimg.NewGraphicContext(img.img)
+	gc.SetFillColor(*c)
+
+	startRad := startDeg * math.Pi / 180
+	endRad := endDeg * math.Pi / 180
+
+	gc.MoveTo(cx, cy)
+	gc.LineTo(
+		cx+radius*math.Cos(startRad),
+		cy+radius*math.Sin(startRad),
+	)
+	gc.ArcTo(cx, cy, radius, radius, startRad, endRad-startRad)
+	gc.Close()
+	gc.Fill()
+
+	return nil, nil
+}
+
+func drawImgPie(d *dto.DicInputs) (any, error) {
+	img, ok := d.Inputs.Get(1).(*NDrawImg)
+	if !ok || img == nil {
+		return nil, errors.New("参数1必须是非空画布")
+	}
+
+	cx := d.Inputs.Float64(2)
+	cy := d.Inputs.Float64(3)
+
+	radius := 50.0
+	if r, ok := d.Inputs.Float64Ok(4); ok {
+		radius = r
+	}
+
+	startDeg := 0.0
+	endDeg := 360.0
+	if d.Inputs.Len() >= 6 {
+		startDeg = d.Inputs.Float64(5)
+		endDeg = d.Inputs.Float64(6)
+	}
+
+	c := img.GetColor()
+	if cc, ok := d.Inputs.Get(7).(*color.NRGBA); ok {
+		c = cc
+	}
+
+	startRad := startDeg * math.Pi / 180
+	endRad := endDeg * math.Pi / 180
+	angle := endRad - startRad
+
+	gc := draw2dimg.NewGraphicContext(img.img)
+	gc.SetStrokeColor(c)
+	gc.SetLineWidth(img.size)
+
+	if math.Abs(angle) >= 2*math.Pi {
+		gc.ArcTo(cx, cy, radius, radius, 0, 2*math.Pi)
+	} else {
+		gc.MoveTo(cx, cy)
+		gc.LineTo(
+			cx+radius*math.Cos(startRad),
+			cy+radius*math.Sin(startRad),
+		)
+		gc.ArcTo(cx, cy, radius, radius, startRad, angle)
+		gc.Close()
+	}
+
+	gc.Stroke()
+	return nil, nil
+}
+
+func drawImgPolygon(d *dto.DicInputs) (any, error) {
+	img, ok := d.Inputs.Get(1).(*NDrawImg)
+	if !ok || img == nil {
+		return nil, errors.New("参数1必须是画布")
+	}
+
+	numArgs := d.Inputs.Len()
+
+	var c *color.NRGBA
+	lastVal := d.Inputs.Get(numArgs)
+	if cc, ok := lastVal.(*color.NRGBA); ok {
+		c = cc
+		numArgs--
+	} else {
+		c = img.GetColor()
+	}
+
+	points := [][]float64{}
+	for i := 2; i <= numArgs; i++ {
+		str := d.Inputs.String(i)
+		coords := strings.Split(str, ",")
+		if len(coords) != 2 {
+			return nil, fmt.Errorf("参数%d格式错误，期望 x,y 格式", i)
+		}
+		x, err1 := strconv.ParseFloat(strings.TrimSpace(coords[0]), 64)
+		y, err2 := strconv.ParseFloat(strings.TrimSpace(coords[1]), 64)
+		if err1 != nil || err2 != nil {
+			return nil, fmt.Errorf("参数%d坐标转换错误", i)
+		}
+		points = append(points, []float64{x, y})
+	}
+
+	if len(points) < 3 {
+		return nil, errors.New("至少需要3个点")
+	}
+
+	gc := draw2dimg.NewGraphicContext(img.img)
+	gc.SetFillColor(*c)
+	gc.MoveTo(points[0][0], points[0][1])
+	for _, p := range points[1:] {
+		gc.LineTo(p[0], p[1])
+	}
+	gc.Close()
+	gc.Fill()
+
+	return nil, nil
+}
+
+func drawImgPolygons(d *dto.DicInputs) (any, error) {
+	img, ok := d.Inputs.Get(1).(*NDrawImg)
+	if !ok || img == nil {
+		return nil, errors.New("参数1必须是画布")
+	}
+
+	numArgs := d.Inputs.Len()
+
+	var c *color.NRGBA
+	lastVal := d.Inputs.Get(numArgs)
+	if cc, ok := lastVal.(*color.NRGBA); ok {
+		c = cc
+		numArgs--
+	} else {
+		c = img.GetColor()
+	}
+
+	points := [][]float64{}
+	for i := 2; i <= numArgs; i++ {
+		str := d.Inputs.String(i)
+		coords := strings.Split(str, ",")
+		if len(coords) != 2 {
+			return nil, fmt.Errorf("参数%d格式错误，期望 x,y 格式", i)
+		}
+		x, err1 := strconv.ParseFloat(strings.TrimSpace(coords[0]), 64)
+		y, err2 := strconv.ParseFloat(strings.TrimSpace(coords[1]), 64)
+		if err1 != nil || err2 != nil {
+			return nil, fmt.Errorf("参数%d坐标转换错误", i)
+		}
+		points = append(points, []float64{x, y})
+	}
+
+	if len(points) < 2 {
+		return nil, errors.New("至少需要2个点")
+	}
+
+	gc := draw2dimg.NewGraphicContext(img.img)
+	gc.SetStrokeColor(*c)
+	gc.SetLineWidth(img.size)
+	gc.MoveTo(points[0][0], points[0][1])
+	for _, p := range points[1:] {
+		gc.LineTo(p[0], p[1])
+	}
+	gc.Close()
+	gc.Stroke()
+
+	return nil, nil
+}

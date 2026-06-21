@@ -139,6 +139,10 @@ func Entry(r *dic_dto.DicEntry, txt []string, funcV *dic_dto.DicFunc) error {
 
 		RunDicindex++
 
+		if r.Sys_v.Stop {
+			return nil
+		}
+
 		if r.Sys_v.NodeJs.Success {
 			if text != "--end" {
 				r.Sys_v.NodeJs.Content = append(r.Sys_v.NodeJs.Content, text)

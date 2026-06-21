@@ -190,3 +190,53 @@ func runCommandAsync(d *dto.DicInputs) (any, error) {
 	}()
 	return "", nil
 }
+
+func runCommandDecoder(d *dto.DicInputs) (any, error) {
+	cmd, ok := d.Inputs.Get(1).(*CmdConfig)
+	if !ok {
+		return "", errors.New("传入参数错误")
+	}
+	cmd.Decoder = d.Inputs.String(2)
+	return "", nil
+}
+
+func runCommandVar(d *dto.DicInputs) (any, error) {
+	cmd, ok := d.Inputs.Get(1).(*CmdConfig)
+	if !ok {
+		return "", errors.New("传入参数错误")
+	}
+	if cmd.Cmd == nil {
+		return "", errors.New("未启动终端")
+	}
+	cmd.Cmd.Env = append(cmd.Cmd.Env, d.Inputs.String(2))
+	return "", nil
+}
+
+func runCommandClose(d *dto.DicInputs) (any, error) {
+	cmd, ok := d.Inputs.Get(1).(*CmdConfig)
+	if !ok {
+		return "", errors.New("传入参数错误")
+	}
+	if cmd.Cmd == nil || cmd.Cmd.Process == nil {
+		return "false", nil
+	}
+	if err := cmd.Cmd.Process.Kill(); err != nil {
+		return "false", nil
+	}
+	return "true", nil
+}
+
+func runCommandInputText(d *dto.DicInputs) (any, error) {
+	cmd, ok := d.Inputs.Get(1).(*CmdConfig)
+	if !ok {
+		return "", errors.New("传入参数错误")
+	}
+	if cmd.Cmd == nil || cmd.Cmd.Process == nil {
+		return "", errors.New("未启动终端")
+	}
+	_, err := cmd.Stdin.Write([]byte(d.Inputs.String(2)))
+	if err != nil {
+		return "", err
+	}
+	return "", nil
+}

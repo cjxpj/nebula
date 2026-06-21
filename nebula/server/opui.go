@@ -1,15 +1,26 @@
 package dic_server
 
 import (
+	"bytes"
+	"context"
 	"encoding/json"
+	"errors"
+	"fmt"
+	"io"
 	"mime"
+	"net"
 	"net/http"
+	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
+	"time"
 
 	"github.com/cjxpj/nebula/appfiles"
 	"github.com/cjxpj/nebula/bot/secludedbot"
+	"github.com/cjxpj/nebula/debugLog"
+	dic_funcs "github.com/cjxpj/nebula/dic/funcs"
 	"github.com/cjxpj/nebula/dto"
 	"github.com/cjxpj/nebula/utils"
 	"github.com/gomarkdown/markdown"
@@ -26,6 +37,9 @@ type HttpOpUiConfig_server struct {
 	CORS                bool   `json:"cors"`
 	CORSOrigins         string `json:"cors_origins"`
 	TempCleanupInterval int    `json:"temp_cleanup_interval"`
+	TLS                 bool   `json:"tls"`
+	CertFile            string `json:"cert_file"`
+	KeyFile             string `json:"key_file"`
 }
 
 type HttpOpUiConfig_websocket struct {
@@ -40,12 +54,924 @@ type HttpOpUiConfig_ngrok struct {
 	Domain string `json:"domain"`
 }
 
-type HttpOpUiConfig_qq struct {
+type HttpOpUiConfig_frp struct {
+	Open       bool   `json:"open"`
+	ServerAddr string `json:"server_addr"`
+	Token      string `json:"token"`
+	Debug      bool   `json:"debug"`
+}
+
+type HttpOpUiConfig_opui struct {
 	Open   bool   `json:"open"`
-	Dic    string `json:"dic"`
 	Path   string `json:"path"`
-	Appid  string `json:"appid"`
 	Secret string `json:"secret"`
+}
+
+type HttpOpUiConfig_bg struct {
+	Type string `json:"type"` // "url" | "local" | ""
+	Data string `json:"data"` // URL 或 base64
+}
+
+type HttpOpUiConfig_ftp struct {
+	Open          bool   `json:"open"`
+	Port          int    `json:"port"`
+	Username      string `json:"username"`
+	Password      string `json:"password"`
+	Debug         bool   `json:"debug"`
+	Tls           bool   `json:"tls"`
+	PasvPortStart int    `json:"pasv_port_start"`
+	PasvPortEnd   int    `json:"pasv_port_end"`
+}
+
+type HttpOpUiConfig_sftp struct {
+	Open     bool   `json:"open"`
+	Port     int    `json:"port"`
+	Username string `json:"username"`
+	Password string `json:"password"`
+	Debug    bool   `json:"debug"`
+}
+
+// BeerWebFrp 协议消息类型
+type frpWSMessage struct {
+	ID      string            `json:"id"`
+	Type    string            `json:"type"` // "http"(默认)、"ws"、"ws_frame"、"ws_close"
+	Method  string            `json:"method"`
+	Path    string            `json:"path"`
+	Headers map[string]string `json:"headers"`
+	Body    []byte            `json:"body"`
+}
+
+type frpWSResponse struct {
+	ID         string            `json:"id"`
+	StatusCode int               `json:"status_code"`
+	Headers    map[string]string `json:"headers"`
+	Body       []byte            `json:"body,omitempty"`
+}
+
+// frpWSResponseStart 分块流式响应的起始消息（状态码+响应头）
+type frpWSResponseStart struct {
+	Type       string            `json:"type"`
+	ID         string            `json:"id"`
+	StatusCode int               `json:"status_code"`
+	Headers    map[string]string `json:"headers,omitempty"`
+}
+
+// frpWSChunk 分块流式响应的数据块
+type frpWSChunk struct {
+	Type  string `json:"type"`
+	ID    string `json:"id"`
+	Chunk []byte `json:"chunk"`
+	Final bool   `json:"final"`
+}
+
+// frpCon 单条 FRP WebSocket 连接，写队列模式实现异步发送
+type frpCon struct {
+	conn   *websocket.Conn
+	wch    chan writeJob // 写队列
+	ctx    context.Context
+	cancel context.CancelFunc
+}
+
+// writeJob 一次写任务
+type writeJob struct {
+	data []byte
+	done chan error // nil = 异步（HTTP响应），非nil = 同步（WS帧/状态等结果）
+}
+
+// BeerWebFrp WebSocket 连接管理
+var (
+	frpConn       *frpCon
+	frpMutex      sync.Mutex
+	frpCancel     context.CancelFunc
+	frpHTTPClient = &http.Client{
+		Timeout: 30 * time.Second,
+	}
+	frpDebug bool
+
+	// FTP 服务管理
+	ftpListener    net.Listener
+	ftpCancel      context.CancelFunc
+	ftpUser        string // 配置的用户名
+	ftpPass        string // 配置的密码
+	ftpPasvPortMin int    // PASV 被动模式端口范围起始
+	ftpPasvPortMax int    // PASV 被动模式端口范围结束
+
+	// SFTP 服务管理
+	sftpListener net.Listener
+	sftpCancel   context.CancelFunc
+	sftpUser     string // 配置的用户名
+	sftpPass     string // 配置的密码
+
+	// BeerWebFrp WS 代理流映射表
+	frpWsStreams   = make(map[string]*websocket.Conn) // streamID -> 本地 WS 连接
+	frpWsStreamsMu sync.Mutex
+)
+
+// SetFrpDebug 设置 FRP 调试开关
+func SetFrpDebug(debug bool) {
+	frpDebug = debug
+}
+
+// ConnectFrp 连接到 BeerWebFrp 服务端
+func ConnectFrp(serverAddr, token string) {
+	serverAddr = strings.TrimSpace(serverAddr)
+	token = strings.TrimSpace(token)
+	if frpDebug {
+		debugLog.Infof("[FRP] ConnectFrp 被调用, serverAddr=%s, token长度=%d", serverAddr, len(token))
+	}
+
+	frpMutex.Lock()
+	if frpCancel != nil {
+		if frpDebug {
+			debugLog.Infof("[FRP] 取消已有连接上下文")
+		}
+		frpCancel()
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	frpCancel = cancel
+	frpMutex.Unlock()
+
+	go runFrpConn(ctx, serverAddr, token)
+}
+
+// runFrpConn 管理单条 FRP WebSocket 连接的生命周期，断线自动重连
+func runFrpConn(ctx context.Context, serverAddr, token string) {
+	const readTimeout = 300 * time.Second // 读超时需大于服务端 pongWait，防止慢带宽下大文件写入时读超时断开
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		default:
+		}
+
+		wsURL := strings.TrimRight(serverAddr, "/") + "/api/ws"
+		dialer := websocket.Dialer{
+			EnableCompression: true,
+			HandshakeTimeout:  10 * time.Second,
+		}
+		conn, httpResp, err := dialer.Dial(wsURL, nil)
+		if err != nil {
+			if frpDebug {
+				if httpResp != nil {
+					debugLog.Infof("[FRP] 连接失败: %v (HTTP %d), 5秒后重连", err, httpResp.StatusCode)
+				} else {
+					debugLog.Infof("[FRP] 连接失败: %v, 5秒后重连 (请确认 BeerWebFrp 服务端已启动)", err)
+				}
+			}
+			select {
+			case <-ctx.Done():
+				return
+			case <-time.After(5 * time.Second):
+			}
+			continue
+		}
+
+		// 握手
+		if err := conn.WriteJSON(map[string]string{"token": token}); err != nil {
+			if frpDebug {
+				debugLog.Infof("[FRP] 握手发送失败: %v", err)
+			}
+			conn.Close()
+			select {
+			case <-ctx.Done():
+				return
+			case <-time.After(5 * time.Second):
+			}
+			continue
+		}
+
+		var hs struct {
+			Message string `json:"message"`
+			Error   string `json:"error"`
+			Link    string `json:"link"`
+		}
+		if err := conn.ReadJSON(&hs); err != nil {
+			if frpDebug {
+				debugLog.Infof("[FRP] 握手响应读取失败: %v", err)
+			}
+			conn.Close()
+			select {
+			case <-ctx.Done():
+				return
+			case <-time.After(5 * time.Second):
+			}
+			continue
+		}
+		if hs.Error != "" {
+			if frpDebug {
+				debugLog.Infof("[FRP] 握手失败: %s", hs.Error)
+			}
+			conn.Close()
+			select {
+			case <-ctx.Done():
+				return
+			case <-time.After(5 * time.Second):
+			}
+			continue
+		}
+		if frpDebug {
+			debugLog.Infof("[FRP] 握手成功, link=%s", hs.Link)
+		}
+
+		// 注册到连接池，启动异步写入器
+		fc := &frpCon{
+			conn: conn,
+			wch:  make(chan writeJob, 64),
+		}
+		fc.ctx, fc.cancel = context.WithCancel(ctx)
+		frpMutex.Lock()
+		frpConn = fc
+		frpMutex.Unlock()
+
+		go fc.writer()
+
+		if frpDebug {
+			debugLog.Infof("[FRP] 连接已注册，进入代理模式")
+		}
+
+		// 设置保活
+		conn.SetReadDeadline(time.Now().Add(readTimeout))
+		conn.SetPingHandler(func(appData string) error {
+			conn.SetReadDeadline(time.Now().Add(readTimeout))
+			return conn.WriteControl(websocket.PongMessage, []byte(appData), time.Now().Add(10*time.Second))
+		})
+		// Pong 回调：客户端发 Ping 后服务端回复 Pong 时触发，重置读超时防止空闲断连
+		conn.SetPongHandler(func(appData string) error {
+			conn.SetReadDeadline(time.Now().Add(readTimeout))
+			return nil
+		})
+
+		pingDone := make(chan struct{})
+		go func() {
+			ticker := time.NewTicker(50 * time.Second)
+			defer ticker.Stop()
+			for {
+				select {
+				case <-ticker.C:
+					if err := conn.WriteControl(websocket.PingMessage, nil, time.Now().Add(10*time.Second)); err != nil {
+						return
+					}
+				case <-pingDone:
+					return
+				}
+			}
+		}()
+
+		// 读取代理请求
+		for {
+			var msg frpWSMessage
+			if err := conn.ReadJSON(&msg); err != nil {
+				if frpDebug {
+					debugLog.Infof("[FRP] 读取消息失败(连接断开): %v", err)
+				}
+				break
+			}
+			if msg.ID == "" {
+				continue
+			}
+
+			// 每次成功读取后重置读超时，配合 Ping 保活防止空闲断连
+			conn.SetReadDeadline(time.Now().Add(readTimeout))
+
+			switch msg.Type {
+			case "ws":
+				if frpDebug {
+					debugLog.Infof("[FRP] 收到WS代理请求: %s (id=%s)", msg.Path, msg.ID)
+				}
+				go handleFrpWsProxy(fc, &msg)
+			case "ws_frame":
+				if frpDebug {
+					debugLog.Infof("[FRP] 收到WS数据帧 (id=%s)", msg.ID)
+				}
+				go handleFrpWsFrame(&msg)
+			case "ws_close":
+				if frpDebug {
+					debugLog.Infof("[FRP] 收到WS关闭通知 (id=%s)", msg.ID)
+				}
+				go handleFrpWsClose(&msg)
+			default:
+				if frpDebug {
+					debugLog.Infof("[FRP] 收到HTTP代理请求: %s %s (id=%s)", msg.Method, msg.Path, msg.ID)
+				}
+				go handleFrpProxyRequest(fc, &msg)
+			}
+		}
+
+		// 清理：取消 writer，停止 Ping
+		fc.cancel()
+		close(pingDone)
+
+		frpMutex.Lock()
+		if frpConn == fc {
+			frpConn = nil
+		}
+		frpMutex.Unlock()
+
+		if frpDebug {
+			debugLog.Infof("[FRP] 连接断开, 5秒后重连")
+		}
+
+		select {
+		case <-ctx.Done():
+			return
+		case <-time.After(5 * time.Second):
+		}
+	}
+}
+
+// writer 异步写 goroutine，从队列取数据按带宽自适应发送
+func (fc *frpCon) writer() {
+	defer fc.conn.Close()
+	for {
+		select {
+		case job := <-fc.wch:
+			writeTimeout := 60 * time.Second
+			dataLen := len(job.data)
+			if dataLen > 0 {
+				// 按实际数据量计算：每 25KB 增加 1s，支持极低带宽（如 17KB/s 传 2.7MB）
+				writeTimeout = time.Duration(60+dataLen/25600) * time.Second
+				if writeTimeout < 60*time.Second {
+					writeTimeout = 60 * time.Second
+				}
+				if writeTimeout > 10*time.Minute {
+					writeTimeout = 10 * time.Minute
+				}
+			}
+			fc.conn.SetWriteDeadline(time.Now().Add(writeTimeout))
+			err := fc.conn.WriteMessage(websocket.TextMessage, job.data)
+			if job.done != nil {
+				job.done <- err
+			}
+			if err != nil {
+				if frpDebug {
+					debugLog.Infof("[FRP] writer 写出错: %v，排空队列退出", err)
+				}
+				for {
+					select {
+					case job := <-fc.wch:
+						if job.done != nil {
+							job.done <- err
+						}
+					default:
+						return
+					}
+				}
+			}
+		case <-fc.ctx.Done():
+			for {
+				select {
+				case job := <-fc.wch:
+					if job.done != nil {
+						job.done <- fc.ctx.Err()
+					}
+				default:
+					return
+				}
+			}
+		}
+	}
+}
+
+// proxyTimeoutHTML 当本地请求超时时返回的提示页面
+const proxyTimeoutHTML = `<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>504 响应超时</title>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI','Microsoft YaHei',sans-serif;background:#0f172a;color:#e2e8f0;display:flex;align-items:center;justify-content:center;min-height:100vh}
+.card{background:#1e293b;border:1px solid #334155;border-radius:20px;padding:48px 40px;max-width:560px;width:90%;text-align:center;box-shadow:0 25px 60px rgba(0,0,0,.4);animation:fadeUp .5s ease-out}
+.icon-wrap{width:80px;height:80px;margin:0 auto 20px;background:linear-gradient(135deg,#f59e0b,#ef4444);border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:36px;animation:pulse 2s ease-in-out infinite}
+.error-code{font-size:28px;font-weight:800;background:linear-gradient(135deg,#f59e0b,#ef4444);background-clip:text;-webkit-background-clip:text;-webkit-text-fill-color:transparent;margin-bottom:8px}
+.error-title{font-size:22px;font-weight:700;color:#f1f5f9;margin-bottom:12px}
+.divider{width:60px;height:3px;background:linear-gradient(90deg,#f59e0b,#ef4444);border-radius:2px;margin:0 auto 24px}
+.error-sub{font-size:14px;color:#94a3b8;line-height:1.8;margin-bottom:20px}
+.error-sub span{color:#f59e0b;font-weight:600}
+.bw-info{background:#0f172a;border:1px solid #334155;border-radius:12px;padding:16px 20px;margin-bottom:20px;display:flex;align-items:center;gap:12px}
+.bw-icon{font-size:24px;flex-shrink:0}
+.bw-text{font-size:13px;color:#94a3b8;line-height:1.7;text-align:left}
+.bw-text strong{color:#f1f5f9}
+.hint{font-size:13px;color:#64748b;line-height:1.8}
+@keyframes fadeUp{0%{opacity:0;transform:translateY(20px)}100%{opacity:1;transform:translateY(0)}}
+@keyframes pulse{0%,100%{opacity:1;transform:scale(1)}50%{opacity:.6;transform:scale(1.08)}}
+</style>
+</head>
+<body>
+<div class="card">
+  <div class="icon-wrap">⏳</div>
+  <div class="error-code">504</div>
+  <div class="error-title">响应超时</div>
+  <div class="divider"></div>
+  <p class="error-sub">
+    本地服务处理请求超时，<span>未能及时返回响应</span>。
+  </p>
+  <div class="bw-info">
+    <div class="bw-icon">📶</div>
+    <div class="bw-text">
+      <strong>请检查本地服务状态</strong><br>
+      隧道客户端已收到请求，但本地后端服务未能在规定时间内响应。请确认后端服务运行正常，或适当增加超时时间。
+    </div>
+  </div>
+  <p class="hint">请稍后刷新重试</p>
+</div>
+</body>
+</html>`
+
+// handleFrpProxyRequest 处理来自 BeerWebFrp 服务端的代理请求
+// 将请求转发到本地 HTTP 服务器，并返回响应。大响应（>1MB）使用分块流式传输
+func handleFrpProxyRequest(fc *frpCon, msg *frpWSMessage) {
+	var (
+		respStatusCode int
+		respHeaders    map[string]string
+		respBody       []byte
+		sent           bool // 是否已由流式模式处理
+	)
+
+	defer func() {
+		if sent {
+			return
+		}
+		// 发送错误响应（单条消息）
+		resp := frpWSResponse{
+			ID:         msg.ID,
+			StatusCode: respStatusCode,
+			Headers:    respHeaders,
+		}
+		if respBody != nil {
+			resp.Body = respBody
+		}
+		data, _ := json.Marshal(resp)
+		select {
+		case fc.wch <- writeJob{data: data}:
+		default:
+			if frpDebug {
+				debugLog.Infof("[FRP] 写队列满，丢弃响应 (id=%s)", msg.ID)
+			}
+		}
+	}()
+
+	respStatusCode = 502
+	respHeaders = map[string]string{"Content-Type": "text/html; charset=utf-8"}
+	respBody = []byte("backend server not available")
+
+	if dto.ServerConfig.Router == nil || dto.ServerConfig.Router.Http == nil {
+		if frpDebug {
+			debugLog.Infof("[FRP] 代理请求: Router.Http为空，返回502 (id=%s)", msg.ID)
+		}
+		return
+	}
+
+	// 构造本地 HTTP 地址
+	localAddr := strings.Replace(dto.ServerConfig.Router.Http.Addr, "0.0.0.0", "127.0.0.1", 1)
+	targetURL := "http://" + localAddr + msg.Path
+
+	if frpDebug {
+		debugLog.Infof("[FRP] 转发请求: %s %s -> %s (body长度=%d, headers数=%d)", msg.Method, msg.Path, targetURL, len(msg.Body), len(msg.Headers))
+	}
+
+	var bodyReader io.Reader
+	if len(msg.Body) > 0 {
+		bodyReader = bytes.NewReader(msg.Body)
+	}
+	// 注：服务端 Body 已是 []byte，JSON 反序列化时自动 base64 解码
+
+	req, err := http.NewRequest(msg.Method, targetURL, bodyReader)
+	if err != nil {
+		if frpDebug {
+			debugLog.Infof("[FRP] 代理请求: 构造请求失败 (id=%s): %v", msg.ID, err)
+		}
+		respBody = []byte("proxy build request error: " + err.Error())
+		return
+	}
+
+	// 转发原始请求头（含 X-Real-Ip、X-Forwarded-For）
+	if msg.Headers != nil {
+		for k, v := range msg.Headers {
+			req.Header.Set(k, v)
+		}
+	}
+
+	// 发起本地 HTTP 请求
+	httpResp, err := frpHTTPClient.Do(req)
+	if err != nil {
+		if frpDebug {
+			debugLog.Infof("[FRP] 代理请求: 本地请求失败 (id=%s): %v", msg.ID, err)
+		}
+		if errors.Is(err, context.DeadlineExceeded) {
+			respStatusCode = 504
+			respBody = []byte(proxyTimeoutHTML)
+			return
+		}
+		respBody = []byte("proxy request error: " + err.Error())
+		return
+	}
+	defer httpResp.Body.Close()
+
+	// 收集响应头（过滤局域网敏感信息）
+	stripHeaders := map[string]bool{
+		"Server": true, "X-Powered-By": true,
+		"X-Forwarded-For": true, "X-Forwarded-Proto": true,
+		"X-Forwarded-Host": true, "X-Forwarded-Port": true,
+		"X-Real-Ip": true, "X-Real-Port": true,
+		"X-Runtime": true, "Via": true,
+	}
+	respHeaders = make(map[string]string)
+	for k, v := range httpResp.Header {
+		if stripHeaders[k] {
+			continue
+		}
+		respHeaders[k] = strings.Join(v, ", ")
+	}
+
+	// 读取响应体
+	respBody, err = io.ReadAll(httpResp.Body)
+	if err != nil {
+		if frpDebug {
+			debugLog.Infof("[FRP] 代理请求: 读取响应体失败 (id=%s): %v", msg.ID, err)
+		}
+		respStatusCode = 502
+		respBody = []byte("proxy read body error: " + err.Error())
+		return
+	}
+
+	respStatusCode = httpResp.StatusCode
+
+	if frpDebug {
+		debugLog.Infof("[FRP] 代理请求完成: id=%s, status=%d, 响应体长度=%d", msg.ID, httpResp.StatusCode, len(respBody))
+	}
+
+	// 小响应（≤1MB）：单条消息
+	const chunkThreshold = 1 << 20
+	if len(respBody) <= chunkThreshold {
+		return // defer 会发送
+	}
+
+	// 大响应（>1MB）：分块流式传输
+	sent = true
+
+	// 1. 发送 http_response_start
+	start := frpWSResponseStart{
+		Type:       "http_response_start",
+		ID:         msg.ID,
+		StatusCode: respStatusCode,
+		Headers:    respHeaders,
+	}
+	startData, _ := json.Marshal(start)
+	select {
+	case fc.wch <- writeJob{data: startData}:
+	default:
+		if frpDebug {
+			debugLog.Infof("[FRP] 写队列满，丢弃流式响应 (id=%s)", msg.ID)
+		}
+		return
+	}
+
+	// 2. 分块发送 body（64KB/块）
+	const chunkSize = 64 << 10
+	for offset := 0; offset < len(respBody); offset += chunkSize {
+		end := offset + chunkSize
+		if end > len(respBody) {
+			end = len(respBody)
+		}
+		chunk := frpWSChunk{
+			Type:  "http_chunk",
+			ID:    msg.ID,
+			Chunk: respBody[offset:end],
+			Final: end == len(respBody),
+		}
+		chunkData, _ := json.Marshal(chunk)
+		select {
+		case fc.wch <- writeJob{data: chunkData}:
+		default:
+			if frpDebug {
+				debugLog.Infof("[FRP] 写队列满，丢弃流式响应块 (id=%s)", msg.ID)
+			}
+			return
+		}
+	}
+
+	// 清理 defer 不需要的数据
+	respBody = nil
+}
+
+// handleFrpWsProxy 处理 BeerWebFrp 的 WebSocket 代理请求
+// 收到 type:"ws" 消息后，连接本地 WebSocket 服务并双向转发数据帧
+func handleFrpWsProxy(fc *frpCon, msg *frpWSMessage) {
+	streamID := msg.ID
+
+	if dto.ServerConfig.Router == nil || dto.ServerConfig.Router.Http == nil {
+		sendFrpWsStatus(fc, streamID, -1)
+		return
+	}
+
+	localAddr := strings.Replace(dto.ServerConfig.Router.Http.Addr, "0.0.0.0", "127.0.0.1", 1)
+	wsURL := "ws://" + localAddr + msg.Path
+
+	if frpDebug {
+		debugLog.Infof("[FRP] WS代理: 连接本地WS %s (id=%s)", wsURL, streamID)
+	}
+
+	// 转换请求头为 http.Header 格式
+	var wsHeaders http.Header
+	if len(msg.Headers) > 0 {
+		wsHeaders = make(http.Header, len(msg.Headers))
+		for k, v := range msg.Headers {
+			wsHeaders.Set(k, v)
+		}
+	}
+	localConn, _, err := websocket.DefaultDialer.Dial(wsURL, wsHeaders)
+	if err != nil {
+		if frpDebug {
+			debugLog.Infof("[FRP] WS代理: 本地WS连接失败 (id=%s): %v", streamID, err)
+		}
+		sendFrpWsStatus(fc, streamID, -1)
+		return
+	}
+
+	// 注册流
+	frpWsStreamsMu.Lock()
+	frpWsStreams[streamID] = localConn
+	frpWsStreamsMu.Unlock()
+
+	if frpDebug {
+		debugLog.Infof("[FRP] WS代理: 本地WS连接成功 (id=%s)", streamID)
+	}
+
+	// 本地 → 服务端：读取本地 WS 消息并回传
+	go func() {
+		defer func() {
+			localConn.Close()
+			frpWsStreamsMu.Lock()
+			delete(frpWsStreams, streamID)
+			frpWsStreamsMu.Unlock()
+		}()
+		for {
+			_, frame, err := localConn.ReadMessage()
+			if err != nil {
+				if frpDebug {
+					debugLog.Infof("[FRP] WS代理: 本地WS读取关闭 (id=%s): %v", streamID, err)
+				}
+				sendFrpWsStatus(fc, streamID, -1)
+				return
+			}
+			sendFrpWsFrame(fc, streamID, frame)
+		}
+	}()
+}
+
+// handleFrpWsFrame 处理来自 BeerWebFrp 的 ws_frame 消息
+// Base64 解码 body 后写入本地 WS 连接
+func handleFrpWsFrame(msg *frpWSMessage) {
+	streamID := msg.ID
+
+	frpWsStreamsMu.Lock()
+	localConn, ok := frpWsStreams[streamID]
+	frpWsStreamsMu.Unlock()
+
+	if !ok {
+		if frpDebug {
+			debugLog.Infof("[FRP] WS代理: 收到ws_frame但流不存在 (id=%s)", streamID)
+		}
+		return
+	}
+
+	if err := localConn.WriteMessage(websocket.BinaryMessage, msg.Body); err != nil {
+		if frpDebug {
+			debugLog.Infof("[FRP] WS代理: 写入本地WS失败 (id=%s): %v", streamID, err)
+		}
+	}
+}
+
+// handleFrpWsClose 处理来自 BeerWebFrp 的 ws_close 消息
+// 关闭本地 WS 连接并清理流
+func handleFrpWsClose(msg *frpWSMessage) {
+	streamID := msg.ID
+
+	frpWsStreamsMu.Lock()
+	localConn, ok := frpWsStreams[streamID]
+	if ok {
+		delete(frpWsStreams, streamID)
+	}
+	frpWsStreamsMu.Unlock()
+
+	if ok && localConn != nil {
+		if frpDebug {
+			debugLog.Infof("[FRP] WS代理: 关闭本地WS流 (id=%s)", streamID)
+		}
+		localConn.Close()
+	}
+}
+
+// sendFrpWsFrame 向服务端发送 WS 数据帧响应（同步等待写入结果）
+func sendFrpWsFrame(fc *frpCon, streamID string, frame []byte) {
+	data, _ := json.Marshal(frpWSResponse{
+		ID:         streamID,
+		StatusCode: 0,
+		Headers:    map[string]string{},
+		Body:       frame,
+	})
+	done := make(chan error, 1)
+	select {
+	case fc.wch <- writeJob{data: data, done: done}:
+		err := <-done
+		if err != nil && frpDebug {
+			debugLog.Infof("[FRP] WS代理: 发送数据帧失败 (id=%s): %v", streamID, err)
+		}
+	default:
+		if frpDebug {
+			debugLog.Infof("[FRP] WS代理: 发送数据帧失败（写队列满） (id=%s)", streamID)
+		}
+	}
+}
+
+// sendFrpWsStatus 向服务端发送 WS 状态通知（同步等待写入结果）
+func sendFrpWsStatus(fc *frpCon, streamID string, statusCode int) {
+	if frpDebug {
+		debugLog.Infof("[FRP] WS代理: 发送状态通知 streamID=%s, statusCode=%d", streamID, statusCode)
+	}
+	data, _ := json.Marshal(frpWSResponse{
+		ID:         streamID,
+		StatusCode: statusCode,
+	})
+	done := make(chan error, 1)
+	select {
+	case fc.wch <- writeJob{data: data, done: done}:
+		<-done
+	default:
+	}
+}
+
+// closeAllFrpWsStreams 断开所有本地 WS 代理连接
+func closeAllFrpWsStreams() {
+	frpWsStreamsMu.Lock()
+	defer frpWsStreamsMu.Unlock()
+	if frpDebug && len(frpWsStreams) > 0 {
+		debugLog.Infof("[FRP] WS代理: 清理%d个本地WS流", len(frpWsStreams))
+	}
+	for id, conn := range frpWsStreams {
+		conn.Close()
+		delete(frpWsStreams, id)
+	}
+}
+
+// DisconnectFrp 断开所有 BeerWebFrp 连接
+func DisconnectFrp() {
+	if frpDebug {
+		debugLog.Infof("[FRP] DisconnectFrp 被调用, 断开所有连接")
+	}
+
+	frpMutex.Lock()
+	defer frpMutex.Unlock()
+
+	if frpCancel != nil {
+		frpCancel()
+		frpCancel = nil
+	}
+
+	// 关闭连接
+	if frpConn != nil {
+		frpConn.cancel()
+		frpConn = nil
+	}
+
+	closeAllFrpWsStreams()
+
+	if frpDebug {
+		debugLog.Infof("[FRP] DisconnectFrp 完成")
+	}
+}
+
+// StartFtp 启动 FTP 服务并打印局域网链接
+func StartFtp(port int, debug bool, username, password string, tlsEnabled bool, pasvPortStart, pasvPortEnd int) {
+	// 先停止旧的 FTP 服务
+	StopFtp()
+
+	prefix := "[FTP]"
+	if tlsEnabled {
+		prefix = "[FTPS]"
+	}
+
+	// 配置 TLS
+	if tlsEnabled {
+		tlsCfg, err := utils.GenerateSelfSignedTLS()
+		if err != nil {
+			debugLog.Errorf(prefix+" TLS 证书生成失败: %v", err)
+		} else {
+			ftpTlsConfig = tlsCfg
+		}
+	} else {
+		ftpTlsConfig = nil
+	}
+
+	// 打印局域网链接
+	lanIP := getLanIP()
+	if lanIP != "127.0.0.1" {
+		fmt.Printf("%s 局域网链接: ftp://%s:%d\n", prefix, lanIP, port)
+	}
+
+	ftpUser = username
+	ftpPass = password
+
+	// 设置 PASV 端口范围
+	if pasvPortStart > 0 && pasvPortEnd > 0 && pasvPortStart <= pasvPortEnd {
+		ftpPasvPortMin = pasvPortStart
+		ftpPasvPortMax = pasvPortEnd
+	} else {
+		ftpPasvPortMin = 32000
+		ftpPasvPortMax = 32005
+	}
+
+	if debug {
+		debugLog.Infof(prefix+" FTP 服务已启动，端口: %d, PASV 端口范围: %d-%d", port, ftpPasvPortMin, ftpPasvPortMax)
+		debugLog.Infof(prefix+" 根目录映射: %s", utils.FtpDir())
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	ftpCancel = cancel
+
+	// 异步启动 FTP 服务端
+	go func() {
+		if err := runFtpServer(ctx, port, debug); err != nil {
+			debugLog.Errorf(prefix+" 服务异常: %v", err)
+		}
+	}()
+}
+
+// StopFtp 停止 FTP 服务
+func StopFtp() {
+	if ftpCancel != nil {
+		ftpCancel()
+		ftpCancel = nil
+	}
+	if ftpListener != nil {
+		ftpListener.Close()
+		ftpListener = nil
+	}
+}
+
+// StartSftp 启动 SFTP 服务并打印局域网链接
+func StartSftp(port int, debug bool, username, password string) {
+	// 先停止旧的 SFTP 服务
+	StopSftp()
+
+	// 打印局域网链接
+	lanIP := getLanIP()
+	if lanIP != "127.0.0.1" {
+		fmt.Printf("[SFTP] 局域网链接: sftp://%s:%d\n", lanIP, port)
+	}
+
+	sftpUser = username
+	sftpPass = password
+
+	if debug {
+		debugLog.Infof("[SFTP] SFTP 服务已启动，端口: %d", port)
+		debugLog.Infof("[SFTP] 根目录映射: %s", utils.FtpDir())
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	sftpCancel = cancel
+
+	// 异步启动 SFTP 服务端
+	go func() {
+		if err := runSftpServer(ctx, port, debug); err != nil {
+			debugLog.Errorf("[SFTP] 服务异常: %v", err)
+		}
+	}()
+}
+
+// StopSftp 停止 SFTP 服务
+func StopSftp() {
+	if sftpCancel != nil {
+		sftpCancel()
+		sftpCancel = nil
+	}
+	if sftpListener != nil {
+		sftpListener.Close()
+		sftpListener = nil
+	}
+}
+
+type HttpOpUiConfig_qq struct {
+	Open     bool   `json:"open"`
+	Dic      string `json:"dic"`
+	Path     string `json:"path"`
+	Appid    string `json:"appid"`
+	Secret   string `json:"secret"`
+	AtCompat bool   `json:"at_compat"`
+	Debug    bool   `json:"debug"`
+	Remark   string `json:"remark"`
+}
+
+type HttpOpUiConfig_qq_instance struct {
+	Section string            `json:"section"`
+	Config  HttpOpUiConfig_qq `json:"config"`
+}
+
+type HttpOpUiConfig_qq_list struct {
+	Instances []HttpOpUiConfig_qq_instance `json:"instances"`
 }
 
 type HttpOpUiConfig_napcat struct {
@@ -76,6 +1002,7 @@ type HttpOpUiConfig_secluded struct {
 	Dic     string `json:"dic"`
 	Address string `json:"address"`
 	Token   string `json:"token"`
+	Debug   bool   `json:"debug"`
 }
 
 type HttpOpUiConfig_EncryptDic struct {
@@ -105,6 +1032,118 @@ type HttpOpUiInstallStatusResponse struct {
 	Error     string   `json:"error,omitempty"`
 }
 
+// ==================== 异步安装任务管理 ====================
+
+type InstallTask struct {
+	ID        string   `json:"id"`
+	Component string   `json:"component"`
+	Status    string   `json:"status"` // "running", "completed", "failed", "cancelled"
+	Output    []string `json:"output"`
+	Error     string   `json:"error,omitempty"`
+	Progress  float64  `json:"progress"` // 下载进度 0-100
+
+	cancelled bool
+	mu        sync.RWMutex
+}
+
+func (t *InstallTask) Cancel() {
+	t.mu.Lock()
+	t.cancelled = true
+	t.mu.Unlock()
+}
+
+func (t *InstallTask) IsCancelled() bool {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return t.cancelled
+}
+
+func (t *InstallTask) addOutput(msg string) {
+	t.mu.Lock()
+	t.Output = append(t.Output, msg)
+	t.mu.Unlock()
+}
+
+func (t *InstallTask) setProgress(p float64) {
+	t.mu.Lock()
+	if p > 100 {
+		p = 100
+	}
+	t.Progress = p
+	t.mu.Unlock()
+}
+
+func (t *InstallTask) snapshot() (status string, output []string, errMsg string, progress float64) {
+	t.mu.RLock()
+	defer t.mu.RUnlock()
+	status = t.Status
+	output = make([]string, len(t.Output))
+	copy(output, t.Output)
+	errMsg = t.Error
+	progress = t.Progress
+	return
+}
+
+func (t *InstallTask) finish(err error) {
+	t.mu.Lock()
+	if t.cancelled {
+		t.Status = "cancelled"
+		t.Error = "用户取消"
+	} else if err != nil {
+		t.Status = "failed"
+		t.Error = err.Error()
+	} else {
+		t.Status = "completed"
+		t.Progress = 100
+	}
+	t.mu.Unlock()
+	// 3 分钟后自动清理，给前端足够时间轮询到最终状态
+	time.AfterFunc(3*time.Minute, func() {
+		installTaskStore.Delete(t.ID)
+	})
+}
+
+var installTaskStore sync.Map // map[string]*InstallTask
+
+func generateTaskID() string {
+	return fmt.Sprintf("%d", time.Now().UnixNano())
+}
+
+// findRunningTaskForComponent 检查指定组件是否已有正在运行的任务
+func findRunningTaskForComponent(component string) *InstallTask {
+	var found *InstallTask
+	installTaskStore.Range(func(key, value interface{}) bool {
+		task := value.(*InstallTask)
+		task.mu.RLock()
+		status := task.Status
+		comp := task.Component
+		task.mu.RUnlock()
+		if comp == component && (status == "running") {
+			found = task
+			return false
+		}
+		return true
+	})
+	return found
+}
+
+func opuiCheckKey(r *http.Request, hType string) bool {
+	if hType == "check_opui_key" || hType == "get_opui" || hType == "get_bg" {
+		return true // 密钥校验和查询配置状态免鉴权
+	}
+	ff := utils.NewFileQueue(dto.CONFIG_SYSTEM_PATH)
+	f, err := ff.LoadIni()
+	if err != nil {
+		return false
+	}
+	storedKey := f.Section("管理面板").Key("密钥").String()
+	if storedKey == "" {
+		return true // 未配置密钥，放行
+	}
+	reqKey := r.Header.Get("X-OPUI-Key")
+	return reqKey == storedKey
+}
+
 func OpUI(w http.ResponseWriter, r *http.Request, getpath string) {
 	if getpath == "" {
 		http.Redirect(w, r, dto.ServerConfig.OPUI.Addr+"/", http.StatusFound)
@@ -124,6 +1163,12 @@ func OpUI(w http.ResponseWriter, r *http.Request, getpath string) {
 		}
 
 		w.Header().Set("Content-Type", "application/json; charset=utf-8")
+
+		if !opuiCheckKey(r, h.Type) {
+			http.Error(w, `{"status":"error","error":"unauthorized"}`, http.StatusUnauthorized)
+			return
+		}
+
 		switch h.Type {
 		case "get_server":
 			ff := utils.NewFileQueue(dto.CONFIG_SYSTEM_PATH)
@@ -137,7 +1182,12 @@ func OpUI(w http.ResponseWriter, r *http.Request, getpath string) {
 			j.CORS = d.Key("跨域").MustBool(false)
 			j.CORSOrigins = d.Key("跨域白名单").String()
 			j.TempCleanupInterval = d.Key("临时读写清理周期").MustInt(60)
-			if r, err := json.Marshal(j); err == nil {
+			j.TLS = d.Key("TLS").MustBool(false)
+			j.CertFile = d.Key("TLS证书文件").String()
+			j.KeyFile = d.Key("TLS密钥文件").String()
+			if r, err := json.Marshal(j); err != nil {
+				w.Write([]byte(`{"server":"","cors":false,"cors_origins":"","temp_cleanup_interval":60,"tls":false,"cert_file":"","key_file":""}`))
+			} else {
 				w.Write(r)
 			}
 			return
@@ -158,14 +1208,173 @@ func OpUI(w http.ResponseWriter, r *http.Request, getpath string) {
 			d.Key("跨域").SetValue(strconv.FormatBool(j.CORS))
 			d.Key("跨域白名单").SetValue(j.CORSOrigins)
 			d.Key("临时读写清理周期").SetValue(strconv.Itoa(j.TempCleanupInterval))
+			d.Key("TLS").SetValue(strconv.FormatBool(j.TLS))
+			d.Key("TLS证书文件").SetValue(j.CertFile)
+			d.Key("TLS密钥文件").SetValue(j.KeyFile)
 			if err := ff.SaveIni(f); err != nil {
 				utils.ErrorStop("系统配置保存失败")
 			}
 			dto.ServerConfig.Router.Cors = j.CORS
 			dto.ServerConfig.Router.CorsOrigins = j.CORSOrigins
 			dto.ServerConfig.Router.TempCleanupInterval = j.TempCleanupInterval
+			dto.ServerConfig.Router.TLS = j.TLS
+			dto.ServerConfig.Router.CertFile = j.CertFile
+			dto.ServerConfig.Router.KeyFile = j.KeyFile
 			// 处理配置请求
 			w.Write([]byte(`{"status":"ok"}`))
+			return
+
+		case "get_opui":
+			ff := utils.NewFileQueue(dto.CONFIG_SYSTEM_PATH)
+			f, err := ff.LoadIni()
+			if err != nil {
+				debugLog.Errorf("[OPUI] get_opui LoadIni failed: %v", err)
+				w.Write([]byte(`{"open":false,"path":"","secret":""}`))
+				return
+			}
+			d := f.Section("管理面板")
+			var j HttpOpUiConfig_opui
+			j.Open = d.Key("启用").MustBool(false)
+			j.Path = d.Key("访问路径").String()
+			j.Secret = d.Key("密钥").String()
+			r, err := json.Marshal(j)
+			if err != nil {
+				debugLog.Errorf("[OPUI] get_opui json.Marshal failed: %v", err)
+				w.Write([]byte(`{"open":false,"path":"","secret":""}`))
+				return
+			}
+			w.Write(r)
+			return
+
+		case "save_opui":
+			var j HttpOpUiConfig_opui
+			if err := json.Unmarshal(h.Data, &j); err != nil {
+				http.Error(w, `{"status":"error","error":"invalid json"}`, http.StatusBadRequest)
+				return
+			}
+			ff := utils.NewFileQueue(dto.CONFIG_SYSTEM_PATH)
+			f, err := ff.LoadIni()
+			if err != nil {
+				utils.ErrorStop("系统配置不存在")
+			}
+			d := f.Section("管理面板")
+			d.Key("启用").SetValue(strconv.FormatBool(j.Open))
+			d.Key("访问路径").SetValue(j.Path)
+			d.Key("密钥").SetValue(j.Secret)
+			ff.SaveIni(f)
+
+			if j.Open {
+				dto.ServerConfig.OPUI = &dto.OPUI{
+					Addr:   "/" + j.Path,
+					Secret: j.Secret,
+				}
+			} else {
+				dto.ServerConfig.OPUI = nil
+			}
+			w.Write([]byte(`{"status":"ok"}`))
+			return
+
+		case "get_bg":
+			db, err := dic_funcs.GetGlobalDB()
+			if err != nil {
+				w.Write([]byte(`{"type":"","data":""}`))
+				return
+			}
+			if err := dic_funcs.EnsureFsTable(db, "opui_bg"); err != nil {
+				w.Write([]byte(`{"type":"","data":""}`))
+				return
+			}
+			var bgData HttpOpUiConfig_bg
+			var data string
+			err = db.QueryRow(`SELECT data FROM "opui_bg" WHERE key='bg'`).Scan(&data)
+			if err != nil {
+				w.Write([]byte(`{"type":"","data":""}`))
+				return
+			}
+			if err := json.Unmarshal([]byte(data), &bgData); err != nil {
+				// 旧格式：data 为纯文本，需同时读取 type 列
+				var bgType string
+				err2 := db.QueryRow(`SELECT type FROM "opui_bg" WHERE key='bg'`).Scan(&bgType)
+				if err2 != nil {
+					bgData.Type = ""
+				} else {
+					bgData.Type = bgType
+				}
+				bgData.Data = data
+			}
+			r, _ := json.Marshal(bgData)
+			w.Write(r)
+			return
+
+		case "save_bg":
+			var j HttpOpUiConfig_bg
+			if err := json.Unmarshal(h.Data, &j); err != nil {
+				http.Error(w, `{"status":"error","error":"invalid json"}`, http.StatusBadRequest)
+				return
+			}
+			db, err := dic_funcs.GetGlobalDB()
+			if err != nil {
+				http.Error(w, `{"status":"error","error":"db not ready"}`, http.StatusInternalServerError)
+				return
+			}
+			if err := dic_funcs.EnsureFsTable(db, "opui_bg"); err != nil {
+				http.Error(w, `{"status":"error","error":"db init failed"}`, http.StatusInternalServerError)
+				return
+			}
+			bgJson, _ := json.Marshal(j)
+			now := time.Now().Unix()
+			// 尝试新表结构（无 type 列），失败则回退旧表结构
+			_, err = db.Exec(`
+				INSERT INTO "opui_bg" (key, data, updated_at)
+				VALUES ('bg', ?, ?)
+				ON CONFLICT(key) DO UPDATE SET
+					data = excluded.data,
+					updated_at = excluded.updated_at
+			`, string(bgJson), now)
+			if err != nil {
+				_, err = db.Exec(`
+					INSERT INTO "opui_bg" (key, type, data, updated_at)
+					VALUES ('bg', ?, ?, ?)
+					ON CONFLICT(key) DO UPDATE SET
+						type = excluded.type,
+						data = excluded.data,
+						updated_at = excluded.updated_at
+				`, j.Type, string(bgJson), now)
+			}
+			if err != nil {
+				http.Error(w, `{"status":"error","error":"save failed"}`, http.StatusInternalServerError)
+				return
+			}
+			w.Write([]byte(`{"status":"ok"}`))
+			return
+
+		case "check_opui_key":
+			var j struct {
+				Key string `json:"key"`
+			}
+			if len(h.Data) == 0 {
+				debugLog.Errorf("[OPUI] check_opui_key: h.Data is nil or empty")
+				w.Write([]byte(`{"valid":false}`))
+				return
+			}
+			if err := json.Unmarshal(h.Data, &j); err != nil {
+				debugLog.Errorf("[OPUI] check_opui_key: json.Unmarshal failed, data=%s, err=%v", string(h.Data), err)
+				w.Write([]byte(`{"valid":false}`))
+				return
+			}
+			ff := utils.NewFileQueue(dto.CONFIG_SYSTEM_PATH)
+			f, err := ff.LoadIni()
+			if err != nil {
+				w.Write([]byte(`{"valid":false}`))
+				return
+			}
+			d := f.Section("管理面板")
+			storedKey := d.Key("密钥").String()
+			if storedKey != "" && storedKey == j.Key {
+				w.Write([]byte(`{"valid":true}`))
+			} else {
+				w.Write([]byte(`{"valid":false}`))
+			}
 			return
 
 		case "get_websocket":
@@ -246,27 +1455,322 @@ func OpUI(w http.ResponseWriter, r *http.Request, getpath string) {
 			w.Write([]byte(`{"status":"ok"}`))
 			return
 
-		case "get_qq":
+		case "toggle_ngrok":
+			var j struct {
+				Open bool `json:"open"`
+			}
+			if err := json.Unmarshal(h.Data, &j); err != nil {
+				http.Error(w, `{"status":"error","error":"invalid json"}`, http.StatusBadRequest)
+				return
+			}
+			ff := utils.NewFileQueue(dto.CONFIG_SYSTEM_PATH)
+			f, err := ff.LoadIni()
+			if err != nil {
+				utils.ErrorStop("系统配置不存在")
+			}
+			d := f.Section("Ngrok")
+			d.Key("启用").SetValue(strconv.FormatBool(j.Open))
+			ff.SaveIni(f)
+
+			if j.Open {
+				token := d.Key("密钥").String()
+				domain := d.Key("访问链接").String()
+				dto.ServerConfig.Ngrok = &dto.NgrokConfig{
+					Addr:  domain,
+					Token: token,
+				}
+				url, err := StartNgrok(token, domain)
+				if err != nil {
+					w.Write([]byte(`{"status":"error","error":"` + err.Error() + `"}`))
+					return
+				}
+				w.Write([]byte(`{"status":"ok","url":"` + url + `"}`))
+			} else {
+				StopNgrok()
+				dto.ServerConfig.Ngrok = nil
+				w.Write([]byte(`{"status":"ok"}`))
+			}
+			return
+
+		case "get_frp":
+			ff := utils.NewFileQueue(dto.CONFIG_SYSTEM_PATH)
+			f, err := ff.LoadIni()
+			if err != nil {
+				utils.ErrorStop("系统配置不存在")
+			}
+			d := f.Section("FRP")
+			var j HttpOpUiConfig_frp
+			j.Open = d.Key("启用").MustBool(false)
+			j.ServerAddr = d.Key("服务端地址").String()
+			j.Token = d.Key("令牌").String()
+			j.Debug = d.Key("调试").MustBool(false)
+			r, _ := json.Marshal(j)
+			w.Write(r)
+			return
+
+		case "save_frp":
+			var j HttpOpUiConfig_frp
+			if err := json.Unmarshal(h.Data, &j); err != nil {
+				http.Error(w, `{"status":"error","error":"invalid json"}`, http.StatusBadRequest)
+				return
+			}
+			// 自动将 http/https 转换为 ws/wss
+			if strings.HasPrefix(j.ServerAddr, "https://") {
+				j.ServerAddr = "wss://" + strings.TrimPrefix(j.ServerAddr, "https://")
+			} else if strings.HasPrefix(j.ServerAddr, "http://") {
+				j.ServerAddr = "ws://" + strings.TrimPrefix(j.ServerAddr, "http://")
+			}
+			ff := utils.NewFileQueue(dto.CONFIG_SYSTEM_PATH)
+			f, err := ff.LoadIni()
+			if err != nil {
+				utils.ErrorStop("系统配置不存在")
+			}
+			d := f.Section("FRP")
+			d.Key("启用").SetValue(strconv.FormatBool(j.Open))
+			d.Key("服务端地址").SetValue(j.ServerAddr)
+			d.Key("令牌").SetValue(j.Token)
+			d.Key("调试").SetValue(strconv.FormatBool(j.Debug))
+			ff.SaveIni(f)
+
+			frpDebug = j.Debug
+
+			if j.Open {
+				// 开启：建立 WebSocket 连接
+				ConnectFrp(j.ServerAddr, j.Token)
+				w.Write([]byte(`{"status":"ok"}`))
+			} else {
+				// 关闭：断开连接
+				DisconnectFrp()
+				w.Write([]byte(`{"status":"ok"}`))
+			}
+			return
+
+		case "get_ftp":
+			ff := utils.NewFileQueue(dto.CONFIG_SYSTEM_PATH)
+			f, err := ff.LoadIni()
+			if err != nil {
+				utils.ErrorStop("系统配置不存在")
+			}
+			d := f.Section("FTP")
+			var j HttpOpUiConfig_ftp
+			j.Open = d.Key("启用").MustBool(false)
+			j.Port = d.Key("端口").MustInt(21)
+			j.Username = d.Key("用户名").String()
+			j.Password = d.Key("密码").String()
+			j.Debug = d.Key("调试").MustBool(false)
+			j.Tls = d.Key("TLS").MustBool(false)
+			j.PasvPortStart = d.Key("PASV端口起始").MustInt(32000)
+			j.PasvPortEnd = d.Key("PASV端口结束").MustInt(32005)
+			r, _ := json.Marshal(j)
+			w.Write(r)
+			return
+
+		case "save_ftp":
+			var j HttpOpUiConfig_ftp
+			if err := json.Unmarshal(h.Data, &j); err != nil {
+				http.Error(w, `{"status":"error","error":"invalid json"}`, http.StatusBadRequest)
+				return
+			}
+			// 校验数据端口范围
+			if j.PasvPortStart < 1 || j.PasvPortStart > 65535 || j.PasvPortEnd < 1 || j.PasvPortEnd > 65535 {
+				http.Error(w, `{"status":"error","error":"数据端口范围必须在 1-65535 之间"}`, http.StatusBadRequest)
+				return
+			}
+			if j.PasvPortStart > j.PasvPortEnd {
+				http.Error(w, `{"status":"error","error":"起始端口不能大于结束端口"}`, http.StatusBadRequest)
+				return
+			}
+			ff := utils.NewFileQueue(dto.CONFIG_SYSTEM_PATH)
+			f, err := ff.LoadIni()
+			if err != nil {
+				utils.ErrorStop("系统配置不存在")
+			}
+			d := f.Section("FTP")
+			d.Key("启用").SetValue(strconv.FormatBool(j.Open))
+			d.Key("端口").SetValue(strconv.Itoa(j.Port))
+			d.Key("用户名").SetValue(j.Username)
+			d.Key("密码").SetValue(j.Password)
+			d.Key("调试").SetValue(strconv.FormatBool(j.Debug))
+			d.Key("TLS").SetValue(strconv.FormatBool(j.Tls))
+			d.Key("PASV端口起始").SetValue(strconv.Itoa(j.PasvPortStart))
+			d.Key("PASV端口结束").SetValue(strconv.Itoa(j.PasvPortEnd))
+			ff.SaveIni(f)
+
+			if j.Open {
+				StartFtp(j.Port, j.Debug, j.Username, j.Password, j.Tls, j.PasvPortStart, j.PasvPortEnd)
+			} else {
+				StopFtp()
+			}
+
+			w.Write([]byte(`{"status":"ok"}`))
+			return
+
+		case "get_sftp":
+			ff := utils.NewFileQueue(dto.CONFIG_SYSTEM_PATH)
+			f, err := ff.LoadIni()
+			if err != nil {
+				utils.ErrorStop("系统配置不存在")
+			}
+			d := f.Section("SFTP")
+			var j HttpOpUiConfig_sftp
+			j.Open = d.Key("启用").MustBool(false)
+			j.Port = d.Key("端口").MustInt(22)
+			j.Username = d.Key("用户名").String()
+			j.Password = d.Key("密码").String()
+			j.Debug = d.Key("调试").MustBool(false)
+			r, _ := json.Marshal(j)
+			w.Write(r)
+			return
+
+		case "save_sftp":
+			var j HttpOpUiConfig_sftp
+			if err := json.Unmarshal(h.Data, &j); err != nil {
+				http.Error(w, `{"status":"error","error":"invalid json"}`, http.StatusBadRequest)
+				return
+			}
+			ff := utils.NewFileQueue(dto.CONFIG_SYSTEM_PATH)
+			f, err := ff.LoadIni()
+			if err != nil {
+				utils.ErrorStop("系统配置不存在")
+			}
+			d := f.Section("SFTP")
+			d.Key("启用").SetValue(strconv.FormatBool(j.Open))
+			d.Key("端口").SetValue(strconv.Itoa(j.Port))
+			d.Key("用户名").SetValue(j.Username)
+			d.Key("密码").SetValue(j.Password)
+			d.Key("调试").SetValue(strconv.FormatBool(j.Debug))
+			ff.SaveIni(f)
+
+			if j.Open {
+				StartSftp(j.Port, j.Debug, j.Username, j.Password)
+			} else {
+				StopSftp()
+			}
+
+			w.Write([]byte(`{"status":"ok"}`))
+			return
+
+		case "get_qq", "get_qq_list":
 			ff := utils.NewFileQueue(dto.CONFIG_PATH)
 			f, err := ff.LoadIni()
 			if err != nil {
 				utils.ErrorStop("系统配置不存在")
 			}
-			d := f.Section("QQ")
-			var j HttpOpUiConfig_qq
-			j.Open = d.Key("启用").MustBool(false)
-			j.Dic = d.Key("词库").String()
-			j.Path = d.Key("访问路径").String()
-			j.Appid = d.Key("APPID").String()
-			j.Secret = d.Key("密钥").String()
-			r, _ := json.Marshal(j)
+			var list HttpOpUiConfig_qq_list
+			for _, sec := range f.Sections() {
+				secName := sec.Name()
+				if secName == "QQ" || (strings.HasPrefix(secName, "QQ") && len(secName) > 2) {
+					d := f.Section(secName)
+					var j HttpOpUiConfig_qq
+					j.Open = d.Key("启用").MustBool(false)
+					j.Dic = d.Key("词库").String()
+					j.Path = d.Key("访问路径").String()
+					j.Appid = d.Key("APPID").String()
+					j.Secret = d.Key("密钥").String()
+					j.AtCompat = d.Key("全量艾特兼容").MustBool(false)
+					j.Debug = d.Key("调试打印").MustBool(false)
+					j.Remark = d.Key("备注").String()
+					list.Instances = append(list.Instances, HttpOpUiConfig_qq_instance{
+						Section: secName,
+						Config:  j,
+					})
+				}
+			}
+			r, _ := json.Marshal(list)
 			w.Write(r)
 			return
 
 		case "save_qq":
-			var j HttpOpUiConfig_qq
+			var j HttpOpUiConfig_qq_instance
 			if err := json.Unmarshal(h.Data, &j); err != nil {
 				http.Error(w, `{"status":"error","error":"invalid json"}`, http.StatusBadRequest)
+				return
+			}
+			sectionName := j.Section
+			if sectionName == "" {
+				sectionName = "QQ"
+			}
+			ff := utils.NewFileQueue(dto.CONFIG_PATH)
+			f, err := ff.LoadIni()
+			if err != nil {
+				utils.ErrorStop("系统配置不存在")
+			}
+			d := f.Section(sectionName)
+			d.Key("启用").SetValue(strconv.FormatBool(j.Config.Open))
+			d.Key("词库").SetValue(j.Config.Dic)
+			d.Key("访问路径").SetValue(j.Config.Path)
+			d.Key("APPID").SetValue(j.Config.Appid)
+			d.Key("密钥").SetValue(j.Config.Secret)
+			d.Key("全量艾特兼容").SetValue(strconv.FormatBool(j.Config.AtCompat))
+			d.Key("调试打印").SetValue(strconv.FormatBool(j.Config.Debug))
+			d.Key("备注").SetValue(j.Config.Remark)
+			dto.LoadConfig_qq(d, sectionName)
+			ff.SaveIni(f)
+			w.Write([]byte(`{"status":"ok"}`))
+			return
+
+		case "add_qq":
+			ff := utils.NewFileQueue(dto.CONFIG_PATH)
+			f, err := ff.LoadIni()
+			if err != nil {
+				utils.ErrorStop("系统配置不存在")
+			}
+			// 找到下一个可用的编号
+			maxNum := 0
+			for _, sec := range f.Sections() {
+				name := sec.Name()
+				if strings.HasPrefix(name, "QQ") {
+					if name == "QQ" {
+						if maxNum < 1 {
+							maxNum = 1
+						}
+					} else {
+						numStr := name[2:]
+						if num, err := strconv.Atoi(numStr); err == nil && num > maxNum {
+							maxNum = num
+						}
+					}
+				}
+			}
+			newNum := maxNum + 1
+			newSection := "QQ" + strconv.Itoa(newNum)
+			d := f.Section(newSection)
+			d.Key("启用").SetValue("false")
+			d.Key("词库").SetValue("private/bot/qq" + strconv.Itoa(newNum))
+			d.Key("访问路径").SetValue("qq-bot" + strconv.Itoa(newNum))
+			d.Key("APPID").SetValue("")
+			d.Key("密钥").SetValue("")
+			d.Key("全量艾特兼容").SetValue("false")
+			d.Key("调试打印").SetValue("false")
+			d.Key("备注").SetValue("")
+			ff.SaveIni(f)
+			j := HttpOpUiConfig_qq_instance{
+				Section: newSection,
+				Config: HttpOpUiConfig_qq{
+					Open:     false,
+					Dic:      "private/bot/qq" + strconv.Itoa(newNum),
+					Path:     "qq-bot" + strconv.Itoa(newNum),
+					Appid:    "",
+					Secret:   "",
+					AtCompat: false,
+					Debug:    false,
+					Remark:   "",
+				},
+			}
+			r, _ := json.Marshal(j)
+			w.Write(r)
+			return
+
+		case "del_qq":
+			var j struct {
+				Section string `json:"section"`
+			}
+			if err := json.Unmarshal(h.Data, &j); err != nil {
+				http.Error(w, `{"status":"error","error":"invalid json"}`, http.StatusBadRequest)
+				return
+			}
+			if j.Section == "" || j.Section == "QQ" {
+				http.Error(w, `{"status":"error","error":"cannot delete primary QQ instance"}`, http.StatusBadRequest)
 				return
 			}
 			ff := utils.NewFileQueue(dto.CONFIG_PATH)
@@ -274,13 +1778,11 @@ func OpUI(w http.ResponseWriter, r *http.Request, getpath string) {
 			if err != nil {
 				utils.ErrorStop("系统配置不存在")
 			}
-			d := f.Section("QQ")
-			d.Key("启用").SetValue(strconv.FormatBool(j.Open))
-			d.Key("词库").SetValue(j.Dic)
-			d.Key("访问路径").SetValue(j.Path)
-			d.Key("APPID").SetValue(j.Appid)
-			d.Key("密钥").SetValue(j.Secret)
-			dto.LoadConfig_qq(d)
+			f.DeleteSection(j.Section)
+			// 从运行中移除
+			if dto.ServerConfig.QQBots != nil {
+				delete(dto.ServerConfig.QQBots, j.Section)
+			}
 			ff.SaveIni(f)
 			w.Write([]byte(`{"status":"ok"}`))
 			return
@@ -413,6 +1915,7 @@ func OpUI(w http.ResponseWriter, r *http.Request, getpath string) {
 			j.Dic = d.Key("词库").String()
 			j.Address = d.Key("对接地址").String()
 			j.Token = d.Key("令牌").String()
+			j.Debug = d.Key("调试打印").MustBool(false)
 			r, _ := json.Marshal(j)
 			w.Write(r)
 			return
@@ -433,6 +1936,7 @@ func OpUI(w http.ResponseWriter, r *http.Request, getpath string) {
 			d.Key("词库").SetValue(j.Dic)
 			d.Key("对接地址").SetValue(j.Address)
 			d.Key("令牌").SetValue(j.Token)
+			d.Key("调试打印").SetValue(strconv.FormatBool(j.Debug))
 			dto.LoadConfig_secluded(d)
 			ff.SaveIni(f)
 			if j.Open {
@@ -467,50 +1971,134 @@ func OpUI(w http.ResponseWriter, r *http.Request, getpath string) {
 			return
 
 		case "install_php":
-			var output []string
 			appDir := utils.GetAppDir()
-			destDir := filepath.Join(appDir, "private", "php")
-			if err := installPHP(destDir, &output); err != nil {
-				w.Write([]byte(`{"status":"error","error":"` + err.Error() + `"}`))
+			destDir := filepath.Join(appDir, "private", "extensions", "php")
+			if utils.NewFileQueue(filepath.Join(destDir, "php.exe")).FileExists() {
+				resp := HttpOpUiInstallResponse{
+					Status: "ok",
+					Output: []string{"PHP 已安装"},
+				}
+				jsonResp, _ := json.Marshal(resp)
+				w.Write(jsonResp)
 				return
 			}
-			resp := HttpOpUiInstallResponse{
-				Status: "ok",
-				Output: output,
+			// 防止重复安装：检查是否已有同组件运行中的任务
+			if existingTask := findRunningTaskForComponent("php"); existingTask != nil {
+				jsonResp, _ := json.Marshal(map[string]string{"status": "ok", "task_id": existingTask.ID})
+				w.Write(jsonResp)
+				return
 			}
-			jsonResp, _ := json.Marshal(resp)
+			taskID := generateTaskID()
+			task := &InstallTask{
+				ID:        taskID,
+				Component: "php",
+				Status:    "running",
+				Progress:  0,
+			}
+			installTaskStore.Store(taskID, task)
+			go func() {
+				var output []string
+				progressFn := func(p float64) { task.setProgress(p) }
+				err := installPHP(destDir, &output, progressFn)
+				for _, line := range output {
+					task.addOutput(line)
+				}
+				if task.IsCancelled() {
+					task.addOutput("⚠ 安装已取消")
+					task.finish(nil)
+					return
+				}
+				task.finish(err)
+			}()
+			jsonResp, _ := json.Marshal(map[string]string{"status": "ok", "task_id": taskID})
 			w.Write(jsonResp)
 			return
 
 		case "install_ffmpeg":
-			var output []string
 			appDir := utils.GetAppDir()
-			destDir := filepath.Join(appDir, "private", "ffmpeg")
-			if err := installFFmpeg(destDir, &output); err != nil {
-				w.Write([]byte(`{"status":"error","error":"` + err.Error() + `"}`))
+			destDir := filepath.Join(appDir, "private", "extensions", "ffmpeg")
+			if utils.FindFfmpegExe(destDir) != "" {
+				resp := HttpOpUiInstallResponse{
+					Status: "ok",
+					Output: []string{"FFmpeg 已安装"},
+				}
+				jsonResp, _ := json.Marshal(resp)
+				w.Write(jsonResp)
 				return
 			}
-			resp := HttpOpUiInstallResponse{
-				Status: "ok",
-				Output: output,
+			// 防止重复安装
+			if existingTask := findRunningTaskForComponent("ffmpeg"); existingTask != nil {
+				jsonResp, _ := json.Marshal(map[string]string{"status": "ok", "task_id": existingTask.ID})
+				w.Write(jsonResp)
+				return
 			}
-			jsonResp, _ := json.Marshal(resp)
+			taskID := generateTaskID()
+			task := &InstallTask{
+				ID:        taskID,
+				Component: "ffmpeg",
+				Status:    "running",
+				Progress:  0,
+			}
+			installTaskStore.Store(taskID, task)
+			go func() {
+				var output []string
+				progressFn := func(p float64) { task.setProgress(p) }
+				err := installFFmpeg(destDir, &output, progressFn)
+				for _, line := range output {
+					task.addOutput(line)
+				}
+				if task.IsCancelled() {
+					task.addOutput("⚠ 安装已取消")
+					task.finish(nil)
+					return
+				}
+				task.finish(err)
+			}()
+			jsonResp, _ := json.Marshal(map[string]string{"status": "ok", "task_id": taskID})
 			w.Write(jsonResp)
 			return
 
 		case "install_silk_v3":
-			var output []string
 			appDir := utils.GetAppDir()
-			destDir := filepath.Join(appDir, "private", "ffmpeg")
-			if err := installSilkV3(destDir, &output); err != nil {
-				w.Write([]byte(`{"status":"error","error":"` + err.Error() + `"}`))
+			destDir := filepath.Join(appDir, "private", "extensions")
+			if utils.NewFileQueue(filepath.Join(destDir, "silk_v3", "silk_v3_encoder.exe")).FileExists() {
+				resp := HttpOpUiInstallResponse{
+					Status: "ok",
+					Output: []string{"silk_v3 已安装"},
+				}
+				jsonResp, _ := json.Marshal(resp)
+				w.Write(jsonResp)
 				return
 			}
-			resp := HttpOpUiInstallResponse{
-				Status: "ok",
-				Output: output,
+			// 防止重复安装
+			if existingTask := findRunningTaskForComponent("silk_v3"); existingTask != nil {
+				jsonResp, _ := json.Marshal(map[string]string{"status": "ok", "task_id": existingTask.ID})
+				w.Write(jsonResp)
+				return
 			}
-			jsonResp, _ := json.Marshal(resp)
+			taskID := generateTaskID()
+			task := &InstallTask{
+				ID:        taskID,
+				Component: "silk_v3",
+				Status:    "running",
+				Progress:  0,
+			}
+			installTaskStore.Store(taskID, task)
+			go func() {
+				var output []string
+				progressFn := func(p float64) { task.setProgress(p) }
+				err := installSilkV3(destDir, &output, progressFn)
+				for _, line := range output {
+					task.addOutput(line)
+				}
+				if task.IsCancelled() {
+					task.addOutput("⚠ 安装已取消")
+					task.finish(nil)
+					return
+				}
+				task.finish(err)
+			}()
+			jsonResp, _ := json.Marshal(map[string]string{"status": "ok", "task_id": taskID})
 			w.Write(jsonResp)
 			return
 
@@ -525,57 +2113,217 @@ func OpUI(w http.ResponseWriter, r *http.Request, getpath string) {
 				w.Write([]byte(`{"status":"error","error":"missing qq parameter"}`))
 				return
 			}
-			var output []string
 			appDir := utils.GetAppDir()
-			destDir := filepath.Join(appDir, "private", "NapCat.Shell")
-			if err := installNapCatBot(destDir, qq, &output); err != nil {
-				w.Write([]byte(`{"status":"error","error":"` + err.Error() + `"}`))
+			destDir := filepath.Join(appDir, "private", "extensions", "NapCat.Shell")
+			if utils.NewFileQueue(filepath.Join(destDir, "launcher.bat")).FileExists() {
+				resp := HttpOpUiInstallResponse{
+					Status: "ok",
+					Output: []string{"napcat_bot 已安装"},
+				}
+				jsonResp, _ := json.Marshal(resp)
+				w.Write(jsonResp)
 				return
 			}
-			resp := HttpOpUiInstallResponse{
-				Status: "ok",
-				Output: output,
+			// 防止重复安装
+			if existingTask := findRunningTaskForComponent("napcat_bot"); existingTask != nil {
+				jsonResp, _ := json.Marshal(map[string]string{"status": "ok", "task_id": existingTask.ID})
+				w.Write(jsonResp)
+				return
 			}
-			jsonResp, _ := json.Marshal(resp)
+			taskID := generateTaskID()
+			task := &InstallTask{
+				ID:        taskID,
+				Component: "napcat_bot",
+				Status:    "running",
+				Progress:  0,
+			}
+			installTaskStore.Store(taskID, task)
+			go func() {
+				var output []string
+				progressFn := func(p float64) { task.setProgress(p) }
+				err := installNapCatBot(destDir, qq, &output, progressFn)
+				for _, line := range output {
+					task.addOutput(line)
+				}
+				if task.IsCancelled() {
+					task.addOutput("⚠ 安装已取消")
+					task.finish(nil)
+					return
+				}
+				task.finish(err)
+			}()
+			jsonResp, _ := json.Marshal(map[string]string{"status": "ok", "task_id": taskID})
 			w.Write(jsonResp)
 			return
 
 		case "install_python":
-			w.Write([]byte(`{"status":"error","error":"Python installation not yet implemented"}`))
+			appDir := utils.GetAppDir()
+			destDir := filepath.Join(appDir, "private", "extensions", "python")
+			if utils.NewFileQueue(filepath.Join(destDir, "python.exe")).FileExists() {
+				resp := HttpOpUiInstallResponse{
+					Status: "ok",
+					Output: []string{"Python 已安装"},
+				}
+				jsonResp, _ := json.Marshal(resp)
+				w.Write(jsonResp)
+				return
+			}
+			// 防止重复安装
+			if existingTask := findRunningTaskForComponent("python"); existingTask != nil {
+				jsonResp, _ := json.Marshal(map[string]string{"status": "ok", "task_id": existingTask.ID})
+				w.Write(jsonResp)
+				return
+			}
+			taskID := generateTaskID()
+			task := &InstallTask{
+				ID:        taskID,
+				Component: "python",
+				Status:    "running",
+				Progress:  0,
+			}
+			installTaskStore.Store(taskID, task)
+			go func() {
+				var output []string
+				progressFn := func(p float64) { task.setProgress(p) }
+				err := installPython(destDir, &output, progressFn)
+				for _, line := range output {
+					task.addOutput(line)
+				}
+				if task.IsCancelled() {
+					task.addOutput("⚠ 安装已取消")
+					task.finish(nil)
+					return
+				}
+				task.finish(err)
+			}()
+			jsonResp, _ := json.Marshal(map[string]string{"status": "ok", "task_id": taskID})
+			w.Write(jsonResp)
 			return
 
 		case "get_install_status":
+			appDir := utils.GetAppDir()
+			extDir := filepath.Join(appDir, "private", "extensions")
 			allStatus := map[string]bool{
-				"php":        utils.NewFileQueue(filepath.Join("private", "php", "php.exe")).FileExists(),
-				"python":     utils.NewFileQueue(filepath.Join("private", "python", "python.exe")).FileExists(),
-				"napcat_bot": utils.NewFileQueue(filepath.Join("private", "NapCat.Shell", "NapCatWinBootMain.exe")).FileExists(),
-				"ffmpeg":     utils.NewFileQueue(filepath.Join("private", "ffmpeg", "bin", "ffmpeg.exe")).FileExists(),
-				"silk_v3":    utils.NewFileQueue(filepath.Join("private", "ffmpeg", "silk_v3", "silk_v3_encoder.exe")).FileExists(),
+				"php":        utils.NewFileQueue(filepath.Join(extDir, "php", "php.exe")).FileExists(),
+				"python":     utils.NewFileQueue(filepath.Join(extDir, "python", "python.exe")).FileExists(),
+				"napcat_bot": utils.NewFileQueue(filepath.Join(extDir, "NapCat.Shell", "launcher.bat")).FileExists(),
+				"ffmpeg":     utils.FindFfmpegExe(filepath.Join(extDir, "ffmpeg")) != "",
+				"silk_v3":    utils.NewFileQueue(filepath.Join(extDir, "silk_v3", "silk_v3_encoder.exe")).FileExists(),
 			}
 			jsonResp, _ := json.Marshal(allStatus)
 			w.Write(jsonResp)
 			return
 
-		case "install_status":
+		case "install_progress":
 			var j HttpOpUiConfig_installStatus
 			if err := json.Unmarshal(h.Data, &j); err != nil {
 				http.Error(w, `{"status":"error","error":"invalid json"}`, http.StatusBadRequest)
 				return
 			}
-			resp := HttpOpUiInstallStatusResponse{
-				Installed: true,
-				Status:    "completed",
+			if val, ok := installTaskStore.Load(j.TaskID); ok {
+				task := val.(*InstallTask)
+				status, output, errMsg, progress := task.snapshot()
+				resp := map[string]interface{}{
+					"status":    status,
+					"component": task.Component,
+					"output":    output,
+					"error":     errMsg,
+					"progress":  progress,
+				}
+				jsonResp, _ := json.Marshal(resp)
+				w.Write(jsonResp)
+			} else {
+				w.Write([]byte(`{"status":"not_found","error":"task not found"}`))
 			}
+			return
+
+		case "cancel_install":
+			var j HttpOpUiConfig_installStatus
+			if err := json.Unmarshal(h.Data, &j); err != nil {
+				http.Error(w, `{"status":"error","error":"invalid json"}`, http.StatusBadRequest)
+				return
+			}
+			if val, ok := installTaskStore.Load(j.TaskID); ok {
+				task := val.(*InstallTask)
+				task.Cancel()
+				w.Write([]byte(`{"status":"ok"}`))
+			} else {
+				w.Write([]byte(`{"status":"not_found","error":"task not found"}`))
+			}
+			return
+
+		case "uninstall":
+			var config HttpOpUiConfig_install
+			if err := json.Unmarshal(h.Data, &config); err != nil {
+				http.Error(w, `{"status":"error","error":"invalid json"}`, http.StatusBadRequest)
+				return
+			}
+			appDir := utils.GetAppDir()
+			var rmDir string
+			switch config.Component {
+			case "php":
+				rmDir = filepath.Join(appDir, "private", "extensions", "php")
+			case "ffmpeg":
+				rmDir = filepath.Join(appDir, "private", "extensions", "ffmpeg")
+			case "silk_v3":
+				rmDir = filepath.Join(appDir, "private", "extensions", "silk_v3")
+			case "napcat_bot":
+				rmDir = filepath.Join(appDir, "private", "extensions", "NapCat.Shell")
+			case "python":
+				rmDir = filepath.Join(appDir, "private", "extensions", "python")
+			default:
+				http.Error(w, `{"status":"error","error":"unknown component"}`, http.StatusBadRequest)
+				return
+			}
+			if err := os.RemoveAll(rmDir); err != nil {
+				resp := HttpOpUiInstallResponse{Status: "error", Error: "卸载失败: " + err.Error()}
+				jsonResp, _ := json.Marshal(resp)
+				w.Write(jsonResp)
+				return
+			}
+			resp := HttpOpUiInstallResponse{Status: "ok", Output: []string{config.Component + " 已卸载"}}
 			jsonResp, _ := json.Marshal(resp)
 			w.Write(jsonResp)
 			return
 
 		case "get_dic_doc":
-			data := appfiles.GetFile("dic.md")
+			data, err := appfiles.GetFile("dic.md")
+			if err != nil {
+				http.Error(w, `{"status":"error","error":"embedded file not found"}`, http.StatusInternalServerError)
+				return
+			}
 			html := markdown.ToHTML(data, nil, nil)
 			resp := map[string]string{"content": string(html)}
 			jsonResp, _ := json.Marshal(resp)
 			w.Write(jsonResp)
+			return
+
+		case "get_autostart":
+			enabled, err := GetAutoStart()
+			if err != nil {
+				w.Write([]byte(`{"enabled":false}`))
+				return
+			}
+			jsonResp, _ := json.Marshal(map[string]bool{"enabled": enabled})
+			w.Write(jsonResp)
+			return
+
+		case "set_autostart":
+			if err := SetAutoStart(); err != nil {
+				jsonResp, _ := json.Marshal(map[string]string{"status": "error", "error": err.Error()})
+				w.Write(jsonResp)
+				return
+			}
+			w.Write([]byte(`{"status":"ok"}`))
+			return
+
+		case "cancel_autostart":
+			if err := CancelAutoStart(); err != nil {
+				jsonResp, _ := json.Marshal(map[string]string{"status": "error", "error": err.Error()})
+				w.Write(jsonResp)
+				return
+			}
+			w.Write([]byte(`{"status":"ok"}`))
 			return
 
 		default:
@@ -592,8 +2340,8 @@ func OpUI(w http.ResponseWriter, r *http.Request, getpath string) {
 		w.Header().Set("Content-Type", ct)
 	}
 
-	data := appfiles.GetFile(fullPath)
-	if data == nil {
+	data, err := appfiles.GetFile(fullPath)
+	if err != nil {
 		http.NotFound(w, r)
 		return
 	}

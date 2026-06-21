@@ -1,6 +1,8 @@
 package dto
 
 import (
+	"context"
+	"net"
 	"net/http"
 	"net/url"
 
@@ -29,11 +31,16 @@ type ServerHTTP struct {
 	Cors                bool
 	CorsOrigins         string
 	TempCleanupInterval int
+	TLS                 bool
+	CertFile            string
+	KeyFile             string
 }
 
 type OPUI struct {
 	// 地址
 	Addr string
+	// 密钥
+	Secret string
 }
 
 type ServerConfigInfo struct {
@@ -43,8 +50,8 @@ type ServerConfigInfo struct {
 	OPUI *OPUI
 	// WS地址
 	Ws *ServerRouterWebSocket
-	// QQBot地址
-	QQBot *qqbot_msg.RouterQQBot
+	// QQBot地址（多开支持，key为INI section名如"QQ"、"QQ2"等）
+	QQBots map[string]*qqbot_msg.RouterQQBot
 	// YunHuBot地址
 	YunHuBot *yunhubot_dto.RouterYunHuBot
 	// NapCatBot地址
@@ -54,6 +61,10 @@ type ServerConfigInfo struct {
 	SecludedBot *secludedbot_dto.RouterSecludedBot
 	// Ngrok地址
 	Ngrok *NgrokConfig
+	// Ngrok 隧道监听器（运行时启停用）
+	NgrokListener net.Listener
+	// Ngrok 取消上下文（运行时启停用）
+	NgrokCancel context.CancelFunc
 }
 
 type NgrokConfig struct {

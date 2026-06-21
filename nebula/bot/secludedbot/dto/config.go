@@ -12,4 +12,6 @@ type RouterSecludedBot struct {
 	FilePath string
 	// 机器人账户（QQ号）
 	Account string
+	// 调试打印
+	Debug bool
 }

@@ -3,6 +3,9 @@ package funcs
 import (
 	"sort"
 	"strconv"
+	stdjson "encoding/json"
+
+	"github.com/cjxpj/nebula/dto"
 )
 
 func (f *DicFunc) Sort() string {
@@ -85,4 +88,77 @@ func (f *DicFunc) Sort() string {
 		return string(sortedJsonData)
 	}
 	return ""
+}
+
+func doSort(d *dto.DicInputs) (any, error) {
+	l := d.Inputs.Len()
+	if l >= 2 {
+		data := d.Inputs.String(2)
+		sortKey := d.Inputs.String(1)
+
+		isDescending := false
+		if l >= 3 && d.Inputs.String(3) == "true" {
+			isDescending = true
+		}
+
+		var list []map[string]interface{}
+		if err := stdjson.Unmarshal([]byte(data), &list); err != nil {
+			return "null", nil
+		}
+
+		sort.Slice(list, func(i, j int) bool {
+			valueI := list[i][sortKey]
+			valueJ := list[j][sortKey]
+
+			var result bool
+			switch vI := valueI.(type) {
+			case string:
+				intI, errI := strconv.Atoi(vI)
+				if errI == nil {
+					switch vJ := valueJ.(type) {
+					case string:
+						intJ, errJ := strconv.Atoi(vJ)
+						if errJ == nil {
+							result = intI < intJ
+						} else {
+							result = vI < vJ
+						}
+					case float64:
+						result = float64(intI) < vJ
+					}
+				} else {
+					switch vJ := valueJ.(type) {
+					case string:
+						result = vI < vJ
+					case float64:
+						result = true
+					}
+				}
+			case float64:
+				switch vJ := valueJ.(type) {
+				case string:
+					intJ, errJ := strconv.Atoi(vJ)
+					if errJ == nil {
+						result = vI < float64(intJ)
+					} else {
+						result = false
+					}
+				case float64:
+					result = vI < vJ
+				}
+			}
+
+			if isDescending {
+				return !result
+			}
+			return result
+		})
+
+		sortedJsonData, err := stdjson.Marshal(list)
+		if err != nil {
+			return data, nil
+		}
+		return string(sortedJsonData), nil
+	}
+	return "", nil
 }
