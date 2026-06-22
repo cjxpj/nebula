@@ -56,7 +56,13 @@ func parseMixedText(input string) parseMixedTextResult {
 // Start 启动 Secluded 插件（WebSocket 客户端）
 // 会在后台 goroutine 中持续维护连接，收到消息通过词库处理后回复
 func Start(wsUrl, token string) {
+	// 防止重复启动
+	if !started.CompareAndSwap(false, true) {
+		return
+	}
 	go func() {
+		defer started.Store(false)
+		stopping.Store(false)
 		firstAttempt := true
 		for {
 			if dto.ServerConfig.SecludedBot == nil || !dto.ServerConfig.SecludedBot.Open {
@@ -81,7 +87,8 @@ func Start(wsUrl, token string) {
 			readLoop(func(raw []byte, header *rawPacketHeader) {
 				handleMessage(raw, header)
 			})
-			debugLog.Infof("[secluded] 连接已断开")
+			debugLog.Infof("[secluded] 连接已断开，5秒后重连...")
+			time.Sleep(5 * time.Second)
 		}
 	}()
 }

@@ -85,7 +85,7 @@ var Funcs = map[string]dto.DicFunc{
 				},
 			}
 			// debugLog.Infof("[secluded] 发送语音: groupId=%s, url=%s, duration=%s", groupId, pttUrl, duration)
-			sendRaw(packet)
+			sendRawNoWait(packet)
 			return "", nil
 		},
 	},
@@ -127,7 +127,7 @@ var Funcs = map[string]dto.DicFunc{
 				},
 			}
 			// debugLog.Infof("[secluded] 发送视频: groupId=%s, duration=%s, coverUrl=%s", groupId, duration, coverUrl)
-			sendRaw(packet)
+			sendRawNoWait(packet)
 			return "", nil
 		},
 	},
@@ -264,7 +264,7 @@ var Funcs = map[string]dto.DicFunc{
 				"rsp":  true,
 				"data": []any{dataMap},
 			}
-			sendRaw(packet)
+			sendRawNoWait(packet)
 			return "", nil
 		},
 	},
@@ -289,7 +289,7 @@ var Funcs = map[string]dto.DicFunc{
 					"Uin":             uin,
 				}},
 			}
-			sendRaw(packet)
+			sendRawNoWait(packet)
 			return "", nil
 		},
 	},
@@ -314,7 +314,7 @@ var Funcs = map[string]dto.DicFunc{
 					"Uin":             uin,
 				}},
 			}
-			sendRaw(packet)
+			sendRawNoWait(packet)
 			return "", nil
 		},
 	},
@@ -338,7 +338,7 @@ var Funcs = map[string]dto.DicFunc{
 					"GroupName":       groupName,
 				}},
 			}
-			sendRaw(packet)
+			sendRawNoWait(packet)
 			return "", nil
 		},
 	},
@@ -374,7 +374,7 @@ var Funcs = map[string]dto.DicFunc{
 				"rsp":  true,
 				"data": []any{dataMap},
 			}
-			sendRaw(packet)
+			sendRawNoWait(packet)
 			return "", nil
 		},
 	},
@@ -399,7 +399,7 @@ var Funcs = map[string]dto.DicFunc{
 					"Uin":            uin,
 				}},
 			}
-			sendRaw(packet)
+			sendRawNoWait(packet)
 			return "", nil
 		},
 	},
@@ -421,7 +421,7 @@ var Funcs = map[string]dto.DicFunc{
 					"GroupClockin": "GroupClockin",
 				}},
 			}
-			sendRaw(packet)
+			sendRawNoWait(packet)
 			return "", nil
 		},
 	},
@@ -462,7 +462,7 @@ var Funcs = map[string]dto.DicFunc{
 				"rsp":  true,
 				"data": []any{dataMap},
 			}
-			sendRaw(packet)
+			sendRawNoWait(packet)
 			return "", nil
 		},
 	},
@@ -487,7 +487,7 @@ var Funcs = map[string]dto.DicFunc{
 					"Text":    text,
 				}},
 			}
-			sendRaw(packet)
+			sendRawNoWait(packet)
 			return "", nil
 		},
 	},
@@ -514,7 +514,7 @@ var Funcs = map[string]dto.DicFunc{
 				"rsp":  true,
 				"data": []any{dataMap},
 			}
-			sendRaw(packet)
+			sendRawNoWait(packet)
 			return "", nil
 		},
 	},
@@ -536,7 +536,7 @@ var Funcs = map[string]dto.DicFunc{
 					"Uin":           uin,
 				}},
 			}
-			sendRaw(packet)
+			sendRawNoWait(packet)
 			return "", nil
 		},
 	},
@@ -560,7 +560,7 @@ var Funcs = map[string]dto.DicFunc{
 					"Name":            name,
 				}},
 			}
-			sendRaw(packet)
+			sendRawNoWait(packet)
 			return "", nil
 		},
 	},
@@ -689,7 +689,7 @@ var Funcs = map[string]dto.DicFunc{
 					"Value":              mode,
 				}},
 			}
-			sendRaw(packet)
+			sendRawNoWait(packet)
 			return "", nil
 		},
 	},
@@ -725,7 +725,7 @@ var Funcs = map[string]dto.DicFunc{
 				"rsp":  true,
 				"data": []any{dataMap},
 			}
-			sendRaw(packet)
+			sendRawNoWait(packet)
 			return "", nil
 		},
 	},
@@ -748,7 +748,7 @@ var Funcs = map[string]dto.DicFunc{
 					"Xml":     xml,
 				}},
 			}
-			sendRaw(packet)
+			sendRawNoWait(packet)
 			return "", nil
 		},
 	},
@@ -771,7 +771,7 @@ var Funcs = map[string]dto.DicFunc{
 					"Json":    jsonCard,
 				}},
 			}
-			sendRaw(packet)
+			sendRawNoWait(packet)
 			return "", nil
 		},
 	},
@@ -796,7 +796,7 @@ var Funcs = map[string]dto.DicFunc{
 					"MsgId":   msgId,
 				}},
 			}
-			sendRaw(packet)
+			sendRawNoWait(packet)
 			return "", nil
 		},
 	},
@@ -879,7 +879,7 @@ var Funcs = map[string]dto.DicFunc{
 					"Open":          "Open",
 				}},
 			}
-			sendRaw(packet)
+			sendRawNoWait(packet)
 			return "", nil
 		},
 	},
@@ -904,7 +904,7 @@ var Funcs = map[string]dto.DicFunc{
 					"Close":         "Close",
 				}},
 			}
-			sendRaw(packet)
+			sendRawNoWait(packet)
 			return "", nil
 		},
 	},
@@ -930,7 +930,7 @@ var Funcs = map[string]dto.DicFunc{
 					"EmoReply": emoReply,
 				}},
 			}
-			sendRaw(packet)
+			sendRawNoWait(packet)
 			return "", nil
 		},
 	},
@@ -983,7 +983,7 @@ var Funcs = map[string]dto.DicFunc{
 					"Value":        value,
 				}},
 			}
-			sendRaw(packet)
+			sendRawNoWait(packet)
 			return "", nil
 		},
 	},
@@ -1010,7 +1010,7 @@ var Funcs = map[string]dto.DicFunc{
 				"rsp":  true,
 				"data": []any{dataMap},
 			}
-			sendRaw(packet)
+			sendRawNoWait(packet)
 			return "", nil
 		},
 	},

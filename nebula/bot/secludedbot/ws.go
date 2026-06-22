@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/cjxpj/nebula/debugLog"
@@ -23,6 +24,8 @@ var (
 	seqCounter int64
 	connected  bool
 	pendingRsp sync.Map // seq -> chan *rawPacketHeader
+	stopping   atomic.Bool
+	started    atomic.Bool
 )
 
 // isConnected 只读获取连接状态
@@ -40,6 +43,13 @@ func sendRaw(v any) error {
 		return fmt.Errorf("secluded websocket not connected")
 	}
 	return conn.WriteJSON(v)
+}
+
+// sendRawNoWait 发送一条 JSON 消息，失败时仅记录日志
+func sendRawNoWait(v any) {
+	if err := sendRaw(v); err != nil {
+		debugLog.Infof("[secluded] send failed: %v", err)
+	}
 }
 
 // nextSeq 获取下一个包序号
@@ -67,6 +77,12 @@ func connectAndLogin(wsUrl, token string) error {
 	c, _, err := websocket.DefaultDialer.Dial(wsUrl, headers)
 	if err != nil {
 		return fmt.Errorf("dial secluded %s: %w", wsUrl, err)
+	}
+
+	// Dial 成功后检查是否已被 Stop，避免覆盖 Stop 效果
+	if stopping.Load() {
+		c.Close()
+		return fmt.Errorf("stopped")
 	}
 
 	mu.Lock()
@@ -117,16 +133,14 @@ func connectAndLogin(wsUrl, token string) error {
 // readLoop 持续读取消息并派发处理
 func readLoop(onMessage func(raw []byte, header *rawPacketHeader)) {
 	for {
-		if !isConnected() {
-			time.Sleep(2 * time.Second)
-			continue
+		if !isConnected() || stopping.Load() {
+			return
 		}
 		mu.Lock()
 		c := conn
 		mu.Unlock()
 		if c == nil {
-			time.Sleep(2 * time.Second)
-			continue
+			return
 		}
 		_, raw, err := c.ReadMessage()
 		if err != nil {
@@ -134,8 +148,7 @@ func readLoop(onMessage func(raw []byte, header *rawPacketHeader)) {
 			connected = false
 			mu.Unlock()
 			debugLog.Infof("[secluded] secluded read error: %v, will reconnect", err)
-			time.Sleep(3 * time.Second)
-			continue
+			return
 		}
 		header := &rawPacketHeader{}
 		_ = json.Unmarshal(raw, header)
@@ -190,6 +203,7 @@ func handleResponse(header *rawPacketHeader) {
 
 // Stop 停止 Secluded 连接
 func Stop() {
+	stopping.Store(true)
 	mu.Lock()
 	defer mu.Unlock()
 	if conn != nil {
