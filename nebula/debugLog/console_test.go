@@ -1,6 +1,7 @@
 package debugLog
 
 import (
+	"fmt"
 	"testing"
 )
 
@@ -17,5 +18,11 @@ func Test_log(t *testing.T) {
 	t.Run("Debugf", func(t *testing.T) {
 		c := consoleLogger{}
 		c.Debugf("debugf %s", "log")
+	})
+
+	t.Run("pointerToString", func(t *testing.T) {
+		s := "hello"
+		p := &s
+		Info(fmt.Sprintf("%p", p))
 	})
 }

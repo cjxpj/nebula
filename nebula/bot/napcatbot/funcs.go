@@ -7,6 +7,10 @@ import (
 	"github.com/cjxpj/nebula/dto"
 )
 
+func init() {
+	dto.BotFuncsRegistry["NapCat"] = Funcs
+}
+
 // 机器人函数
 var Funcs = map[string]dto.DicFunc{
 	"群列表": {

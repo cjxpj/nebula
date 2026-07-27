@@ -35,8 +35,8 @@ func initKey() []byte {
 			return k
 		}
 	}
-	return []byte("cjxpj2960965389 nebula0051 juice") // 32 字节用于 AES-256
+	return []byte("cjxpj2960965389 nebula0052 juice") // 32 字节用于 AES-256
 }
 
 // 版本号
-var Version string = "16.13.0"
+var Version string = "16.15.0"

@@ -103,9 +103,19 @@ func qqBOTGroupRun(payload *qqbot_msg.Payload, bot *qqbot_msg.RouterQQBot) {
 				return
 			}
 
+			// 设置PushContext供 #引入=QQBot 函数使用
+			SetPushContext(&PushContext{
+				Bot:         bot,
+				MsgID:       m.ID,
+				GroupOpenID: m.GroupOpenID,
+			})
+			defer ClearPushContext()
+
 			// 回复消息
 			dic := dic_dto.NewDic(dicPath, FileData).
 				SetGlobal_v(valData)
+
+			dic.AddFuncs(ReplyFuncs)
 
 			dic.SetFunc("IMG", dto.DicFunc{
 				L: "0|1",
@@ -357,9 +367,19 @@ func qqBOTGroupATRun(payload *qqbot_msg.Payload, bot *qqbot_msg.RouterQQBot) {
 				return
 			}
 
+			// 设置PushContext供 #引入=QQBot 函数使用
+			SetPushContext(&PushContext{
+				Bot:         bot,
+				MsgID:       m.ID,
+				GroupOpenID: m.GroupOpenID,
+			})
+			defer ClearPushContext()
+
 			// 回复消息
 			dic := dic_dto.NewDic(dicPath, FileData).
 				SetGlobal_v(valData)
+
+			dic.AddFuncs(ReplyFuncs)
 
 			dic.SetFunc("调用", dto.DicFunc{
 				L: "2..",
@@ -597,9 +617,19 @@ func qqBOTGroupPrivateRun(payload *qqbot_msg.Payload, bot *qqbot_msg.RouterQQBot
 				return
 			}
 
+			// 设置PushContext供 #引入=QQBot 函数使用
+			SetPushContext(&PushContext{
+				Bot:        bot,
+				MsgID:      m.ID,
+				UserOpenID: userID,
+			})
+			defer ClearPushContext()
+
 			// 回复消息
 			dic := dic_dto.NewDic(dicPath, FileData).
 				SetGlobal_v(valData)
+
+			dic.AddFuncs(ReplyFuncs)
 
 			dic.SetFunc("调用", dto.DicFunc{
 				L: "2..",

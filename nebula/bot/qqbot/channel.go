@@ -47,6 +47,14 @@ func qqBOTChannelRun(payload *qqbot_msg.Payload, bot *qqbot_msg.RouterQQBot) {
 	// 去除艾特
 	msg = RemoveLeadingMentionOnce(msg)
 
+	// 设置PushContext供 #引入=QQBot 函数使用
+	SetPushContext(&PushContext{
+		Bot:       bot,
+		MsgID:     m.ID,
+		ChannelID: m.ChannelID,
+	})
+	defer ClearPushContext()
+
 	// 回复消息
 	dic := dic_dto.NewDic(bot.FilePath, FileData).
 		// 变量
@@ -57,6 +65,9 @@ func qqBOTChannelRun(payload *qqbot_msg.Payload, bot *qqbot_msg.RouterQQBot) {
 			Set("昵称", m.Author.Username).
 			Set("QQ", m.Author.ID).
 			Set("头像", m.Author.Avatar))
+
+	dic.AddFuncs(ReplyFuncs)
+
 	dic.SetFunc("调用", dto.DicFunc{
 		L: "2..",
 		Fn: func(d *dto.DicInputs) (any, error) {
@@ -127,6 +138,14 @@ func qqBOTChannelPrivateRun(payload *qqbot_msg.Payload, bot *qqbot_msg.RouterQQB
 	// 去除艾特
 	msg = RemoveLeadingMentionOnce(msg)
 
+	// 设置PushContext供 #引入=QQBot 函数使用
+	SetPushContext(&PushContext{
+		Bot:       bot,
+		MsgID:     m.ID,
+		ChannelID: m.ChannelID,
+	})
+	defer ClearPushContext()
+
 	// 回复消息
 	dic := dic_dto.NewDic(bot.FilePath, FileData).
 		// 变量
@@ -137,6 +156,8 @@ func qqBOTChannelPrivateRun(payload *qqbot_msg.Payload, bot *qqbot_msg.RouterQQB
 			Set("昵称", m.Author.Username).
 			Set("QQ", m.Author.ID).
 			Set("头像", m.Author.Avatar))
+
+	dic.AddFuncs(ReplyFuncs)
 
 	dic.SetFunc("调用", dto.DicFunc{
 		L: "2..",

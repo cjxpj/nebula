@@ -6,8 +6,8 @@ import (
 	"maps"
 	"strings"
 
-	dic_dto "github.com/cjxpj/nebula/dic/dto"
 	"github.com/cjxpj/nebula/debugLog"
+	dic_dto "github.com/cjxpj/nebula/dic/dto"
 	"github.com/cjxpj/nebula/dto"
 	"github.com/cjxpj/nebula/run"
 	"golang.org/x/net/html"
@@ -139,6 +139,7 @@ func (m *dicImpl) WebPHPDicRun(WD *dic_dto.WebDic) string {
 		SplitText := run.Web(WD.Path, lines)
 		dicRun.SetDic(SplitText)
 		dicRun.Dic.MyFunc = WD.MyFunc
+		maps.Copy(dicRun.Dic.MyFunc, SplitText.MyFunc)
 		// fmt.Println("词库:", SplitText)
 		RunDic := m.DicRunLine(dicRun, SplitText.Head)
 		return RunDic

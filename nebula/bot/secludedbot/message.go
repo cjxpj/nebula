@@ -88,6 +88,7 @@ func Start(wsUrl, token string) {
 				handleMessage(raw, header)
 			})
 			debugLog.Infof("[secluded] 连接已断开，5秒后重连...")
+			triggerDisconnectCallback()
 			time.Sleep(5 * time.Second)
 		}
 	}()

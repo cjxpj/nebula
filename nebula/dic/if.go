@@ -15,6 +15,11 @@ import (
 func Pd(dic *dic_dto.DicFunc, str string) bool {
 	it := &IfText{}
 	runstr := it.Run(str)
+	if it.Error {
+		dic.Output.Add("条件表达式解析异常: " + str)
+		dic.Sys.Stop = true
+		return false
+	}
 	pdstr := it.Evaluate(dic, runstr)
 	sendstr := it.EvaluateExpression(pdstr)
 	return sendstr
@@ -108,6 +113,7 @@ func (it *IfText) Run(input string) []map[string]string {
 		dieNum++
 		if dieNum > 5000 {
 			debugLog.Infof("错误判断: %v", input)
+			it.Error = true
 			return []map[string]string{
 				{
 					"a": "",

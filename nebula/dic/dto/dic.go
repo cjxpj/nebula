@@ -143,7 +143,7 @@ func NewDic(path, text string) *Dic {
 		Path:      path,
 		FuncText:  nil,
 		ClassText: nil,
-		MyFunc:    make(map[string]dto.DicFunc),
+		MyFunc:    SplitText.MyFunc,
 	}
 }
 

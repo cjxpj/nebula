@@ -3,12 +3,10 @@ package dic
 import (
 	"errors"
 	"fmt"
-	"maps"
 	"strconv"
 	"strings"
 	"time"
 
-	"github.com/cjxpj/nebula/bot/napcatbot"
 	dicBuild "github.com/cjxpj/nebula/build"
 	"github.com/cjxpj/nebula/count"
 	"github.com/cjxpj/nebula/debugLog"
@@ -34,7 +32,7 @@ func (m *dicImpl) Execute(r *dto.DicInfoData, txt []string) any {
 	debugLog.Infof("%v", utils.AnyToString(r))
 	runNum := 0
 
-	for index := 0; index < len(txt); index++ {
+	for index := range txt {
 		runNum++
 		vType, vPrefix, _ := dicBuild.ValTextTest(txt[index])
 		if vType == 6 {
@@ -986,11 +984,6 @@ func Entry(r *dic_dto.DicEntry, txt []string, funcV *dic_dto.DicFunc) error {
 
 		if text == "--js" {
 			r.Sys_v.NodeJs.Success = true
-			continue
-		}
-
-		if text == ">>NapCat" {
-			maps.Copy(funcV.Dic.MyFunc, napcatbot.Funcs)
 			continue
 		}
 

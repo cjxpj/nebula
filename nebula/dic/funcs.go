@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"errors"
 	"io"
+	"maps"
 	"os"
 	"regexp"
 	"strings"
@@ -35,7 +36,7 @@ func runDic(d *dto.DicInputs) (any, error) {
 
 	calldicrun := dic_dto.NewDic(dicPath, data).
 		SetGlobal_v(d.V.G)
-	calldicrun.MyFunc = d.Dic.MyFunc
+	maps.Copy(calldicrun.MyFunc, d.Dic.MyFunc)
 	calldicrun.SetFunc("调用", dto.DicFunc{
 		L: "2..",
 		Fn: func(d *dto.DicInputs) (any, error) {
@@ -87,7 +88,7 @@ func runDicFile(d *dto.DicInputs) (any, error) {
 
 	calldicrun := dic_dto.NewDic(dicPath, data).
 		SetGlobal_v(d.V.G)
-	calldicrun.MyFunc = d.Dic.MyFunc
+	maps.Copy(calldicrun.MyFunc, d.Dic.MyFunc)
 
 	calldicrun.SetFunc("调用", dto.DicFunc{
 		L: "2..",

@@ -271,3 +271,52 @@ func triggerStartupCallback() {
 		}()
 	}
 }
+
+// triggerDisconnectCallback 连接断开后触发词库回调
+func triggerDisconnectCallback() {
+	if dto.ServerConfig.SecludedBot == nil || dto.ServerConfig.SecludedBot.FilePath == "" {
+		return
+	}
+
+	botDicPath := utils.NewFileQueue(dto.ServerConfig.SecludedBot.FilePath + "/dic")
+	botDicList, err := botDicPath.GetFileList()
+	if err != nil {
+		debugLog.Infof("[secluded] get dic list for disconnect callback failed: %v", err)
+		return
+	}
+
+	for _, v := range botDicList {
+		if !strings.HasSuffix(v, ".n") {
+			continue
+		}
+		dicFile := v
+		go func() {
+			dicPath := dto.ServerConfig.SecludedBot.FilePath + "/dic/" + dicFile
+			fileData, err := utils.NewFileQueue(dicPath).ReadFromFile()
+			if err != nil {
+				return
+			}
+
+			dic := dic_dto.NewDic(dicPath, fileData)
+			dic.AddFuncs(Funcs)
+			dic.SetFunc("调用", dto.DicFunc{
+				L: "2..",
+				Fn: func(d *dto.DicInputs) (any, error) {
+					qqVal := dto.NewDicVal()
+					sleepTime := d.Inputs.Int(1)
+					if sleepTime > 0 {
+						time.Sleep(time.Duration(sleepTime) * time.Millisecond)
+					}
+					dic.AddFuncs(Funcs)
+					rMsg := dic_api.Api.DicRunPrivateVal(dic, d.Inputs.StringAfter(2), qqVal)
+					return strings.ReplaceAll(rMsg, "\\r", "\n"), nil
+				}})
+
+			rMsg := dic_api.Api.DicRunPrivate(dic, "断开连接")
+			rMsg = strings.ReplaceAll(rMsg, "\\r", "\n")
+			if rMsg != "" {
+				fmt.Println(rMsg)
+			}
+		}()
+	}
+}

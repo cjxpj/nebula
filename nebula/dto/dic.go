@@ -151,6 +151,7 @@ type BuildValue struct {
 	LocalFunc   []*BuildDic          `json:"函数"`
 	LocalClass  map[string]*DicClass `json:"整合包"`
 	MyFunc      map[string]DicFunc   `json:"自定义函数"`
+	BotImports  []string             `json:"bot引入"`
 }
 
 // 词库参数数据
@@ -202,3 +203,6 @@ func (v *BuildValue) Close() {
 	v.Dic = nil
 	v.Head = nil
 }
+
+// BotFuncsRegistry bot函数注册表，由各bot包在init()中自行注册，避免循环依赖
+var BotFuncsRegistry = map[string]map[string]DicFunc{}

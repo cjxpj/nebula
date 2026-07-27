@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"fmt"
 	"io"
+	"maps"
 	"regexp"
 	"strings"
 	"sync"
@@ -410,8 +411,9 @@ func Web(dicPath string, lines []string) *dto.BuildValue {
 		classText map[string]*dto.DicClass = make(map[string]*dto.DicClass)
 		// 缩进
 		suojin bool
+		// 自定义函数（含bot注入）
+		myFunc map[string]dto.DicFunc = make(map[string]dto.DicFunc)
 	)
-
 	for _, line := range lines {
 		if line != "" {
 			if !suojin {
@@ -445,9 +447,19 @@ func Web(dicPath string, lines []string) *dto.BuildValue {
 		if lineLen > 8 && line[:8] == "#引入=" {
 			path := strings.TrimSpace(line[8:])
 
+			// @NapCat / @QQBot 编译期注入函数，不进入词行
+			switch path {
+			case "@NapCat":
+				maps.Copy(myFunc, dto.BotFuncsRegistry["NapCat"])
+				continue
+			case "@QQBot":
+				maps.Copy(myFunc, dto.BotFuncsRegistry["QQBot"])
+				continue
+			}
+
 			var filesToLoad []string
 
-			// 判断是目录还是文件
+			// 判断是目录还是文件（Web）
 			if dirName, ok := strings.CutSuffix(path, "/*"); ok {
 				dirPath := "private/" + dirName
 				fileLoad := utils.NewFileQueue(dirPath)
@@ -490,6 +502,7 @@ func Web(dicPath string, lines []string) *dto.BuildValue {
 				funcText = append(funcText, z.LocalStatic...)
 
 				chajianText = append(chajianText, z.LocalFunc...)
+				maps.Copy(myFunc, z.MyFunc)
 				for key, value := range z.LocalClass {
 					if classText[key] == nil {
 						classText[key] = value
@@ -506,6 +519,7 @@ func Web(dicPath string, lines []string) *dto.BuildValue {
 		LocalStatic: funcText,
 		LocalFunc:   chajianText,
 		LocalClass:  classText,
+		MyFunc:      myFunc,
 	}
 	return result
 }
@@ -554,6 +568,9 @@ func BuildDic(dicPath, text string) *dto.BuildValue {
 		suojin bool // 缩进
 
 		fHeaderName string // 函数头部名称
+
+		// 自定义函数（含bot注入）
+		myFunc map[string]dto.DicFunc = make(map[string]dto.DicFunc)
 	)
 
 	if lines[0] != "" {
@@ -604,9 +621,19 @@ func BuildDic(dicPath, text string) *dto.BuildValue {
 			if lineLen > 8 && line[:8] == "#引入=" {
 				path := strings.TrimSpace(line[8:])
 
+				// @NapCat / @QQBot 编译期注入函数，不进入词行
+				switch path {
+				case "@NapCat":
+					maps.Copy(myFunc, dto.BotFuncsRegistry["NapCat"])
+					continue
+				case "@QQBot":
+					maps.Copy(myFunc, dto.BotFuncsRegistry["QQBot"])
+					continue
+				}
+
 				var filesToLoad []string
 
-				// 判断是目录还是文件
+				// 判断是目录还是文件（BuildDic）
 				if dirName, ok := strings.CutSuffix(path, "/*"); ok {
 					dirPath := "private/" + dirName
 					fileLoad := utils.NewFileQueue(dirPath)
@@ -655,6 +682,7 @@ func BuildDic(dicPath, text string) *dto.BuildValue {
 					}
 
 					chajianText = append(chajianText, z.LocalFunc...)
+					maps.Copy(myFunc, z.MyFunc)
 					for key, value := range z.LocalClass {
 						if classText[key] == nil {
 							classText[key] = value
@@ -803,6 +831,7 @@ func BuildDic(dicPath, text string) *dto.BuildValue {
 		LocalStatic: funcText,
 		LocalFunc:   chajianText,
 		LocalClass:  classText,
+		MyFunc:      myFunc,
 	}
 
 	// 打印普通json
@@ -993,10 +1022,19 @@ func Parse(dicPath string, reader io.Reader) *dto.DicInfoData {
 		/* ===== 头部 ===== */
 
 		if runhead {
+			// #引入= 是预编译指令，不进入词行
+			if lineLen > 8 && line[:8] == "#引入=" {
+				path := strings.TrimSpace(line[8:])
+				switch path {
+				case "@NapCat", "@QQBot":
+					continue
+				}
+			}
 			if vType, vPrefix, vSuffix := dicBuild.ValTextTest(line); vType == 6 {
 				if packPath, ok := strings.CutPrefix(vSuffix, "#引入="); ok && packPath != "" {
 					var files []string
 					var wg sync.WaitGroup
+					// 判断是目录还是文件（Parse）
 					if dirName, ok := strings.CutSuffix(packPath, "/*"); ok {
 						dir := "private/" + dirName
 						fq := utils.NewFileQueue(dir)

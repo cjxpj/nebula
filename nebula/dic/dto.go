@@ -9,4 +9,6 @@ func init() {
 type dicImpl struct{}
 
 // if
-type IfText struct{}
+type IfText struct {
+	Error bool // 条件表达式解析异常
+}

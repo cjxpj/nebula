@@ -7,7 +7,7 @@
             "command": "build",
             "args": [
                 "-ldflags",
-                "-H=windows -s -w",
+                "-H=windowsgui -s -w -trimpath",
                 "-o",
                 "dist/nebula.exe",
                 "-tags",
@@ -25,7 +25,9 @@
             "options": {
                 "env": {
                     "GO111MODULE": "on",
-                    "GOARCH": "amd64"
+                    "GOARCH": "amd64",
+                    "GOOS": "windows",
+                    "CGO_ENABLED": "0"
                 }
             }
         },
@@ -35,7 +37,7 @@
             "command": "build",
             "args": [
                 "-ldflags",
-                "-s -w",
+                "-s -w -trimpath",
                 "-o",
                 "dist/nebula",
                 "-tags",
@@ -54,7 +56,8 @@
                 "env": {
                     "GO111MODULE": "on",
                     "GOARCH": "amd64",
-                    "GOOS": "linux"
+                    "GOOS": "linux",
+                    "CGO_ENABLED": "0"
                 }
             }
         },
@@ -63,11 +66,13 @@
             "label": "upx",
             "command": "upx",
             "args": [
+                "--best",
+                "--lzma",
                 "dist/nebula.exe",
                 "dist/nebula"
             ],
             "problemMatcher": [],
-            "detail": "压缩可执行文件"
+            "detail": "UPX"
         },
         {
             "label": "全部编译",
