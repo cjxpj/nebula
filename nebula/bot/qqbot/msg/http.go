@@ -13,7 +13,7 @@ import (
 )
 
 func (b *QQBot) Send(path string, body any, respObj any) error {
-	if err := b.ensureToken(); err != nil {
+	if err := b.EnsureToken(); err != nil {
 		return err
 	}
 	headers := GetQQBotAuthHeader(b.Key.AccessToken)
@@ -27,19 +27,41 @@ func (b *QQBot) Send(path string, body any, respObj any) error {
 	err := postJson(APIURL+path, body, headers, respObj)
 
 	if b.Debug {
-		if respObj != nil {
+		if err != nil {
+			debugLog.Infof("[QQBot 错误] %v\n", err)
+		} else if respObj != nil {
 			respJson, _ := json.Marshal(respObj)
 			debugLog.Infof("[QQBot 返回] %s\n", string(respJson))
 		}
+	}
+	return err
+}
+
+func (b *QQBot) Get(path string, respObj any) error {
+	if err := b.EnsureToken(); err != nil {
+		return err
+	}
+	headers := GetQQBotAuthHeader(b.Key.AccessToken)
+
+	if b.Debug {
+		debugLog.Infof("[QQBot GET] %s%s\n", APIURL, path)
+	}
+
+	err := getJson(APIURL+path, headers, respObj)
+
+	if b.Debug {
 		if err != nil {
 			debugLog.Infof("[QQBot 错误] %v\n", err)
+		} else if respObj != nil {
+			respJson, _ := json.Marshal(respObj)
+			debugLog.Infof("[QQBot GET返回] %s\n", string(respJson))
 		}
 	}
 	return err
 }
 
 func (b *QQBot) SendChannelImage(path string, imgData []byte, body any, respObj any) error {
-	if err := b.ensureToken(); err != nil {
+	if err := b.EnsureToken(); err != nil {
 		return err
 	}
 	headers := GetQQBotAuthHeader(b.Key.AccessToken)
@@ -53,12 +75,11 @@ func (b *QQBot) SendChannelImage(path string, imgData []byte, body any, respObj 
 	err := postImageWithJsonDataAsFormFields(APIURL+path, imgData, "NebulaImage", body, headers, respObj)
 
 	if b.Debug {
-		if respObj != nil {
-			respJson, _ := json.Marshal(respObj)
-			debugLog.Infof("[QQBot 返回] %s\n", string(respJson))
-		}
 		if err != nil {
 			debugLog.Infof("[QQBot 错误] %v\n", err)
+		} else if respObj != nil {
+			respJson, _ := json.Marshal(respObj)
+			debugLog.Infof("[QQBot 返回] %s\n", string(respJson))
 		}
 	}
 	return err
@@ -190,4 +211,56 @@ func postJson(url string, body any, headers http.Header, respObj any) error {
 	}
 
 	return nil
+}
+
+func getJson(url string, headers http.Header, respObj any) error {
+	req, err := http.NewRequest("GET", url, nil)
+	if err != nil {
+		return fmt.Errorf("构造请求失败: %w", err)
+	}
+
+	if headers != nil {
+		req.Header = headers
+	}
+
+	client := &http.Client{Timeout: 10 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		return fmt.Errorf("HTTP 请求失败: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		if c, err := io.ReadAll(resp.Body); err == nil {
+			return fmt.Errorf("请求失败，状态码: %d, 内容: %s", resp.StatusCode, string(c))
+		}
+		return fmt.Errorf("请求失败，状态码: %d", resp.StatusCode)
+	}
+
+	if respObj != nil {
+		if err := json.NewDecoder(resp.Body).Decode(respObj); err != nil {
+			return fmt.Errorf("解析响应失败: %w", err)
+		}
+	}
+
+	return nil
+}
+
+// GetGroupMemberRole 获取群成员角色
+func (b *QQBot) GetGroupMemberRole(groupOpenID, memberOpenID string) string {
+	if groupOpenID == "" || memberOpenID == "" {
+		return "null"
+	}
+	var r GroupMemberRole
+	if err := b.Get("/v2/groups/"+groupOpenID+"/members/"+memberOpenID, &r); err != nil {
+		return "null"
+	}
+	switch r.Role {
+	case "owner":
+		return "1"
+	case "admin":
+		return "2"
+	default:
+		return "null"
+	}
 }

@@ -76,6 +76,11 @@ func qqBOTGroupRun(payload *qqbot_msg.Payload, bot *qqbot_msg.RouterQQBot) {
 		}
 	}
 
+	appId := ""
+	if bot.API != nil {
+		appId = bot.API.AppId
+	}
+
 	valData := dto.NewVal().
 		Set("来源", "群聊").
 		Set("昵称", m.Author.Username).
@@ -83,9 +88,19 @@ func qqBOTGroupRun(payload *qqbot_msg.Payload, bot *qqbot_msg.RouterQQBot) {
 		Set("qq", userID).
 		Set("QQ", userID).
 		Set("主人", isAdmin).
-		Set("robot", bot.API.AppId).
-		Set("Robot", bot.API.AppId).
-		Set("头像", "http://q.qlogo.cn/qqapp/"+bot.API.AppId+"/"+userID+"/640")
+		Set("管理", func() string {
+			switch m.Author.MemberRole {
+			case "owner":
+				return "1"
+			case "admin":
+				return "2"
+			default:
+				return "0"
+			}
+		}()).
+		Set("robot", appId).
+		Set("Robot", appId).
+		Set("头像", "http://q.qlogo.cn/qqapp/"+appId+"/"+userID+"/640")
 
 	for i, id := range atIDs {
 		valData.Set(fmt.Sprintf("AT%d", i), id)
@@ -93,6 +108,10 @@ func qqBOTGroupRun(payload *qqbot_msg.Payload, bot *qqbot_msg.RouterQQBot) {
 	for i, username := range atUsernames {
 		valData.Set(fmt.Sprintf("AtName%d", i), username)
 	}
+
+	// 记录群和用户
+	RecordGroup(bot, m.GroupOpenID)
+	RecordUser(bot, userID, m.Author.Username)
 
 	// 词库
 	for _, v := range botDicList {
@@ -143,7 +162,6 @@ func qqBOTGroupRun(payload *qqbot_msg.Payload, bot *qqbot_msg.RouterQQBot) {
 				Fn: func(d *dto.DicInputs) (any, error) {
 					go func() {
 						qqVal := dic.NewDicVal()
-						// d.Inputs.IntOk()
 						// 读取参数1休眠
 						sleepTime := d.Inputs.Int(1)
 						time.Sleep(time.Duration(sleepTime) * time.Millisecond)
@@ -260,7 +278,7 @@ func qqBOTGroupRun(payload *qqbot_msg.Payload, bot *qqbot_msg.RouterQQBot) {
 					go func() {
 						_, mErr := bot.API.ReplyGroupVideoMessage(m.ID, m.GroupOpenID, d.Inputs.String(1))
 						if mErr != nil {
-							fmt.Println("QQBot回复语音失败", mErr)
+							fmt.Println("QQBot回复视频失败", mErr)
 						}
 					}()
 					return "", nil
@@ -349,6 +367,11 @@ func qqBOTGroupATRun(payload *qqbot_msg.Payload, bot *qqbot_msg.RouterQQBot) {
 	// 去除开头第一个空格
 	msg = RemoveLeadingSpace(msg)
 
+	appId := ""
+	if bot.API != nil {
+		appId = bot.API.AppId
+	}
+
 	valData := dto.NewVal().
 		Set("来源", "群聊").
 		Set("昵称", "未知").
@@ -356,11 +379,26 @@ func qqBOTGroupATRun(payload *qqbot_msg.Payload, bot *qqbot_msg.RouterQQBot) {
 		Set("qq", userID).
 		Set("QQ", userID).
 		Set("主人", isAdmin).
-		Set("头像", "http://q.qlogo.cn/qqapp/"+bot.API.AppId+"/"+userID+"/640")
+		Set("管理", func() string {
+			switch m.Author.MemberRole {
+			case "owner":
+				return "1"
+			case "admin":
+				return "2"
+			default:
+				return "0"
+			}
+		}()).
+		Set("robot", appId).
+		Set("Robot", appId).
+		Set("头像", "http://q.qlogo.cn/qqapp/"+appId+"/"+userID+"/640")
+
+	// 记录可用群
+	RecordGroup(bot, m.GroupOpenID)
 
 	// 词库
 	for _, v := range botDicList {
-		go func() {
+		go func(v string) {
 			dicPath := filepath.Join(bot.FilePath, "dic", v)
 			FileData, err := utils.NewFileQueue(dicPath).ReadFromFile()
 			if err != nil {
@@ -386,7 +424,6 @@ func qqBOTGroupATRun(payload *qqbot_msg.Payload, bot *qqbot_msg.RouterQQBot) {
 				Fn: func(d *dto.DicInputs) (any, error) {
 					go func() {
 						qqVal := dic.NewDicVal()
-						// d.Inputs.IntOk()
 						// 读取参数1休眠
 						sleepTime := d.Inputs.Int(1)
 						time.Sleep(time.Duration(sleepTime) * time.Millisecond)
@@ -511,7 +548,7 @@ func qqBOTGroupATRun(payload *qqbot_msg.Payload, bot *qqbot_msg.RouterQQBot) {
 					go func() {
 						_, mErr := bot.API.ReplyGroupVideoMessage(m.ID, m.GroupOpenID, d.Inputs.String(1))
 						if mErr != nil {
-							fmt.Println("QQBot回复语音失败", mErr)
+							fmt.Println("QQBot回复视频失败", mErr)
 						}
 					}()
 					return "", nil
@@ -557,7 +594,7 @@ func qqBOTGroupATRun(payload *qqbot_msg.Payload, bot *qqbot_msg.RouterQQBot) {
 					debugLog.Infof("QQBot回复失败%v", mErr)
 				}
 			}
-		}()
+		}(v)
 	}
 }
 
@@ -600,17 +637,24 @@ func qqBOTGroupPrivateRun(payload *qqbot_msg.Payload, bot *qqbot_msg.RouterQQBot
 	// 处理消息次数
 	qqbot_msg.MsgCount++
 
+	appId := ""
+	if bot.API != nil {
+		appId = bot.API.AppId
+	}
+
 	valData := dto.NewVal().
 		Set("来源", "群私聊").
 		Set("昵称", "未知").
 		Set("qq", userID).
 		Set("QQ", userID).
 		Set("主人", isAdmin).
-		Set("头像", "http://q.qlogo.cn/qqapp/"+bot.API.AppId+"/"+userID+"/640")
+		Set("robot", appId).
+		Set("Robot", appId).
+		Set("头像", "http://q.qlogo.cn/qqapp/"+appId+"/"+userID+"/640")
 
 	// 词库
 	for _, v := range botDicList {
-		go func() {
+		go func(v string) {
 			dicPath := filepath.Join(bot.FilePath, "dic", v)
 			FileData, err := utils.NewFileQueue(dicPath).ReadFromFile()
 			if err != nil {
@@ -754,6 +798,6 @@ func qqBOTGroupPrivateRun(payload *qqbot_msg.Payload, bot *qqbot_msg.RouterQQBot
 			if rMsg != "" {
 				bot.API.ReplyGroupPrivateMessage(m.ID, userID, rMsg)
 			}
-		}()
+		}(v)
 	}
 }

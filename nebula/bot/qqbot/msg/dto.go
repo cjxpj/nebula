@@ -106,6 +106,7 @@ type GroupAuthor struct {
 	Username string `json:"username"`
 	// 群
 	MemberOpenID string `json:"member_openid"`
+	MemberRole   string `json:"member_role"`
 	// 私聊
 	UserOpenID  string `json:"user_openid"`
 	UnionOpenID string `json:"union_openid"`
@@ -202,4 +203,9 @@ type MessageResponse struct {
 	ID        string `json:"id"`
 	ChannelID string `json:"channel_id"`
 	Content   string `json:"content"`
+}
+
+// GroupMemberRole 群成员角色
+type GroupMemberRole struct {
+	Role string `json:"role"` // "owner" | "admin" | "member"
 }

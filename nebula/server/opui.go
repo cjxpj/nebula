@@ -955,14 +955,16 @@ func StopSftp() {
 }
 
 type HttpOpUiConfig_qq struct {
-	Open     bool   `json:"open"`
-	Dic      string `json:"dic"`
-	Path     string `json:"path"`
-	Appid    string `json:"appid"`
-	Secret   string `json:"secret"`
-	AtCompat bool   `json:"at_compat"`
-	Debug    bool   `json:"debug"`
-	Remark   string `json:"remark"`
+	Open      bool   `json:"open"`
+	Dic       string `json:"dic"`
+	Path      string `json:"path"`
+	Appid     string `json:"appid"`
+	Secret    string `json:"secret"`
+	AtCompat  bool   `json:"at_compat"`
+	Debug     bool   `json:"debug"`
+	Ws        bool   `json:"ws"`
+	WsIntents int    `json:"ws_intents"`
+	Remark    string `json:"remark"`
 }
 
 type HttpOpUiConfig_qq_instance struct {
@@ -1669,6 +1671,8 @@ func OpUI(w http.ResponseWriter, r *http.Request, getpath string) {
 					j.Secret = d.Key("密钥").String()
 					j.AtCompat = d.Key("全量艾特兼容").MustBool(false)
 					j.Debug = d.Key("调试打印").MustBool(false)
+					j.Ws = d.Key("WebSocket").MustBool(false)
+					j.WsIntents = d.Key("监听码").MustInt(0)
 					j.Remark = d.Key("备注").String()
 					list.Instances = append(list.Instances, HttpOpUiConfig_qq_instance{
 						Section: secName,
@@ -1695,6 +1699,18 @@ func OpUI(w http.ResponseWriter, r *http.Request, getpath string) {
 			if err != nil {
 				utils.ErrorStop("系统配置不存在")
 			}
+			// 备注唯一性检查
+			if j.Config.Remark != "" {
+				for _, sec := range f.Sections() {
+					secName := sec.Name()
+					if secName != sectionName && (secName == "QQ" || (strings.HasPrefix(secName, "QQ") && len(secName) > 2)) {
+						if f.Section(secName).Key("备注").String() == j.Config.Remark {
+							http.Error(w, `{"status":"error","error":"备注名已存在"}`, http.StatusConflict)
+							return
+						}
+					}
+				}
+			}
 			d := f.Section(sectionName)
 			d.Key("启用").SetValue(strconv.FormatBool(j.Config.Open))
 			d.Key("词库").SetValue(j.Config.Dic)
@@ -1703,9 +1719,41 @@ func OpUI(w http.ResponseWriter, r *http.Request, getpath string) {
 			d.Key("密钥").SetValue(j.Config.Secret)
 			d.Key("全量艾特兼容").SetValue(strconv.FormatBool(j.Config.AtCompat))
 			d.Key("调试打印").SetValue(strconv.FormatBool(j.Config.Debug))
+			d.Key("WebSocket").SetValue(strconv.FormatBool(j.Config.Ws))
+			d.Key("监听码").SetValue(strconv.Itoa(j.Config.WsIntents))
 			d.Key("备注").SetValue(j.Config.Remark)
 			dto.LoadConfig_qq(d, sectionName)
 			ff.SaveIni(f)
+			w.Write([]byte(`{"status":"ok"}`))
+			return
+
+		case "toggle_qq_debug":
+			var j struct {
+				Section string `json:"section"`
+				Debug   bool   `json:"debug"`
+			}
+			if err := json.Unmarshal(h.Data, &j); err != nil {
+				http.Error(w, `{"status":"error","error":"invalid json"}`, http.StatusBadRequest)
+				return
+			}
+			// 更新配置文件
+			ff := utils.NewFileQueue(dto.CONFIG_PATH)
+			f, err := ff.LoadIni()
+			if err != nil {
+				utils.ErrorStop("系统配置不存在")
+			}
+			d := f.Section(j.Section)
+			d.Key("调试打印").SetValue(strconv.FormatBool(j.Debug))
+			ff.SaveIni(f)
+			// 仅更新运行中 bot 的 Debug 标志，不重连
+			if dto.ServerConfig.QQBots != nil {
+				if bot := dto.ServerConfig.QQBots[j.Section]; bot != nil {
+					bot.Debug = j.Debug
+					if bot.API != nil {
+						bot.API.Debug = j.Debug
+					}
+				}
+			}
 			w.Write([]byte(`{"status":"ok"}`))
 			return
 
@@ -1742,19 +1790,23 @@ func OpUI(w http.ResponseWriter, r *http.Request, getpath string) {
 			d.Key("密钥").SetValue("")
 			d.Key("全量艾特兼容").SetValue("false")
 			d.Key("调试打印").SetValue("false")
+			d.Key("WebSocket").SetValue("true")
+			d.Key("监听码").SetValue("0")
 			d.Key("备注").SetValue("")
 			ff.SaveIni(f)
 			j := HttpOpUiConfig_qq_instance{
 				Section: newSection,
 				Config: HttpOpUiConfig_qq{
-					Open:     false,
-					Dic:      "private/bot/qq" + strconv.Itoa(newNum),
-					Path:     "qq-bot" + strconv.Itoa(newNum),
-					Appid:    "",
-					Secret:   "",
-					AtCompat: false,
-					Debug:    false,
-					Remark:   "",
+					Open:      false,
+					Dic:       "private/bot/qq" + strconv.Itoa(newNum),
+					Path:      "qq-bot" + strconv.Itoa(newNum),
+					Appid:     "",
+					Secret:    "",
+					AtCompat:  false,
+					Debug:     false,
+					Ws:        true,
+					WsIntents: 0,
+					Remark:    "",
 				},
 			}
 			r, _ := json.Marshal(j)

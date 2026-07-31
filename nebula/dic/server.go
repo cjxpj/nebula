@@ -57,7 +57,7 @@ func webRun(w http.ResponseWriter, r *http.Request) {
 
 	if s.QQBots != nil {
 		for _, bot := range s.QQBots {
-			if bot != nil && bot.Open && r.URL.Path == bot.Addr {
+			if bot != nil && bot.Open && !bot.Ws && r.URL.Path == bot.Addr {
 				qqbot.BotMessage(w, r, bot)
 				return
 			}

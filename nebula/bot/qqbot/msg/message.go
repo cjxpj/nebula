@@ -7,6 +7,9 @@ import (
 
 // 回复子频道消息
 func (b *QQBot) ReplyChannelMessage(messageID, channelID, content string) (*MessageResponse, error) {
+	if channelID == "" || content == "" {
+		return nil, fmt.Errorf("channelID或消息内容为空")
+	}
 	url := fmt.Sprintf("/channels/%s/messages", channelID)
 
 	b.Count++
@@ -144,6 +147,9 @@ func (b *QQBot) GroupPrivateUploadFiles(Type int, openID, content string) (*Grou
 
 // 回复群聊语音
 func (b *QQBot) ReplyGroupVoiceMessage(messageID, groupOpenID, voice string) (*MessageResponse, error) {
+	if groupOpenID == "" || voice == "" {
+		return nil, fmt.Errorf("groupOpenID或语音内容为空")
+	}
 	url := fmt.Sprintf("/v2/groups/%s/messages", groupOpenID)
 	base64Data := base64.StdEncoding.EncodeToString([]byte(voice))
 	voice = base64Data
@@ -170,6 +176,9 @@ func (b *QQBot) ReplyGroupVoiceMessage(messageID, groupOpenID, voice string) (*M
 
 // 回复群聊视频
 func (b *QQBot) ReplyGroupVideoMessage(messageID, groupOpenID, video string) (*MessageResponse, error) {
+	if groupOpenID == "" || video == "" {
+		return nil, fmt.Errorf("groupOpenID或视频内容为空")
+	}
 	url := fmt.Sprintf("/v2/groups/%s/messages", groupOpenID)
 	base64Data := base64.StdEncoding.EncodeToString([]byte(video))
 	video = base64Data
@@ -284,6 +293,9 @@ func (b *QQBot) ReplyPrivateMarkdownMessage(messageID, openID string, md *Markdo
 
 // 回复群聊图文
 func (b *QQBot) ReplyGroupImgMessage(messageID, groupOpenID, img, content string) (*MessageResponse, error) {
+	if groupOpenID == "" || img == "" {
+		return nil, fmt.Errorf("groupOpenID或图片内容为空")
+	}
 	url := fmt.Sprintf("/v2/groups/%s/messages", groupOpenID)
 	base64Data := base64.StdEncoding.EncodeToString([]byte(img))
 	img = base64Data
@@ -331,12 +343,16 @@ func (b *QQBot) ReplyGroupPrivateImgMessage(messageID, openID, img, content stri
 
 	var resp MessageResponse
 	if err := b.Send(url, msg, &resp); err != nil {
+		return nil, err
 	}
 	return &resp, nil
 }
 
 // 回复群聊
 func (b *QQBot) ReplyGroupMessage(messageID, groupOpenID, content string) (*MessageResponse, error) {
+	if groupOpenID == "" || content == "" {
+		return nil, fmt.Errorf("groupOpenID或消息内容为空")
+	}
 	url := fmt.Sprintf("/v2/groups/%s/messages", groupOpenID)
 
 	b.Count++
@@ -356,6 +372,9 @@ func (b *QQBot) ReplyGroupMessage(messageID, groupOpenID, content string) (*Mess
 
 // 回复群私聊
 func (b *QQBot) ReplyGroupPrivateMessage(messageID, openID, content string) (*MessageResponse, error) {
+	if openID == "" || content == "" {
+		return nil, fmt.Errorf("openID或消息内容为空")
+	}
 	url := fmt.Sprintf("/v2/users/%s/messages", openID)
 
 	b.Count++

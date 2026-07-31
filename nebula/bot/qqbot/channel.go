@@ -64,6 +64,7 @@ func qqBOTChannelRun(payload *qqbot_msg.Payload, bot *qqbot_msg.RouterQQBot) {
 			Set("子群号", m.ChannelID).
 			Set("昵称", m.Author.Username).
 			Set("QQ", m.Author.ID).
+			Set("管理", getChannelAdminRole(m.Member.Roles)).
 			Set("头像", m.Author.Avatar))
 
 	dic.AddFuncs(ReplyFuncs)
@@ -111,22 +112,19 @@ func qqBOTChannelPrivateRun(payload *qqbot_msg.Payload, bot *qqbot_msg.RouterQQB
 	m := &qqbot_msg.GuildMessageEvent{}
 	err := json.Unmarshal([]byte(payload.Data), m)
 	if err != nil {
-		debugLog.Infof("QQBot消息数据验证失败")
+		debugLog.Infof("QQBot私聊消息数据验证失败")
 		return
 	}
 
-	// 处理重复消息ID
 	if !bot.CheckOnce(fmt.Sprint(m.Seq)) {
-		// fmt.Println("QQBot消息ID重复", m.Seq)
+		fmt.Println("QQBot私聊消息ID重复")
 		return
 	}
-
 	// 处理消息次数
 	qqbot_msg.MsgCount++
 
 	// 新建副本消息
 	msg := m.Content
-
 	// 词库
 	BotDic := utils.NewFileQueue(bot.FilePath)
 	FileData, err := BotDic.ReadFromFile()
@@ -155,6 +153,7 @@ func qqBOTChannelPrivateRun(payload *qqbot_msg.Payload, bot *qqbot_msg.RouterQQB
 			Set("子群号", m.ChannelID).
 			Set("昵称", m.Author.Username).
 			Set("QQ", m.Author.ID).
+			Set("管理", getChannelAdminRole(m.Member.Roles)).
 			Set("头像", m.Author.Avatar))
 
 	dic.AddFuncs(ReplyFuncs)
@@ -196,4 +195,18 @@ func qqBOTChannelPrivateRun(payload *qqbot_msg.Payload, bot *qqbot_msg.RouterQQB
 			debugLog.Infof("QQBot回复失败%v", mErr)
 		}
 	}
+}
+
+// getChannelAdminRole 从频道成员角色列表判断管理权限
+// 返回 "1" (创建者), "2" (管理员), "null" (无权限)
+func getChannelAdminRole(roles []string) string {
+	for _, r := range roles {
+		switch r {
+		case "4": // 频道创建者
+			return "1"
+		case "2": // 频道管理员
+			return "2"
+		}
+	}
+	return "null"
 }

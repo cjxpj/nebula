@@ -1,7 +1,11 @@
 package qqbot
 
 import (
+	"encoding/json"
 	"fmt"
+	"os"
+	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 
@@ -48,118 +52,314 @@ func GetPushContext() *PushContext {
 	return currentPush
 }
 
-// getActiveBotAPI 从全局配置取第一个启用的 QQBot API（主动发送，无 PushContext 依赖）
-func getActiveBotAPI() *qqbot_msg.QQBot {
+// getBotByIndex 按排序后的账号列表取指定索引的 QQBot（index: 0=第一个, 1=第二个...），不存在返回 nil
+func getBotByIndex(index int) *qqbot_msg.RouterQQBot {
 	if dto.ServerConfig.QQBots == nil || len(dto.ServerConfig.QQBots) == 0 {
 		return nil
 	}
-	for _, bot := range dto.ServerConfig.QQBots {
+	keys := make([]string, 0, len(dto.ServerConfig.QQBots))
+	for k, bot := range dto.ServerConfig.QQBots {
 		if bot != nil && bot.Open && bot.API != nil {
-			return bot.API
+			keys = append(keys, k)
 		}
 	}
-	return nil
+	sort.Strings(keys)
+	if index < 0 || index >= len(keys) {
+		return nil
+	}
+	return dto.ServerConfig.QQBots[keys[index]]
 }
 
-// ========== ActiveFuncs：主动发送（#引入=@QQBot 注入），通过全局 Bot API，无需 PushContext ==========
+// getBotKey 从 QQBots map 反查 bot 对应的 key，找不到返回空字符串
+func getBotKey(bot *qqbot_msg.RouterQQBot) string {
+	for k, v := range dto.ServerConfig.QQBots {
+		if v == bot {
+			return k
+		}
+	}
+	return ""
+}
+
+// getSortedBotKeys 返回所有已启用账号的排序后的 key 列表
+func getSortedBotKeys() []string {
+	if dto.ServerConfig.QQBots == nil || len(dto.ServerConfig.QQBots) == 0 {
+		return nil
+	}
+	keys := make([]string, 0, len(dto.ServerConfig.QQBots))
+	for k, bot := range dto.ServerConfig.QQBots {
+		if bot != nil && bot.Open && bot.API != nil {
+			keys = append(keys, k)
+		}
+	}
+	sort.Strings(keys)
+	return keys
+}
+
+// ========== 群列表/用户列表记录 ==========
+
+var recordMu sync.Mutex
+
+// RecordGroup 记录群号到 bot 目录下的 groups.json
+func RecordGroup(bot *qqbot_msg.RouterQQBot, groupOpenID string) {
+	if bot == nil || groupOpenID == "" {
+		return
+	}
+	p := filepath.Join(bot.FilePath, "groups.json")
+	recordMu.Lock()
+	defer recordMu.Unlock()
+	groups := loadStringSet(p)
+	if groups[groupOpenID] {
+		return // 已存在，跳过写入
+	}
+	groups[groupOpenID] = true
+	saveStringSet(p, groups)
+}
+
+// RecordUser 记录用户 ID+昵称到 bot 目录下的 users.json
+func RecordUser(bot *qqbot_msg.RouterQQBot, userID, username string) {
+	if bot == nil || userID == "" {
+		return
+	}
+	p := filepath.Join(bot.FilePath, "users.json")
+	key := userID
+	if username != "" {
+		key = userID + "\t" + username
+	}
+	recordMu.Lock()
+	defer recordMu.Unlock()
+	users := loadStringSet(p)
+	if users[key] {
+		return // 已存在，跳过写入
+	}
+	users[key] = true
+	saveStringSet(p, users)
+}
+
+// GetRecordedGroups 获取已记录的群列表
+func GetRecordedGroups(bot *qqbot_msg.RouterQQBot) []string {
+	if bot == nil {
+		return nil
+	}
+	groups := loadStringSet(filepath.Join(bot.FilePath, "groups.json"))
+	result := make([]string, 0, len(groups))
+	for g := range groups {
+		result = append(result, g)
+	}
+	sort.Strings(result)
+	return result
+}
+
+func loadStringSet(path string) map[string]bool {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return make(map[string]bool)
+	}
+	result := make(map[string]bool)
+	for _, line := range strings.Split(string(data), "\n") {
+		line = strings.TrimSpace(line)
+		if line != "" {
+			result[line] = true
+		}
+	}
+	return result
+}
+
+func saveStringSet(path string, m map[string]bool) {
+	lines := make([]string, 0, len(m))
+	for k := range m {
+		lines = append(lines, k)
+	}
+	sort.Strings(lines)
+	os.WriteFile(path, []byte(strings.Join(lines, "\n")), 0644)
+}
+
+// ========== ActiveFuncs：主动发送（#引入=@QQBot 注入），第一个参数为账号序号（0=第一个） ==========
 var ActiveFuncs = map[string]dto.DicFunc{
-	"群单发": {
-		L: "2",
+	"获取账号": {
+		L: "0|1",
 		Fn: func(d *dto.DicInputs) (any, error) {
-			bot := getActiveBotAPI()
+			keys := getSortedBotKeys()
+			// 第一个参数留空 → 返回全部账号列表 JSON
+			if d.Inputs.Len() == 0 || d.Inputs.String(1) == "" {
+				list := make([]map[string]string, 0, len(keys))
+				for _, k := range keys {
+					bot := dto.ServerConfig.QQBots[k]
+					list = append(list, map[string]string{
+						"name":  k,
+						"appid": bot.API.AppId,
+						"path":  bot.Addr,
+					})
+				}
+				data, _ := json.Marshal(list)
+				return string(data), nil
+			}
+			// 第一个参数为序号（正整数，0=第一个）
+			index := d.Inputs.Int(1)
+			bot := getBotByIndex(index)
+			if bot == nil {
+				return "null", nil
+			}
+			info := map[string]string{
+				"name":  getBotKey(bot),
+				"appid": bot.API.AppId,
+				"path":  bot.Addr,
+			}
+			data, _ := json.Marshal(info)
+			return string(data), nil
+		},
+	},
+	"搜索账号": {
+		L: "1",
+		Fn: func(d *dto.DicInputs) (any, error) {
+			keyword := d.Inputs.String(1)
+			if keyword == "" {
+				return `[]`, nil
+			}
+			keyword = strings.ToLower(keyword)
+			result := make([]map[string]string, 0)
+			for k, bot := range dto.ServerConfig.QQBots {
+				if bot == nil || !bot.Open || bot.API == nil {
+					continue
+				}
+				if strings.Contains(strings.ToLower(k), keyword) ||
+					strings.Contains(strings.ToLower(bot.Remark), keyword) ||
+					strings.Contains(strings.ToLower(bot.API.AppId), keyword) {
+					result = append(result, map[string]string{
+						"name":   k,
+						"appid":  bot.API.AppId,
+						"path":   bot.Addr,
+						"remark": bot.Remark,
+					})
+				}
+			}
+			data, _ := json.Marshal(result)
+			return string(data), nil
+		},
+	},
+	"群单发": {
+		L: "3",
+		Fn: func(d *dto.DicInputs) (any, error) {
+			bot := getBotByIndex(d.Inputs.Int(1))
 			if bot == nil {
 				return "QQBot未启用或未配置", nil
 			}
-			groupOpenID := d.Inputs.String(1)
+			groupOpenID := d.Inputs.String(2)
+			rMsg := d.Inputs.String(3)
+			if rMsg == "" {
+				return "内容为空", nil
+			}
+			rMsg = strings.ReplaceAll(rMsg, "\\r", "\n")
+			if _, err := bot.API.ReplyGroupMessage("", groupOpenID, rMsg); err != nil {
+				return "发送失败: " + err.Error(), nil
+			}
+			return "发送成功", nil
+		},
+	},
+	"群发": {
+		L: "2",
+		Fn: func(d *dto.DicInputs) (any, error) {
+			bot := getBotByIndex(d.Inputs.Int(1))
+			if bot == nil {
+				return "QQBot未启用或未配置", nil
+			}
 			rMsg := d.Inputs.String(2)
 			if rMsg == "" {
 				return "内容为空", nil
 			}
 			rMsg = strings.ReplaceAll(rMsg, "\\r", "\n")
-			if _, err := bot.ReplyGroupMessage("", groupOpenID, rMsg); err != nil {
+			groups := GetRecordedGroups(bot)
+			if len(groups) == 0 {
+				return "没有已记录的群", nil
+			}
+			var success, fail int
+			for _, g := range groups {
+				if _, err := bot.API.ReplyGroupMessage("", g, rMsg); err != nil {
+					fail++
+				} else {
+					success++
+				}
+			}
+			return fmt.Sprintf("群发完成: 成功%d 失败%d", success, fail), nil
+		},
+	},
+	"群单发图": {
+		L: "4",
+		Fn: func(d *dto.DicInputs) (any, error) {
+			bot := getBotByIndex(d.Inputs.Int(1))
+			if bot == nil {
+				return "QQBot未启用或未配置", nil
+			}
+			if _, err := bot.API.ReplyGroupImgMessage("", d.Inputs.String(2), d.Inputs.String(3), d.Inputs.String(4)); err != nil {
 				return "发送失败: " + err.Error(), nil
 			}
 			return "发送成功", nil
 		},
 	},
-	"群发图": {
+	"群单发MD": {
 		L: "3",
 		Fn: func(d *dto.DicInputs) (any, error) {
-			bot := getActiveBotAPI()
+			bot := getBotByIndex(d.Inputs.Int(1))
 			if bot == nil {
 				return "QQBot未启用或未配置", nil
 			}
-			if _, err := bot.ReplyGroupImgMessage("", d.Inputs.String(1), d.Inputs.String(2), d.Inputs.String(3)); err != nil {
+			if _, err := bot.API.ReplyGroupAnyMarkdownMessage("", d.Inputs.String(2), d.Inputs.String(3)); err != nil {
 				return "发送失败: " + err.Error(), nil
 			}
 			return "发送成功", nil
 		},
 	},
-	"群发MD": {
-		L: "2",
+	"群单发语音": {
+		L: "3",
 		Fn: func(d *dto.DicInputs) (any, error) {
-			bot := getActiveBotAPI()
+			bot := getBotByIndex(d.Inputs.Int(1))
 			if bot == nil {
 				return "QQBot未启用或未配置", nil
 			}
-			if _, err := bot.ReplyGroupAnyMarkdownMessage("", d.Inputs.String(1), d.Inputs.String(2)); err != nil {
+			if _, err := bot.API.ReplyGroupVoiceMessage("", d.Inputs.String(2), d.Inputs.String(3)); err != nil {
 				return "发送失败: " + err.Error(), nil
 			}
 			return "发送成功", nil
 		},
 	},
-	"群发语音": {
-		L: "2",
+	"群单发视频": {
+		L: "3",
 		Fn: func(d *dto.DicInputs) (any, error) {
-			bot := getActiveBotAPI()
+			bot := getBotByIndex(d.Inputs.Int(1))
 			if bot == nil {
 				return "QQBot未启用或未配置", nil
 			}
-			if _, err := bot.ReplyGroupVoiceMessage("", d.Inputs.String(1), d.Inputs.String(2)); err != nil {
-				return "发送失败: " + err.Error(), nil
-			}
-			return "发送成功", nil
-		},
-	},
-	"群发视频": {
-		L: "2",
-		Fn: func(d *dto.DicInputs) (any, error) {
-			bot := getActiveBotAPI()
-			if bot == nil {
-				return "QQBot未启用或未配置", nil
-			}
-			if _, err := bot.ReplyGroupVideoMessage("", d.Inputs.String(1), d.Inputs.String(2)); err != nil {
+			if _, err := bot.API.ReplyGroupVideoMessage("", d.Inputs.String(2), d.Inputs.String(3)); err != nil {
 				return "发送失败: " + err.Error(), nil
 			}
 			return "发送成功", nil
 		},
 	},
 	"私聊": {
-		L: "2",
+		L: "3",
 		Fn: func(d *dto.DicInputs) (any, error) {
-			bot := getActiveBotAPI()
+			bot := getBotByIndex(d.Inputs.Int(1))
 			if bot == nil {
 				return "QQBot未启用或未配置", nil
 			}
-			rMsg := d.Inputs.String(2)
+			rMsg := d.Inputs.String(3)
 			if rMsg == "" {
 				return "内容为空", nil
 			}
 			rMsg = strings.ReplaceAll(rMsg, "\\r", "\n")
-			if _, err := bot.ReplyGroupPrivateMessage("", d.Inputs.String(1), rMsg); err != nil {
+			if _, err := bot.API.ReplyGroupPrivateMessage("", d.Inputs.String(2), rMsg); err != nil {
 				return "发送失败: " + err.Error(), nil
 			}
 			return "发送成功", nil
 		},
 	},
 	"私聊图": {
-		L: "3",
+		L: "4",
 		Fn: func(d *dto.DicInputs) (any, error) {
-			bot := getActiveBotAPI()
+			bot := getBotByIndex(d.Inputs.Int(1))
 			if bot == nil {
 				return "QQBot未启用或未配置", nil
 			}
-			if _, err := bot.ReplyGroupPrivateImgMessage("", d.Inputs.String(1), d.Inputs.String(2), d.Inputs.String(3)); err != nil {
+			if _, err := bot.API.ReplyGroupPrivateImgMessage("", d.Inputs.String(2), d.Inputs.String(3), d.Inputs.String(4)); err != nil {
 				return "发送失败: " + err.Error(), nil
 			}
 			return "发送成功", nil

@@ -13,8 +13,8 @@ func NewQQBot(appId, clientSecret string) *QQBot {
 	}
 }
 
-// ensureToken 确保 token 有效（自动刷新）
-func (b *QQBot) ensureToken() error {
+// EnsureToken 确保 token 有效（自动刷新）
+func (b *QQBot) EnsureToken() error {
 	// 尝试从字符串转换 ExpiresIn 为 int
 	var expiresIn int
 	if b.Key != nil {

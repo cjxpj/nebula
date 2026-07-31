@@ -68,6 +68,16 @@ func LoadConfig_qq(QQBot_Config *ini.Section, sectionName string) {
 		dicPath := QQBot_Config.Key("词库").String()
 		atCompat, _ := QQBot_Config.Key("全量艾特兼容").Bool()
 		debug, _ := QQBot_Config.Key("调试打印").Bool()
+		ws, _ := QQBot_Config.Key("WebSocket").Bool()
+		wsIntents := QQBot_Config.Key("监听码").MustInt(0)
+
+		// 停止旧实例的 WS 连接
+		if oldBot := ServerConfig.QQBots[sectionName]; oldBot != nil {
+			if qqbot_msg.StopWsFunc != nil {
+				qqbot_msg.StopWsFunc(oldBot)
+			}
+		}
+
 		api := qqbot_msg.NewQQBot(appId, secret)
 		api.Debug = debug
 		ServerConfig.QQBots[sectionName] = &qqbot_msg.RouterQQBot{
@@ -79,7 +89,16 @@ func LoadConfig_qq(QQBot_Config *ini.Section, sectionName string) {
 			API:       api,
 			AtCompat:  atCompat,
 			Debug:     debug,
+			Remark:    QQBot_Config.Key("备注").String(),
+			Ws:        ws,
+			WsIntents: wsIntents,
 		}
+
+		// 启动 WS 连接
+		if ws && qqbot_msg.StartWsFunc != nil {
+			qqbot_msg.StartWsFunc(ServerConfig.QQBots[sectionName])
+		}
+
 		BotDic := utils.NewFileQueue(dicPath)
 		if !BotDic.DirExists() {
 			BotDic.SetPath(dicPath + "/dic/dic.n")
@@ -93,6 +112,9 @@ func LoadConfig_qq(QQBot_Config *ini.Section, sectionName string) {
 			BotDic.WriteFileByte([]byte(""))
 		}
 	} else if bot, exists := ServerConfig.QQBots[sectionName]; exists {
+		if qqbot_msg.StopWsFunc != nil {
+			qqbot_msg.StopWsFunc(bot)
+		}
 		bot.Open = false
 	}
 }

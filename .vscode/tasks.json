@@ -6,8 +6,9 @@
             "label": "buildWindows_amd64",
             "command": "build",
             "args": [
+                "-trimpath",
                 "-ldflags",
-                "-H=windowsgui -s -w -trimpath",
+                "-H=windowsgui -s -w",
                 "-o",
                 "dist/nebula.exe",
                 "-tags",
@@ -36,8 +37,9 @@
             "label": "buildLinux_amd64",
             "command": "build",
             "args": [
+                "-trimpath",
                 "-ldflags",
-                "-s -w -trimpath",
+                "-s -w",
                 "-o",
                 "dist/nebula",
                 "-tags",
