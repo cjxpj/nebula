@@ -7,6 +7,7 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"runtime"
 
 	"github.com/cjxpj/nebula/debugLog"
 
@@ -67,6 +68,33 @@ func runCommandNew(d *dto.DicInputs) (any, error) {
 	return cmdConfig, nil
 }
 
+// 新建终端（Shell模式，跨平台自动选择 shell）
+func runCommandShellNew(d *dto.DicInputs) (any, error) {
+	var shellName, shellFlag string
+
+	if runtime.GOOS == "windows" {
+		shellName = "cmd"
+		shellFlag = "/c"
+	} else {
+		shellName = "bash"
+		shellFlag = "-c"
+	}
+
+	cmd := exec.Command(shellName, shellFlag, d.Inputs.StringAfter(1))
+
+	stdin, err := cmd.StdinPipe()
+	if err != nil {
+		return nil, err
+	}
+
+	cmdConfig := &CmdConfig{
+		Cmd:     cmd,
+		Stdin:   stdin,
+		Decoder: "utf-8",
+	}
+	return cmdConfig, nil
+}
+
 // 终端解码器
 func (f *DicFunc) RunCommandDecoder() (string, error) {
 	if !f.Inputs.LenOk(2) {
@@ -93,6 +121,9 @@ func (f *DicFunc) RunCommandVar() (string, error) {
 		return "", errors.New("传入参数错误")
 	}
 
+	if cmd.Cmd.Env == nil {
+		cmd.Cmd.Env = os.Environ()
+	}
 	cmd.Cmd.Env = append(cmd.Cmd.Env, f.Inputs.String(2))
 
 	return "", nil
@@ -107,6 +138,10 @@ func runCommandDir(d *dto.DicInputs) (any, error) {
 	cmd, ok := d.Inputs.Get(1).(*CmdConfig)
 	if !ok {
 		return "", errors.New("传入参数错误")
+	}
+
+	if cmd.Cmd == nil {
+		return "", errors.New("未启动终端")
 	}
 
 	cmd.Cmd.Dir = d.Inputs.String(2)
@@ -160,6 +195,10 @@ func runCommand(d *dto.DicInputs) (any, error) {
 		return "", errors.New("传入参数错误")
 	}
 
+	if cmd.Cmd == nil {
+		return "", errors.New("未启动终端")
+	}
+
 	var out bytes.Buffer
 	cmd.Cmd.Stdout = &out
 	cmd.Cmd.Stderr = &out
@@ -181,6 +220,10 @@ func runCommandAsync(d *dto.DicInputs) (any, error) {
 	cmd, ok := d.Inputs.Get(1).(*CmdConfig)
 	if !ok {
 		return "", errors.New("传入参数错误")
+	}
+
+	if cmd.Cmd == nil {
+		return "", errors.New("未启动终端")
 	}
 
 	go func() {
@@ -207,6 +250,9 @@ func runCommandVar(d *dto.DicInputs) (any, error) {
 	}
 	if cmd.Cmd == nil {
 		return "", errors.New("未启动终端")
+	}
+	if cmd.Cmd.Env == nil {
+		cmd.Cmd.Env = os.Environ()
 	}
 	cmd.Cmd.Env = append(cmd.Cmd.Env, d.Inputs.String(2))
 	return "", nil

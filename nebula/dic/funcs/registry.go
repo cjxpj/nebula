@@ -159,10 +159,11 @@ func Setup() {
 
 		// ========== 终端 ==========
 		f{Name: "终端.创建", L: "1..", Fn: runCommandNew},
+		f{Name: "终端.Shell创建", L: "1..", Fn: runCommandShellNew},
 		f{Name: "终端.异步执行", L: "1", Fn: runCommandAsync},
 		f{Name: "终端.执行目录", L: "2", Fn: runCommandDir},
 		f{Name: "终端.执行", L: "1", Fn: runCommand},
-		f{Name: "终端等待输入", L: "0", Fn: runCommandInput},
+		f{Name: "终端.等待输入", L: "0", Fn: runCommandInput},
 		f{Name: "终端.解码器", L: "2", Fn: runCommandDecoder},
 		f{Name: "终端.变量", L: "2", Fn: runCommandVar},
 		f{Name: "终端.断开", L: "1", Fn: runCommandClose},
