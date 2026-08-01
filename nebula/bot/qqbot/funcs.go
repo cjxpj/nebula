@@ -54,7 +54,7 @@ func GetPushContext() *PushContext {
 
 // getBotByIndex 按排序后的账号列表取指定索引的 QQBot（index: 0=第一个, 1=第二个...），不存在返回 nil
 func getBotByIndex(index int) *qqbot_msg.RouterQQBot {
-	if dto.ServerConfig.QQBots == nil || len(dto.ServerConfig.QQBots) == 0 {
+	if len(dto.ServerConfig.QQBots) == 0 {
 		return nil
 	}
 	keys := make([]string, 0, len(dto.ServerConfig.QQBots))
@@ -82,7 +82,7 @@ func getBotKey(bot *qqbot_msg.RouterQQBot) string {
 
 // getSortedBotKeys 返回所有已启用账号的排序后的 key 列表
 func getSortedBotKeys() []string {
-	if dto.ServerConfig.QQBots == nil || len(dto.ServerConfig.QQBots) == 0 {
+	if len(dto.ServerConfig.QQBots) == 0 {
 		return nil
 	}
 	keys := make([]string, 0, len(dto.ServerConfig.QQBots))

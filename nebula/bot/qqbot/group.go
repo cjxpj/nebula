@@ -37,6 +37,10 @@ func qqBOTGroupRun(payload *qqbot_msg.Payload, bot *qqbot_msg.RouterQQBot) {
 
 	// 取出需要的数据
 	userID := m.Author.ID // QQ
+	username := m.Author.Username
+	if username == "" {
+		username = "未知"
+	}
 
 	isAdmin := "null" // 是否是管理员
 	// 主人列表
@@ -83,7 +87,7 @@ func qqBOTGroupRun(payload *qqbot_msg.Payload, bot *qqbot_msg.RouterQQBot) {
 
 	valData := dto.NewVal().
 		Set("来源", "群聊").
-		Set("昵称", m.Author.Username).
+		Set("昵称", username).
 		Set("群号", m.GroupOpenID).
 		Set("qq", userID).
 		Set("QQ", userID).
@@ -340,6 +344,10 @@ func qqBOTGroupATRun(payload *qqbot_msg.Payload, bot *qqbot_msg.RouterQQBot) {
 
 	// 取出需要的数据
 	userID := m.Author.ID // QQ
+	username := m.Author.Username
+	if username == "" {
+		username = "未知"
+	}
 
 	isAdmin := "null" // 是否是管理员
 	// 主人列表
@@ -374,7 +382,7 @@ func qqBOTGroupATRun(payload *qqbot_msg.Payload, bot *qqbot_msg.RouterQQBot) {
 
 	valData := dto.NewVal().
 		Set("来源", "群聊").
-		Set("昵称", "未知").
+		Set("昵称", username).
 		Set("群号", m.GroupOpenID).
 		Set("qq", userID).
 		Set("QQ", userID).

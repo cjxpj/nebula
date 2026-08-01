@@ -21,10 +21,10 @@ require (
 	github.com/patrickmn/go-cache v2.1.0+incompatible
 	github.com/shirou/gopsutil v3.21.11+incompatible
 	golang.ngrok.com/ngrok v1.9.1
-	golang.org/x/crypto v0.45.0
+	golang.org/x/crypto v0.54.0
 	golang.org/x/image v0.18.0
-	golang.org/x/net v0.47.0
-	golang.org/x/text v0.31.0
+	golang.org/x/net v0.56.0
+	golang.org/x/text v0.40.0
 )
 
 require (
@@ -45,7 +45,7 @@ require (
 
 require (
 	github.com/kr/fs v0.1.0 // indirect
-	github.com/pkg/sftp v1.13.10
+	github.com/pkg/sftp v1.13.11
 )
 
 require (
@@ -72,9 +72,9 @@ require (
 	github.com/yusufpapurcu/wmi v1.2.4 // indirect
 	go.uber.org/multierr v1.11.0 // indirect
 	golang.ngrok.com/muxado/v2 v2.0.0 // indirect
-	golang.org/x/sync v0.20.0 // indirect
-	golang.org/x/sys v0.42.0 // indirect
-	golang.org/x/term v0.37.0 // indirect
+	golang.org/x/sync v0.22.0 // indirect
+	golang.org/x/sys v0.47.0 // indirect
+	golang.org/x/term v0.45.0 // indirect
 	google.golang.org/protobuf v1.31.0 // indirect
 	gopkg.in/yaml.v2 v2.4.0 // indirect
 )

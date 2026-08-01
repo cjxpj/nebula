@@ -205,6 +205,9 @@ func (b *QQBot) ReplyGroupVideoMessage(messageID, groupOpenID, video string) (*M
 
 // 回复群markdown
 func (b *QQBot) ReplyGroupMarkdownMessage(messageID, groupOpenID string, md *Markdown) (*MessageResponse, error) {
+	if groupOpenID == "" || md == nil {
+		return nil, fmt.Errorf("groupOpenID或markdown为空")
+	}
 	url := fmt.Sprintf("/v2/groups/%s/messages", groupOpenID)
 
 	b.Count++
@@ -225,6 +228,9 @@ func (b *QQBot) ReplyGroupMarkdownMessage(messageID, groupOpenID string, md *Mar
 
 // 回复群任意markdown
 func (b *QQBot) ReplyGroupAnyMarkdownMessage(messageID, groupOpenID, text string) (*MessageResponse, error) {
+	if groupOpenID == "" || text == "" {
+		return nil, fmt.Errorf("groupOpenID或文本为空")
+	}
 	url := fmt.Sprintf("/v2/groups/%s/messages", groupOpenID)
 
 	b.Count++
@@ -249,6 +255,9 @@ func (b *QQBot) ReplyGroupAnyMarkdownMessage(messageID, groupOpenID, text string
 
 // 回复私聊任意markdown
 func (b *QQBot) ReplyPrivateAnyMarkdownMessage(messageID, openID, text string) (*MessageResponse, error) {
+	if openID == "" || text == "" {
+		return nil, fmt.Errorf("openID或文本为空")
+	}
 	url := fmt.Sprintf("/v2/users/%s/messages", openID)
 
 	b.Count++
@@ -273,6 +282,9 @@ func (b *QQBot) ReplyPrivateAnyMarkdownMessage(messageID, openID, text string) (
 
 // 回复私聊markdown
 func (b *QQBot) ReplyPrivateMarkdownMessage(messageID, openID string, md *Markdown) (*MessageResponse, error) {
+	if openID == "" || md == nil {
+		return nil, fmt.Errorf("openID或markdown为空")
+	}
 	url := fmt.Sprintf("/v2/users/%s/messages", openID)
 
 	b.Count++
@@ -394,6 +406,9 @@ func (b *QQBot) ReplyGroupPrivateMessage(messageID, openID, content string) (*Me
 
 // 回复群私聊语音
 func (b *QQBot) ReplyGroupPrivateVoiceMessage(messageID, openID, voice string) (*MessageResponse, error) {
+	if openID == "" || voice == "" {
+		return nil, fmt.Errorf("openID或语音内容为空")
+	}
 	url := fmt.Sprintf("/v2/users/%s/messages", openID)
 	base64Data := base64.StdEncoding.EncodeToString([]byte(voice))
 	voice = base64Data
@@ -420,6 +435,9 @@ func (b *QQBot) ReplyGroupPrivateVoiceMessage(messageID, openID, voice string) (
 
 // 回复群私聊视频
 func (b *QQBot) ReplyGroupPrivateVideoMessage(messageID, openID, video string) (*MessageResponse, error) {
+	if openID == "" || video == "" {
+		return nil, fmt.Errorf("openID或视频内容为空")
+	}
 	url := fmt.Sprintf("/v2/users/%s/messages", openID)
 	base64Data := base64.StdEncoding.EncodeToString([]byte(video))
 	video = base64Data

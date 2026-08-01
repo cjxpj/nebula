@@ -8,11 +8,9 @@
             "args": [
                 "-trimpath",
                 "-ldflags",
-                "-H=windowsgui -s -w",
+                "-s -w",
                 "-o",
                 "dist/nebula.exe",
-                "-tags",
-                "windows",
                 "./nebulaApp/win"
             ],
             "problemMatcher": [
@@ -42,8 +40,6 @@
                 "-s -w",
                 "-o",
                 "dist/nebula",
-                "-tags",
-                "linux",
                 "./nebulaApp/main_linux.go"
             ],
             "problemMatcher": [

@@ -198,7 +198,7 @@ func qqBOTChannelPrivateRun(payload *qqbot_msg.Payload, bot *qqbot_msg.RouterQQB
 }
 
 // getChannelAdminRole 从频道成员角色列表判断管理权限
-// 返回 "1" (创建者), "2" (管理员), "null" (无权限)
+// 返回 "1" (创建者), "2" (管理员), "0" (普通成员)
 func getChannelAdminRole(roles []string) string {
 	for _, r := range roles {
 		switch r {
@@ -208,5 +208,5 @@ func getChannelAdminRole(roles []string) string {
 			return "2"
 		}
 	}
-	return "null"
+	return "0"
 }

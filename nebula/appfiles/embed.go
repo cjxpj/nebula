@@ -39,4 +39,4 @@ func initKey() []byte {
 }
 
 // 版本号
-var Version string = "16.15.0"
+var Version string = "16.16.0"

@@ -120,15 +120,19 @@ func wsLoop(ctx context.Context, bot *qqbot_msg.RouterQQBot) {
 
 		dbg(bot, "连接异常: %v", err)
 
-		// op=9 或鉴权失败 → 换下一个探针重连
-		if bot.WsIntents == 0 {
-			idx++
-			if idx >= len(probes) {
-				idx = 0 // 全部试完，从头循环
+		isInvalidSession := err == errInvalidSession
+
+		if isInvalidSession {
+			// op=9 Session 无效 → 换下一个探针重连
+			if bot.WsIntents == 0 {
+				idx++
+				if idx >= len(probes) {
+					idx = 0 // 全部试完，从头循环
+				}
 			}
 			retry = 0
 		} else {
-			// 自定义意图无探针回退，用退避避免高频重连
+			// 网络断开/服务端要求重连 → 保持当前探针，退避重试
 			retry++
 			if retry > 5 {
 				retry = 5
