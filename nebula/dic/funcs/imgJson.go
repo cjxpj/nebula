@@ -56,10 +56,14 @@ func (j *JsonImage) Draw(jsonData []map[string]interface{}) string {
 	var img_dx, img_dy int
 
 	for _, json := range jsonData {
-		key := json["需求"].(string)
+		key, ok := json["需求"].(string)
+		if !ok {
+			return "缺少需求字段或类型错误"
+		}
 		var value []string
 		SetValue, ok := json["参数"].([]interface{})
 		if ok {
+			value = make([]string, 0, len(SetValue))
 			for _, vv := range SetValue {
 				if s, ok := vv.(string); ok {
 					value = append(value, s)
@@ -67,6 +71,9 @@ func (j *JsonImage) Draw(jsonData []map[string]interface{}) string {
 			}
 		}
 		valueLen := len(value)
+		if img == nil && key != "创建" && key != "二维码" {
+			return "请先创建画布"
+		}
 		switch key {
 
 		case "创建":
@@ -80,6 +87,7 @@ func (j *JsonImage) Draw(jsonData []map[string]interface{}) string {
 				imgData := strings.NewReader(imgDataStr)
 				imge, _, err := image.Decode(imgData)
 				if err != nil {
+					imgData = strings.NewReader(imgDataStr)
 					imge, err = webp.Decode(imgData)
 					if err != nil {
 						return "Not image"
@@ -124,7 +132,7 @@ func (j *JsonImage) Draw(jsonData []map[string]interface{}) string {
 				var rTopLeft, rTopRight, rBottomLeft, rBottomRight int
 
 				if valueLen == 1 {
-					if num, err := strconv.Atoi(value[1]); err == nil {
+					if num, err := strconv.Atoi(value[0]); err == nil {
 						rTopLeft = num
 						rTopRight = num
 						rBottomLeft = num
@@ -371,7 +379,7 @@ func (j *JsonImage) Draw(jsonData []map[string]interface{}) string {
 			if err != nil {
 				return "非数字"
 			}
-			img = imaging.AdjustBrightness(img, f)
+			img = imaging.AdjustSaturation(img, f)
 
 		case "贴图":
 			if !(valueLen == 1 || valueLen == 3 || valueLen == 5 || valueLen == 6) {
@@ -414,6 +422,7 @@ func (j *JsonImage) Draw(jsonData []map[string]interface{}) string {
 			imgData := strings.NewReader(imgStr)
 			imge, _, err := image.Decode(imgData)
 			if err != nil {
+				imgData = strings.NewReader(imgStr)
 				imge, err = webp.Decode(imgData)
 				if err != nil {
 					return "创建失败"

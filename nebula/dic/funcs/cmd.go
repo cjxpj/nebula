@@ -44,7 +44,7 @@ func runCommandNew(d *dto.DicInputs) (any, error) {
 	var cmd *exec.Cmd
 
 	if d.Inputs.Len() > 1 {
-		var args []string
+		var args = make([]string, 0, len(d.Inputs.List[2:]))
 		for _, arg := range d.Inputs.List[2:] {
 			if strArg, ok := arg.(string); ok {
 				args = append(args, strArg)
@@ -121,6 +121,9 @@ func (f *DicFunc) RunCommandVar() (string, error) {
 		return "", errors.New("传入参数错误")
 	}
 
+	if cmd.Cmd == nil {
+		return "", errors.New("未启动终端")
+	}
 	if cmd.Cmd.Env == nil {
 		cmd.Cmd.Env = os.Environ()
 	}
@@ -159,6 +162,9 @@ func (f *DicFunc) RunCommandClose() (string, error) {
 		return "", errors.New("传入参数错误")
 	}
 
+	if cmd.Cmd == nil || cmd.Cmd.Process == nil {
+		return "false", nil
+	}
 	if err := cmd.Cmd.Process.Kill(); err != nil {
 		return "false", nil
 	}
@@ -177,7 +183,7 @@ func (f *DicFunc) RunCommandInputText() (string, error) {
 	}
 
 	// 检测启动
-	if cmd.Cmd.Process == nil {
+	if cmd.Cmd == nil || cmd.Cmd.Process == nil {
 		return "", errors.New("未启动终端")
 	}
 

@@ -26,6 +26,8 @@ import (
 	"gopkg.in/ini.v1"
 )
 
+var httpClient = &http.Client{Timeout: 30 * time.Second}
+
 const GPATH = "NebulaData"
 
 // Error 将文本写入文件
@@ -277,7 +279,7 @@ func (fq *FileQueue) Download(url string) bool {
 	defer out.Close()
 
 	// 发送 HTTP GET 请求
-	resp, err := http.Get(url)
+	resp, err := httpClient.Get(url)
 	if err != nil {
 		Error("访问失败")
 		return false
@@ -577,10 +579,10 @@ func (fq *FileQueue) ZipFolder(destZip string) bool {
 		if err != nil {
 			return fmt.Errorf("打开源文件失败: %w", err)
 		}
-		defer srcFile.Close()
-
-		// 复制文件内容到 ZIP 文件项
-		_, err = io.Copy(zipFile, srcFile)
+		func() {
+			defer srcFile.Close()
+			_, err = io.Copy(zipFile, srcFile)
+		}()
 		if err != nil {
 			return fmt.Errorf("复制文件内容失败: %w", err)
 		}

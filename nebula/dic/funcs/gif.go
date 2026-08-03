@@ -27,7 +27,7 @@ func (f *DicFunc) GetGif() string {
 		Delay int    `json:"delay"` // 单位是100分之一秒
 	}
 
-	var allFrames []FrameData
+	var allFrames = make([]FrameData, 0, len(imgs.Image))
 
 	for i, frame := range imgs.Image {
 		var buf bytes.Buffer
@@ -64,7 +64,7 @@ func getGif(d *dto.DicInputs) (any, error) {
 		Delay int    `json:"delay"`
 	}
 
-	var allFrames []frameData
+	var allFrames = make([]frameData, 0, len(imgs.Image))
 	for i, frame := range imgs.Image {
 		var buf bytes.Buffer
 		if err := imaging.Encode(&buf, frame, imaging.PNG); err != nil {

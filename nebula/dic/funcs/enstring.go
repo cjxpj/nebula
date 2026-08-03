@@ -65,8 +65,7 @@ func (f *DicFunc) EnUtf8() string {
 		return encodedStr
 
 	case "ASCII":
-		var asciiCodes []string // 创建一个字符串切片来存储ASCII码值
-		// 遍历输入字符串中的每个字符
+		asciiCodes := make([]string, 0, len([]rune(utf8Str)))
 		for _, c := range utf8Str {
 			// 获取字符的ASCII码值
 			asciiValue := int(c)
@@ -89,9 +88,10 @@ func (f *DicFunc) EnUtf8() string {
 
 	case "二进制":
 		var binaryStr strings.Builder
+		binaryStr.Grow(len(utf8Str) * 8)
 		for i := 0; i < len(utf8Str); i++ {
 			// 将每个字节转换为二进制字符串，保证每个字节是8位
-			binaryStr.WriteString(fmt.Sprintf("%08b", utf8Str[i]))
+			binaryStr.WriteString(binTable[utf8Str[i]])
 		}
 		encodedStr := binaryStr.String()
 		return encodedStr

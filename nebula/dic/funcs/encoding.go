@@ -12,6 +12,14 @@ import (
 	"golang.org/x/text/transform"
 )
 
+var binTable [256]string
+
+func init() {
+	for i := 0; i < 256; i++ {
+		binTable[i] = fmt.Sprintf("%08b", i)
+	}
+}
+
 // ========== 编码/解码 ==========
 
 func enUtf8(d *dto.DicInputs) (any, error) {
@@ -47,7 +55,7 @@ func enUtf8(d *dto.DicInputs) (any, error) {
 		return encodedStr, nil
 
 	case "ASCII":
-		var asciiCodes []string
+		asciiCodes := make([]string, 0, len([]rune(utf8Str)))
 		for _, c := range utf8Str {
 			asciiValue := int(c)
 			asciiCodes = append(asciiCodes, strconv.Itoa(asciiValue))
@@ -68,8 +76,9 @@ func enUtf8(d *dto.DicInputs) (any, error) {
 
 	case "二进制":
 		var binaryStr strings.Builder
+		binaryStr.Grow(len(utf8Str) * 8)
 		for i := 0; i < len(utf8Str); i++ {
-			binaryStr.WriteString(fmt.Sprintf("%08b", utf8Str[i]))
+			binaryStr.WriteString(binTable[utf8Str[i]])
 		}
 		return binaryStr.String(), nil
 
@@ -141,7 +150,7 @@ func deUtf8(d *dto.DicInputs) (any, error) {
 		if len(utf8Str)%8 != 0 {
 			return "error1", nil
 		}
-		var bytess []byte
+		var bytess = make([]byte, 0, len(utf8Str)/8)
 		for i := 0; i < len(utf8Str); i += 8 {
 			byteStr := utf8Str[i : i+8]
 			b, err := strconv.ParseUint(byteStr, 2, 8)

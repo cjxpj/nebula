@@ -31,15 +31,19 @@ func (f *DicFunc) TencentGetApiCall() (string, error) {
 		return "", fmt.Errorf("参数数量错误")
 	}
 	if api, ok := f.Inputs.Get(1).(*utils.TencentAPI); ok {
-		// 参数2转map[string]any
+		payloadStr, ok := f.Inputs.Get(2).(string)
+		if !ok {
+			return "", fmt.Errorf("参数2必须是字符串")
+		}
 		var payload map[string]any
-		if err := json.Unmarshal([]byte(f.Inputs.Get(2).(string)), &payload); err != nil {
+		if err := json.Unmarshal([]byte(payloadStr), &payload); err == nil {
 			result, err := api.Request(payload)
 			if err != nil {
 				return "", err
 			}
 			return string(result), nil
 		}
+		return "", fmt.Errorf("json解析失败")
 	}
 	return "", fmt.Errorf("参数类型错误")
 }

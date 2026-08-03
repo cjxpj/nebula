@@ -1,6 +1,7 @@
 package funcs
 
 import (
+	"bytes"
 	"errors"
 	"regexp"
 	stdjson "encoding/json"
@@ -78,8 +79,12 @@ func (f *DicFunc) IsJson() string {
 }
 
 func jsonSet(d *dto.DicInputs) (any, error) {
+	raw := d.Inputs.String(1)
+	if raw == "" {
+		return nil, errors.New("不是json格式")
+	}
 	var obj any
-	if err := json.Unmarshal([]byte(d.Inputs.String(1)), &obj); err != nil {
+	if err := json.Unmarshal([]byte(raw), &obj); err != nil {
 		return nil, errors.New("不是json格式")
 	}
 
@@ -97,8 +102,12 @@ func jsonSet(d *dto.DicInputs) (any, error) {
 	return string(b), nil
 }
 func jsonSetString(d *dto.DicInputs) (any, error) {
+	raw := d.Inputs.String(1)
+	if raw == "" {
+		return nil, errors.New("不是json格式")
+	}
 	var obj any
-	if err := json.Unmarshal([]byte(d.Inputs.String(1)), &obj); err != nil {
+	if err := json.Unmarshal([]byte(raw), &obj); err != nil {
 		return nil, errors.New("不是json格式")
 	}
 
@@ -271,16 +280,22 @@ func (f *DicFunc) JsonPrettyPrint() (string, error) {
 	if !f.Inputs.LenOk(1, 2) {
 		return "", errors.New("参数错误")
 	}
-	var obj any
-	if err := json.Unmarshal([]byte(f.Inputs.String(1)), &obj); err != nil {
+	raw := f.Inputs.String(1)
+	if raw == "" {
+		return "", errors.New("不是json格式")
+	}
+	if !stdjson.Valid([]byte(raw)) {
 		return "", errors.New("不是json格式")
 	}
 	indent := " "
 	if n, err := strconv.Atoi(f.Inputs.String(2)); err == nil && n > 0 {
 		indent = strings.Repeat(" ", n)
 	}
-	b, _ := json.MarshalIndent(obj, "", indent)
-	return string(b), nil
+	var buf bytes.Buffer
+	if err := stdjson.Indent(&buf, []byte(raw), "", indent); err != nil {
+		return "", err
+	}
+	return buf.String(), nil
 }
 
 func (f *DicFunc) JsonLen() string {
@@ -526,8 +541,12 @@ func queryJson(d *dto.DicInputs) (any, error) {
 	if !d.Inputs.LenOk(2) {
 		return "", errors.New("参数错误")
 	}
+	raw := d.Inputs.String(1)
+	if raw == "" {
+		return "", errors.New("不是json格式")
+	}
 	var obj any
-	if err := json.Unmarshal([]byte(d.Inputs.String(1)), &obj); err != nil {
+	if err := json.Unmarshal([]byte(raw), &obj); err != nil {
 		return "", errors.New("不是json格式")
 	}
 	keys := strings.Split(d.Inputs.String(2), "->")
@@ -574,113 +593,186 @@ func isJson(d *dto.DicInputs) (any, error) {
 }
 
 func jsonAdd(d *dto.DicInputs) (any, error) {
-	var obj map[string]any
-	if err := json.Unmarshal([]byte(d.Inputs.String(1)), &obj); err != nil {
+	raw := d.Inputs.String(1)
+	if raw == "" {
 		return "", errors.New("不是json格式")
 	}
-	keys := strings.Split(d.Inputs.String(2), ".")
-	curr := obj
-	for i, key := range keys {
-		if i == len(keys)-1 {
-			if d.Inputs.Len() > 2 {
-				var val any
-				if err := json.Unmarshal([]byte(d.Inputs.String(3)), &val); err != nil {
-					curr[key] = d.Inputs.String(3)
+
+	var obj any
+	if err := json.Unmarshal([]byte(raw), &obj); err != nil {
+		return "", errors.New("不是json格式")
+	}
+
+	switch v := obj.(type) {
+	case map[string]any:
+		keys := strings.Split(d.Inputs.String(2), ".")
+		curr := v
+		for i, key := range keys {
+			if i == len(keys)-1 {
+				if d.Inputs.Len() > 2 {
+					var val any
+					if err := json.Unmarshal([]byte(d.Inputs.String(3)), &val); err != nil {
+						curr[key] = d.Inputs.String(3)
+					} else {
+						curr[key] = val
+					}
 				} else {
-					curr[key] = val
+					curr[key] = nil
 				}
 			} else {
-				curr[key] = nil
-			}
-		} else {
-			if next, ok := curr[key]; ok {
-				if m, ok := next.(map[string]any); ok {
-					curr = m
+				if next, ok := curr[key]; ok {
+					if m, ok := next.(map[string]any); ok {
+						curr = m
+					} else {
+						return "", errors.New("路径中存在非对象类型")
+					}
 				} else {
-					return "", errors.New("路径中存在非对象类型")
+					newObj := make(map[string]any)
+					curr[key] = newObj
+					curr = newObj
 				}
-			} else {
-				newObj := make(map[string]any)
-				curr[key] = newObj
-				curr = newObj
 			}
 		}
+		b, err := json.Marshal(v)
+		if err != nil {
+			return "", err
+		}
+		return string(b), nil
+
+	case []any:
+		var val any
+		if err := json.Unmarshal([]byte(d.Inputs.String(2)), &val); err != nil {
+			v = append(v, d.Inputs.String(2))
+		} else {
+			v = append(v, val)
+		}
+		b, err := json.Marshal(v)
+		if err != nil {
+			return "", err
+		}
+		return string(b), nil
+
+	default:
+		return "", errors.New("JSON追加仅支持对象或数组")
 	}
-	b, err := json.Marshal(obj)
-	if err != nil {
-		return "", err
-	}
-	return string(b), nil
 }
 
 func jsonAddString(d *dto.DicInputs) (any, error) {
-	var obj map[string]any
-	if err := json.Unmarshal([]byte(d.Inputs.String(1)), &obj); err != nil {
+	raw := d.Inputs.String(1)
+	if raw == "" {
 		return "", errors.New("不是json格式")
 	}
-	keys := strings.Split(d.Inputs.String(2), ".")
-	curr := obj
-	for i, key := range keys {
-		if i == len(keys)-1 {
-			if d.Inputs.Len() > 2 {
-				curr[key] = d.Inputs.String(3)
-			} else {
-				curr[key] = ""
-			}
-		} else {
-			if next, ok := curr[key]; ok {
-				if m, ok := next.(map[string]any); ok {
-					curr = m
+
+	var obj any
+	if err := json.Unmarshal([]byte(raw), &obj); err != nil {
+		return "", errors.New("不是json格式")
+	}
+
+	switch v := obj.(type) {
+	case map[string]any:
+		keys := strings.Split(d.Inputs.String(2), ".")
+		curr := v
+		for i, key := range keys {
+			if i == len(keys)-1 {
+				if d.Inputs.Len() > 2 {
+					curr[key] = d.Inputs.String(3)
 				} else {
-					return "", errors.New("路径中存在非对象类型")
+					curr[key] = ""
 				}
 			} else {
-				newObj := make(map[string]any)
-				curr[key] = newObj
-				curr = newObj
+				if next, ok := curr[key]; ok {
+					if m, ok := next.(map[string]any); ok {
+						curr = m
+					} else {
+						return "", errors.New("路径中存在非对象类型")
+					}
+				} else {
+					newObj := make(map[string]any)
+					curr[key] = newObj
+					curr = newObj
+				}
 			}
 		}
+		b, err := json.Marshal(v)
+		if err != nil {
+			return "", err
+		}
+		return string(b), nil
+
+	case []any:
+		v = append(v, d.Inputs.String(2))
+		b, err := json.Marshal(v)
+		if err != nil {
+			return "", err
+		}
+		return string(b), nil
+
+	default:
+		return "", errors.New("JSON追加仅支持对象或数组")
 	}
-	b, err := json.Marshal(obj)
-	if err != nil {
-		return "", err
-	}
-	return string(b), nil
 }
 
 func jsonDelete(d *dto.DicInputs) (any, error) {
-	var obj map[string]any
-	if err := json.Unmarshal([]byte(d.Inputs.String(1)), &obj); err != nil {
+	raw := d.Inputs.String(1)
+	if raw == "" {
 		return "", errors.New("不是json格式")
 	}
-	keys := strings.Split(d.Inputs.String(2), ".")
-	curr := obj
-	for i, key := range keys {
-		if i == len(keys)-1 {
-			delete(curr, key)
-		} else {
-			if next, ok := curr[key]; ok {
-				if m, ok := next.(map[string]any); ok {
-					curr = m
-				} else {
-					return "", errors.New("路径中存在非对象类型")
-				}
+
+	var obj any
+	if err := json.Unmarshal([]byte(raw), &obj); err != nil {
+		return "", errors.New("不是json格式")
+	}
+
+	switch v := obj.(type) {
+	case map[string]any:
+		keys := strings.Split(d.Inputs.String(2), ".")
+		curr := v
+		for i, key := range keys {
+			if i == len(keys)-1 {
+				delete(curr, key)
 			} else {
-				return "", errors.New("路径不存在")
+				if next, ok := curr[key]; ok {
+					if m, ok := next.(map[string]any); ok {
+						curr = m
+					} else {
+						return "", errors.New("路径中存在非对象类型")
+					}
+				} else {
+					return "", errors.New("路径不存在")
+				}
 			}
 		}
+		b, err := json.Marshal(v)
+		if err != nil {
+			return "", err
+		}
+		return string(b), nil
+
+	case []any:
+		idx, err := strconv.Atoi(d.Inputs.String(2))
+		if err != nil || idx < 0 || idx >= len(v) {
+			return "", errors.New("数组索引无效")
+		}
+		v = append(v[:idx], v[idx+1:]...)
+		b, err := json.Marshal(v)
+		if err != nil {
+			return "", err
+		}
+		return string(b), nil
+
+	default:
+		return "", errors.New("JSON删仅支持对象或数组")
 	}
-	b, err := json.Marshal(obj)
-	if err != nil {
-		return "", err
-	}
-	return string(b), nil
 }
 
 func jsonIsKey(d *dto.DicInputs) (any, error) {
+	raw := d.Inputs.String(1)
+	if raw == "" {
+		return "false", nil
+	}
 	var obj map[string]any
-	if err := json.Unmarshal([]byte(d.Inputs.String(1)), &obj); err != nil {
-		return "", errors.New("不是json格式")
+	if err := json.Unmarshal([]byte(raw), &obj); err != nil {
+		return "false", nil
 	}
 	keys := strings.Split(d.Inputs.String(2), ".")
 	curr := obj
@@ -705,8 +797,12 @@ func jsonIsKey(d *dto.DicInputs) (any, error) {
 }
 
 func jsonLen(d *dto.DicInputs) (any, error) {
+	raw := d.Inputs.String(1)
+	if raw == "" {
+		return "", errors.New("不是json格式")
+	}
 	var obj any
-	if err := json.Unmarshal([]byte(d.Inputs.String(1)), &obj); err != nil {
+	if err := json.Unmarshal([]byte(raw), &obj); err != nil {
 		return "", errors.New("不是json格式")
 	}
 	switch v := obj.(type) {
@@ -719,17 +815,20 @@ func jsonLen(d *dto.DicInputs) (any, error) {
 }
 
 func jsonPrettyPrint(d *dto.DicInputs) (any, error) {
-	var obj any
-	if err := json.Unmarshal([]byte(d.Inputs.String(1)), &obj); err != nil {
+	raw := d.Inputs.String(1)
+	if raw == "" {
+		return "", errors.New("不是json格式")
+	}
+	if !stdjson.Valid([]byte(raw)) {
 		return "", errors.New("不是json格式")
 	}
 	indent := "  "
 	if d.Inputs.LenOk(2) {
 		indent = d.Inputs.String(2)
 	}
-	b, err := json.MarshalIndent(obj, "", indent)
-	if err != nil {
+	var buf bytes.Buffer
+	if err := stdjson.Indent(&buf, []byte(raw), "", indent); err != nil {
 		return "", err
 	}
-	return string(b), nil
+	return buf.String(), nil
 }

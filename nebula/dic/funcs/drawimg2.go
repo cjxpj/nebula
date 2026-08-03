@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/cjxpj/nebula/dto"
 	"github.com/cjxpj/nebula/utils"
@@ -22,6 +23,8 @@ import (
 	"golang.org/x/image/font/opentype"
 	"golang.org/x/image/math/fixed"
 )
+
+var httpClient = &http.Client{Timeout: 30 * time.Second}
 
 type NDrawImg struct {
 	img *image.RGBA // 改为 *image.RGBA
@@ -92,7 +95,7 @@ func drawImgNew(d *dto.DicInputs) (any, error) {
 		case string:
 			if strings.HasPrefix(v, "http://") || strings.HasPrefix(v, "https://") {
 				// 网络图片处理，保持不变
-				resp, err := http.Get(v)
+				resp, err := httpClient.Get(v)
 				if err != nil {
 					return nil, fmt.Errorf("下载网络图片失败: %v", err)
 				}
@@ -1044,6 +1047,7 @@ func (f *DicFunc) DrawImgRandomLines() error {
 
 // 画细线（Bresenham算法）
 func drawLine(img *image.RGBA, x1, y1, x2, y2 int, col color.Color) {
+	bounds := img.Bounds()
 	dx := int(math.Abs(float64(x2 - x1)))
 	dy := int(math.Abs(float64(y2 - y1)))
 	sx := 1
@@ -1065,10 +1069,16 @@ func drawLine(img *image.RGBA, x1, y1, x2, y2 int, col color.Color) {
 		if e2 > -dy {
 			err -= dy
 			x1 += sx
+			if x1 < bounds.Min.X || x1 >= bounds.Max.X {
+				break
+			}
 		}
 		if e2 < dx {
 			err += dx
 			y1 += sy
+			if y1 < bounds.Min.Y || y1 >= bounds.Max.Y {
+				break
+			}
 		}
 	}
 }
@@ -1084,10 +1094,14 @@ func drawThickLine(img *image.RGBA, x1, y1, x2, y2, thickness int, col color.Col
 	dy := float64(y2 - y1)
 	length := math.Hypot(dx, dy)
 	if length == 0 {
+		bounds := img.Bounds()
 		half := thickness / 2
 		for tx := -half; tx <= half; tx++ {
 			for ty := -half; ty <= half; ty++ {
-				img.Set(x1+tx, y1+ty, col)
+				px, py := x1+tx, y1+ty
+				if px >= bounds.Min.X && px < bounds.Max.X && py >= bounds.Min.Y && py < bounds.Max.Y {
+					img.Set(px, py, col)
+				}
 			}
 		}
 		return
@@ -1433,7 +1447,7 @@ func (f *DicFunc) DrawImgPaste() error {
 	case string:
 		// 网络链接
 		if strings.HasPrefix(v, "http://") || strings.HasPrefix(v, "https://") {
-			resp, err := http.Get(v)
+			resp, err := httpClient.Get(v)
 			if err != nil {
 				return fmt.Errorf("下载网络图片失败: %v", err)
 			}
@@ -2368,7 +2382,7 @@ func drawImgPaste(d *dto.DicInputs) (any, error) {
 		srcImg = v.img
 	case string:
 		if strings.HasPrefix(v, "http://") || strings.HasPrefix(v, "https://") {
-			resp, err := http.Get(v)
+			resp, err := httpClient.Get(v)
 			if err != nil {
 				return nil, fmt.Errorf("下载网络图片失败: %v", err)
 			}

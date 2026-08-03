@@ -120,7 +120,11 @@ func sqliteRead(d *dto.DicInputs) (any, error) {
 	}
 
 	if d.Inputs.LenOk(2) {
-		rows, err := db.Query(fmt.Sprintf(`SELECT key FROM "%s"`, rawTable))
+		table, err := normalizeTableName(rawTable)
+		if err != nil {
+			return "[]", nil
+		}
+		rows, err := db.Query(fmt.Sprintf(`SELECT key FROM "%s"`, table))
 		if err != nil {
 			return "[]", nil
 		}

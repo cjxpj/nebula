@@ -29,10 +29,12 @@ func (r *MysqlRes) r() string {
 
 func mysqlConn(d *dto.DicInputs) (any, error) {
 	Output := MysqlRes{}
-	// 构建 MySQL 连接字符串
-	dbUser := d.V.Get("_MYSQL_账号").(string) // 替换为你的 MySQL 用户名
-	dbPass := d.V.Get("_MYSQL_密码").(string) // 替换为你的 MySQL 密码
-	dbHost := d.V.Get("_MYSQL_地址").(string) // 替换为你的 MySQL 地址
+	dbUser, _ := d.V.Get("_MYSQL_账号").(string)
+	dbPass, _ := d.V.Get("_MYSQL_密码").(string)
+	dbHost, _ := d.V.Get("_MYSQL_地址").(string)
+	if dbUser == "" || dbHost == "" {
+		return "", fmt.Errorf("MySQL参数未设置")
+	}
 	// 从地址解析端口
 	dbPort := "3306" // 默认端口为 3306
 	if strings.Contains(dbHost, ":") {

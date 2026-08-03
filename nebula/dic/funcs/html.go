@@ -94,8 +94,8 @@ func (f *DicFunc) HtmlParse() (string, error) {
 	}
 
 	if f.Len > 1 {
-		var path []string
-		for _, p := range f.Inputs.List[2:] {
+		var path = make([]string, 0, len(f.Inputs.List[2:]))
+	for _, p := range f.Inputs.List[2:] {
 			if strP, ok := p.(string); ok {
 				path = append(path, strP)
 			}
