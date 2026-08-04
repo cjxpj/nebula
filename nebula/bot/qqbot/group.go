@@ -606,6 +606,109 @@ func qqBOTGroupATRun(payload *qqbot_msg.Payload, bot *qqbot_msg.RouterQQBot) {
 	}
 }
 
+// 群事件处理（入群/退群）
+func qqBOTGroupEventRun(payload *qqbot_msg.Payload, bot *qqbot_msg.RouterQQBot) {
+	m := &qqbot_msg.GroupMemberEvent{}
+	err := json.Unmarshal([]byte(payload.Data), m)
+	if err != nil {
+		debugLog.Infof("QQBot群事件数据验证失败")
+		return
+	}
+
+	botDicPath := utils.NewFileQueue(filepath.Join(bot.FilePath, "dic"))
+	botDicList, err := botDicPath.GetFileList()
+	if err != nil {
+		return
+	}
+
+	// 处理消息次数
+	qqbot_msg.MsgCount++
+
+	// 根据事件类型确定消息内容和来源
+	eventType := payload.Type
+	var msg string
+	var source string
+	switch eventType {
+	case "GROUP_MEMBER_ADD":
+		msg = "群成员加入"
+		source = "入群"
+	case "GROUP_MEMBER_REMOVE":
+		msg = "群成员退出"
+		source = "退群"
+	default:
+		return
+	}
+
+	appId := ""
+	if bot.API != nil {
+		appId = bot.API.AppId
+	}
+
+	// 取成员ID：GROUP_MEMBER_ADD/REMOVE 用 member_openid，GROUP_ADD_ROBOT/DEL_ROBOT 用 op_member_openid
+	memberID := m.MemberOpenID
+	if memberID == "" {
+		memberID = m.OpMemberOpenID
+	}
+
+	valData := dto.NewVal().
+		Set("来源", source).
+		Set("群号", m.GroupOpenID).
+		Set("成员", memberID).
+		Set("用户", m.UserOpenID).
+		Set("robot", appId).
+		Set("Robot", appId)
+
+	// 记录群
+	RecordGroup(bot, m.GroupOpenID)
+
+	// 词库
+	for _, v := range botDicList {
+		go func(v string) {
+			dicPath := filepath.Join(bot.FilePath, "dic", v)
+			FileData, err := utils.NewFileQueue(dicPath).ReadFromFile()
+			if err != nil {
+				return
+			}
+
+			SetPushContext(&PushContext{
+				Bot:         bot,
+				MsgID:       payload.Id,
+				GroupOpenID: m.GroupOpenID,
+			})
+			defer ClearPushContext()
+
+			dic := dic_dto.NewDic(dicPath, FileData).
+				SetGlobal_v(valData)
+
+			dic.AddFuncs(ReplyFuncs)
+
+			// 内部事件使用 DicRunPrivate
+			rMsg := dic_api.Api.DicRunPrivate(dic, msg)
+			rMsg = strings.ReplaceAll(rMsg, "\\r", "\n")
+
+			if rMsg, imgs := stripImgTags(rMsg); len(imgs) != 0 {
+				for i, img := range imgs {
+					if i == 1 {
+						rMsg = ""
+					}
+					_, mErr := bot.API.ReplyGroupImgMessage(payload.Id, m.GroupOpenID, img, rMsg)
+					if mErr != nil {
+						debugLog.Infof("QQBot回复图文失败%v", mErr)
+					}
+				}
+				return
+			}
+
+			if rMsg != "" {
+				_, mErr := bot.API.ReplyGroupMessage(payload.Id, m.GroupOpenID, rMsg)
+				if mErr != nil {
+					debugLog.Infof("QQBot回复失败%v", mErr)
+				}
+			}
+		}(v)
+	}
+}
+
 // 群私聊处理
 func qqBOTGroupPrivateRun(payload *qqbot_msg.Payload, bot *qqbot_msg.RouterQQBot) {
 	// 解析消息数据

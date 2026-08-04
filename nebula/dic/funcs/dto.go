@@ -47,9 +47,27 @@ func Register(name, l string, fn func(d *dto.DicInputs) (any, error)) error {
 
 // 批量注册函数
 func Registers(list ...dto.RegisterDicFunc) error {
+	return registers("", list)
+}
+
+func registers(prefix string, list []dto.RegisterDicFunc) error {
 	for _, v := range list {
-		if err := Register(v.Name, v.L, v.Fn); err != nil {
-			return err
+		if v.Fn == nil && len(v.List) == 0 {
+			continue
+		}
+		name := v.Name
+		if prefix != "" {
+			name = prefix + "." + name
+		}
+		if v.Fn != nil {
+			if err := Register(name, v.L, v.Fn); err != nil {
+				return err
+			}
+		}
+		if len(v.List) > 0 {
+			if err := registers(name, v.List); err != nil {
+				return err
+			}
 		}
 	}
 	return nil

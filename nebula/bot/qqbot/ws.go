@@ -486,8 +486,10 @@ func wsDispatch(bot *qqbot_msg.RouterQQBot, t string, d json.RawMessage) {
 		qqBOTGroupRun(payload, bot)
 	case "C2C_MESSAGE_CREATE":
 		qqBOTGroupPrivateRun(payload, bot)
-	case "GROUP_ADD_ROBOT", "GROUP_DEL_ROBOT",
-		"GROUP_MSG_REJECT", "GROUP_MSG_RECEIVE",
+	case "GROUP_MEMBER_ADD", "GROUP_MEMBER_REMOVE",
+		"GROUP_ADD_ROBOT", "GROUP_DEL_ROBOT":
+		qqBOTGroupEventRun(payload, bot)
+	case "GROUP_MSG_REJECT", "GROUP_MSG_RECEIVE",
 		"FRIEND_ADD", "FRIEND_DEL",
 		"C2C_MSG_REJECT", "C2C_MSG_RECEIVE":
 		dbg(bot, "系统通知: %s", t)

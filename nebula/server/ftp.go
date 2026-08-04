@@ -66,6 +66,7 @@ func handleFtpConn(conn net.Conn, debug bool) {
 	ftp := &ftpSession{
 		conn:      conn,
 		writer:    bufio.NewWriter(conn),
+		reader:    bufio.NewReader(conn),
 		debug:     debug,
 		rootDir:   utils.FtpDir(),
 		workDir:   "/",
@@ -73,14 +74,19 @@ func handleFtpConn(conn net.Conn, debug bool) {
 		dataType:  "A",  // 默认 ASCII（仅列表时用；文件传输用二进制）
 		localAddr: conn.LocalAddr().String(),
 	}
+	defer ftp.closeDataConn()
 
 	ftp.reply(220, "Nebula FTP Server ready")
 
 	for {
 		line, err := ftp.readLine()
 		if err != nil {
-			if ftp.debug {
-				debugLog.Infof(ftp.logPrefix()+" %s 连接断开: %v", conn.RemoteAddr(), err)
+			if err == io.EOF {
+				if ftp.debug {
+					debugLog.Infof(ftp.logPrefix()+" %s 连接正常关闭", conn.RemoteAddr())
+				}
+			} else {
+				debugLog.Warnf(ftp.logPrefix()+" %s 连接断开: %v", conn.RemoteAddr(), err)
 			}
 			return
 		}
@@ -175,6 +181,7 @@ func handleFtpConn(conn net.Conn, debug bool) {
 type ftpSession struct {
 	conn          net.Conn
 	writer        *bufio.Writer
+	reader        *bufio.Reader
 	debug         bool
 	rootDir       string // FTP 根目录（物理路径）
 	workDir       string // 当前工作目录（虚拟路径，相对于 rootDir）
@@ -212,27 +219,27 @@ func (ftp *ftpSession) reply(code int, msg string) {
 			debugLog.Infof(ftp.logPrefix()+" %s < %s", ftp.conn.RemoteAddr(), strings.TrimRight(resp, "\r\n"))
 		}
 	}
+	ftp.conn.SetWriteDeadline(time.Now().Add(ftpWriteTimeout))
 	ftp.writer.Flush()
 }
 
-// readLine 逐字节读取一行（不使用 bufio.Reader，避免 TLS 升级时缓冲丢失）
+// ftpIdleTimeout FTP 控制连接空闲超时时间
+const ftpIdleTimeout = 5 * time.Minute
+
+// ftpDataConnTimeout PASV 数据连接 Accept 超时时间
+const ftpDataConnTimeout = 30 * time.Second
+
+// ftpWriteTimeout 控制连接写入超时时间
+const ftpWriteTimeout = 10 * time.Second
+
+// readLine 使用 bufio.Reader 读取一行，每次读取前刷新读超时
 func (ftp *ftpSession) readLine() (string, error) {
-	var line []byte
-	b := make([]byte, 1)
-	for {
-		_, err := ftp.conn.Read(b)
-		if err != nil {
-			return "", err
-		}
-		if b[0] == '\n' {
-			s := strings.TrimRight(string(line), "\r")
-			if ftp.debug {
-				debugLog.Infof(ftp.logPrefix()+" %s > %s", ftp.conn.RemoteAddr(), s)
-			}
-			return s, nil
-		}
-		line = append(line, b[0])
+	ftp.conn.SetReadDeadline(time.Now().Add(ftpIdleTimeout))
+	line, err := ftp.reader.ReadString('\n')
+	if err != nil {
+		return "", err
 	}
+	return strings.TrimRight(line, "\r\n"), nil
 }
 
 // resolvePath 将虚拟路径转为物理路径，并检查路径穿越
@@ -396,10 +403,8 @@ func (ftp *ftpSession) handlePASV() {
 	if !ftp.mustAuth() {
 		return
 	}
-	// 关闭旧的
-	if ftp.dataListener != nil {
-		ftp.dataListener.Close()
-	}
+	// 关闭旧的数据连接和监听器
+	ftp.closeDataConn()
 
 	// 在限定范围内监听，方便防火墙放行
 	var listener net.Listener
@@ -514,11 +519,8 @@ func (ftp *ftpSession) handlePORT(arg string) {
 	host := fmt.Sprintf("%d.%d.%d.%d", h1, h2, h3, h4)
 	port := p1*256 + p2
 
-	// 关闭旧的数据连接
-	if ftp.dataConn != nil {
-		ftp.dataConn.Close()
-		ftp.dataConn = nil
-	}
+	// 关闭旧的数据连接和监听器
+	ftp.closeDataConn()
 
 	conn, err := net.DialTimeout("tcp", net.JoinHostPort(host, fmt.Sprintf("%d", port)), time.Second*10)
 	if err != nil {
@@ -543,6 +545,10 @@ func (ftp *ftpSession) getDataConn() (net.Conn, error) {
 			ftp.dataListener.Close()
 			ftp.dataListener = nil
 		}()
+		// 设置 Accept 超时，防止客户端不连接导致 goroutine 永久阻塞
+		if tl, ok := ftp.dataListener.(*net.TCPListener); ok {
+			tl.SetDeadline(time.Now().Add(ftpDataConnTimeout))
+		}
 		dc, err = ftp.dataListener.Accept()
 		if err != nil {
 			return nil, err
@@ -628,7 +634,9 @@ func (ftp *ftpSession) handleLIST(arg string) {
 			continue
 		}
 		line := formatFtpListLine(info)
-		fmt.Fprint(dc, line+"\r\n")
+		if _, err := fmt.Fprint(dc, line+"\r\n"); err != nil {
+			break
+		}
 		totalSize += int64(len(line) + 2)
 	}
 	ftp.closeDataConn()
@@ -901,18 +909,19 @@ func (ftp *ftpSession) handleAUTH(arg string) {
 		ftp.reply(200, "Already in TLS mode")
 		return
 	}
-	ftp.reply(234, "AUTH TLS successful")
-
-	// 升级控制连接到 TLS
+	// 升级控制连接到 TLS（先握手再回复，握手失败不发送 234）
 	tlsConn := tls.Server(ftp.conn, ftpTlsConfig)
 	if err := tlsConn.Handshake(); err != nil {
+		ftp.conn.Close()
 		if ftp.debug {
 			debugLog.Errorf(ftp.logPrefix()+" TLS 握手失败: %v", err)
 		}
 		return
 	}
+	ftp.reply(234, "AUTH TLS successful")
 	ftp.conn = tlsConn
 	ftp.writer = bufio.NewWriter(tlsConn)
+	ftp.reader = bufio.NewReader(tlsConn)
 	ftp.tlsEnabled = true
 
 	if ftp.debug {

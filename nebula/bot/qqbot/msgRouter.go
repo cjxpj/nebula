@@ -166,6 +166,34 @@ func BotMessage(w http.ResponseWriter, r *http.Request, bot *qqbot_msg.RouterQQB
 				fmt.Println("[QQBot] ================================")
 			}
 
+		case "GROUP_MEMBER_ADD", "GROUP_ADD_ROBOT": // 群成员加入
+			if bot.Debug {
+				m := &qqbot_msg.GroupMemberEvent{}
+				json.Unmarshal(payload.Data, m)
+				fmt.Printf("[QQBot 来源] 入群事件 | 群=%s 成员=%s 用户=%s\n",
+					m.GroupOpenID, m.MemberOpenID, m.UserOpenID)
+			}
+			qqBOTGroupEventRun(payload, bot)
+			w.Write([]byte("Bot Message"))
+			if bot.Debug {
+				fmt.Println("[QQBot 返回] HTTP 200 OK (Bot Message)")
+				fmt.Println("[QQBot] ================================")
+			}
+
+		case "GROUP_MEMBER_REMOVE", "GROUP_DEL_ROBOT": // 群成员退出
+			if bot.Debug {
+				m := &qqbot_msg.GroupMemberEvent{}
+				json.Unmarshal(payload.Data, m)
+				fmt.Printf("[QQBot 来源] 退群事件 | 群=%s 成员=%s 用户=%s\n",
+					m.GroupOpenID, m.MemberOpenID, m.UserOpenID)
+			}
+			qqBOTGroupEventRun(payload, bot)
+			w.Write([]byte("Bot Message"))
+			if bot.Debug {
+				fmt.Println("[QQBot 返回] HTTP 200 OK (Bot Message)")
+				fmt.Println("[QQBot] ================================")
+			}
+
 		default:
 			if bot.Debug {
 				fmt.Printf("[QQBot] 未支持的消息类型: %s\n", payload.Type)

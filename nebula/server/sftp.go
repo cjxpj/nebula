@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/cjxpj/nebula/debugLog"
 	"github.com/cjxpj/nebula/utils"
@@ -104,25 +105,31 @@ func generateHostKey() (ssh.Signer, error) {
 		return nil, err
 	}
 
-	// 保存公钥到文件
-	pubKeyBytes := ssh.MarshalAuthorizedKey(signer.PublicKey())
-	os.WriteFile(keyPath+".pub", pubKeyBytes, 0600)
-
-	// 保存私钥到文件
+	// 保存私钥到文件（先写私钥再写公钥，避免只有公钥无对应私钥）
 	pemBlock := &pem.Block{
 		Type:  "RSA PRIVATE KEY",
 		Bytes: x509.MarshalPKCS1PrivateKey(privateKey),
 	}
 	pemBytes := pem.EncodeToMemory(pemBlock)
-	os.WriteFile(keyPath, pemBytes, 0600)
+	if err := os.WriteFile(keyPath, pemBytes, 0600); err != nil {
+		return nil, fmt.Errorf("保存 SFTP 私钥失败: %v", err)
+	}
+
+	// 保存公钥到文件
+	pubKeyBytes := ssh.MarshalAuthorizedKey(signer.PublicKey())
+	os.WriteFile(keyPath+".pub", pubKeyBytes, 0600)
 
 	return signer, nil
 }
+
+// sftpHandshakeTimeout SSH 握手超时时间
+const sftpHandshakeTimeout = 30 * time.Second
 
 // handleSftpConn 处理单个 SFTP 客户端连接
 func handleSftpConn(conn net.Conn, config *ssh.ServerConfig, debug bool) {
 	defer conn.Close()
 
+	conn.SetDeadline(time.Now().Add(sftpHandshakeTimeout))
 	sshConn, chans, reqs, err := ssh.NewServerConn(conn, config)
 	if err != nil {
 		if debug {
@@ -130,6 +137,7 @@ func handleSftpConn(conn net.Conn, config *ssh.ServerConfig, debug bool) {
 		}
 		return
 	}
+	conn.SetDeadline(time.Time{})
 	defer sshConn.Close()
 
 	if debug {

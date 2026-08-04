@@ -209,3 +209,12 @@ type MessageResponse struct {
 type GroupMemberRole struct {
 	Role string `json:"role"` // "owner" | "admin" | "member"
 }
+
+// 群成员加入/退出事件（兼容 GROUP_MEMBER_ADD/REMOVE 和 GROUP_ADD_ROBOT/DEL_ROBOT）
+type GroupMemberEvent struct {
+	GroupOpenID    string `json:"group_openid"`     // 群 OpenID
+	MemberOpenID   string `json:"member_openid"`    // 成员 OpenID（GROUP_MEMBER_ADD/REMOVE）
+	OpMemberOpenID string `json:"op_member_openid"` // 操作者 OpenID（GROUP_ADD_ROBOT/DEL_ROBOT）
+	UserOpenID     string `json:"user_openid"`      // 成员用户 OpenID（跨应用统一标识，可能为空）
+	Timestamp      int64  `json:"timestamp"`        // 事件时间戳（Unix 秒）
+}
