@@ -119,211 +119,205 @@ func qqBOTGroupRun(payload *qqbot_msg.Payload, bot *qqbot_msg.RouterQQBot) {
 
 	// 词库
 	for _, v := range botDicList {
-		go func(v string) {
-			dicPath := filepath.Join(bot.FilePath, "dic", v)
-			FileData, err := utils.NewFileQueue(dicPath).ReadFromFile()
-			if err != nil {
-				return
-			}
+		dicPath := filepath.Join(bot.FilePath, "dic", v)
+		FileData, err := utils.NewFileQueue(dicPath).ReadFromFile()
+		if err != nil {
+			continue
+		}
 
-			// 设置PushContext供 #引入=QQBot 函数使用
-			SetPushContext(&PushContext{
-				Bot:         bot,
-				MsgID:       m.ID,
-				GroupOpenID: m.GroupOpenID,
-			})
-			defer ClearPushContext()
+		// 设置PushContext供 #引入=QQBot 函数使用
+		SetPushContext(&PushContext{
+			Bot:         bot,
+			MsgID:       m.ID,
+			GroupOpenID: m.GroupOpenID,
+		})
 
-			// 回复消息
-			dic := dic_dto.NewDic(dicPath, FileData).
-				SetGlobal_v(valData)
+		// 回复消息
+		dic := dic_dto.NewDic(dicPath, FileData).
+			SetGlobal_v(valData)
 
-			dic.AddFuncs(ReplyFuncs)
+		dic.AddFuncs(ReplyFuncs)
 
-			dic.SetFunc("IMG", dto.DicFunc{
-				L: "0|1",
-				Fn: func(d *dto.DicInputs) (any, error) {
-					if d.Inputs.Len() == 0 {
-						if len(m.Attachments) == 0 {
-							return "[]", nil
-						}
-						data, _ := utils.Marshal(m.Attachments)
-						return string(data), nil
-					}
+		dic.SetFunc("IMG", dto.DicFunc{
+			L: "0|1",
+			Fn: func(d *dto.DicInputs) (any, error) {
+				if d.Inputs.Len() == 0 {
 					if len(m.Attachments) == 0 {
-						return "null", nil
+						return "[]", nil
 					}
-					index := d.Inputs.Int(1)
-					if index <= 0 || index > len(m.Attachments) {
-						return "null", nil
-					}
-					return m.Attachments[index-1].URL, nil
-				},
-			})
+					data, _ := utils.Marshal(m.Attachments)
+					return string(data), nil
+				}
+				if len(m.Attachments) == 0 {
+					return "null", nil
+				}
+				index := d.Inputs.Int(1)
+				if index <= 0 || index > len(m.Attachments) {
+					return "null", nil
+				}
+				return m.Attachments[index-1].URL, nil
+			},
+		})
 
-			dic.SetFunc("调用", dto.DicFunc{
-				L: "2..",
-				Fn: func(d *dto.DicInputs) (any, error) {
-					go func() {
-						qqVal := dic.NewDicVal()
-						// 读取参数1休眠
-						sleepTime := d.Inputs.Int(1)
-						time.Sleep(time.Duration(sleepTime) * time.Millisecond)
+		dic.SetFunc("调用", dto.DicFunc{
+			L: "2..",
+			Fn: func(d *dto.DicInputs) (any, error) {
+				go func() {
+					qqVal := dic.NewDicVal()
+					// 读取参数1休眠
+					sleepTime := d.Inputs.Int(1)
+					time.Sleep(time.Duration(sleepTime) * time.Millisecond)
 
-						// 调用参数2
-						rMsg := dic_api.Api.DicRunPrivateVal(dic, d.Inputs.StringAfter(2), qqVal)
-						// 替换'\r'换行
-						rMsg = strings.ReplaceAll(rMsg, "\\r", "\n")
+					// 调用参数2
+					rMsg := dic_api.Api.DicRunPrivateVal(dic, d.Inputs.StringAfter(2), qqVal)
+					// 替换'\r'换行
+					rMsg = strings.ReplaceAll(rMsg, "\\r", "\n")
 
-						// fmt.Println("QQBot回复:", rMsg)
-						if rMsg, imgs := stripImgTags(rMsg); len(imgs) != 0 {
-							for i, img := range imgs {
-								if i == 1 {
-									rMsg = ""
-								}
-								_, mErr := bot.API.ReplyGroupImgMessage(m.ID, m.GroupOpenID, img, rMsg)
-								if mErr != nil {
-									debugLog.Infof("QQBot回复图文失败%v", mErr)
-								}
+					// fmt.Println("QQBot回复:", rMsg)
+					if rMsg, imgs := stripImgTags(rMsg); len(imgs) != 0 {
+						for i, img := range imgs {
+							if i == 1 {
+								rMsg = ""
 							}
-							return
+							_, mErr := bot.API.ReplyGroupImgMessage(m.ID, m.GroupOpenID, img, rMsg)
+							if mErr != nil {
+								debugLog.Infof("QQBot回复图文失败%v", mErr)
+							}
 						}
+						return
+					}
 
+					if rMsg != "" {
+						_, mErr := bot.API.ReplyGroupMessage(m.ID, m.GroupOpenID, rMsg)
+						if mErr != nil {
+							fmt.Println("QQBot回复失败", mErr)
+						}
+					}
+				}()
+				return "", nil
+			}})
+
+		dic.SetFunc("发送MD", dto.DicFunc{
+			L: "1..",
+			Fn: func(d *dto.DicInputs) (any, error) {
+
+				if d.Inputs.LenOk(1) {
+					_, mErr := bot.API.
+						ReplyGroupAnyMarkdownMessage(m.ID, m.GroupOpenID, d.Inputs.String(1))
+					if mErr != nil {
+						fmt.Println("QQBot回复失败", mErr)
+					}
+					return "", nil
+				}
+
+				// 2 开始，必须是 key-value 成对
+				if (d.Inputs.Len()-1)%2 != 0 {
+					return nil, fmt.Errorf("要设置对应键跟值")
+				}
+
+				params := make([]*qqbot_msg.MarkdownParams, 0)
+
+				list := d.Inputs.StringAfterList(2)
+				for i := 0; i < len(list); i += 2 {
+					key := list[i]
+					// 分割换行
+					val := list[i+1]
+					val = strings.ReplaceAll(val, "\n", "\r")
+					val = mdRe.ReplaceAllString(val, "[\r\n$1]($2)")
+					val = mdReAt.ReplaceAllString(val, "<$1\r\n$2>")
+					val = strings.ReplaceAll(val, "```", "'''")
+					if strings.HasPrefix(val, "#") {
+						val = " " + val
+					}
+					vals := strings.Split(val, "\r\n")
+
+					params = append(params, &qqbot_msg.MarkdownParams{
+						Key:    key,
+						Values: vals,
+					})
+				}
+
+				md := &qqbot_msg.Markdown{
+					CustomTemplateId: d.Inputs.String(1),
+					Params:           params,
+				}
+
+				_, mErr := bot.API.
+					ReplyGroupMarkdownMessage(m.ID, m.GroupOpenID, md)
+
+				if mErr != nil {
+					fmt.Println("QQBot回复失败", mErr)
+				}
+
+				return "", nil
+			},
+		})
+
+		dic.SetFunc("发送文本", dto.DicFunc{
+			L: "1|2",
+			Fn: func(d *dto.DicInputs) (any, error) {
+				go func() {
+					rMsg := strings.ReplaceAll(d.Inputs.String(1), "\\r", "\n")
+					if d.Inputs.LenOk(1) {
 						if rMsg != "" {
-							_, mErr := bot.API.ReplyGroupMessage(m.ID, m.GroupOpenID, rMsg)
+							_, mErr := bot.API.ReplyGroupMessage(m.ID, m.GroupOpenID, "\n"+rMsg)
 							if mErr != nil {
 								fmt.Println("QQBot回复失败", mErr)
 							}
 						}
-					}()
-					return "", nil
-				}})
-
-			dic.SetFunc("发送MD", dto.DicFunc{
-				L: "1..",
-				Fn: func(d *dto.DicInputs) (any, error) {
-
-					if d.Inputs.LenOk(1) {
-						_, mErr := bot.API.
-							ReplyGroupAnyMarkdownMessage(m.ID, m.GroupOpenID, d.Inputs.String(1))
+					} else {
+						_, mErr := bot.API.ReplyGroupImgMessage(m.ID, m.GroupOpenID, d.Inputs.String(2), rMsg)
 						if mErr != nil {
-							fmt.Println("QQBot回复失败", mErr)
+							fmt.Println("QQBot回复图文失败", mErr)
 						}
-						return "", nil
 					}
-
-					// 2 开始，必须是 key-value 成对
-					if (d.Inputs.Len()-1)%2 != 0 {
-						return nil, fmt.Errorf("要设置对应键跟值")
-					}
-
-					params := make([]*qqbot_msg.MarkdownParams, 0)
-
-					list := d.Inputs.StringAfterList(2)
-					for i := 0; i < len(list); i += 2 {
-						key := list[i]
-						// 分割换行
-						val := list[i+1]
-						val = strings.ReplaceAll(val, "\n", "\r")
-						val = mdRe.ReplaceAllString(val, "[\r\n$1]($2)")
-						val = mdReAt.ReplaceAllString(val, "<$1\r\n$2>")
-						val = strings.ReplaceAll(val, "```", "'''")
-						if strings.HasPrefix(val, "#") {
-							val = " " + val
-						}
-						vals := strings.Split(val, "\r\n")
-
-						params = append(params, &qqbot_msg.MarkdownParams{
-							Key:    key,
-							Values: vals,
-						})
-					}
-
-					md := &qqbot_msg.Markdown{
-						CustomTemplateId: d.Inputs.String(1),
-						Params:           params,
-					}
-
-					_, mErr := bot.API.
-						ReplyGroupMarkdownMessage(m.ID, m.GroupOpenID, md)
-
+				}()
+				return "", nil
+			}})
+		dic.SetFunc("发送视频", dto.DicFunc{
+			L: "1",
+			Fn: func(d *dto.DicInputs) (any, error) {
+				go func() {
+					_, mErr := bot.API.ReplyGroupVideoMessage(m.ID, m.GroupOpenID, d.Inputs.String(1))
 					if mErr != nil {
-						fmt.Println("QQBot回复失败", mErr)
+						fmt.Println("QQBot回复视频失败", mErr)
 					}
-
-					return "", nil
-				},
-			})
-
-			dic.SetFunc("发送文本", dto.DicFunc{
-				L: "1|2",
-				Fn: func(d *dto.DicInputs) (any, error) {
-					go func() {
-						rMsg := strings.ReplaceAll(d.Inputs.String(1), "\\r", "\n")
-						if d.Inputs.LenOk(1) {
-							if rMsg != "" {
-								_, mErr := bot.API.ReplyGroupMessage(m.ID, m.GroupOpenID, "\n"+rMsg)
-								if mErr != nil {
-									fmt.Println("QQBot回复失败", mErr)
-								}
-							}
-						} else {
-							_, mErr := bot.API.ReplyGroupImgMessage(m.ID, m.GroupOpenID, d.Inputs.String(2), rMsg)
-							if mErr != nil {
-								fmt.Println("QQBot回复图文失败", mErr)
-							}
-						}
-					}()
-					return "", nil
-				}})
-			dic.SetFunc("发送视频", dto.DicFunc{
-				L: "1",
-				Fn: func(d *dto.DicInputs) (any, error) {
-					go func() {
-						_, mErr := bot.API.ReplyGroupVideoMessage(m.ID, m.GroupOpenID, d.Inputs.String(1))
-						if mErr != nil {
-							fmt.Println("QQBot回复视频失败", mErr)
-						}
-					}()
-					return "", nil
-				}})
-			dic.SetFunc("发送语音", dto.DicFunc{
-				L: "1",
-				Fn: func(d *dto.DicInputs) (any, error) {
-					go func() {
-						_, mErr := bot.API.ReplyGroupVoiceMessage(m.ID, m.GroupOpenID, d.Inputs.String(1))
-						if mErr != nil {
-							fmt.Println("QQBot回复语音失败", mErr)
-						}
-					}()
-					return "", nil
-				}})
-			rMsg := dic_api.Api.DicRun(dic, msg)
-			// 替换'\r'换行
-			rMsg = strings.ReplaceAll(rMsg, "\\r", "\n")
-
-			// fmt.Println("QQBot回复:", rMsg)
-
-			if rMsg, imgs := stripImgTags(rMsg); len(imgs) != 0 {
-				for i, img := range imgs {
-					if i == 1 {
-						rMsg = ""
-					}
-					_, mErr := bot.API.ReplyGroupImgMessage(m.ID, m.GroupOpenID, img, rMsg)
+				}()
+				return "", nil
+			}})
+		dic.SetFunc("发送语音", dto.DicFunc{
+			L: "1",
+			Fn: func(d *dto.DicInputs) (any, error) {
+				go func() {
+					_, mErr := bot.API.ReplyGroupVoiceMessage(m.ID, m.GroupOpenID, d.Inputs.String(1))
 					if mErr != nil {
-						fmt.Println("QQBot回复图文失败", mErr)
+						fmt.Println("QQBot回复语音失败", mErr)
 					}
+				}()
+				return "", nil
+			}})
+		rMsg := dic_api.Api.DicRun(dic, msg)
+		// 替换'\r'换行
+		rMsg = strings.ReplaceAll(rMsg, "\\r", "\n")
+
+		// fmt.Println("QQBot回复:", rMsg)
+
+		if rMsg, imgs := stripImgTags(rMsg); len(imgs) != 0 {
+			for i, img := range imgs {
+				if i == 1 {
+					rMsg = ""
 				}
-				return
-			}
-
-			if rMsg != "" {
-				_, mErr := bot.API.ReplyGroupMessage(m.ID, m.GroupOpenID, rMsg)
+				_, mErr := bot.API.ReplyGroupImgMessage(m.ID, m.GroupOpenID, img, rMsg)
 				if mErr != nil {
-					debugLog.Infof("QQBot回复失败%v", mErr)
+					fmt.Println("QQBot回复图文失败", mErr)
 				}
 			}
-		}(v)
+		} else if rMsg != "" {
+			_, mErr := bot.API.ReplyGroupMessage(m.ID, m.GroupOpenID, rMsg)
+			if mErr != nil {
+				debugLog.Infof("QQBot回复失败%v", mErr)
+			}
+		}
 	}
 }
 
@@ -406,203 +400,197 @@ func qqBOTGroupATRun(payload *qqbot_msg.Payload, bot *qqbot_msg.RouterQQBot) {
 
 	// 词库
 	for _, v := range botDicList {
-		go func(v string) {
-			dicPath := filepath.Join(bot.FilePath, "dic", v)
-			FileData, err := utils.NewFileQueue(dicPath).ReadFromFile()
-			if err != nil {
-				return
-			}
+		dicPath := filepath.Join(bot.FilePath, "dic", v)
+		FileData, err := utils.NewFileQueue(dicPath).ReadFromFile()
+		if err != nil {
+			continue
+		}
 
-			// 设置PushContext供 #引入=QQBot 函数使用
-			SetPushContext(&PushContext{
-				Bot:         bot,
-				MsgID:       m.ID,
-				GroupOpenID: m.GroupOpenID,
-			})
-			defer ClearPushContext()
+		// 设置PushContext供 #引入=QQBot 函数使用
+		SetPushContext(&PushContext{
+			Bot:         bot,
+			MsgID:       m.ID,
+			GroupOpenID: m.GroupOpenID,
+		})
 
-			// 回复消息
-			dic := dic_dto.NewDic(dicPath, FileData).
-				SetGlobal_v(valData)
+		// 回复消息
+		dic := dic_dto.NewDic(dicPath, FileData).
+			SetGlobal_v(valData)
 
-			dic.AddFuncs(ReplyFuncs)
+		dic.AddFuncs(ReplyFuncs)
 
-			dic.SetFunc("调用", dto.DicFunc{
-				L: "2..",
-				Fn: func(d *dto.DicInputs) (any, error) {
-					go func() {
-						qqVal := dic.NewDicVal()
-						// 读取参数1休眠
-						sleepTime := d.Inputs.Int(1)
-						time.Sleep(time.Duration(sleepTime) * time.Millisecond)
+		dic.SetFunc("调用", dto.DicFunc{
+			L: "2..",
+			Fn: func(d *dto.DicInputs) (any, error) {
+				go func() {
+					qqVal := dic.NewDicVal()
+					// 读取参数1休眠
+					sleepTime := d.Inputs.Int(1)
+					time.Sleep(time.Duration(sleepTime) * time.Millisecond)
 
-						// 调用参数2
-						rMsg := dic_api.Api.DicRunPrivateVal(dic, d.Inputs.StringAfter(2), qqVal)
-						// 替换'\r'换行
-						rMsg = strings.ReplaceAll(rMsg, "\\r", "\n")
+					// 调用参数2
+					rMsg := dic_api.Api.DicRunPrivateVal(dic, d.Inputs.StringAfter(2), qqVal)
+					// 替换'\r'换行
+					rMsg = strings.ReplaceAll(rMsg, "\\r", "\n")
 
-						// fmt.Println("QQBot回复:", rMsg)
-						if rMsg, imgs := stripImgTags(rMsg); len(imgs) != 0 {
-							if rMsg != "" {
-								rMsg = "\n" + rMsg
-							}
-							for i, img := range imgs {
-								if i == 1 {
-									rMsg = ""
-								}
-								_, mErr := bot.API.ReplyGroupImgMessage(m.ID, m.GroupOpenID, img, rMsg)
-								if mErr != nil {
-									debugLog.Infof("QQBot回复图文失败%v", mErr)
-								}
-							}
-							return
-						}
-
+					// fmt.Println("QQBot回复:", rMsg)
+					if rMsg, imgs := stripImgTags(rMsg); len(imgs) != 0 {
 						if rMsg != "" {
-							// 开头附带\n
 							rMsg = "\n" + rMsg
-							_, mErr := bot.API.ReplyGroupMessage(m.ID, m.GroupOpenID, rMsg)
+						}
+						for i, img := range imgs {
+							if i == 1 {
+								rMsg = ""
+							}
+							_, mErr := bot.API.ReplyGroupImgMessage(m.ID, m.GroupOpenID, img, rMsg)
+							if mErr != nil {
+								debugLog.Infof("QQBot回复图文失败%v", mErr)
+							}
+						}
+						return
+					}
+
+					if rMsg != "" {
+						// 开头附带\n
+						rMsg = "\n" + rMsg
+						_, mErr := bot.API.ReplyGroupMessage(m.ID, m.GroupOpenID, rMsg)
+						if mErr != nil {
+							fmt.Println("QQBot回复失败", mErr)
+						}
+					}
+				}()
+				return "", nil
+			}})
+
+		dic.SetFunc("发送MD", dto.DicFunc{
+			L: "1..",
+			Fn: func(d *dto.DicInputs) (any, error) {
+
+				if d.Inputs.LenOk(1) {
+					_, mErr := bot.API.
+						ReplyGroupAnyMarkdownMessage(m.ID, m.GroupOpenID, d.Inputs.String(1))
+					if mErr != nil {
+						fmt.Println("QQBot回复失败", mErr)
+					}
+					return "", nil
+				}
+
+				// 2 开始，必须是 key-value 成对
+				if (d.Inputs.Len()-1)%2 != 0 {
+					return nil, fmt.Errorf("要设置对应键跟值")
+				}
+
+				params := make([]*qqbot_msg.MarkdownParams, 0)
+
+				list := d.Inputs.StringAfterList(2)
+				for i := 0; i < len(list); i += 2 {
+					key := list[i]
+					// 分割换行
+					val := list[i+1]
+					val = strings.ReplaceAll(val, "\n", "\r")
+					val = mdRe.ReplaceAllString(val, "[\r\n$1]($2)")
+					val = mdReAt.ReplaceAllString(val, "<$1\r\n$2>")
+					val = strings.ReplaceAll(val, "```", "'''")
+					if strings.HasPrefix(val, "#") {
+						val = " " + val
+					}
+					vals := strings.Split(val, "\r\n")
+
+					params = append(params, &qqbot_msg.MarkdownParams{
+						Key:    key,
+						Values: vals,
+					})
+				}
+
+				md := &qqbot_msg.Markdown{
+					CustomTemplateId: d.Inputs.String(1),
+					Params:           params,
+				}
+
+				_, mErr := bot.API.
+					ReplyGroupMarkdownMessage(m.ID, m.GroupOpenID, md)
+
+				if mErr != nil {
+					fmt.Println("QQBot回复失败", mErr)
+				}
+
+				return "", nil
+			},
+		})
+
+		dic.SetFunc("发送文本", dto.DicFunc{
+			L: "1|2",
+			Fn: func(d *dto.DicInputs) (any, error) {
+				go func() {
+					rMsg := strings.ReplaceAll(d.Inputs.String(1), "\\r", "\n")
+					if d.Inputs.LenOk(1) {
+						if rMsg != "" {
+							_, mErr := bot.API.ReplyGroupMessage(m.ID, m.GroupOpenID, "\n"+rMsg)
 							if mErr != nil {
 								fmt.Println("QQBot回复失败", mErr)
 							}
 						}
-					}()
-					return "", nil
-				}})
-
-			dic.SetFunc("发送MD", dto.DicFunc{
-				L: "1..",
-				Fn: func(d *dto.DicInputs) (any, error) {
-
-					if d.Inputs.LenOk(1) {
-						_, mErr := bot.API.
-							ReplyGroupAnyMarkdownMessage(m.ID, m.GroupOpenID, d.Inputs.String(1))
+					} else {
+						if rMsg != "" {
+							rMsg = "\n" + rMsg
+						}
+						_, mErr := bot.API.ReplyGroupImgMessage(m.ID, m.GroupOpenID, d.Inputs.String(2), rMsg)
 						if mErr != nil {
-							fmt.Println("QQBot回复失败", mErr)
+							fmt.Println("QQBot回复图文失败", mErr)
 						}
-						return "", nil
 					}
-
-					// 2 开始，必须是 key-value 成对
-					if (d.Inputs.Len()-1)%2 != 0 {
-						return nil, fmt.Errorf("要设置对应键跟值")
-					}
-
-					params := make([]*qqbot_msg.MarkdownParams, 0)
-
-					list := d.Inputs.StringAfterList(2)
-					for i := 0; i < len(list); i += 2 {
-						key := list[i]
-						// 分割换行
-						val := list[i+1]
-						val = strings.ReplaceAll(val, "\n", "\r")
-						val = mdRe.ReplaceAllString(val, "[\r\n$1]($2)")
-						val = mdReAt.ReplaceAllString(val, "<$1\r\n$2>")
-						val = strings.ReplaceAll(val, "```", "'''")
-						if strings.HasPrefix(val, "#") {
-							val = " " + val
-						}
-						vals := strings.Split(val, "\r\n")
-
-						params = append(params, &qqbot_msg.MarkdownParams{
-							Key:    key,
-							Values: vals,
-						})
-					}
-
-					md := &qqbot_msg.Markdown{
-						CustomTemplateId: d.Inputs.String(1),
-						Params:           params,
-					}
-
-					_, mErr := bot.API.
-						ReplyGroupMarkdownMessage(m.ID, m.GroupOpenID, md)
-
+				}()
+				return "", nil
+			}})
+		dic.SetFunc("发送视频", dto.DicFunc{
+			L: "1",
+			Fn: func(d *dto.DicInputs) (any, error) {
+				go func() {
+					_, mErr := bot.API.ReplyGroupVideoMessage(m.ID, m.GroupOpenID, d.Inputs.String(1))
 					if mErr != nil {
-						fmt.Println("QQBot回复失败", mErr)
+						fmt.Println("QQBot回复视频失败", mErr)
 					}
-
-					return "", nil
-				},
-			})
-
-			dic.SetFunc("发送文本", dto.DicFunc{
-				L: "1|2",
-				Fn: func(d *dto.DicInputs) (any, error) {
-					go func() {
-						rMsg := strings.ReplaceAll(d.Inputs.String(1), "\\r", "\n")
-						if d.Inputs.LenOk(1) {
-							if rMsg != "" {
-								_, mErr := bot.API.ReplyGroupMessage(m.ID, m.GroupOpenID, "\n"+rMsg)
-								if mErr != nil {
-									fmt.Println("QQBot回复失败", mErr)
-								}
-							}
-						} else {
-							if rMsg != "" {
-								rMsg = "\n" + rMsg
-							}
-							_, mErr := bot.API.ReplyGroupImgMessage(m.ID, m.GroupOpenID, d.Inputs.String(2), rMsg)
-							if mErr != nil {
-								fmt.Println("QQBot回复图文失败", mErr)
-							}
-						}
-					}()
-					return "", nil
-				}})
-			dic.SetFunc("发送视频", dto.DicFunc{
-				L: "1",
-				Fn: func(d *dto.DicInputs) (any, error) {
-					go func() {
-						_, mErr := bot.API.ReplyGroupVideoMessage(m.ID, m.GroupOpenID, d.Inputs.String(1))
-						if mErr != nil {
-							fmt.Println("QQBot回复视频失败", mErr)
-						}
-					}()
-					return "", nil
-				}})
-			dic.SetFunc("发送语音", dto.DicFunc{
-				L: "1",
-				Fn: func(d *dto.DicInputs) (any, error) {
-					go func() {
-						_, mErr := bot.API.ReplyGroupVoiceMessage(m.ID, m.GroupOpenID, d.Inputs.String(1))
-						if mErr != nil {
-							fmt.Println("QQBot回复语音失败", mErr)
-						}
-					}()
-					return "", nil
-				}})
-			rMsg := dic_api.Api.DicRun(dic, msg)
-			// 替换'\r'换行
-			rMsg = strings.ReplaceAll(rMsg, "\\r", "\n")
-
-			// fmt.Println("QQBot回复:", rMsg)
-
-			if rMsg, imgs := stripImgTags(rMsg); len(imgs) != 0 {
-				if rMsg != "" {
-					rMsg = "\n" + rMsg
-				}
-				for i, img := range imgs {
-					if i == 1 {
-						rMsg = ""
-					}
-					_, mErr := bot.API.ReplyGroupImgMessage(m.ID, m.GroupOpenID, img, rMsg)
+				}()
+				return "", nil
+			}})
+		dic.SetFunc("发送语音", dto.DicFunc{
+			L: "1",
+			Fn: func(d *dto.DicInputs) (any, error) {
+				go func() {
+					_, mErr := bot.API.ReplyGroupVoiceMessage(m.ID, m.GroupOpenID, d.Inputs.String(1))
 					if mErr != nil {
-						fmt.Println("QQBot回复图文失败", mErr)
+						fmt.Println("QQBot回复语音失败", mErr)
 					}
-				}
-				return
-			}
+				}()
+				return "", nil
+			}})
+		rMsg := dic_api.Api.DicRun(dic, msg)
+		// 替换'\r'换行
+		rMsg = strings.ReplaceAll(rMsg, "\\r", "\n")
 
+		// fmt.Println("QQBot回复:", rMsg)
+
+		if rMsg, imgs := stripImgTags(rMsg); len(imgs) != 0 {
 			if rMsg != "" {
-				// 开头附带\n
 				rMsg = "\n" + rMsg
-				_, mErr := bot.API.ReplyGroupMessage(m.ID, m.GroupOpenID, rMsg)
+			}
+			for i, img := range imgs {
+				if i == 1 {
+					rMsg = ""
+				}
+				_, mErr := bot.API.ReplyGroupImgMessage(m.ID, m.GroupOpenID, img, rMsg)
 				if mErr != nil {
-					debugLog.Infof("QQBot回复失败%v", mErr)
+					fmt.Println("QQBot回复图文失败", mErr)
 				}
 			}
-		}(v)
+		} else if rMsg != "" {
+			// 开头附带\n
+			rMsg = "\n" + rMsg
+			_, mErr := bot.API.ReplyGroupMessage(m.ID, m.GroupOpenID, rMsg)
+			if mErr != nil {
+				debugLog.Infof("QQBot回复失败%v", mErr)
+			}
+		}
 	}
 }
 
@@ -663,49 +651,43 @@ func qqBOTGroupEventRun(payload *qqbot_msg.Payload, bot *qqbot_msg.RouterQQBot) 
 
 	// 词库
 	for _, v := range botDicList {
-		go func(v string) {
-			dicPath := filepath.Join(bot.FilePath, "dic", v)
-			FileData, err := utils.NewFileQueue(dicPath).ReadFromFile()
-			if err != nil {
-				return
-			}
+		dicPath := filepath.Join(bot.FilePath, "dic", v)
+		FileData, err := utils.NewFileQueue(dicPath).ReadFromFile()
+		if err != nil {
+			continue
+		}
 
-			SetPushContext(&PushContext{
-				Bot:         bot,
-				MsgID:       payload.Id,
-				GroupOpenID: m.GroupOpenID,
-			})
-			defer ClearPushContext()
+		SetPushContext(&PushContext{
+			Bot:         bot,
+			MsgID:       payload.Id,
+			GroupOpenID: m.GroupOpenID,
+		})
 
-			dic := dic_dto.NewDic(dicPath, FileData).
-				SetGlobal_v(valData)
+		dic := dic_dto.NewDic(dicPath, FileData).
+			SetGlobal_v(valData)
 
-			dic.AddFuncs(ReplyFuncs)
+		dic.AddFuncs(ReplyFuncs)
 
-			// 内部事件使用 DicRunPrivate
-			rMsg := dic_api.Api.DicRunPrivate(dic, msg)
-			rMsg = strings.ReplaceAll(rMsg, "\\r", "\n")
+		// 内部事件使用 DicRunPrivate
+		rMsg := dic_api.Api.DicRunPrivate(dic, msg)
+		rMsg = strings.ReplaceAll(rMsg, "\\r", "\n")
 
-			if rMsg, imgs := stripImgTags(rMsg); len(imgs) != 0 {
-				for i, img := range imgs {
-					if i == 1 {
-						rMsg = ""
-					}
-					_, mErr := bot.API.ReplyGroupImgMessage(payload.Id, m.GroupOpenID, img, rMsg)
-					if mErr != nil {
-						debugLog.Infof("QQBot回复图文失败%v", mErr)
-					}
+		if rMsg, imgs := stripImgTags(rMsg); len(imgs) != 0 {
+			for i, img := range imgs {
+				if i == 1 {
+					rMsg = ""
 				}
-				return
-			}
-
-			if rMsg != "" {
-				_, mErr := bot.API.ReplyGroupMessage(payload.Id, m.GroupOpenID, rMsg)
+				_, mErr := bot.API.ReplyGroupImgMessage(payload.Id, m.GroupOpenID, img, rMsg)
 				if mErr != nil {
-					debugLog.Infof("QQBot回复失败%v", mErr)
+					fmt.Println("QQBot回复图文失败", mErr)
 				}
 			}
-		}(v)
+		} else if rMsg != "" {
+			_, mErr := bot.API.ReplyGroupMessage(payload.Id, m.GroupOpenID, rMsg)
+			if mErr != nil {
+				debugLog.Infof("QQBot回复失败%v", mErr)
+			}
+		}
 	}
 }
 
@@ -765,150 +747,145 @@ func qqBOTGroupPrivateRun(payload *qqbot_msg.Payload, bot *qqbot_msg.RouterQQBot
 
 	// 词库
 	for _, v := range botDicList {
-		go func(v string) {
-			dicPath := filepath.Join(bot.FilePath, "dic", v)
-			FileData, err := utils.NewFileQueue(dicPath).ReadFromFile()
-			if err != nil {
-				return
-			}
+		dicPath := filepath.Join(bot.FilePath, "dic", v)
+		FileData, err := utils.NewFileQueue(dicPath).ReadFromFile()
+		if err != nil {
+			continue
+		}
 
-			// 设置PushContext供 #引入=QQBot 函数使用
-			SetPushContext(&PushContext{
-				Bot:        bot,
-				MsgID:      m.ID,
-				UserOpenID: userID,
-			})
-			defer ClearPushContext()
+		// 设置PushContext供 #引入=QQBot 函数使用
+		SetPushContext(&PushContext{
+			Bot:        bot,
+			MsgID:      m.ID,
+			UserOpenID: userID,
+		})
 
-			// 回复消息
-			dic := dic_dto.NewDic(dicPath, FileData).
-				SetGlobal_v(valData)
+		// 回复消息
+		dic := dic_dto.NewDic(dicPath, FileData).
+			SetGlobal_v(valData)
 
-			dic.AddFuncs(ReplyFuncs)
+		dic.AddFuncs(ReplyFuncs)
 
-			dic.SetFunc("调用", dto.DicFunc{
-				L: "2..",
-				Fn: func(d *dto.DicInputs) (any, error) {
-					go func() {
-						qqVal := dic.NewDicVal()
-						sleepTime := d.Inputs.Int(1)
-						time.Sleep(time.Duration(sleepTime) * time.Millisecond)
-						rMsg := dic_api.Api.DicRunPrivateVal(dic, d.Inputs.StringAfter(2), qqVal)
-						rMsg = strings.ReplaceAll(rMsg, "\\r", "\n")
+		dic.SetFunc("调用", dto.DicFunc{
+			L: "2..",
+			Fn: func(d *dto.DicInputs) (any, error) {
+				go func() {
+					qqVal := dic.NewDicVal()
+					sleepTime := d.Inputs.Int(1)
+					time.Sleep(time.Duration(sleepTime) * time.Millisecond)
+					rMsg := dic_api.Api.DicRunPrivateVal(dic, d.Inputs.StringAfter(2), qqVal)
+					rMsg = strings.ReplaceAll(rMsg, "\\r", "\n")
 
-						if rMsg, imgs := stripImgTags(rMsg); len(imgs) != 0 {
-							for i, img := range imgs {
-								if i == 1 {
-									rMsg = ""
-								}
-								bot.API.ReplyGroupPrivateImgMessage(m.ID, userID, img, rMsg)
+					if rMsg, imgs := stripImgTags(rMsg); len(imgs) != 0 {
+						for i, img := range imgs {
+							if i == 1 {
+								rMsg = ""
 							}
-							return
+							bot.API.ReplyGroupPrivateImgMessage(m.ID, userID, img, rMsg)
 						}
+						return
+					}
 
+					if rMsg != "" {
+						bot.API.ReplyGroupPrivateMessage(m.ID, userID, rMsg)
+					}
+				}()
+				return "", nil
+			}})
+
+		dic.SetFunc("发送MD", dto.DicFunc{
+			L: "2..",
+			Fn: func(d *dto.DicInputs) (any, error) {
+
+				// 2 开始，必须是 key-value 成对
+				if (d.Inputs.Len()-1)%2 != 0 {
+					return nil, fmt.Errorf("要设置对应键跟值")
+				}
+
+				params := make([]*qqbot_msg.MarkdownParams, 0)
+
+				list := d.Inputs.StringAfterList(2)
+				for i := 0; i < len(list); i += 2 {
+					key := list[i]
+					// 分割换行
+					val := list[i+1]
+					val = strings.ReplaceAll(val, "\n", "\r")
+					val = mdRe.ReplaceAllString(val, "[\r\n$1]($2)")
+					val = mdReAt.ReplaceAllString(val, "<$1\r\n$2>")
+					val = strings.ReplaceAll(val, "```", "'''")
+					if strings.HasPrefix(val, "#") {
+						val = " " + val
+					}
+					vals := strings.Split(val, "\r\n")
+
+					params = append(params, &qqbot_msg.MarkdownParams{
+						Key:    key,
+						Values: vals,
+					})
+				}
+
+				md := &qqbot_msg.Markdown{
+					CustomTemplateId: d.Inputs.String(1),
+					Params:           params,
+				}
+
+				_, mErr := bot.API.
+					ReplyPrivateMarkdownMessage(m.ID, userID, md)
+
+				if mErr != nil {
+					fmt.Println("QQBot回复失败", mErr)
+				}
+
+				return "", nil
+			},
+		})
+
+		dic.SetFunc("私聊", dto.DicFunc{
+			L: "1|2",
+			Fn: func(d *dto.DicInputs) (any, error) {
+				go func() {
+					rMsg := strings.ReplaceAll(d.Inputs.String(1), "\\r", "\n")
+					if d.Inputs.LenOk(1) {
 						if rMsg != "" {
 							bot.API.ReplyGroupPrivateMessage(m.ID, userID, rMsg)
 						}
-					}()
-					return "", nil
-				}})
-
-			dic.SetFunc("发送MD", dto.DicFunc{
-				L: "2..",
-				Fn: func(d *dto.DicInputs) (any, error) {
-
-					// 2 开始，必须是 key-value 成对
-					if (d.Inputs.Len()-1)%2 != 0 {
-						return nil, fmt.Errorf("要设置对应键跟值")
+					} else {
+						bot.API.ReplyGroupPrivateImgMessage(m.ID, userID, d.Inputs.String(2), rMsg)
 					}
+				}()
+				return "", nil
+			}})
+		dic.SetFunc("发送语音", dto.DicFunc{
+			L: "1",
+			Fn: func(d *dto.DicInputs) (any, error) {
+				go func() {
+					bot.API.ReplyGroupPrivateVoiceMessage(m.ID, userID, d.Inputs.String(1))
+				}()
+				return "", nil
+			}})
+		dic.SetFunc("发送视频", dto.DicFunc{
+			L: "1",
+			Fn: func(d *dto.DicInputs) (any, error) {
+				go func() {
+					bot.API.ReplyGroupPrivateVideoMessage(m.ID, userID, d.Inputs.String(1))
+				}()
+				return "", nil
+			}})
 
-					params := make([]*qqbot_msg.MarkdownParams, 0)
+		rMsg := dic_api.Api.DicRun(dic, "#私聊#"+m.Content)
+		// 替换'\r'换行
+		rMsg = strings.ReplaceAll(rMsg, "\\r", "\n")
 
-					list := d.Inputs.StringAfterList(2)
-					for i := 0; i < len(list); i += 2 {
-						key := list[i]
-						// 分割换行
-						val := list[i+1]
-						val = strings.ReplaceAll(val, "\n", "\r")
-						val = mdRe.ReplaceAllString(val, "[\r\n$1]($2)")
-						val = mdReAt.ReplaceAllString(val, "<$1\r\n$2>")
-						val = strings.ReplaceAll(val, "```", "'''")
-						if strings.HasPrefix(val, "#") {
-							val = " " + val
-						}
-						vals := strings.Split(val, "\r\n")
-
-						params = append(params, &qqbot_msg.MarkdownParams{
-							Key:    key,
-							Values: vals,
-						})
-					}
-
-					md := &qqbot_msg.Markdown{
-						CustomTemplateId: d.Inputs.String(1),
-						Params:           params,
-					}
-
-					_, mErr := bot.API.
-						ReplyPrivateMarkdownMessage(m.ID, userID, md)
-
-					if mErr != nil {
-						fmt.Println("QQBot回复失败", mErr)
-					}
-
-					return "", nil
-				},
-			})
-
-			dic.SetFunc("私聊", dto.DicFunc{
-				L: "1|2",
-				Fn: func(d *dto.DicInputs) (any, error) {
-					go func() {
-						rMsg := strings.ReplaceAll(d.Inputs.String(1), "\\r", "\n")
-						if d.Inputs.LenOk(1) {
-							if rMsg != "" {
-								bot.API.ReplyGroupPrivateMessage(m.ID, userID, rMsg)
-							}
-						} else {
-							bot.API.ReplyGroupPrivateImgMessage(m.ID, userID, d.Inputs.String(2), rMsg)
-						}
-					}()
-					return "", nil
-				}})
-			dic.SetFunc("发送语音", dto.DicFunc{
-				L: "1",
-				Fn: func(d *dto.DicInputs) (any, error) {
-					go func() {
-						bot.API.ReplyGroupPrivateVoiceMessage(m.ID, userID, d.Inputs.String(1))
-					}()
-					return "", nil
-				}})
-			dic.SetFunc("发送视频", dto.DicFunc{
-				L: "1",
-				Fn: func(d *dto.DicInputs) (any, error) {
-					go func() {
-						bot.API.ReplyGroupPrivateVideoMessage(m.ID, userID, d.Inputs.String(1))
-					}()
-					return "", nil
-				}})
-
-			rMsg := dic_api.Api.DicRun(dic, "#私聊#"+m.Content)
-			// 替换'\r'换行
-			rMsg = strings.ReplaceAll(rMsg, "\\r", "\n")
-
-			// fmt.Println("QQBot回复:", rMsg)
-			if rMsg, imgs := stripImgTags(rMsg); len(imgs) != 0 {
-				for i, img := range imgs {
-					if i == 1 {
-						rMsg = ""
-					}
-					bot.API.ReplyGroupPrivateImgMessage(m.ID, userID, img, rMsg)
+		// fmt.Println("QQBot回复:", rMsg)
+		if rMsg, imgs := stripImgTags(rMsg); len(imgs) != 0 {
+			for i, img := range imgs {
+				if i == 1 {
+					rMsg = ""
 				}
-				return
+				bot.API.ReplyGroupPrivateImgMessage(m.ID, userID, img, rMsg)
 			}
-			if rMsg != "" {
-				bot.API.ReplyGroupPrivateMessage(m.ID, userID, rMsg)
-			}
-		}(v)
+		} else if rMsg != "" {
+			bot.API.ReplyGroupPrivateMessage(m.ID, userID, rMsg)
+		}
 	}
 }

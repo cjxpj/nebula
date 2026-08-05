@@ -527,6 +527,8 @@ func jsonQueryByName(d *dto.DicInputs) (any, error) {
 	switch v := obj.(type) {
 	case string:
 		return v, nil
+	case bool:
+		return strconv.FormatBool(v), nil
 	case map[string]any, []any:
 		b, err := json.Marshal(v)
 		if err != nil {
@@ -569,6 +571,8 @@ func queryJson(d *dto.DicInputs) (any, error) {
 	switch v := obj.(type) {
 	case string:
 		return v, nil
+	case bool:
+		return strconv.FormatBool(v), nil
 	case float64:
 		if v == float64(int64(v)) {
 			return strconv.FormatInt(int64(v), 10), nil
