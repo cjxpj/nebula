@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"crypto/tls"
 	"errors"
+	"fmt"
 	"io"
 	"mime/multipart"
 	"net/http"
@@ -47,8 +48,7 @@ func accessGet(d *dto.DicInputs) (any, error) {
 
 	req, err := http.NewRequest("GET", url, nil)
 	if err != nil {
-		utils.Error(err.Error())
-		return "新建访问报错", nil
+		return "", fmt.Errorf("新建GET请求失败: %w", err)
 	}
 
 	req.Header.Set("User-Agent", "Nebula-Client/1.0")
@@ -76,13 +76,12 @@ func accessGet(d *dto.DicInputs) (any, error) {
 	resp, err := client.Do(req)
 	client.CloseIdleConnections()
 	if err != nil {
-		return "访问报错", nil
+		return "", fmt.Errorf("GET访问失败: %w", err)
 	}
 	defer resp.Body.Close()
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
-		utils.Error(err.Error())
-		return "获取错误", nil
+		return "", fmt.Errorf("读取GET响应失败: %w", err)
 	}
 
 	res := string(body)
@@ -100,7 +99,7 @@ func accessPost(d *dto.DicInputs) (any, error) {
 	reqBody := bytes.NewBufferString(bodys)
 	req, err := http.NewRequest("POST", url, reqBody)
 	if err != nil {
-		return "新建访问报错", nil
+		return "", fmt.Errorf("新建POST请求失败: %w", err)
 	}
 
 	if utils.IsJSON(bodys) {
@@ -128,13 +127,12 @@ func accessPost(d *dto.DicInputs) (any, error) {
 	}
 	resp, err := client.Do(req)
 	if err != nil {
-		return "访问报错", nil
+		return "", fmt.Errorf("POST访问失败: %w", err)
 	}
 	defer resp.Body.Close()
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
-		utils.Error(err.Error())
-		return "获取错误", nil
+		return "", fmt.Errorf("读取POST响应失败: %w", err)
 	}
 
 	res := string(body)
@@ -218,14 +216,13 @@ func requestForward(d *dto.DicInputs) (any, error) {
 	}
 	resp, err := client.Do(forwardReq)
 	if err != nil {
-		return nil, err
+		return "", fmt.Errorf("转发请求失败: %w", err)
 	}
 	defer resp.Body.Close()
 
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
-		utils.Error(err.Error())
-		return "获取转发响应失败", nil
+		return "", fmt.Errorf("读取转发响应失败: %w", err)
 	}
 
 	return string(body), nil
@@ -443,7 +440,7 @@ func requestSend(d *dto.DicInputs) (any, error) {
 	}
 
 	if err != nil {
-		return "新建请求失败", nil
+		return "", errors.New("新建请求失败")
 	}
 
 	httpReq.Header.Set("User-Agent", "Nebula-Client/1.0")
@@ -453,7 +450,7 @@ func requestSend(d *dto.DicInputs) (any, error) {
 
 	resp, err := client.Do(httpReq)
 	if err != nil {
-		return "发送失败", nil
+		return "", fmt.Errorf("请求发送失败: %w", err)
 	}
 	defer resp.Body.Close()
 

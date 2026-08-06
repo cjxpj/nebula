@@ -11,15 +11,7 @@ char* RunN_C(char* text, char* trigger, char* path);
 void FreeString(char* s);
 */
 import "C"
-import (
-	"cjxpj/nebula/dic"
-	"cjxpj/nebula/juice"
-)
-
-//export RunJuice
-func RunJuice() {
-	juice.Run()
-}
+import "github.com/cjxpj/nebula/dic"
 
 //export RunN
 func RunN(text, trigger, path *C.char) *C.char {

@@ -1,10 +1,10 @@
-//go:build so
+//go:build so && (arm64 || arm)
 
 package main
 
 //#include <jni.h>
 import "C"
-import "cjxpj/nebula/dic"
+import "github.com/cjxpj/nebula/dic"
 
 // Java_com_cjxpj_nebula_rn_11_RunNebula
 // Java_com_cjxpj_nebula_MainActivity_RunNebula

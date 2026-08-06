@@ -1,3 +1,5 @@
+//go:build so && amd64
+
 package main
 
 import "C"
