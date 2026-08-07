@@ -112,6 +112,7 @@ func Setup() {
 		f{Name: "URL链接解码", L: "1", Fn: urlPathDe},
 		f{Name: "sha256", L: "1", Fn: sha256Encrypt},
 		f{Name: "Byte生成", L: "1", Fn: newByte},
+		f{Name: "Byte转String", L: "1", Fn: byteToString},
 		f{Name: "MD转义", L: "1", Fn: mdEscape},
 		f{Name: "MIME类型", L: "1", Fn: getMime},
 		f{Name: "加密词库", L: "1", Fn: encodeDic},

@@ -349,6 +349,15 @@ func newByte(d *dto.DicInputs) (any, error) {
 	return []byte(d.Inputs.String(1)), nil
 }
 
+// Byte转String
+func byteToString(d *dto.DicInputs) (any, error) {
+	b, ok := d.Inputs.Get(1).([]byte)
+	if !ok {
+		return "", errors.New("Byte转String失败: 参数不是[]byte类型")
+	}
+	return string(b), nil
+}
+
 // MIME类型
 func getMime(d *dto.DicInputs) (any, error) {
 	ext := d.Inputs.String(1)

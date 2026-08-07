@@ -176,7 +176,7 @@ func requestForward(d *dto.DicInputs) (any, error) {
 	// 创建转发请求
 	forwardReq, err := http.NewRequest(origReq.Method, targetURL, bytes.NewBuffer(reqBody))
 	if err != nil {
-		return nil, err
+		return "", fmt.Errorf("新建转发请求失败: %w", err)
 	}
 
 	// 复制原始请求头部（排除部分不需要转发的头部）
