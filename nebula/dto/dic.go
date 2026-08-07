@@ -43,6 +43,10 @@ type LocalDicValue struct {
 		VlaueName string   `json:"vlaueName"`
 		Content   []string `json:"content"`
 	} `json:"赋予值纯文本框"`
+	ValChain struct {
+		Success   bool   `json:"success"`
+		VlaueName string `json:"vlaueName"`
+	} `json:"赋予值连续执行框"`
 	IfFunc struct {
 		Success bool       `json:"success"`
 		IsElse  bool       `json:"IsElse"`

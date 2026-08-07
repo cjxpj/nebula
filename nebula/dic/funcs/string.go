@@ -5,6 +5,7 @@ import (
 	"errors"
 	"mime"
 	"path/filepath"
+	"reflect"
 	"slices"
 	"strconv"
 	"strings"
@@ -351,11 +352,23 @@ func newByte(d *dto.DicInputs) (any, error) {
 
 // Byte转String
 func byteToString(d *dto.DicInputs) (any, error) {
-	b, ok := d.Inputs.Get(1).([]byte)
-	if !ok {
-		return "", errors.New("Byte转String失败: 参数不是[]byte类型")
+	v := d.Inputs.Get(1)
+	if v == nil {
+		return "", errors.New("Byte转String失败: 参数为空")
 	}
-	return string(b), nil
+	if b, ok := v.([]byte); ok {
+		return string(b), nil
+	}
+	// [N]byte 数组（如 sha256 返回的 [32]byte），用反射转切片
+	rv := reflect.ValueOf(v)
+	if rv.Kind() == reflect.Array && rv.Type().Elem().Kind() == reflect.Uint8 {
+		b := make([]byte, rv.Len())
+		for i := 0; i < rv.Len(); i++ {
+			b[i] = byte(rv.Index(i).Uint())
+		}
+		return string(b), nil
+	}
+	return "", errors.New("Byte转String失败: 参数不是byte类型")
 }
 
 // MIME类型

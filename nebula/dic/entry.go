@@ -254,6 +254,20 @@ func Entry(r *dic_dto.DicEntry, txt []string, funcV *dic_dto.DicFunc) error {
 			continue
 		}
 
+		// 赋予值连续执行框 >>>
+		if r.Sys_v.ValChain.Success {
+			if text == "<<<" {
+				r.Sys_v.ValChain.Success = false
+				continue
+			}
+			// 空行跳过，避免清空当前值
+			if text == "" {
+				continue
+			}
+			runValSet(r, funcV, r.Sys_v.ValChain.VlaueName, text)
+			continue
+		}
+
 		if r.Sys_v.Text.Success {
 			if text == "<文本" {
 				valName := r.Sys_v.Text.VlaueName
@@ -1098,6 +1112,24 @@ func Entry(r *dic_dto.DicEntry, txt []string, funcV *dic_dto.DicFunc) error {
 					continue
 				}
 
+				// >>> 连续执行框，往下逐行执行并写回赋予值
+				if vSuffix == ">>>" {
+					r.Sys_v.ValChain.Success = true
+					r.Sys_v.ValChain.VlaueName = vPrefix
+					break
+				}
+
+				// >>> 连续执行，复用当前赋予值名字（值为 JSON 时不拆分）
+				if strings.Contains(vSuffix, ">>>") && utils.IsJSONResult(vSuffix) == nil {
+					for _, chainPart := range SplitValChain(vSuffix) {
+						if chainPart == "" {
+							continue
+						}
+						runValSet(r, funcV, vPrefix, chainPart)
+					}
+					continue
+				}
+
 				if setJsonHead := strings.Split(vPrefix, "->"); len(setJsonHead) > 1 {
 					vPrefix = setJsonHead[0]
 					setJsonHead = setJsonHead[1:]
@@ -1165,122 +1197,7 @@ func Entry(r *dic_dto.DicEntry, txt []string, funcV *dic_dto.DicFunc) error {
 					break
 				}
 
-				GetIfKeys := strings.Split(vSuffix, "?:")
-
-				// 开头为@
-				var runText any
-			questionCycle:
-				for _, GetIfKey := range GetIfKeys {
-					if strings.HasPrefix(GetIfKey, "@") {
-						keys := strings.Split(GetIfKey, "->")
-						if len(keys) < 2 {
-							runText, stopSetVal := RunsVal(funcV, utils.AnyToString(count.RunCountText(r.Val, GetIfKey)), vPrefix)
-							if stopSetVal {
-								break
-							}
-							switch runText {
-							case "", "null", "NULL", "Null", "false", "False", "FALSE":
-								r.Val.P.Set(vPrefix, runText)
-								continue
-							}
-							r.Val.P.Set(vPrefix, runText)
-							break
-						}
-						for RunI, key := range keys {
-							// 第一次加载解析数据
-							if RunI == 0 {
-								// 读取数据去除@
-								runTexts := RunsAny(funcV, key[1:])
-								// fmt.Println(runTexts)
-								// 推断数据map
-								if rJ, ok := runTexts.(map[string]string); ok {
-									runText = rJ
-									continue
-								}
-								if rJ, ok := runTexts.(map[string]any); ok {
-									runText = rJ
-									continue
-								}
-								// 字符串转换后解析数据
-								if runTexts, ok := runTexts.(string); ok {
-									if rJ := utils.IsJSONResult(runTexts); rJ != nil {
-										runText = rJ
-										continue
-									}
-								}
-								continue
-							}
-							// 解析数据
-							switch objData := runText.(type) {
-							case map[string]string:
-								if rD, ok := objData[key]; ok {
-									runText = rD
-								} else {
-									runText = ""
-									break
-								}
-							case map[string]any:
-								if rD, ok := objData[key]; ok {
-									switch num := rD.(type) {
-									case int:
-										runText = strconv.FormatInt(int64(num), 10)
-									case int64:
-										runText = strconv.FormatInt(num, 10)
-									case float64:
-										runText = strconv.FormatFloat(num, 'f', -1, 64)
-									default:
-										runText = num
-									}
-								} else {
-									runText = ""
-									break
-								}
-							case []any:
-								if num, err := strconv.Atoi(key); err == nil {
-									if num >= 0 && num < len(objData) {
-										rD := objData[num]
-										runText = rD
-									} else {
-										runText = ""
-										break
-									}
-								}
-							}
-							if objData, ok := runText.(string); ok {
-								runText = objData
-								break
-							}
-						}
-						// 判断是否为空
-						if rStr, ok := runText.(string); ok {
-							switch rStr {
-							case "", "null", "NULL", "Null", "false", "False", "FALSE":
-								r.Val.P.Set(vPrefix, runText)
-							default:
-								r.Val.P.Set(vPrefix, runText)
-								break questionCycle
-							}
-						}
-						if runText != nil {
-							// 最后一个直接设置
-							r.Val.P.Set(vPrefix, utils.AnyToString(runText))
-							continue
-						}
-					} else {
-						runText, stopSetVal := RunsVal(funcV, GetIfKey, vPrefix)
-						if stopSetVal {
-							break
-						}
-						switch runText {
-						case "", "null", "NULL", "Null", "false", "False", "FALSE":
-							r.Val.P.Set(vPrefix, runText)
-						default:
-							r.Val.P.Set(vPrefix, runText)
-							break questionCycle
-						}
-						continue
-					}
-				}
+				runValSet(r, funcV, vPrefix, vSuffix)
 			}
 			continue
 		}
@@ -1311,4 +1228,155 @@ func UnmarshalJSON(jsonText string) (any, error) {
 
 	// 如果两次尝试都失败，返回错误
 	return nil, fmt.Errorf("解析 JSON 失败: %v", err)
+}
+
+// SplitValChain 按 >>> 分割赋予值内容，跳过 $...$ 函数块内部的 >>>，用于赋予值连续执行
+func SplitValChain(text string) []string {
+	var parts []string
+	var b strings.Builder
+	inFunc := false
+	for i := 0; i < len(text); i++ {
+		c := text[i]
+		if c == '$' {
+			// 统计前置反斜杠，判断是否被转义，\$ 不参与块状态切换
+			bs := 0
+			for j := i - 1; j >= 0 && text[j] == '\\'; j-- {
+				bs++
+			}
+			if bs%2 == 0 {
+				inFunc = !inFunc
+			}
+			b.WriteByte(c)
+			continue
+		}
+		if !inFunc && c == '>' && i+2 < len(text) && text[i+1] == '>' && text[i+2] == '>' {
+			parts = append(parts, b.String())
+			b.Reset()
+			i += 2
+			continue
+		}
+		b.WriteByte(c)
+	}
+	// 忽略末尾空段（如 "a>>>"），保持返回结果整洁
+	if b.Len() > 0 {
+		parts = append(parts, b.String())
+	}
+	return parts
+}
+
+// runValSet 执行赋予值内容并写回变量，支持 ?: 回退 与 @json路径
+func runValSet(r *dic_dto.DicEntry, funcV *dic_dto.DicFunc, vPrefix, value string) {
+	GetIfKeys := strings.Split(value, "?:")
+	var runText any
+questionCycle:
+	for _, GetIfKey := range GetIfKeys {
+		if strings.HasPrefix(GetIfKey, "@") {
+			keys := strings.Split(GetIfKey, "->")
+			if len(keys) < 2 {
+				runText, stopSetVal := RunsVal(funcV, utils.AnyToString(count.RunCountText(r.Val, GetIfKey)), vPrefix)
+				if stopSetVal {
+					break
+				}
+				switch runText {
+				case "", "null", "NULL", "Null", "false", "False", "FALSE":
+					r.Val.P.Set(vPrefix, runText)
+					continue
+				}
+				r.Val.P.Set(vPrefix, runText)
+				break
+			}
+			for RunI, key := range keys {
+				// 第一次加载解析数据
+				if RunI == 0 {
+					// 读取数据去除@
+					runTexts := RunsAny(funcV, key[1:])
+					// 推断数据map
+					if rJ, ok := runTexts.(map[string]string); ok {
+						runText = rJ
+						continue
+					}
+					if rJ, ok := runTexts.(map[string]any); ok {
+						runText = rJ
+						continue
+					}
+					// 字符串转换后解析数据
+					if runTexts, ok := runTexts.(string); ok {
+						if rJ := utils.IsJSONResult(runTexts); rJ != nil {
+							runText = rJ
+							continue
+						}
+					}
+					continue
+				}
+				// 解析数据
+				switch objData := runText.(type) {
+				case map[string]string:
+					if rD, ok := objData[key]; ok {
+						runText = rD
+					} else {
+						runText = ""
+						break
+					}
+				case map[string]any:
+					if rD, ok := objData[key]; ok {
+						switch num := rD.(type) {
+						case int:
+							runText = strconv.FormatInt(int64(num), 10)
+						case int64:
+							runText = strconv.FormatInt(num, 10)
+						case float64:
+							runText = strconv.FormatFloat(num, 'f', -1, 64)
+						default:
+							runText = num
+						}
+					} else {
+						runText = ""
+						break
+					}
+				case []any:
+					if num, err := strconv.Atoi(key); err == nil {
+						if num >= 0 && num < len(objData) {
+							rD := objData[num]
+							runText = rD
+						} else {
+							runText = ""
+							break
+						}
+					}
+				}
+				if objData, ok := runText.(string); ok {
+					runText = objData
+					break
+				}
+			}
+			// 判断是否为空
+			if rStr, ok := runText.(string); ok {
+				switch rStr {
+				case "", "null", "NULL", "Null", "false", "False", "FALSE":
+					r.Val.P.Set(vPrefix, runText)
+				default:
+					r.Val.P.Set(vPrefix, runText)
+					break questionCycle
+				}
+			}
+			if runText != nil {
+				// 最后一个直接设置
+				r.Val.P.Set(vPrefix, utils.AnyToString(runText))
+				continue
+			}
+		} else {
+			runText, stopSetVal := RunsVal(funcV, GetIfKey, vPrefix)
+			if stopSetVal {
+				break
+			}
+			switch runText {
+			case "", "null", "NULL", "Null", "false", "False", "FALSE":
+				r.Val.P.Set(vPrefix, runText)
+			default:
+				r.Val.P.Set(vPrefix, runText)
+				break questionCycle
+			}
+			continue
+		}
+	}
 }
