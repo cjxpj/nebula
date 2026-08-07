@@ -17,7 +17,7 @@ func Pd(dic *dic_dto.DicFunc, str string) bool {
 	runstr := it.Run(str)
 	if it.Error {
 		dic.Output.Add("条件表达式解析异常: " + str)
-		dic.Sys.Stop = true
+		dic.Sys.Stop.Store(true)
 		return false
 	}
 	pdstr := it.Evaluate(dic, runstr)

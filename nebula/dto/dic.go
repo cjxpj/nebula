@@ -3,6 +3,7 @@ package dto
 import (
 	"database/sql"
 	"strings"
+	"sync/atomic"
 
 	"github.com/cjxpj/nebula/utils"
 )
@@ -77,8 +78,8 @@ type LocalDicValue struct {
 		Success bool     `json:"success"`
 		Content []string `json:"content"`
 	}
-	Database *sql.DB `json:"database"`
-	Stop     bool    `json:"stop"`
+	Database *sql.DB     `json:"database"`
+	Stop     atomic.Bool `json:"stop"`
 }
 
 type LocalDicValueForEach struct {

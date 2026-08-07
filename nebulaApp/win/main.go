@@ -5,19 +5,15 @@ package main
 import (
 	"context"
 	"fmt"
-	"log"
 	"net/http"
 	"os"
 	"os/exec"
 	"os/signal"
 	"path/filepath"
 	"syscall"
-	"time"
 
 	"github.com/cjxpj/nebula/appfiles"
 	"github.com/cjxpj/nebula/dic"
-	dic_api "github.com/cjxpj/nebula/dic/api"
-	dic_dto "github.com/cjxpj/nebula/dic/dto"
 	"github.com/cjxpj/nebula/dic/funcs"
 	"github.com/cjxpj/nebula/dto"
 	dic_server "github.com/cjxpj/nebula/server"
@@ -184,7 +180,6 @@ func main() {
 		fmt.Println("-v                  		（显示版本）")
 		fmt.Println("-autostart          		（开机自启）")
 		fmt.Println("-noautostart        		（取消开机自启）")
-		fmt.Println("run [文件] [触发词] （运行文件）")
 	case "-v":
 		fmt.Print(appfiles.Version)
 		return
@@ -203,30 +198,6 @@ func main() {
 		} else {
 			fmt.Println("已取消开机启动")
 		}
-		return
-
-	case "run":
-		if argsLen < 3 || argsLen > 4 {
-			fmt.Println("用法: NebulaApp.exe run [文件路径] [触发词]")
-			return
-		}
-
-		cmdInput := args[2]
-		triggerWord := "Main"
-		if argsLen == 4 {
-			triggerWord = args[3]
-		}
-		// 计时
-		start := time.Now()
-		d, err := dic_dto.NewDicPro(cmdInput)
-		if err != nil {
-			log.Fatal(err)
-			return
-		}
-		results := dic_api.Api.DicRunPro(d, triggerWord)
-		fmt.Print(results)
-		elapsed := time.Since(start)
-		fmt.Println("执行时间:", elapsed)
 		return
 	default:
 		fmt.Println("未知命令")

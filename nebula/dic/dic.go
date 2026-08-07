@@ -5,6 +5,7 @@ import (
 	"html/template"
 	"maps"
 	"strings"
+	"time"
 
 	"github.com/cjxpj/nebula/debugLog"
 	dic_dto "github.com/cjxpj/nebula/dic/dto"
@@ -108,20 +109,6 @@ func findNebulaScripts(doc *html.Node) []scriptNebula {
 	}
 
 	return result
-}
-
-// 新-词库运行
-func (m *dicImpl) DicRunPro(d *dto.DicInfoData, trigger string) any {
-	GetDic, GetDicTrigger, _, _ := run.GetTriggerCodeBlock(d.Data.Dic, trigger, 0)
-	d.Value.Set("触发词", trigger)
-	d.Value.Set("触发", GetDicTrigger)
-	// 生成参数跟括号
-	dto.RunTrigger(trigger, GetDicTrigger, d.Value)
-
-	debugLog.Infof("%v", GetDic)
-
-	res := m.Execute(d, GetDic)
-	return res
 }
 
 func (m *dicImpl) WebPHPDicRun(WD *dic_dto.WebDic) string {
@@ -280,11 +267,79 @@ func (m *dicImpl) DicRun(D *dic_dto.Dic, trigger string) string {
 
 	RunDichader := m.DicRunLine(dicRun, DicHaderText)
 
-	if !dicRun.Sys_v.Stop {
+	if !dicRun.Sys_v.Stop.Load() {
 		RunDic = m.DicRunLine(dicRun, GetDic)
 	}
 
 	result = RunDichader + RunDic
 
+	dicRun.Close()
+
 	return result
+}
+
+// 运行词库（带超时）：超过 timeout 后置停止标志强行打断执行，返回当前已产出结果
+func (m *dicImpl) DicRunTimeout(D *dic_dto.Dic, trigger string, timeout time.Duration) (result string, timedOut bool) {
+	// 无超时限制：直接复用 DicRun，避免不必要的 goroutine
+	if timeout <= 0 {
+		return m.DicRun(D, trigger), false
+	}
+
+	if D.FuncText != nil {
+		D.Data.LocalFunc = append(D.Data.LocalFunc, D.FuncText...)
+	}
+
+	if D.ClassText != nil {
+		maps.Copy(D.Data.LocalClass, D.ClassText)
+	}
+
+	GetDic, GetDicTrigger, _, _ := run.RunFor(D.Data.Dic, trigger, 0)
+	D.Val.P.Set("触发词", trigger)
+	D.Val.P.Set("触发", GetDicTrigger)
+
+	dicRun := dic_dto.NewRunDicEntry().
+		SetV(D.Val).
+		SetDic(D.Data)
+	dicRun.Dic.MyFunc = D.MyFunc
+
+	type runResult struct {
+		text string
+	}
+	done := make(chan runResult, 1)
+
+	go func() {
+		defer func() {
+			if r := recover(); r != nil {
+				debugLog.Errorf("DicRunTimeout panic: %v", r)
+				done <- runResult{}
+			}
+		}()
+		RunDichader := m.DicRunLine(dicRun, D.Data.Head)
+		text := RunDichader
+		if !dicRun.Sys_v.Stop.Load() {
+			text += m.DicRunLine(dicRun, GetDic)
+		}
+		done <- runResult{text}
+	}()
+
+	timer := time.NewTimer(timeout)
+	defer timer.Stop()
+
+	select {
+	case r := <-done:
+		dicRun.Close()
+		return r.text, false
+	case <-timer.C:
+		// 超时：置停止标志，引擎会在行间检查时尽快退出
+		dicRun.Sys_v.Stop.Store(true)
+		// 给引擎短暂宽限，尽量在返回前安全退出，避免并发访问已释放的变量
+		select {
+		case r := <-done:
+			dicRun.Close()
+			return r.text, true
+		case <-time.After(3 * time.Second):
+			// 强制终止：goroutine 可能仍持有 dicRun，无法安全调用 Close()
+			return "", true
+		}
+	}
 }

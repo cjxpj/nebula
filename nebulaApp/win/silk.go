@@ -8,46 +8,7 @@ import (
 	"path/filepath"
 
 	"github.com/cjxpj/nebula/dto"
-	"github.com/cjxpj/nebula/utils"
 )
-
-// 安装 silk_v3
-func installSilkV3(destDir string, output *[]string) error {
-	// silk_v3 下载地址（含镜像回退）
-	urls := []string{
-		"https://cjxpj.com/download/silk_v3.zip",
-		"https://mirror.cjxpj.com/silk_v3.zip",
-	}
-
-	zipPath := utils.NewFileQueue("silk_v3_download.zip")
-	defer zipPath.DeleteFile() // 确保下载文件最终被删除
-
-	if output != nil {
-		*output = append(*output, "正在分段下载 silk_v3 ...")
-	}
-
-	// 下载 zip 包（多线程+进度+镜像回退）
-	if err := zipPath.DownloadWithMirrors(urls, 4, true, nil); err != nil {
-		return fmt.Errorf("下载失败: %w", err)
-	}
-
-	if output != nil {
-		*output = append(*output, "下载完成，正在解压...")
-	}
-
-	// 解压
-	if err := os.MkdirAll(destDir, 0755); err != nil {
-		return fmt.Errorf("创建目录失败: %w", err)
-	}
-	if !zipPath.UnZip(destDir) {
-		return fmt.Errorf("解压失败")
-	}
-
-	if output != nil {
-		*output = append(*output, "✅ silk_v3 安装成功，路径："+filepath.Join(destDir, "silk_v3"))
-	}
-	return nil
-}
 
 // runCmd 静默执行外部命令，失败时返回完整日志
 func runCmd(name string, args ...string) error {

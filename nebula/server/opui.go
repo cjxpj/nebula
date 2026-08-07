@@ -3,6 +3,7 @@ package dic_server
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -12,6 +13,9 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"reflect"
+	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -20,6 +24,8 @@ import (
 	"github.com/cjxpj/nebula/appfiles"
 	"github.com/cjxpj/nebula/bot/secludedbot"
 	"github.com/cjxpj/nebula/debugLog"
+	dic_api "github.com/cjxpj/nebula/dic/api"
+	dic_dto "github.com/cjxpj/nebula/dic/dto"
 	dic_funcs "github.com/cjxpj/nebula/dic/funcs"
 	"github.com/cjxpj/nebula/dto"
 	"github.com/cjxpj/nebula/utils"
@@ -1144,6 +1150,304 @@ func opuiCheckKey(r *http.Request, hType string) bool {
 	}
 	reqKey := r.Header.Get("X-OPUI-Key")
 	return reqKey == storedKey
+}
+
+// toDataURI 把图片字节转为 base64 data URI（带浏览器可识别的图片类型）
+func toDataURI(data []byte) string {
+	return "data:" + http.DetectContentType(data) + ";base64," + base64.StdEncoding.EncodeToString(data)
+}
+
+// resolveImgSrc 把 ±img= 的值解析为浏览器可直接显示的图片地址：
+// http(s)/data: 原样返回；本地文件路径读取后转 data URI；纯 base64 图片数据也转 data URI
+func resolveImgSrc(src string) string {
+	src = strings.TrimSpace(src)
+	if src == "" {
+		return src
+	}
+	if strings.HasPrefix(src, "http://") || strings.HasPrefix(src, "https://") || strings.HasPrefix(src, "data:") {
+		return src
+	}
+	// 尝试作为本地文件（相对路径基于应用目录）
+	if data, err := utils.NewFileQueue(src).ReadFile(); err == nil {
+		return toDataURI([]byte(data))
+	}
+	// 尝试作为 base64 图片数据（绘图等函数输出的纯 base64 字符串）
+	if dec, err := base64.StdEncoding.DecodeString(src); err == nil && len(dec) > 4 {
+		if ct := http.DetectContentType(dec); strings.HasPrefix(ct, "image/") {
+			return toDataURI(dec)
+		}
+	}
+	return src
+}
+
+// isImageData 判断字节数据是否为常见图片格式（按文件头魔数识别）
+func isImageData(data []byte) bool {
+	if len(data) < 8 {
+		return false
+	}
+	ct := http.DetectContentType(data)
+	return strings.HasPrefix(ct, "image/")
+}
+
+// imageMagics 常见图片格式的文件头魔数（用于在文本中扫描嵌入的图片字节）
+var imageMagics = [][]byte{
+	{0x89, 'P', 'N', 'G', 0x0D, 0x0A, 0x1A, 0x0A}, // PNG
+	{0xFF, 0xD8, 0xFF},                            // JPEG
+	{'G', 'I', 'F', '8', '7', 'a'},                // GIF
+	{'G', 'I', 'F', '8', '9', 'a'},                // GIF
+	{0x00, 0x00, 0x01, 0x00},                      // ICO
+	{'B', 'M'},                                    // BMP
+}
+
+// findImageStart 在字节流中查找第一个图片数据（文件头魔数）的起始位置，找不到返回 -1
+func findImageStart(data []byte) int {
+	for i := 0; i < len(data); i++ {
+		// WebP：RIFF + 4 字节长度 + WEBP
+		if i+12 <= len(data) && data[i] == 'R' &&
+			bytes.Equal(data[i:i+4], []byte("RIFF")) && bytes.Equal(data[i+8:i+12], []byte("WEBP")) {
+			return i
+		}
+		for _, magic := range imageMagics {
+			if i+len(magic) <= len(data) && bytes.Equal(data[i:i+len(magic)], magic) {
+				// 短魔数（BMP 仅 2 字节）用内容嗅探二次确认，避免文本误报
+				if len(magic) >= 4 || isImageData(data[i:]) {
+					return i
+				}
+			}
+		}
+	}
+	return -1
+}
+
+// findImageEnd 返回从 start 开始图片数据的结束位置（不含）。无法确定结束位置时返回 len(data)
+func findImageEnd(data []byte, start int) int {
+	rest := data[start:]
+	switch {
+	case bytes.HasPrefix(rest, []byte{0x89, 'P', 'N', 'G', 0x0D, 0x0A, 0x1A, 0x0A}):
+		// PNG 以 IEND chunk（00 00 00 00 49 45 4E 44 AE 42 60 82）结束
+		if idx := bytes.Index(rest, []byte{0x00, 0x00, 0x00, 0x00, 0x49, 0x45, 0x4E, 0x44, 0xAE, 0x42, 0x60, 0x82}); idx >= 0 {
+			return start + idx + 12
+		}
+	case bytes.HasPrefix(rest, []byte{0xFF, 0xD8, 0xFF}):
+		// JPEG 以 FFD9 结束
+		if idx := bytes.Index(rest, []byte{0xFF, 0xD9}); idx >= 0 {
+			return start + idx + 2
+		}
+	case bytes.HasPrefix(rest, []byte("GIF87a")) || bytes.HasPrefix(rest, []byte("GIF89a")):
+		// GIF 以 0x3B 结束
+		if idx := bytes.IndexByte(rest, 0x3B); idx >= 0 {
+			return start + idx + 1
+		}
+	case bytes.HasPrefix(rest, []byte("RIFF")) && len(rest) >= 12 && bytes.Equal(rest[8:12], []byte("WEBP")):
+		// WebP：RIFF 头部 4~7 字节为整个文件长度（含 8 字节头）
+		size := int(rest[4]) | int(rest[5])<<8 | int(rest[6])<<16 | int(rest[7])<<24
+		if size >= 8 && len(rest) >= 8+size {
+			return start + 8 + size
+		}
+	}
+	return len(data)
+}
+
+// anyTypeName 返回变量值的类型名（中文，用于词库调试面板展示）
+func anyTypeName(v any) string {
+	switch v.(type) {
+	case string:
+		return "字符串"
+	case bool:
+		return "布尔"
+	case int, int8, int16, int32, int64, uint, uint8, uint16, uint32, uint64, float32, float64:
+		return "数值"
+	case time.Time:
+		return "时间"
+	case []byte:
+		return "字节"
+	case *dic_funcs.NDrawImg:
+		return "画布"
+	case nil:
+		return "空"
+	}
+	// 兜底：按反射归类，避免常见类型（结构体、自定义切片/字典、指针等）显示为「未知」
+	rv := reflect.ValueOf(v)
+	switch rv.Kind() {
+	case reflect.Ptr:
+		if rv.IsNil() {
+			return "空"
+		}
+		return anyTypeName(rv.Elem().Interface())
+	case reflect.Slice, reflect.Array:
+		return "列表"
+	case reflect.Map:
+		return "字典"
+	case reflect.Struct:
+		return "对象"
+	default:
+		return "未知"
+	}
+}
+
+// outputImgRe 匹配输出中的图片标记：±img=xxx± / <img src=...> / ![alt](url)
+var outputImgRe = regexp.MustCompile(`±img=([^±]+)±|<img[^>]*\bsrc=["']([^"']+)["'][^>]*>|!\[[^\]]*\]\(([^)\s]+)\)`)
+
+// parseOutputSegments 把词库输出中的图片标记解析为分段（文本/图片），
+// 图片源解析为浏览器可直接显示的地址；同时自动识别直接输出的图片二进制数据
+// （如 $画布.获取$ 返回的 PNG/JPEG 字节）
+func parseOutputSegments(output string) []map[string]string {
+	var segments []map[string]string
+
+	// appendText 追加文本段，若该段本身是图片二进制或嵌入了图片字节则识别为图片
+	appendText := func(text string) {
+		if text == "" {
+			return
+		}
+		// 整段本身就是图片二进制数据
+		if isImageData([]byte(text)) {
+			segments = append(segments, map[string]string{"type": "img", "src": toDataURI([]byte(text))})
+			return
+		}
+		// 文本中嵌入图片字节（如 $画布.获取$ 输出带前缀文本）：按魔数拆分
+		data := []byte(text)
+		for {
+			imgStart := findImageStart(data)
+			if imgStart < 0 {
+				if len(data) > 0 {
+					segments = append(segments, map[string]string{"type": "text", "text": string(data)})
+				}
+				return
+			}
+			if imgStart > 0 {
+				segments = append(segments, map[string]string{"type": "text", "text": string(data[:imgStart])})
+			}
+			imgEnd := findImageEnd(data, imgStart)
+			segments = append(segments, map[string]string{"type": "img", "src": toDataURI(data[imgStart:imgEnd])})
+			if imgEnd >= len(data) {
+				return
+			}
+			data = data[imgEnd:]
+		}
+	}
+
+	last := 0
+	for _, m := range outputImgRe.FindAllStringSubmatchIndex(output, -1) {
+		start, end := m[0], m[1]
+		if start > last {
+			appendText(output[last:start])
+		}
+		var src string
+		switch {
+		case m[2] >= 0: // ±img=xxx±
+			src = output[m[2]:m[3]]
+		case m[4] >= 0: // <img src="...">
+			src = output[m[4]:m[5]]
+		case m[6] >= 0: // ![alt](url)
+			src = output[m[6]:m[7]]
+		}
+		segments = append(segments, map[string]string{"type": "img", "src": resolveImgSrc(src)})
+		last = end
+	}
+	if last < len(output) {
+		appendText(output[last:])
+	}
+	if len(segments) == 0 {
+		appendText(output)
+	}
+	return segments
+}
+
+// loadDicDebugDefaults 读取 system.ini 中 [词库调试] 节的配置（运行配置的唯一存储位置）
+func loadDicDebugDefaults() map[string]any {
+	def := map[string]any{}
+	file := utils.NewFile()
+	file.SetPath("private/system/system.ini")
+	if !file.FileExists() {
+		return def
+	}
+	ini, err := file.LoadIni()
+	if err != nil {
+		return def
+	}
+	sec := ini.Section("词库调试")
+	if v := sec.Key("默认词库").String(); v != "" {
+		def["path"] = v
+	}
+	if v := sec.Key("触发文本").String(); v != "" {
+		def["trigger"] = v
+	}
+	if b, err := sec.Key("保存运行").Bool(); err == nil {
+		def["saveRun"] = b
+	}
+	if b, err := sec.Key("实时保存").Bool(); err == nil {
+		def["autoSave"] = b
+	}
+	if n := sec.Key("超时").MustInt(0); n > 0 {
+		def["timeout"] = n
+	}
+	if v := sec.Key("全局变量").String(); v != "" {
+		// 值可含任意换行，因此整体按 JSON 数组存储；解析失败时兼容旧格式（每行一个 key=value）
+		var g []string
+		if err := json.Unmarshal([]byte(v), &g); err != nil || g == nil {
+			g = nil
+			for _, line := range strings.Split(v, "\n") {
+				if s := strings.TrimSpace(line); s != "" {
+					g = append(g, s)
+				}
+			}
+		}
+		if g != nil {
+			def["g"] = g
+		}
+	}
+	return def
+}
+
+// listDicFilesInDir 扫描应用目录下指定目录（如 private、private/bot/qq/dic）中的词库文件（.n），
+// 返回相对应用目录的路径
+func listDicFilesInDir(dir string) ([]string, error) {
+	appDir := utils.GetAppDir()
+	var files []string
+
+	root := filepath.Join(appDir, dir)
+	if info, err := os.Stat(root); err != nil || !info.IsDir() {
+		return files, nil
+	}
+	err := filepath.Walk(root, func(path string, info os.FileInfo, err error) error {
+		if err != nil {
+			return nil
+		}
+		if info.IsDir() {
+			return nil
+		}
+		if strings.HasSuffix(info.Name(), ".n") {
+			if rel, err := filepath.Rel(appDir, path); err == nil {
+				files = append(files, filepath.ToSlash(rel))
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	sort.Strings(files)
+	return files, nil
+}
+
+// checkDicPath 校验词库调试路径：仅允许应用目录下 private/public 中的 .n 文件，
+// 拒绝绝对路径、包含 .. 的越权路径以及非词库文件
+func checkDicPath(path string) bool {
+	if path == "" || filepath.IsAbs(path) {
+		return false
+	}
+	if strings.HasPrefix(path, "/") || strings.HasPrefix(path, "\\") {
+		return false
+	}
+	if strings.Contains(path, "..") {
+		return false
+	}
+	if !strings.HasSuffix(strings.ToLower(path), ".n") {
+		return false
+	}
+	clean := filepath.ToSlash(filepath.Clean(path))
+	return strings.HasPrefix(clean, "private/") || strings.HasPrefix(clean, "public/")
 }
 
 func OpUI(w http.ResponseWriter, r *http.Request, getpath string) {
@@ -2376,6 +2680,215 @@ func OpUI(w http.ResponseWriter, r *http.Request, getpath string) {
 				return
 			}
 			w.Write([]byte(`{"status":"ok"}`))
+			return
+
+		case "get_dic_list":
+			// 只在有输入关键字时才搜索；base 指定搜索目录（默认 private），只扫描该文件夹下的 .n 文件
+			var j struct {
+				Search string `json:"search"`
+				Base   string `json:"base"`
+				Limit  int    `json:"limit"`
+			}
+			_ = json.Unmarshal(h.Data, &j)
+			kw := strings.ToLower(strings.TrimSpace(j.Search))
+			if kw == "" {
+				// 未输入关键字不返回列表
+				jsonResp, _ := json.Marshal(map[string]any{"files": []string{}})
+				w.Write(jsonResp)
+				return
+			}
+			base := strings.TrimSpace(j.Base)
+			if base == "" {
+				base = "private"
+			}
+			// 限定搜索目录只能位于 private/public 下，防止越权扫描
+			if base != "private" && base != "public" &&
+				!strings.HasPrefix(base, "private/") && !strings.HasPrefix(base, "public/") {
+				jsonResp, _ := json.Marshal(map[string]any{"files": []string{}})
+				w.Write(jsonResp)
+				return
+			}
+			files, err := listDicFilesInDir(base)
+			if err != nil {
+				http.Error(w, `{"status":"error","error":"`+err.Error()+`"}`, http.StatusInternalServerError)
+				return
+			}
+			var filtered []string
+			for _, f := range files {
+				if strings.Contains(strings.ToLower(f), kw) {
+					filtered = append(filtered, f)
+				}
+			}
+			if j.Limit > 0 && len(filtered) > j.Limit {
+				filtered = filtered[:j.Limit]
+			}
+			jsonResp, _ := json.Marshal(map[string]any{"files": filtered})
+			w.Write(jsonResp)
+			return
+
+		case "dic_get_content":
+			var j struct {
+				Path string `json:"path"`
+			}
+			if err := json.Unmarshal(h.Data, &j); err != nil {
+				http.Error(w, `{"status":"error","error":"invalid json"}`, http.StatusBadRequest)
+				return
+			}
+			if j.Path == "" {
+				http.Error(w, `{"status":"error","error":"词库路径不能为空"}`, http.StatusBadRequest)
+				return
+			}
+			if !checkDicPath(j.Path) {
+				http.Error(w, `{"status":"error","error":"词库路径不合法"}`, http.StatusBadRequest)
+				return
+			}
+			content, err := utils.NewFileQueue(j.Path).ReadFromFile()
+			if err != nil {
+				http.Error(w, `{"status":"error","error":"词库读取失败: `+err.Error()+`"}`, http.StatusBadRequest)
+				return
+			}
+			jsonResp, _ := json.Marshal(map[string]any{"content": content})
+			w.Write(jsonResp)
+			return
+
+		case "dic_save_content":
+			var j struct {
+				Path    string `json:"path"`
+				Content string `json:"content"`
+			}
+			if err := json.Unmarshal(h.Data, &j); err != nil {
+				http.Error(w, `{"status":"error","error":"invalid json"}`, http.StatusBadRequest)
+				return
+			}
+			if j.Path == "" {
+				http.Error(w, `{"status":"error","error":"词库路径不能为空"}`, http.StatusBadRequest)
+				return
+			}
+			if !checkDicPath(j.Path) {
+				http.Error(w, `{"status":"error","error":"词库路径不合法"}`, http.StatusBadRequest)
+				return
+			}
+			utils.NewFileQueue(j.Path).WriteToFile(j.Content)
+			jsonResp, _ := json.Marshal(map[string]any{"status": "ok"})
+			w.Write(jsonResp)
+			return
+
+		case "get_dic_config":
+			// 读取词库调试运行配置（system.ini 的 [词库调试] 节）
+			jsonResp, _ := json.Marshal(loadDicDebugDefaults())
+			w.Write(jsonResp)
+			return
+
+		case "save_dic_config":
+			// 保存词库调试运行配置到 system.ini 的 [词库调试] 节
+			var cfg map[string]any
+			if err := json.Unmarshal(h.Data, &cfg); err != nil {
+				http.Error(w, `{"status":"error","error":"invalid json"}`, http.StatusBadRequest)
+				return
+			}
+			file := utils.NewFile()
+			file.SetPath("private/system/system.ini")
+			iniFile, err := file.LoadIni()
+			if err != nil {
+				http.Error(w, `{"status":"error","error":"读取 system.ini 失败"}`, http.StatusInternalServerError)
+				return
+			}
+			sec := iniFile.Section("词库调试")
+			if v, ok := cfg["path"].(string); ok && v != "" {
+				sec.Key("默认词库").SetValue(v)
+			}
+			if v, ok := cfg["trigger"].(string); ok {
+				sec.Key("触发文本").SetValue(v)
+			}
+			if v, ok := cfg["timeout"].(float64); ok {
+				sec.Key("超时").SetValue(strconv.Itoa(int(v)))
+			}
+			if v, ok := cfg["saveRun"].(bool); ok {
+				sec.Key("保存运行").SetValue(strconv.FormatBool(v))
+			}
+			if v, ok := cfg["autoSave"].(bool); ok {
+				sec.Key("实时保存").SetValue(strconv.FormatBool(v))
+			}
+			if g, ok := cfg["g"].([]any); ok {
+				var items []string
+				for _, it := range g {
+					if s, ok := it.(string); ok {
+						items = append(items, s)
+					}
+				}
+				// 值可含任意换行：整体 JSON 编码存储（ini 值保持单行，避免按行拆分时被截断）
+				if b, err := json.Marshal(items); err == nil {
+					sec.Key("全局变量").SetValue(string(b))
+				}
+			}
+			if err := file.SaveIni(iniFile); err != nil {
+				http.Error(w, `{"status":"error","error":"写入 system.ini 失败: `+err.Error()+`"}`, http.StatusInternalServerError)
+				return
+			}
+			jsonResp, _ := json.Marshal(map[string]any{"status": "ok"})
+			w.Write(jsonResp)
+			return
+
+		case "dic_debug_run":
+			var j struct {
+				Path    string            `json:"path"`
+				Trigger string            `json:"trigger"`
+				G       map[string]string `json:"g"`
+				// 超时（秒），0 表示不限时；超时后强行打断词库执行
+				Timeout int `json:"timeout"`
+			}
+			if err := json.Unmarshal(h.Data, &j); err != nil {
+				http.Error(w, `{"status":"error","error":"invalid json"}`, http.StatusBadRequest)
+				return
+			}
+			if j.Path == "" {
+				http.Error(w, `{"status":"error","error":"词库路径不能为空"}`, http.StatusBadRequest)
+				return
+			}
+			if !checkDicPath(j.Path) {
+				http.Error(w, `{"status":"error","error":"词库路径不合法"}`, http.StatusBadRequest)
+				return
+			}
+			dic, err := dic_dto.RunDic(j.Path)
+			if err != nil {
+				http.Error(w, `{"status":"error","error":"词库加载失败: `+err.Error()+`"}`, http.StatusBadRequest)
+				return
+			}
+			defer dic.Close()
+
+			// 注入全局变量
+			for k, v := range j.G {
+				dic.Val.G.Set(k, v)
+			}
+
+			var output string
+			var timedOut bool
+			if j.Timeout > 0 {
+				output, timedOut = dic_api.Api.DicRunTimeout(dic, j.Trigger, time.Duration(j.Timeout)*time.Second)
+			} else {
+				output = dic_api.Api.DicRun(dic, j.Trigger)
+			}
+
+			// 收集运行后的局部/全局变量（值 + 类型）
+			pVars := make(map[string]any)
+			for k, v := range dic.Val.P.GetAll() {
+				pVars[k] = map[string]any{"v": utils.AnyToString(v), "t": anyTypeName(v)}
+			}
+			gVars := make(map[string]any)
+			for k, v := range dic.Val.G.GetAll() {
+				gVars[k] = map[string]any{"v": utils.AnyToString(v), "t": anyTypeName(v)}
+			}
+
+			jsonResp, _ := json.Marshal(map[string]any{
+				"output":   output,
+				"timedOut": timedOut,
+				"segments": parseOutputSegments(output),
+				"vars": map[string]any{
+					"P": pVars,
+					"G": gVars,
+				},
+			})
+			w.Write(jsonResp)
 			return
 
 		default:

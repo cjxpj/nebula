@@ -1,0 +1,189 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <title>Nebula</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;600;700&display=swap" rel="stylesheet">
+  <style>
+    :root {
+      --bg: #0f172a;
+      --card: #111827;
+      --primary: #38bdf8;
+      --secondary: #22c55e;
+      --text: #e5e7eb;
+      --muted: #9ca3af;
+      --radius: 16px;
+    }
+
+    * { box-sizing: border-box; }
+
+    body {
+      margin: 0;
+      font-family: 'Inter', system-ui, -apple-system;
+      background: radial-gradient(circle at top, #1e293b, var(--bg));
+      color: var(--text);
+      line-height: 1.6;
+    }
+
+    header {
+      padding: 96px 20px 120px;
+      text-align: center;
+    }
+
+    header h1 {
+      font-size: 3rem;
+      font-weight: 700;
+      margin-bottom: 20px;
+    }
+
+    header p {
+      font-size: 1.2rem;
+      color: var(--muted);
+      max-width: 820px;
+      margin: 0 auto 40px;
+    }
+
+    .btn {
+      display: inline-block;
+      padding: 14px 36px;
+      border-radius: 999px;
+      background: linear-gradient(135deg, var(--primary), var(--secondary));
+      color: #020617;
+      font-weight: 600;
+      text-decoration: none;
+      transition: transform .2s ease, box-shadow .2s ease;
+    }
+
+    .btn:hover {
+      transform: translateY(-2px);
+      box-shadow: 0 10px 30px rgba(56,189,248,.35);
+    }
+
+    section {
+      padding: 80px 20px;
+      max-width: 1200px;
+      margin: 0 auto;
+    }
+
+    .features {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+      gap: 32px;
+    }
+
+    .card {
+      background: linear-gradient(180deg, #020617, var(--card));
+      border-radius: var(--radius);
+      padding: 32px;
+      box-shadow: 0 20px 50px rgba(0,0,0,.35);
+      position: relative;
+      overflow: hidden;
+      transition: transform .25s ease, box-shadow .25s ease;
+    }
+
+    .card::before {
+      content: '';
+      position: absolute;
+      inset: 0;
+      background: linear-gradient(120deg, transparent, rgba(56,189,248,.15), transparent);
+      opacity: 0;
+      transition: opacity .3s ease;
+    }
+
+    .card:hover {
+      transform: translateY(-6px);
+      box-shadow: 0 30px 70px rgba(0,0,0,.5);
+    }
+
+    .card:hover::before { opacity: 1; }
+
+    .card h3 {
+      margin-top: 0;
+      font-size: 1.4rem;
+      margin-bottom: 12px;
+    }
+
+    .card p {
+      color: var(--muted);
+    }
+
+    .code {
+      background: #020617;
+      border-radius: 12px;
+      padding: 24px;
+      font-family: Consolas, monospace;
+      color: #a5f3fc;
+      font-size: 0.95rem;
+      overflow-x: auto;
+    }
+
+    footer {
+      padding: 60px 20px;
+      text-align: center;
+      color: var(--muted);
+      background: #020617;
+    }
+
+    footer a { color: var(--primary); text-decoration: none; }
+
+    @media (max-width: 600px) {
+      header h1 { font-size: 2.2rem; }
+    }
+  </style>
+</head>
+<body>
+
+<header>
+  <h1>Nebula</h1>
+  
+  
+  <p style="margin-top:40px;">
+    Nebula 是一个<strong>面向 Web 服务的脚本语言与运行时系统</strong>，
+    用于将词库逻辑直接映射为 HTTP 服务，显著降低后端业务编写与维护成本。
+  </p>
+  <div style="margin-top:32px; display:flex; justify-content:center; gap:16px; flex-wrap:wrap;">
+    <a class="btn" href="https://github.com/cjxpj/nebula" target="_blank">访问 GitHub</a>
+    <a class="btn" href="https://gitee.com/cjxpj/nebula" target="_blank">访问 Gitee</a>
+  </div>
+</header>
+
+<section id="features">
+  <h2 style="text-align:center; margin-bottom:48px;">为何选择 NebulaLanguage</h2>
+  <div class="features">
+    <div class="card">
+      <h3>原生面向 Web 服务</h3>
+      <p>
+        NebulaLanguage 以内置 HTTP 服务为核心设计目标，
+        通过词库与脚本即可定义接口逻辑、返回结构与执行流程，
+        无需传统 Controller / Router 模板代码。
+      </p>
+    </div>
+    <div class="card">
+      <h3>词库即服务</h3>
+      <p>
+        每一个 Nebula 词库都是可执行单元，
+        可被直接映射为 Web API、WebSocket 或自动任务，
+        非常适合快速构建业务中台与自动化服务。
+      </p>
+    </div><div class="card">
+      <h3>零部署 · 直接启动</h3>
+      <p>
+        Nebula 内置完整运行环境，无需额外编译、复杂配置或容器部署。
+        启动程序即可自动加载词库并开放 Web 服务，
+        实现真正的开箱即用与即写即跑。
+      </p>
+    </div>
+  </div>
+</section>
+
+
+
+
+
+<footer>
+  <p>面向 Web 服务的脚本语言</p>
+</footer>
+
+</body>
+</html>

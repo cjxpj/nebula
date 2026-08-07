@@ -21,32 +21,6 @@ import (
 	"golang.org/x/sys/windows"
 )
 
-func installPHP(destDir string, output *[]string) error {
-	urls := []string{
-		"https://cjxpj.com/download/php-7.4.33-Win32-vc15-x64.zip",
-		"https://windows.php.net/downloads/releases/archives/php-7.4.33-Win32-vc15-x64.zip",
-	}
-
-	zipPath := utils.NewFileQueue("php_download.zip")
-	defer zipPath.DeleteFile() // 确保下载文件最终被删除
-
-	*output = append(*output, "正在分段下载 PHP ...")
-	if err := zipPath.DownloadWithMirrors(urls, 8, true, nil); err != nil {
-		return fmt.Errorf("下载失败: %w", err)
-	}
-
-	*output = append(*output, "下载完成，正在解压...")
-	if err := os.MkdirAll(destDir, 0755); err != nil {
-		return fmt.Errorf("创建目录失败: %w", err)
-	}
-	if !zipPath.UnZip(destDir) {
-		return fmt.Errorf("解压失败")
-	}
-
-	*output = append(*output, "✅ PHP 安装成功，路径："+destDir)
-	return nil
-}
-
 func parseRequestToMap(r *http.Request) (getMap, postMap, fileMap map[string]any, err error) {
 	getMap = make(map[string]any)
 	postMap = make(map[string]any)

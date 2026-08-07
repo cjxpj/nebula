@@ -307,7 +307,7 @@ func Funcs(d *dic_dto.DicFunc, dic_i *utils.DicInputs) (any, error) {
 		if inputs.LenOk(fn.L) {
 			res, err := fn.Fn(dto.NewDicInputsWithOutput(d.Dic, d.Val, &inputs, d.Output))
 			if err != nil && err.Error() == "stop" {
-				d.Sys.Stop = true
+				d.Sys.Stop.Store(true)
 			}
 			return res, err
 		}
@@ -317,7 +317,7 @@ func Funcs(d *dic_dto.DicFunc, dic_i *utils.DicInputs) (any, error) {
 		if inputs.LenOk(fnInfo.L) {
 			res, err := fnInfo.Fn(dto.NewDicInputsWithOutput(d.Dic, d.Val, &inputs, d.Output))
 			if err != nil && err.Error() == "stop" {
-				d.Sys.Stop = true
+				d.Sys.Stop.Store(true)
 			}
 			return res, err
 		}

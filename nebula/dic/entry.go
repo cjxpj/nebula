@@ -9,7 +9,6 @@ import (
 
 	dicBuild "github.com/cjxpj/nebula/build"
 	"github.com/cjxpj/nebula/count"
-	"github.com/cjxpj/nebula/debugLog"
 	dic_api "github.com/cjxpj/nebula/dic/api"
 	dic_dto "github.com/cjxpj/nebula/dic/dto"
 	"github.com/cjxpj/nebula/dic/funcs"
@@ -25,25 +24,6 @@ import (
 
 	"github.com/buger/jsonparser"
 )
-
-// 执行词块
-func (m *dicImpl) Execute(r *dto.DicInfoData, txt []string) any {
-	debugLog.Infof("执行词块")
-	debugLog.Infof("%v", utils.AnyToString(r))
-	runNum := 0
-
-	for index := range txt {
-		runNum++
-		vType, vPrefix, _ := dicBuild.ValTextTest(txt[index])
-		if vType == 6 {
-			switch vPrefix {
-			case "如果", "if":
-				// var ifval bool = PdPro(r, vSuffix)
-			}
-		}
-	}
-	return ""
-}
 
 // 执行
 func (m *dicImpl) DicRunLine(r *dic_dto.DicEntry, txt []string) string {
@@ -89,12 +69,12 @@ func (m *dicImpl) DicRunLine(r *dic_dto.DicEntry, txt []string) string {
 func handleLoopControl(r, runDic *dic_dto.DicEntry, loopType string) (shouldBreak, shouldReturn bool) {
 	switch loopType {
 	case "ForEach":
-		if runDic.Sys_v.Stop {
+		if runDic.Sys_v.Stop.Load() {
 			runDic.Close()
-			r.Sys_v.Stop = true
+			r.Sys_v.Stop.Store(true)
 			return true, false
 		}
-		if !runDic.Sys_v.ForEach.IsFor && runDic.Sys_v.Stop {
+		if !runDic.Sys_v.ForEach.IsFor && runDic.Sys_v.Stop.Load() {
 			runDic.Close()
 			return false, true
 		}
@@ -104,7 +84,7 @@ func handleLoopControl(r, runDic *dic_dto.DicEntry, loopType string) (shouldBrea
 			return true, false
 		}
 	case "For":
-		if !runDic.Sys_v.For.IsFor && runDic.Sys_v.Stop {
+		if !runDic.Sys_v.For.IsFor && runDic.Sys_v.Stop.Load() {
 			runDic.Close()
 			return false, true
 		}
@@ -113,9 +93,9 @@ func handleLoopControl(r, runDic *dic_dto.DicEntry, loopType string) (shouldBrea
 			r.Sys_v.For.Jump = false
 			return true, false
 		}
-		if runDic.Sys_v.Stop {
+		if runDic.Sys_v.Stop.Load() {
 			runDic.Close()
-			r.Sys_v.Stop = true
+			r.Sys_v.Stop.Store(true)
 			return false, true
 		}
 	}
@@ -137,7 +117,7 @@ func Entry(r *dic_dto.DicEntry, txt []string, funcV *dic_dto.DicFunc) error {
 
 		RunDicindex++
 
-		if r.Sys_v.Stop {
+		if r.Sys_v.Stop.Load() {
 			return nil
 		}
 
@@ -451,14 +431,14 @@ func Entry(r *dic_dto.DicEntry, txt []string, funcV *dic_dto.DicFunc) error {
 							r.Val.P.Set(v2, value)
 							resRun := dic_api.Api.DicRunLine(RunDic, content)
 							r.Output.Add(resRun)
-							if RunDic.Sys_v.ForEach.Jump || RunDic.Sys_v.Stop {
+							if RunDic.Sys_v.ForEach.Jump || RunDic.Sys_v.Stop.Load() {
 								r.Sys_v.ForEach.Jump = false
 								return errors.New("stop")
 							}
 							return nil
 						})
-						if RunDic.Sys_v.Stop {
-							r.Sys_v.Stop = true
+						if RunDic.Sys_v.Stop.Load() {
+							r.Sys_v.Stop.Store(true)
 							return nil
 						}
 
@@ -611,8 +591,8 @@ func Entry(r *dic_dto.DicEntry, txt []string, funcV *dic_dto.DicFunc) error {
 								return nil
 							}
 
-							if RunDic.Sys_v.Stop {
-								r.Sys_v.Stop = true
+							if RunDic.Sys_v.Stop.Load() {
+								r.Sys_v.Stop.Store(true)
 								return nil
 							}
 							break
@@ -634,7 +614,7 @@ func Entry(r *dic_dto.DicEntry, txt []string, funcV *dic_dto.DicFunc) error {
 							return nil
 						}
 
-						if !r.Sys_v.IfFunc.IsIf && RunDic.Sys_v.Stop {
+						if !r.Sys_v.IfFunc.IsIf && RunDic.Sys_v.Stop.Load() {
 							RunDic.Close()
 							return nil
 						}
@@ -644,9 +624,9 @@ func Entry(r *dic_dto.DicEntry, txt []string, funcV *dic_dto.DicFunc) error {
 							r.Sys_v.IfFunc.Jump = false
 							break
 						}
-						if RunDic.Sys_v.Stop {
+						if RunDic.Sys_v.Stop.Load() {
 							RunDic.Close()
-							r.Sys_v.Stop = true
+							r.Sys_v.Stop.Store(true)
 							return nil
 						}
 					}
@@ -801,12 +781,12 @@ func Entry(r *dic_dto.DicEntry, txt []string, funcV *dic_dto.DicFunc) error {
 		}
 
 		if text == ">终止" {
-			r.Sys_v.Stop = true
+			r.Sys_v.Stop.Store(true)
 			return nil
 		}
 
 		if retretMsg, ok := strings.CutPrefix(text, ">终止 "); ok && retretMsg != "" {
-			r.Sys_v.Stop = true
+			r.Sys_v.Stop.Store(true)
 			r.Output.Add(retretMsg)
 			return nil
 		}
