@@ -2,6 +2,24 @@ plugins {
     id 'com.android.application'
 }
 
+// 从 Go 源码实时读取 Nebula 版本号
+def readNebulaVersion = { ->
+    def embedFile = file("${rootProject.projectDir}/../nebula/appfiles/embed.go")
+    if (embedFile.exists()) {
+        def matcher = embedFile.text =~ /var Version string = "(.+)"/
+        if (matcher.find()) {
+            def ver = matcher.group(1)
+            // "16.18.1" → versionCode: 161801, versionName: "16.18.1"
+            def parts = ver.split("\\.")
+            def code = parts[0].toInteger() * 10000 + parts[1].toInteger() * 100 + parts[2].toInteger()
+            return [versionName: ver, versionCode: code]
+        }
+    }
+    return [versionName: "1.0", versionCode: 1]
+}
+
+def nebulaVer = readNebulaVersion()
+
 android {
     namespace 'com.cjxpj.nebula'
     compileSdk 34
@@ -10,14 +28,16 @@ android {
         applicationId "com.cjxpj.nebula"
         minSdk 30
         targetSdk 34
-        versionCode 1
-        versionName "1.0"
+        versionCode nebulaVer.versionCode
+        versionName nebulaVer.versionName
     }
 
     buildTypes {
         release {
-            minifyEnabled false
+            minifyEnabled true
+            shrinkResources true
             proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'
+            signingConfig signingConfigs.debug
         }
     }
 

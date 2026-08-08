@@ -67,6 +67,9 @@
                 "-tags",
                 "so",
                 "-buildmode=c-shared",
+                "-ldflags",
+                "-s -w",
+                "-trimpath",
                 "-o",
                 "dist/libnebula_arm64.so",
                 "./nebulaApp"
@@ -105,10 +108,10 @@
             "label": "Gradle 打包 APK",
             "command": ".\\gradlew.bat",
             "args": [
-                "assembleDebug"
+                "assembleRelease"
             ],
             "problemMatcher": [],
-            "detail": "Gradle 编译 Android APK (debug 签名)",
+            "detail": "Gradle 编译 Android APK (release 压缩)",
             "options": {
                 "cwd": "${workspaceFolder}\\android",
                 "env": {
@@ -123,7 +126,7 @@
             "command": "xcopy",
             "args": [
                 "/Y",
-                "android\\app\\build\\outputs\\apk\\debug\\app-debug.apk",
+                "android\\app\\build\\outputs\\apk\\release\\app-release.apk",
                 "dist\\nebula.apk*"
             ],
             "problemMatcher": [],

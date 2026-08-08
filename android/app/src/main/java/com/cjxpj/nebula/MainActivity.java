@@ -1,10 +1,17 @@
 package com.cjxpj.nebula;
 
+import android.Manifest;
 import android.annotation.SuppressLint;
 import android.app.Activity;
+import android.content.Intent;
+import android.content.pm.PackageManager;
+import android.net.Uri;
+import android.os.Build;
 import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
+import android.os.PowerManager;
+import android.provider.Settings;
 import android.util.Log;
 import android.view.KeyEvent;
 import android.webkit.WebChromeClient;
@@ -16,16 +23,15 @@ import android.webkit.WebViewClient;
  * 主 Activity —— WebView 显示 Go HTTP 服务的管理面板
  *
  * 流程：
- *   1. setDataDir() 传递应用内部存储路径给 Go 侧
- *   2. RunNebula() 启动 Go HTTP 服务（loadConfig 写入配置文件）
- *   3. 轮询等待 HTTP 服务就绪
- *   4. getOpuiUrl() 从 Go 侧获取面板路径
- *   5. WebView 加载
+ *   1. 请求必需权限（通知 + 电池优化）
+ *   2. setDataDir() → RunNebula() → 等待 HTTP
+ *   3. startKeepAliveService() → getOpuiUrl() → WebView 加载
  */
 public class MainActivity extends Activity {
 
     private static final String TAG = "MainActivity";
     private static final String HTTP_HOST = "http://127.0.0.1:8080";
+    private static final int REQ_NOTIFICATION = 101;
 
     // 类加载时自动加载 .so，确保 JNI 方法可用
     static {
@@ -39,6 +45,7 @@ public class MainActivity extends Activity {
 
     private WebView mWebView;
     private final Handler mHandler = new Handler(Looper.getMainLooper());
+    private volatile boolean mServiceStarted = false;  // 防重复启动
 
     // ---------- JNI 原生方法 ----------
     // 传递应用内部存储目录给 Go 侧（解决 Android 11+ 存储权限问题）
@@ -67,7 +74,14 @@ public class MainActivity extends Activity {
         settings.setCacheMode(WebSettings.LOAD_NO_CACHE);
         settings.setMixedContentMode(WebSettings.MIXED_CONTENT_ALWAYS_ALLOW);
 
-        mWebView.setWebViewClient(new WebViewClient());
+        mWebView.setWebViewClient(new WebViewClient() {
+            @Override
+            public void onReceivedError(WebView view, int errorCode,
+                                        String description, String failingUrl) {
+                Log.e(TAG, "WebView 加载失败: " + errorCode + " " + description);
+                showError("页面加载失败 (" + errorCode + ")");
+            }
+        });
         mWebView.setWebChromeClient(new WebChromeClient());
 
         // 显示加载中页面
@@ -75,8 +89,59 @@ public class MainActivity extends Activity {
                 "<html><body style='display:flex;align-items:center;justify-content:center;height:100vh;font-family:sans-serif;background:#1a1a2e;color:#eee'><div style='text-align:center'><h2>Nebula</h2><p>正在启动服务...</p></div></body></html>",
                 "text/html", "UTF-8");
 
-        // 后台启动 Go HTTP 服务
+        // 先请求必需权限，再后台启动
+        requestRequiredPermissions();
+    }
+
+    // ---------- 权限请求 ----------
+
+    /**
+     * Android 13+ 通知权限 + 电池优化白名单
+     */
+    private void requestRequiredPermissions() {
+        // 防重复启动
+        if (mServiceStarted) return;
+
+        // Android 13+：前台服务必须显示通知，需运行时权限
+        if (Build.VERSION.SDK_INT >= 33) {
+            if (checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS)
+                    != PackageManager.PERMISSION_GRANTED) {
+                requestPermissions(
+                        new String[]{Manifest.permission.POST_NOTIFICATIONS},
+                        REQ_NOTIFICATION);
+                return; // 回调 onRequestPermissionsResult 后继续
+            }
+        }
+
+        // 权限已就绪，启动服务
+        mServiceStarted = true;
         new Thread(this::startAndLoad, "nebula-boot").start();
+    }
+
+    @Override
+    public void onRequestPermissionsResult(int requestCode,
+                                           String[] permissions,
+                                           int[] grantResults) {
+        super.onRequestPermissionsResult(requestCode, permissions, grantResults);
+        if (requestCode == REQ_NOTIFICATION && !mServiceStarted) {
+            mServiceStarted = true;
+            new Thread(this::startAndLoad, "nebula-boot").start();
+        }
+    }
+
+    /**
+     * 请求忽略电池优化（用户需手动确认）
+     */
+    private void requestBatteryOptimizationExemption() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+            PowerManager pm = (PowerManager) getSystemService(POWER_SERVICE);
+            if (pm != null && !pm.isIgnoringBatteryOptimizations(getPackageName())) {
+                Intent intent = new Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS);
+                intent.setData(Uri.parse("package:" + getPackageName()));
+                startActivity(intent);
+                Log.i(TAG, "已请求电池优化白名单");
+            }
+        }
     }
 
     /**
@@ -104,7 +169,11 @@ public class MainActivity extends Activity {
             return;
         }
 
-        // 3) 从 so 直接获取 opui 路径
+        // 3) 启动前台保活服务 + 请求电池优化
+        startKeepAliveService();
+        mHandler.post(this::requestBatteryOptimizationExemption);
+
+        // 4) 从 so 直接获取 opui 路径
         String opuiUrl;
         try {
             opuiUrl = getOpuiUrl();
@@ -119,8 +188,11 @@ public class MainActivity extends Activity {
         String url = HTTP_HOST + opuiUrl;
         Log.i(TAG, "加载 opui: " + url);
 
-        // 4) 加载到 WebView
-        mHandler.post(() -> mWebView.loadUrl(url));
+        // 5) 加载到 WebView（先清除 loadData 历史，防止返回键变白）
+        mHandler.post(() -> {
+            mWebView.clearHistory();
+            mWebView.loadUrl(url);
+        });
     }
 
     /**
@@ -150,8 +222,23 @@ public class MainActivity extends Activity {
 
     private void showError(String msg) {
         Log.e(TAG, msg);
-        String html = "<html><body style='display:flex;align-items:center;justify-content:center;height:100vh;font-family:sans-serif;background:#1a1a2e;color:#e74c3c'><div style='text-align:center;padding:20px'><h2>错误</h2><p>" + msg + "</p></div></body></html>";
+        String safeMsg = msg.replace("&", "&amp;").replace("<", "&lt;")
+                .replace(">", "&gt;").replace("\"", "&quot;");
+        String html = "<html><body style='display:flex;align-items:center;justify-content:center;height:100vh;font-family:sans-serif;background:#1a1a2e;color:#e74c3c'><div style='text-align:center;padding:20px'><h2>错误</h2><p>" + safeMsg + "</p></div></body></html>";
         mHandler.post(() -> mWebView.loadData(html, "text/html", "UTF-8"));
+    }
+
+    /**
+     * 启动前台保活 Service
+     */
+    private void startKeepAliveService() {
+        Intent intent = new Intent(this, NebulaService.class);
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            startForegroundService(intent);
+        } else {
+            startService(intent);
+        }
+        Log.i(TAG, "保活服务已启动");
     }
 
     // ---------- 生命周期 ----------
@@ -180,6 +267,11 @@ public class MainActivity extends Activity {
     public boolean onKeyDown(int keyCode, KeyEvent event) {
         if (keyCode == KeyEvent.KEYCODE_BACK && mWebView != null && mWebView.canGoBack()) {
             mWebView.goBack();
+            return true;
+        }
+        // 已到 WebView 根页面：退到后台而非关闭（保活服务继续运行）
+        if (keyCode == KeyEvent.KEYCODE_BACK) {
+            moveTaskToBack(true);
             return true;
         }
         return super.onKeyDown(keyCode, event);
