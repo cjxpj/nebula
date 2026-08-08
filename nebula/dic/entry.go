@@ -378,11 +378,25 @@ func Entry(r *dic_dto.DicEntry, txt []string, funcV *dic_dto.DicFunc) error {
 			}
 			if text == "<函数" {
 				if forNum == 0 {
-					// 插入函数框
-					r.Val.P.Set(r.Sys_v.Func.VlaueName, &dto.FuncBox{
-						Trigger: funcTrigger,
-						Content: content,
-					})
+					if r.Sys_v.Func.VlaueName == "" {
+						// 赋予值名留空：不存储函数框，直接执行内容并输出返回
+						funcv := dto.NewVal().
+							Reset(r.Val.P.GetAll()).
+							Set("触发", funcTrigger).
+							Set("触发词", "")
+						RunDic := dic_dto.NewRunDicEntry().
+							SetGlobal_v(r.Val.G).
+							Set_v(funcv).
+							SetDic_v(r.Dic)
+						resRunDic := dic_api.Api.DicRunLine(RunDic, content)
+						r.Output.Add(resRunDic)
+					} else {
+						// 插入函数框
+						r.Val.P.Set(r.Sys_v.Func.VlaueName, &dto.FuncBox{
+							Trigger: funcTrigger,
+							Content: content,
+						})
+					}
 
 					r.Sys_v.Func.Content = []string{}
 					r.Sys_v.Func.Success = false

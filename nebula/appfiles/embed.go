@@ -3,7 +3,6 @@ package appfiles
 import (
 	"embed"
 	"fmt"
-	"os"
 )
 
 //go:embed static/*
@@ -25,18 +24,8 @@ func GetFile(filename string) ([]byte, error) {
 	return data, nil
 }
 
-// 秘钥（可通过环境变量 NEBULA_KEY 覆盖）
-var Key []byte = initKey()
-
-func initKey() []byte {
-	if envKey := os.Getenv("NEBULA_KEY"); envKey != "" {
-		k := []byte(envKey)
-		if len(k) == 32 {
-			return k
-		}
-	}
-	return []byte("cjxpj2960965389 nebula0052 juice") // 32 字节用于 AES-256
-}
+// 秘钥（固定，32 字节用于 AES-256）
+var Key []byte = []byte("cjxpj2960965389 nebula0052 juice")
 
 // 版本号
-var Version string = "16.17.1"
+var Version string = "16.18.0"

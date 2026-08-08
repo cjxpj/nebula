@@ -150,7 +150,13 @@ var (
 	frpMutex      sync.Mutex
 	frpCancel     context.CancelFunc
 	frpHTTPClient = &http.Client{
-		Timeout: 30 * time.Second,
+		// 超时需小于 BeerWebFrp 服务端 proxyRequestTimeout(90s)，避免服务端先超时导致 502
+		Timeout: 85 * time.Second,
+		// 不自动跟随重定向：3xx 及 Location 必须原样回传隧道服务端，
+		// 由服务端改写 Location（如 "/" -> "/token/"）以适配隧道域名
+		CheckRedirect: func(req *http.Request, via []*http.Request) error {
+			return http.ErrUseLastResponse
+		},
 	}
 	frpDebug bool
 
@@ -169,13 +175,39 @@ var (
 	sftpPass     string // 配置的密码
 
 	// BeerWebFrp WS 代理流映射表
-	frpWsStreams   = make(map[string]*websocket.Conn) // streamID -> 本地 WS 连接
+	frpWsStreams   = make(map[string]*frpWsStream) // streamID -> 本地 WS 流
 	frpWsStreamsMu sync.Mutex
 )
+
+// frpWsStream 一条本地 WebSocket 代理流。
+// gorilla/websocket 不允许多个 goroutine 并发调用 WriteMessage，
+// 因此用 mu 串行化对本地 WS 连接的所有写入。
+type frpWsStream struct {
+	conn *websocket.Conn
+	mu   sync.Mutex
+}
 
 // SetFrpDebug 设置 FRP 调试开关
 func SetFrpDebug(debug bool) {
 	frpDebug = debug
+}
+
+// printFrpLink 打印 BeerWebFrp 隧道访问链接。
+// 与 Ngrok 一致，将 “BeerWebFrp启动成功 <链接>” 交给启动词库 start.n
+// 匹配并格式化输出（默认输出 “BeerWebFrp：<链接>”），支持用户自定义启动词库。
+func printFrpLink(link string) {
+	if link == "" {
+		return
+	}
+	if dic, err := dic_dto.RunDic("private/system/start.n"); err == nil {
+		defer dic.Close()
+		if out := dic_api.Api.DicRun(dic, "BeerWebFrp启动成功 "+link); out != "" {
+			fmt.Printf("%v\n", out)
+			return
+		}
+	}
+	// 词库不可用时直接打印原始链接
+	fmt.Printf("BeerWebFrp启动成功 %s\n", link)
 }
 
 // ConnectFrp 连接到 BeerWebFrp 服务端
@@ -279,6 +311,8 @@ func runFrpConn(ctx context.Context, serverAddr, token string) {
 		if frpDebug {
 			debugLog.Infof("[FRP] 握手成功, link=%s", hs.Link)
 		}
+		// 打印隧道访问链接（经启动词库 start.n 格式化输出，如 “BeerWebFrp：<链接>”）
+		printFrpLink(hs.Link)
 
 		// 注册到连接池，启动异步写入器
 		fc := &frpCon{
@@ -364,9 +398,10 @@ func runFrpConn(ctx context.Context, serverAddr, token string) {
 			}
 		}
 
-		// 清理：取消 writer，停止 Ping
+		// 清理：取消 writer，停止 Ping，断开残留的本地 WS 代理流（避免重连后旧流残留）
 		fc.cancel()
 		close(pingDone)
+		closeAllFrpWsStreams()
 
 		frpMutex.Lock()
 		if frpConn == fc {
@@ -629,8 +664,10 @@ func handleFrpProxyRequest(fc *frpCon, msg *frpWSMessage) {
 	select {
 	case fc.wch <- writeJob{data: startData}:
 	default:
+		// 起始消息都发不出去，回退为单条响应（由 defer 兜底），避免服务端挂起等待
+		sent = false
 		if frpDebug {
-			debugLog.Infof("[FRP] 写队列满，丢弃流式响应 (id=%s)", msg.ID)
+			debugLog.Infof("[FRP] 写队列满，回退单条响应 (id=%s)", msg.ID)
 		}
 		return
 	}
@@ -652,8 +689,15 @@ func handleFrpProxyRequest(fc *frpCon, msg *frpWSMessage) {
 		select {
 		case fc.wch <- writeJob{data: chunkData}:
 		default:
+			// 队列满：补发一个 final 空块结束服务端流式管道，避免服务端挂起直到超时
 			if frpDebug {
-				debugLog.Infof("[FRP] 写队列满，丢弃流式响应块 (id=%s)", msg.ID)
+				debugLog.Infof("[FRP] 写队列满，发送结束块 (id=%s)", msg.ID)
+			}
+			if finalData, err := json.Marshal(frpWSChunk{Type: "http_chunk", ID: msg.ID, Final: true}); err == nil {
+				select {
+				case fc.wch <- writeJob{data: finalData}:
+				default:
+				}
 			}
 			return
 		}
@@ -698,8 +742,9 @@ func handleFrpWsProxy(fc *frpCon, msg *frpWSMessage) {
 	}
 
 	// 注册流
+	st := &frpWsStream{conn: localConn}
 	frpWsStreamsMu.Lock()
-	frpWsStreams[streamID] = localConn
+	frpWsStreams[streamID] = st
 	frpWsStreamsMu.Unlock()
 
 	if frpDebug {
@@ -709,7 +754,9 @@ func handleFrpWsProxy(fc *frpCon, msg *frpWSMessage) {
 	// 本地 → 服务端：读取本地 WS 消息并回传
 	go func() {
 		defer func() {
+			st.mu.Lock()
 			localConn.Close()
+			st.mu.Unlock()
 			frpWsStreamsMu.Lock()
 			delete(frpWsStreams, streamID)
 			frpWsStreamsMu.Unlock()
@@ -734,7 +781,7 @@ func handleFrpWsFrame(msg *frpWSMessage) {
 	streamID := msg.ID
 
 	frpWsStreamsMu.Lock()
-	localConn, ok := frpWsStreams[streamID]
+	st, ok := frpWsStreams[streamID]
 	frpWsStreamsMu.Unlock()
 
 	if !ok {
@@ -744,10 +791,12 @@ func handleFrpWsFrame(msg *frpWSMessage) {
 		return
 	}
 
-	if err := localConn.WriteMessage(websocket.BinaryMessage, msg.Body); err != nil {
-		if frpDebug {
-			debugLog.Infof("[FRP] WS代理: 写入本地WS失败 (id=%s): %v", streamID, err)
-		}
+	// 加锁串行化写入，避免多帧并发写导致 gorilla 连接数据竞争
+	st.mu.Lock()
+	err := st.conn.WriteMessage(websocket.BinaryMessage, msg.Body)
+	st.mu.Unlock()
+	if err != nil && frpDebug {
+		debugLog.Infof("[FRP] WS代理: 写入本地WS失败 (id=%s): %v", streamID, err)
 	}
 }
 
@@ -757,17 +806,19 @@ func handleFrpWsClose(msg *frpWSMessage) {
 	streamID := msg.ID
 
 	frpWsStreamsMu.Lock()
-	localConn, ok := frpWsStreams[streamID]
+	st, ok := frpWsStreams[streamID]
 	if ok {
 		delete(frpWsStreams, streamID)
 	}
 	frpWsStreamsMu.Unlock()
 
-	if ok && localConn != nil {
+	if ok && st != nil {
 		if frpDebug {
 			debugLog.Infof("[FRP] WS代理: 关闭本地WS流 (id=%s)", streamID)
 		}
-		localConn.Close()
+		st.mu.Lock()
+		st.conn.Close()
+		st.mu.Unlock()
 	}
 }
 
@@ -782,9 +833,13 @@ func sendFrpWsFrame(fc *frpCon, streamID string, frame []byte) {
 	done := make(chan error, 1)
 	select {
 	case fc.wch <- writeJob{data: data, done: done}:
-		err := <-done
-		if err != nil && frpDebug {
-			debugLog.Infof("[FRP] WS代理: 发送数据帧失败 (id=%s): %v", streamID, err)
+		select {
+		case err := <-done:
+			if err != nil && frpDebug {
+				debugLog.Infof("[FRP] WS代理: 发送数据帧失败 (id=%s): %v", streamID, err)
+			}
+		case <-time.After(10 * time.Second):
+			// 连接已断开且写队列无人消费，放弃等待，避免 goroutine 泄漏
 		}
 	default:
 		if frpDebug {
@@ -805,7 +860,11 @@ func sendFrpWsStatus(fc *frpCon, streamID string, statusCode int) {
 	done := make(chan error, 1)
 	select {
 	case fc.wch <- writeJob{data: data, done: done}:
-		<-done
+		select {
+		case <-done:
+		case <-time.After(10 * time.Second):
+			// 连接已断开且写队列无人消费，放弃等待，避免 goroutine 泄漏
+		}
 	default:
 	}
 }
@@ -817,8 +876,10 @@ func closeAllFrpWsStreams() {
 	if frpDebug && len(frpWsStreams) > 0 {
 		debugLog.Infof("[FRP] WS代理: 清理%d个本地WS流", len(frpWsStreams))
 	}
-	for id, conn := range frpWsStreams {
-		conn.Close()
+	for id, st := range frpWsStreams {
+		st.mu.Lock()
+		st.conn.Close()
+		st.mu.Unlock()
 		delete(frpWsStreams, id)
 	}
 }
@@ -1381,19 +1442,28 @@ func loadDicDebugDefaults() map[string]any {
 	if n := sec.Key("超时").MustInt(0); n > 0 {
 		def["timeout"] = n
 	}
+	if n := sec.Key("历史记录数量").MustInt(0); n > 0 {
+		def["historyMax"] = n
+	}
 	if v := sec.Key("全局变量").String(); v != "" {
 		// 值可含任意换行，因此整体按 JSON 数组存储；解析失败时兼容旧格式（每行一个 key=value）
 		var g []string
-		if err := json.Unmarshal([]byte(v), &g); err != nil || g == nil {
+		if err := json.Unmarshal([]byte(v), &g); err == nil {
+			// JSON 数组解析成功；注意 "null" 字面量会解析成 nil 切片，视为空配置
+			if g != nil {
+				def["g"] = g
+			}
+		} else {
+			// 旧格式：每行一个 key=value
 			g = nil
 			for _, line := range strings.Split(v, "\n") {
 				if s := strings.TrimSpace(line); s != "" {
 					g = append(g, s)
 				}
 			}
-		}
-		if g != nil {
-			def["g"] = g
+			if g != nil {
+				def["g"] = g
+			}
 		}
 	}
 	return def
@@ -2803,6 +2873,9 @@ func OpUI(w http.ResponseWriter, r *http.Request, getpath string) {
 			if v, ok := cfg["timeout"].(float64); ok {
 				sec.Key("超时").SetValue(strconv.Itoa(int(v)))
 			}
+			if v, ok := cfg["historyMax"].(float64); ok && v > 0 {
+				sec.Key("历史记录数量").SetValue(strconv.Itoa(int(v)))
+			}
 			if v, ok := cfg["saveRun"].(bool); ok {
 				sec.Key("保存运行").SetValue(strconv.FormatBool(v))
 			}
@@ -2855,6 +2928,9 @@ func OpUI(w http.ResponseWriter, r *http.Request, getpath string) {
 				return
 			}
 			defer dic.Close()
+
+			// 注入词库路径，便于错误日志显示来源（顶层词库默认没有 _词库路径_）
+			dic.Val.P.Set("_词库路径_", j.Path)
 
 			// 注入全局变量
 			for k, v := range j.G {
