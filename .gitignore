@@ -6,3 +6,4 @@ __debug_bin.exe*
 /nebulaApp/win/package.json
 /nebulaApp/win/package-lock.json
 win.exe
+android/app/src/main/jniLibs/arm64-v8a/libnebula_arm64.so

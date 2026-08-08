@@ -1,4 +1,4 @@
-{
+﻿{
     "version": "2.0.0",
     "tasks": [
         {
@@ -61,7 +61,7 @@
         },
         {
             "type": "go",
-            "label": "Android arm64",
+            "label": "Android arm64 (.so)",
             "command": "build",
             "args": [
                 "-tags",
@@ -78,40 +78,72 @@
                 "kind": "build",
                 "isDefault": true
             },
-            "detail": "生成 arm64 位 Android 可执行文件",
+            "detail": "编译 arm64 Android .so 文件",
             "options": {
                 "env": {
                     "GOOS": "android",
                     "GOARCH": "arm64",
                     "CGO_ENABLED": "1",
-                    "CC": "D:\\android-ndk-r29\\android-ndk-r29\\toolchains\\llvm\\prebuilt\\windows-x86_64\\bin\\aarch64-linux-android29-clang.cmd"
+                    "CC": "E:\\android-ndk-r29\\android-ndk-r29\\toolchains\\llvm\\prebuilt\\windows-x86_64\\bin\\aarch64-linux-android29-clang.cmd"
                 }
             }
         },
         {
             "type": "shell",
-            "label": "打包 APK",
-            "command": "gomobile",
+            "label": "复制 .so 到 jniLibs",
+            "command": "xcopy",
             "args": [
-                "build",
-                "-target=android/arm64",
-                "-o",
-                "dist/nebula.apk",
-                "-androidapi=30",
-                "github.com/cjxpj/juiceAndroid"
+                "/Y",
+                "dist\\libnebula_arm64.so",
+                "android\\app\\src\\main\\jniLibs\\arm64-v8a\\"
             ],
             "problemMatcher": [],
-            "detail": "打包 APK",
-            "group": "build",
+            "detail": "拷贝 .so 到 jniLibs"
+        },
+        {
+            "type": "shell",
+            "label": "Gradle 打包 APK",
+            "command": ".\\gradlew.bat",
+            "args": [
+                "assembleRelease"
+            ],
+            "problemMatcher": [],
+            "detail": "Gradle 编译 Android APK",
             "options": {
-                "env": {
-                    "ANDROID_NDK_HOME": "D:\\android-ndk-r29\\android-ndk-r29"
-                }
+                "cwd": "${workspaceFolder}\\android"
             }
         },
         {
             "type": "shell",
-            "label": "upx",
+            "label": "复制 APK 到 dist",
+            "command": "xcopy",
+            "args": [
+                "/Y",
+                "android\\app\\build\\outputs\\apk\\release\\app-release.apk",
+                "dist\\nebula.apk*"
+            ],
+            "problemMatcher": [],
+            "detail": "复制 APK 到 dist 并重命名为 nebula.apk"
+        },
+        {
+            "label": "一键打包 APK",
+            "dependsOrder": "sequence",
+            "dependsOn": [
+                "Android arm64 (.so)",
+                "复制 .so 到 jniLibs",
+                "Gradle 打包 APK",
+                "复制 APK 到 dist"
+            ],
+            "problemMatcher": [],
+            "group": {
+                "kind": "build",
+                "isDefault": true
+            },
+            "detail": "一键打包：编译 .so → 拷贝到 jniLibs → Gradle → 输出到 dist/nebula.apk"
+        },
+        {
+            "type": "shell",
+            "label": "upx 压缩",
             "command": "upx",
             "args": [
                 "--best",
@@ -120,15 +152,15 @@
                 "dist/nebula"
             ],
             "problemMatcher": [],
-            "detail": "UPX"
+            "detail": "UPX 压缩"
         },
         {
-            "label": "全部编译",
+            "label": "全部编译 (桌面端)",
             "dependsOrder": "sequence",
             "dependsOn": [
                 "buildWindows_amd64",
                 "buildLinux_amd64",
-                "upx"
+                "upx 压缩"
             ],
             "problemMatcher": []
         }
