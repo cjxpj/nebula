@@ -24,6 +24,24 @@ type CmdConfig struct {
 	Decoder string
 }
 
+// MarshalJSON 自定义 JSON 序列化，避免 exec.Cmd 中不可序列化的字段
+// （如 Cancel func() error、Stdin/Stdout/Stderr 接口）导致 AnyToString 报错
+func (c *CmdConfig) MarshalJSON() ([]byte, error) {
+	cmdInfo := map[string]any{}
+	if c.Cmd != nil {
+		cmdInfo["path"] = c.Cmd.Path
+		cmdInfo["args"] = c.Cmd.Args
+		cmdInfo["dir"] = c.Cmd.Dir
+		if c.Cmd.Process != nil {
+			cmdInfo["pid"] = c.Cmd.Process.Pid
+		}
+	}
+	return utils.Json.Marshal(map[string]any{
+		"cmd":     cmdInfo,
+		"decoder": c.Decoder,
+	})
+}
+
 // 终端输入
 func runCommandInput(d *dto.DicInputs) (any, error) {
 	var inputText string
