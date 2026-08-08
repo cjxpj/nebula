@@ -199,7 +199,7 @@ func printFrpLink(link string) {
 	if link == "" {
 		return
 	}
-	if dic, err := dic_dto.RunDic("private/system/start.n"); err == nil {
+	if dic, err := dic_dto.RunDic("private/system/start.n"); err == nil && dic != nil {
 		defer dic.Close()
 		if out := dic_api.Api.DicRun(dic, "BeerWebFrp启动成功 "+link); out != "" {
 			fmt.Printf("%v\n", out)
@@ -754,6 +754,8 @@ func handleFrpWsProxy(fc *frpCon, msg *frpWSMessage) {
 	// 本地 → 服务端：读取本地 WS 消息并回传
 	go func() {
 		defer func() {
+			// 先关闭连接（短暂加锁），再清理 map，避免 st.mu → frpWsStreamsMu
+			// 与 handleFrpWsClose 的 frpWsStreamsMu → st.mu 形成死锁。
 			st.mu.Lock()
 			localConn.Close()
 			st.mu.Unlock()

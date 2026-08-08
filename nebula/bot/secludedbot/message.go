@@ -79,14 +79,24 @@ func Start(wsUrl, token string) {
 			}
 			dbgLog("[secluded] 已成功连接到 Secluded，等待消息...")
 
+			// readLoop 放到 goroutine 中运行，这样 sendAndWait 才能收到响应
+			readDone := make(chan struct{})
+			go func() {
+				defer close(readDone)
+				readLoop(func(raw []byte, header *rawPacketHeader) {
+					handleMessage(raw, header)
+				})
+			}()
+
+			// 连接成功后自动获取群列表（需在 readLoop 运行后调用才能收到响应）
+			fetchGroupListOnStartup()
+
 			// 启动触发每个词库只会触发一次并且伴随客户端，不会因为断开重新连接重新触发
 			startupOnce.Do(func() {
 				triggerStartupCallback()
 			})
 
-			readLoop(func(raw []byte, header *rawPacketHeader) {
-				handleMessage(raw, header)
-			})
+			<-readDone
 			debugLog.Infof("[secluded] 连接已断开，5秒后重连...")
 			triggerDisconnectCallback()
 			time.Sleep(5 * time.Second)

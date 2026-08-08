@@ -159,6 +159,13 @@ var Funcs = map[string]dto.DicFunc{
 			return string(rsp.Data), nil
 		},
 	},
+	"启动获取群列表": {
+		L: "0",
+		Fn: func(d *dto.DicInputs) (any, error) {
+			// 返回启动时自动获取并缓存的群列表
+			return getStartupGroupList(), nil
+		},
+	},
 	"SEC发包": {
 		L: "1|2",
 		Fn: func(d *dto.DicInputs) (any, error) {

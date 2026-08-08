@@ -526,7 +526,7 @@ func Entry(r *dic_dto.DicEntry, txt []string, funcV *dic_dto.DicFunc) error {
 							if shouldReturn {
 								return nil
 							}
-							if setNum := r.Val.P.Get(valName).(string); setNum != strNum {
+							if setNum, ok := r.Val.P.Get(valName).(string); ok && setNum != strNum {
 								Xi, err := strconv.Atoi(setNum)
 								if err != nil {
 									break
@@ -547,7 +547,7 @@ func Entry(r *dic_dto.DicEntry, txt []string, funcV *dic_dto.DicFunc) error {
 							if shouldReturn {
 								return nil
 							}
-							if setNum := r.Val.P.Get(valName).(string); setNum != strNum {
+							if setNum, ok := r.Val.P.Get(valName).(string); ok && setNum != strNum {
 								Xi, err := strconv.Atoi(setNum)
 								if err != nil {
 									break
@@ -739,7 +739,7 @@ func Entry(r *dic_dto.DicEntry, txt []string, funcV *dic_dto.DicFunc) error {
 				if text == "else" || text == "否则" {
 					break
 				}
-				if text == "返回" && txt[index+1] == "如果尾" {
+				if text == "返回" && index+1 < txtLen && txt[index+1] == "如果尾" {
 					break
 				}
 			}

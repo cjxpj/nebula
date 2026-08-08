@@ -213,6 +213,48 @@ func Stop() {
 	connected = false
 }
 
+// 启动时自动获取的群列表缓存
+var (
+	startupGroupListMu sync.Mutex
+	startupGroupList   string
+)
+
+// fetchGroupListOnStartup 连接成功后自动获取群列表并缓存
+// 注意：必须在 readLoop 运行后调用，否则收不到响应
+func fetchGroupListOnStartup() {
+	account := getCurrentAccount()
+	if account == "" {
+		return
+	}
+	seq := nextSeq()
+	packet := map[string]any{
+		"seq": seq,
+		"cmd": "SendOicqMsg",
+		"rsp": true,
+		"data": []any{map[string]string{
+			"Account":      account,
+			"GroupListGet": "GroupListGet",
+			"GroupId":      "0",
+		}},
+	}
+	rsp, err := sendAndWait(packet, seq)
+	if err != nil {
+		debugLog.Infof("[secluded] 启动获取群列表失败: %v", err)
+		return
+	}
+	startupGroupListMu.Lock()
+	startupGroupList = string(rsp.Data)
+	startupGroupListMu.Unlock()
+	dbgLog("[secluded] 启动获取群列表成功: %s", startupGroupList)
+}
+
+// getStartupGroupList 返回启动时缓存的群列表，未获取到返回空字符串
+func getStartupGroupList() string {
+	startupGroupListMu.Lock()
+	defer startupGroupListMu.Unlock()
+	return startupGroupList
+}
+
 // triggerStartupCallback 连接成功后触发词库回调
 func triggerStartupCallback() {
 	if dto.ServerConfig.SecludedBot == nil || dto.ServerConfig.SecludedBot.FilePath == "" {

@@ -250,7 +250,11 @@ func (v *Val) Set(key string, val any) *Val {
 func (v *Val) Add(key string, val any) {
 	value, _ := v.obj.Load(key)
 	if existingVal, ok := value.(string); ok {
-		v.obj.Store(key, existingVal+val.(string))
+		if newVal, ok := val.(string); ok {
+			v.obj.Store(key, existingVal+newVal)
+		} else {
+			v.obj.Store(key, val)
+		}
 	} else {
 		v.obj.Store(key, val)
 	}
@@ -260,7 +264,11 @@ func (v *Val) Add(key string, val any) {
 func (v *Val) HeaderAdd(key string, val any) {
 	value, _ := v.obj.Load(key)
 	if existingVal, ok := value.(string); ok {
-		v.obj.Store(key, val.(string)+existingVal)
+		if newVal, ok := val.(string); ok {
+			v.obj.Store(key, newVal+existingVal)
+		} else {
+			v.obj.Store(key, val)
+		}
 	} else {
 		v.obj.Store(key, val)
 	}
