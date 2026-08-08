@@ -12,32 +12,44 @@ import android.webkit.WebSettings;
 import android.webkit.WebView;
 import android.webkit.WebViewClient;
 
-import java.io.BufferedReader;
-import java.io.File;
-import java.io.FileInputStream;
-import java.io.InputStreamReader;
-
 /**
- * 主 Activity —— 加载 .so 启动 Go HTTP 服务，然后用 WebView 显示 opui 管理面板
+ * 主 Activity —— WebView 显示 Go HTTP 服务的管理面板
  *
  * 流程：
- *   1. 后台线程加载 .so 并调用 RunNebula() 启动 Go HTTP 服务
- *   2. 轮询等待 HTTP 服务就绪
- *   3. 读取 system.ini 获取 opui 访问路径
- *   4. WebView 加载 opui 管理面板
+ *   1. setDataDir() 传递应用内部存储路径给 Go 侧
+ *   2. RunNebula() 启动 Go HTTP 服务（loadConfig 写入配置文件）
+ *   3. 轮询等待 HTTP 服务就绪
+ *   4. getOpuiUrl() 从 Go 侧获取面板路径
+ *   5. WebView 加载
  */
 public class MainActivity extends Activity {
 
     private static final String TAG = "MainActivity";
     private static final String HTTP_HOST = "http://127.0.0.1:8080";
 
+    // 类加载时自动加载 .so，确保 JNI 方法可用
+    static {
+        try {
+            System.loadLibrary("nebula_arm64");
+            Log.i(TAG, "libnebula_arm64.so 加载成功");
+        } catch (UnsatisfiedLinkError e) {
+            Log.e(TAG, "加载 .so 失败: " + e.getMessage());
+        }
+    }
+
     private WebView mWebView;
     private final Handler mHandler = new Handler(Looper.getMainLooper());
 
     // ---------- JNI 原生方法 ----------
-    // 对应 Go 导出: Java_com_cjxpj_nebula_MainActivity_RunNebula
-    // 内部调用 dic.Start()，启动 HTTP 服务并阻塞在事件循环
+    // 传递应用内部存储目录给 Go 侧（解决 Android 11+ 存储权限问题）
+    private native void setDataDir(String dir);
+
+    // 对应 Go: Java_com_cjxpj_nebula_MainActivity_RunNebula
     private native void RunNebula();
+
+    // 对应 Go: Java_com_cjxpj_nebula_MainActivity_getOpuiUrl
+    // 返回 opui 访问路径，如 "/nebula"
+    private native String getOpuiUrl();
 
     @SuppressLint("SetJavaScriptEnabled")
     @Override
@@ -71,7 +83,12 @@ public class MainActivity extends Activity {
      * 后台线程：启动服务 → 等待就绪 → 加载 opui
      */
     private void startAndLoad() {
-        // 1) 启动 Go HTTP 服务（阻塞式，RunNebula 内部 go dic.Start() + 事件循环）
+        // 0) 传递内部存储路径给 Go（避免 Android 11+ 存储权限问题）
+        String dataDir = getFilesDir().getParentFile().getAbsolutePath();
+        Log.i(TAG, "设置数据目录: " + dataDir);
+        setDataDir(dataDir);
+
+        // 1) 启动 Go HTTP 服务
         try {
             Log.i(TAG, "正在启动 Nebula 服务...");
             RunNebula();
@@ -83,13 +100,23 @@ public class MainActivity extends Activity {
 
         // 2) 等待 HTTP 服务就绪
         if (!waitForHttpReady(30)) {
-            showError("HTTP 服务启动超时，请检查 .so 是否正确部署");
+            showError("HTTP 服务启动超时");
             return;
         }
 
-        // 3) 读取 opui 路径
-        String opuiPath = readOpuiPath();
-        String url = HTTP_HOST + opuiPath + "/index.html";
+        // 3) 从 so 直接获取 opui 路径
+        String opuiUrl;
+        try {
+            opuiUrl = getOpuiUrl();
+            if (opuiUrl == null || opuiUrl.isEmpty()) {
+                opuiUrl = "/nebula"; // 回退默认值
+            }
+        } catch (Exception e) {
+            Log.e(TAG, "getOpuiUrl 异常", e);
+            opuiUrl = "/nebula";
+        }
+
+        String url = HTTP_HOST + opuiUrl;
         Log.i(TAG, "加载 opui: " + url);
 
         // 4) 加载到 WebView
@@ -115,55 +142,10 @@ public class MainActivity extends Activity {
                     return true;
                 }
             } catch (Exception ignored) {
-                // 服务尚未就绪
             }
             try { Thread.sleep(1000); } catch (InterruptedException ignored) {}
         }
         return false;
-    }
-
-    /**
-     * 从 system.ini 解析 opui 访问路径
-     *
-     * INI 格式：
-     *   [管理面板]
-     *   启用 = true
-     *   访问路径 = nebula
-     */
-    private String readOpuiPath() {
-        File iniFile = new File(getFilesDir().getParentFile(), "private/system/system.ini");
-        if (!iniFile.exists()) {
-            Log.w(TAG, "system.ini 不存在于 " + iniFile.getAbsolutePath());
-            return "/nebula";
-        }
-
-        try (BufferedReader reader = new BufferedReader(
-                new InputStreamReader(new FileInputStream(iniFile)))) {
-            boolean inSection = false;
-            String line;
-            while ((line = reader.readLine()) != null) {
-                line = line.trim();
-                if (line.isEmpty() || line.startsWith("#") || line.startsWith(";")) continue;
-
-                if (line.startsWith("[")) {
-                    inSection = line.equals("[管理面板]");
-                    continue;
-                }
-
-                if (inSection && line.contains("=")) {
-                    int idx = line.indexOf('=');
-                    String key = line.substring(0, idx).trim();
-                    String value = line.substring(idx + 1).trim();
-                    if ("访问路径".equals(key)) {
-                        Log.d(TAG, "opui 路径: /" + value);
-                        return "/" + value;
-                    }
-                }
-            }
-        } catch (Exception e) {
-            Log.e(TAG, "读取 system.ini 失败", e);
-        }
-        return "/nebula";
     }
 
     private void showError(String msg) {

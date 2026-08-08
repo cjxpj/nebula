@@ -105,12 +105,16 @@
             "label": "Gradle 打包 APK",
             "command": ".\\gradlew.bat",
             "args": [
-                "assembleRelease"
+                "assembleDebug"
             ],
             "problemMatcher": [],
-            "detail": "Gradle 编译 Android APK",
+            "detail": "Gradle 编译 Android APK (debug 签名)",
             "options": {
-                "cwd": "${workspaceFolder}\\android"
+                "cwd": "${workspaceFolder}\\android",
+                "env": {
+                    "JAVA_HOME": "C:\\Program Files\\Java\\jdk-17",
+                    "ANDROID_SDK_ROOT": "E:\\android-sdk"
+                }
             }
         },
         {
@@ -119,7 +123,7 @@
             "command": "xcopy",
             "args": [
                 "/Y",
-                "android\\app\\build\\outputs\\apk\\release\\app-release.apk",
+                "android\\app\\build\\outputs\\apk\\debug\\app-debug.apk",
                 "dist\\nebula.apk*"
             ],
             "problemMatcher": [],
@@ -139,7 +143,7 @@
                 "kind": "build",
                 "isDefault": true
             },
-            "detail": "一键打包：编译 .so → 拷贝到 jniLibs → Gradle → 输出到 dist/nebula.apk"
+            "detail": "一键打包：编译 .so → 拷贝 jniLibs → Gradle → dist/nebula.apk"
         },
         {
             "type": "shell",
