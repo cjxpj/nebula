@@ -1,7 +1,6 @@
 go 1.26
 
 use (
-	./nebulaApk
 	./nebula
 	./nebulaApp
 )

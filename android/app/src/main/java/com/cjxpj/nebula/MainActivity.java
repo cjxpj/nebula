@@ -3,11 +3,16 @@ package com.cjxpj.nebula;
 import android.Manifest;
 import android.annotation.SuppressLint;
 import android.app.Activity;
+import android.content.BroadcastReceiver;
+import android.content.Context;
 import android.content.Intent;
+import android.content.IntentFilter;
 import android.content.pm.PackageManager;
 import android.net.Uri;
+import android.os.BatteryManager;
 import android.os.Build;
 import android.os.Bundle;
+import android.os.Environment;
 import android.os.Handler;
 import android.os.Looper;
 import android.os.PowerManager;
@@ -19,12 +24,18 @@ import android.webkit.WebSettings;
 import android.webkit.WebView;
 import android.webkit.WebViewClient;
 
+import org.json.JSONObject;
+
+import java.lang.reflect.Method;
+
+import dalvik.system.DexClassLoader;
+
 /**
  * 主 Activity —— WebView 显示 Go HTTP 服务的管理面板
  *
  * 流程：
- *   1. 请求必需权限（通知 + 电池优化）
- *   2. setDataDir() → RunNebula() → 等待 HTTP
+ *   1. 请求必需权限（管理所有文件 + 通知 + 电池优化）
+ *   2. RunNebula() → 等待 HTTP
  *   3. startKeepAliveService() → getOpuiUrl() → WebView 加载
  */
 public class MainActivity extends Activity {
@@ -46,10 +57,9 @@ public class MainActivity extends Activity {
     private WebView mWebView;
     private final Handler mHandler = new Handler(Looper.getMainLooper());
     private volatile boolean mServiceStarted = false;  // 防重复启动
+    private boolean mStoragePermissionRequested = false; // 防止设置页无限循环
 
     // ---------- JNI 原生方法 ----------
-    // 传递应用内部存储目录给 Go 侧（解决 Android 11+ 存储权限问题）
-    private native void setDataDir(String dir);
 
     // 对应 Go: Java_com_cjxpj_nebula_MainActivity_RunNebula
     private native void RunNebula();
@@ -57,6 +67,11 @@ public class MainActivity extends Activity {
     // 对应 Go: Java_com_cjxpj_nebula_MainActivity_getOpuiUrl
     // 返回 opui 访问路径，如 "/nebula"
     private native String getOpuiUrl();
+
+    // 手机端专属：设备信息、电量、注册
+    private native void setDeviceInfo(String json);
+    private native void updateBatteryStatus(int level, boolean charging);
+    private native void registerDevice();
 
     @SuppressLint("SetJavaScriptEnabled")
     @Override
@@ -90,17 +105,31 @@ public class MainActivity extends Activity {
                 "text/html", "UTF-8");
 
         // 先请求必需权限，再后台启动
-        requestRequiredPermissions();
+        checkPermissionsAndStart();
     }
 
     // ---------- 权限请求 ----------
 
     /**
-     * Android 13+ 通知权限 + 电池优化白名单
+     * 检查并请求所需权限：管理所有文件 + 通知 + 电池优化
      */
-    private void requestRequiredPermissions() {
-        // 防重复启动
+    private void checkPermissionsAndStart() {
         if (mServiceStarted) return;
+
+        // Android 11+：访问 Documents/NebulaData 需要管理所有文件权限
+        if (Build.VERSION.SDK_INT >= 30) {
+            if (!Environment.isExternalStorageManager()) {
+                if (!mStoragePermissionRequested) {
+                    mStoragePermissionRequested = true;
+                    Intent intent = new Intent(Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION);
+                    intent.setData(Uri.parse("package:" + getPackageName()));
+                    startActivity(intent);
+                    return;
+                }
+                showError("需要「所有文件访问」权限才能运行，请在设置中开启后重新打开应用");
+                return;
+            }
+        }
 
         // Android 13+：前台服务必须显示通知，需运行时权限
         if (Build.VERSION.SDK_INT >= 33) {
@@ -124,6 +153,7 @@ public class MainActivity extends Activity {
                                            int[] grantResults) {
         super.onRequestPermissionsResult(requestCode, permissions, grantResults);
         if (requestCode == REQ_NOTIFICATION && !mServiceStarted) {
+            // 无论通知权限是否被授予，都继续启动（前台服务会自动适配）
             mServiceStarted = true;
             new Thread(this::startAndLoad, "nebula-boot").start();
         }
@@ -148,11 +178,6 @@ public class MainActivity extends Activity {
      * 后台线程：启动服务 → 等待就绪 → 加载 opui
      */
     private void startAndLoad() {
-        // 0) 传递内部存储路径给 Go（避免 Android 11+ 存储权限问题）
-        String dataDir = getFilesDir().getParentFile().getAbsolutePath();
-        Log.i(TAG, "设置数据目录: " + dataDir);
-        setDataDir(dataDir);
-
         // 1) 启动 Go HTTP 服务
         try {
             Log.i(TAG, "正在启动 Nebula 服务...");
@@ -169,9 +194,13 @@ public class MainActivity extends Activity {
             return;
         }
 
-        // 3) 启动前台保活服务 + 请求电池优化
+        // 3) 启动前台保活服务 + 请求电池优化 + 采集设备信息并注册
         startKeepAliveService();
-        mHandler.post(this::requestBatteryOptimizationExemption);
+        mHandler.post(() -> {
+            requestBatteryOptimizationExemption();
+            collectAndSendDeviceInfo();
+            registerDevice();
+        });
 
         // 4) 从 so 直接获取 opui 路径
         String opuiUrl;
@@ -228,6 +257,104 @@ public class MainActivity extends Activity {
         mHandler.post(() -> mWebView.loadData(html, "text/html", "UTF-8"));
     }
 
+    // ---------- 手机端专属功能 ----------
+
+    /**
+     * 采集设备信息并传递给 Go 层
+     */
+    private void collectAndSendDeviceInfo() {
+        try {
+            JSONObject json = new JSONObject();
+            json.put("brand", Build.BRAND);
+            json.put("model", Build.MODEL);
+            json.put("manufacturer", Build.MANUFACTURER);
+            json.put("device", Build.DEVICE);
+            json.put("product", Build.PRODUCT);
+            json.put("sdk", Build.VERSION.SDK_INT);
+            json.put("release", Build.VERSION.RELEASE);
+            json.put("fingerprint", Build.FINGERPRINT);
+            json.put("hardware", Build.HARDWARE);
+            String info = json.toString();
+            Log.i(TAG, "设备信息: " + info);
+            setDeviceInfo(info);
+        } catch (Exception e) {
+            Log.e(TAG, "采集设备信息失败", e);
+        }
+    }
+
+    /**
+     * 电量变化广播接收器
+     */
+    private final BroadcastReceiver mBatteryReceiver = new BroadcastReceiver() {
+        @Override
+        public void onReceive(Context context, Intent intent) {
+            int level = intent.getIntExtra(BatteryManager.EXTRA_LEVEL, -1);
+            int scale = intent.getIntExtra(BatteryManager.EXTRA_SCALE, -1);
+            int pct = scale > 0 ? (int) (level * 100 / (float) scale) : -1;
+            int status = intent.getIntExtra(BatteryManager.EXTRA_STATUS, -1);
+            boolean charging = status == BatteryManager.BATTERY_STATUS_CHARGING
+                            || status == BatteryManager.BATTERY_STATUS_FULL;
+            updateBatteryStatus(pct, charging);
+        }
+    };
+
+    /**
+     * 动态加载并执行 DEX 文件
+     *
+     * @param dexPath   DEX 文件路径
+     * @param className 要加载的类全名
+     * @param methodName 要调用的方法名
+     * @param args      方法参数（可选）
+     */
+    private Object executeDex(String dexPath, String className, String methodName, Object... args) {
+        Log.i(TAG, "执行 DEX: " + dexPath + " -> " + className + "." + methodName);
+        try {
+            DexClassLoader loader = new DexClassLoader(
+                    dexPath,
+                    getCacheDir().getAbsolutePath(),
+                    null,
+                    getClassLoader()
+            );
+            Class<?> clazz = loader.loadClass(className);
+            Object instance = clazz.newInstance();
+            Class<?>[] paramTypes = new Class<?>[args.length];
+            for (int i = 0; i < args.length; i++) {
+                paramTypes[i] = args[i] != null ? args[i].getClass() : Object.class;
+            }
+            Method method = clazz.getMethod(methodName, paramTypes);
+            return method.invoke(instance, args);
+        } catch (Exception e) {
+            Log.e(TAG, "DEX 执行失败", e);
+            return null;
+        }
+    }
+
+    /**
+     * JNI 回调桥接：Go 侧 $执行DEX$ 词库函数通过此方法调用 Java 层。
+     * 参数 argsJson 为 JSON 数组字符串，如 "[\"arg1\", 123]"。
+     */
+    @SuppressWarnings("unused")
+    private String executeDexBridge(String dexPath, String className,
+                                    String methodName, String argsJson) {
+        // 解析参数
+        Object[] args = new Object[0];
+        if (argsJson != null && !argsJson.isEmpty()) {
+            try {
+                org.json.JSONArray arr = new org.json.JSONArray(argsJson);
+                args = new Object[arr.length()];
+                for (int i = 0; i < arr.length(); i++) {
+                    args[i] = arr.get(i);
+                }
+            } catch (Exception e) {
+                Log.e(TAG, "DEX 参数解析失败", e);
+                return "参数解析失败: " + e.getMessage();
+            }
+        }
+
+        Object result = executeDex(dexPath, className, methodName, args);
+        return result != null ? result.toString() : "null";
+    }
+
     /**
      * 启动前台保活 Service
      */
@@ -247,11 +374,18 @@ public class MainActivity extends Activity {
     protected void onResume() {
         super.onResume();
         if (mWebView != null) mWebView.onResume();
+        // 从设置页返回时重新检查权限（MANAGE_EXTERNAL_STORAGE 等）
+        if (!mServiceStarted) checkPermissionsAndStart();
+        // 注册电量监听
+        IntentFilter filter = new IntentFilter(Intent.ACTION_BATTERY_CHANGED);
+        registerReceiver(mBatteryReceiver, filter);
     }
 
     @Override
     protected void onPause() {
         if (mWebView != null) mWebView.onPause();
+        // 取消电量监听
+        try { unregisterReceiver(mBatteryReceiver); } catch (Exception ignored) {}
         super.onPause();
     }
 

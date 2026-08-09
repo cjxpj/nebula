@@ -16,6 +16,9 @@
     <!-- WakeLock 防止 CPU 休眠 -->
     <uses-permission android:name="android.permission.WAKE_LOCK" />
 
+    <!-- 管理所有文件权限（Android 11+ 访问 Documents/NebulaData） -->
+    <uses-permission android:name="android.permission.MANAGE_EXTERNAL_STORAGE" />
+
     <!-- 电池优化白名单 -->
     <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />
 

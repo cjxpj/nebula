@@ -30,13 +30,6 @@ var httpClient = &http.Client{Timeout: 30 * time.Second}
 
 const GPATH = "NebulaData"
 
-var appDataDir string
-
-// SetAppDataDir 设置应用数据目录（Android JNI 调用）
-func SetAppDataDir(dir string) {
-	appDataDir = dir
-}
-
 // Error 将文本写入文件
 func Error(text string) {
 	PrintLog(false, "系统", text)
@@ -74,18 +67,9 @@ func LogStop(text string) {
 
 // GetAppDir 获取应用目录
 func GetAppDir() string {
-	if runtime.GOOS == "android" {
-		if appDataDir != "" {
-			return filepath.Join(appDataDir, GPATH)
-		}
-		return "/data/data/com.cjxpj.nebula/files/" + GPATH
-	}
 	switch runtime.GOOS {
 	case "android":
 		return "/storage/emulated/0/Documents/" + GPATH
-		// 鸿蒙
-	case "harmony":
-		return "downloads://" + GPATH
 	}
 	return GPATH
 }
