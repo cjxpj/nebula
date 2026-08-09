@@ -11,6 +11,12 @@ import (
 // 仅在 Android .so 编译时非 nil。
 var DexCallback func(dexPath, className, methodName, argsJson string) (string, error)
 
+// ShizukuCheckCallback 由 main_so.go 的 init() 注入，查询 Shizuku 服务状态。
+var ShizukuCheckCallback func() (string, error)
+
+// ShizukuExecCallback 由 main_so.go 的 init() 注入，使用 Shizuku 提权执行命令。
+var ShizukuExecCallback func(command string) (string, error)
+
 // ---------- 设备信息 ----------
 
 func DicDeviceInfo(d *dto.DicInputs) (any, error) {
@@ -54,4 +60,24 @@ func DicExecuteDex(d *dto.DicInputs) (any, error) {
 		d.Inputs.String(3),
 		argsJson,
 	)
+}
+
+// ---------- Shizuku ----------
+
+// DicShizukuCheck 词库函数：$Shizuku检查$
+// 返回 Shizuku 服务状态 JSON：{"available":bool,"granted":bool,"version":int}
+func DicShizukuCheck(d *dto.DicInputs) (any, error) {
+	if ShizukuCheckCallback == nil {
+		return nil, fmt.Errorf("Shizuku检查 仅支持 Android 端")
+	}
+	return ShizukuCheckCallback()
+}
+
+// DicShizukuExec 词库函数：$Shizuku执行 命令$
+// 使用 Shizuku 提权执行 Shell 命令（以 ADB shell 权限运行），返回 stdout+stderr
+func DicShizukuExec(d *dto.DicInputs) (any, error) {
+	if ShizukuExecCallback == nil {
+		return nil, fmt.Errorf("Shizuku执行 仅支持 Android 端")
+	}
+	return ShizukuExecCallback(d.Inputs.String(1))
 }

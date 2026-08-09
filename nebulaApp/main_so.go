@@ -103,6 +103,78 @@ package main
 //    if (attached) (*gJVM)->DetachCurrentThread(gJVM);
 //    return 0;
 //}
+//
+//// 从任意线程回调 Java 的 checkShizukuBridge，返回 Shizuku 状态 JSON（malloc 的字符串）
+//static char* callCheckShizuku() {
+//    if (gJVM == NULL) return NULL;
+//
+//    JNIEnv* env;
+//    jint ret = (*gJVM)->GetEnv(gJVM, (void**)&env, JNI_VERSION_1_6);
+//    int attached = 0;
+//    if (ret == JNI_EDETACHED) {
+//        (*gJVM)->AttachCurrentThread(gJVM, &env, NULL);
+//        attached = 1;
+//    }
+//
+//    jclass cls = (*env)->GetObjectClass(env, gActivity);
+//    jmethodID mid = (*env)->GetMethodID(env, cls, "checkShizukuBridge",
+//        "()Ljava/lang/String;");
+//    if (mid == NULL) {
+//        if (attached) (*gJVM)->DetachCurrentThread(gJVM);
+//        return NULL;
+//    }
+//
+//    jobject result = (*env)->CallObjectMethod(env, gActivity, mid);
+//
+//    char* copy = NULL;
+//    if (result != NULL) {
+//        const char* chars = (*env)->GetStringUTFChars(env, (jstring)result, NULL);
+//        copy = (char*)malloc(strlen(chars) + 1);
+//        strcpy(copy, chars);
+//        (*env)->ReleaseStringUTFChars(env, (jstring)result, chars);
+//    }
+//
+//    if (attached) (*gJVM)->DetachCurrentThread(gJVM);
+//    return copy;
+//}
+//
+//// 从任意线程回调 Java 的 executeShizukuBridge，使用 Shizuku 提权执行命令（malloc 的字符串）
+//static char* callExecuteShizuku(const char* command) {
+//    if (gJVM == NULL) return NULL;
+//
+//    JNIEnv* env;
+//    jint ret = (*gJVM)->GetEnv(gJVM, (void**)&env, JNI_VERSION_1_6);
+//    int attached = 0;
+//    if (ret == JNI_EDETACHED) {
+//        (*gJVM)->AttachCurrentThread(gJVM, &env, NULL);
+//        attached = 1;
+//    }
+//
+//    jclass cls = (*env)->GetObjectClass(env, gActivity);
+//    jmethodID mid = (*env)->GetMethodID(env, cls, "executeShizukuBridge",
+//        "(Ljava/lang/String;)Ljava/lang/String;");
+//    if (mid == NULL) {
+//        if (attached) (*gJVM)->DetachCurrentThread(gJVM);
+//        return NULL;
+//    }
+//
+//    jstring jCommand = (*env)->NewStringUTF(env, command);
+//
+//    jobject result = (*env)->CallObjectMethod(env, gActivity, mid, jCommand);
+//
+//    char* copy = NULL;
+//    if (result != NULL) {
+//        const char* chars = (*env)->GetStringUTFChars(env, (jstring)result, NULL);
+//        copy = (char*)malloc(strlen(chars) + 1);
+//        strcpy(copy, chars);
+//        (*env)->ReleaseStringUTFChars(env, (jstring)result, chars);
+//    }
+//
+//    (*env)->DeleteLocalRef(env, jCommand);
+//
+//    if (attached) (*gJVM)->DetachCurrentThread(gJVM);
+//    return copy;
+//}
 import "C"
 import (
 	"fmt"
@@ -122,11 +194,15 @@ func init() {
 		dto.RegisterDicFunc{Name: "设备电量", L: "0", Fn: funcs.DicBattery},
 		dto.RegisterDicFunc{Name: "发送通知", L: "2", Fn: funcs.DicSendNotification},
 		dto.RegisterDicFunc{Name: "执行DEX", L: "3|4", Fn: funcs.DicExecuteDex},
+		dto.RegisterDicFunc{Name: "Shizuku检查", L: "0", Fn: funcs.DicShizukuCheck},
+		dto.RegisterDicFunc{Name: "Shizuku执行", L: "1", Fn: funcs.DicShizukuExec},
 	)
 
 	// 设置回调桥接
 	funcs.DexCallback = dexCallback
 	mobile.SendNotificationFunc = sendNotificationCallback
+	funcs.ShizukuCheckCallback = shizukuCheckCallback
+	funcs.ShizukuExecCallback = shizukuExecCallback
 }
 
 // dexCallback 从 Go 协程回调 Java executeDexBridge
@@ -161,6 +237,29 @@ func sendNotificationCallback(title, content string) error {
 	}
 	log.Printf("[nebula] 通知已发送: %s - %s", title, content)
 	return nil
+}
+
+// shizukuCheckCallback 从 Go 协程回调 Java checkShizukuBridge，返回 Shizuku 状态 JSON
+func shizukuCheckCallback() (string, error) {
+	result := C.callCheckShizuku()
+	if result == nil {
+		return "", fmt.Errorf("Shizuku 状态检查失败")
+	}
+	defer C.free(unsafe.Pointer(result))
+	return C.GoString(result), nil
+}
+
+// shizukuExecCallback 从 Go 协程回调 Java executeShizukuBridge，使用 Shizuku 提权执行命令
+func shizukuExecCallback(command string) (string, error) {
+	cCommand := C.CString(command)
+	defer C.free(unsafe.Pointer(cCommand))
+
+	result := C.callExecuteShizuku(cCommand)
+	if result == nil {
+		return "", fmt.Errorf("Shizuku 执行失败")
+	}
+	defer C.free(unsafe.Pointer(result))
+	return C.GoString(result), nil
 }
 
 // setDeviceInfo 接收 Java 侧采集的设备信息 JSON

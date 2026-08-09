@@ -37,6 +37,7 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicInteger;
 
 import dalvik.system.DexClassLoader;
+import rikka.shizuku.Shizuku;
 
 /**
  * 主 Activity —— WebView 显示 Go HTTP 服务的管理面板
@@ -75,6 +76,14 @@ public class MainActivity extends Activity {
     private static final String NOTIFY_CHANNEL_NAME = "Nebula 通知";
     private final AtomicInteger mNotifyIdCounter = new AtomicInteger(1000);
 
+    // Shizuku 监听器
+    private final Shizuku.OnBinderReceivedListener mBinderReceivedListener = () -> {
+        Log.i(TAG, "Shizuku 服务已连接");
+    };
+    private final Shizuku.OnBinderDeadListener mBinderDeadListener = () -> {
+        Log.i(TAG, "Shizuku 服务已断开");
+    };
+
     // ---------- JNI 原生方法 ----------
 
     // 对应 Go: Java_com_cjxpj_nebula_MainActivity_RunNebula
@@ -97,6 +106,10 @@ public class MainActivity extends Activity {
         // 创建 WebView（先显示加载提示）
         mWebView = new WebView(this);
         setContentView(mWebView);
+
+        // 注册 Shizuku 服务监听
+        Shizuku.addBinderReceivedListener(mBinderReceivedListener);
+        Shizuku.addBinderDeadListener(mBinderDeadListener);
 
         WebSettings settings = mWebView.getSettings();
         settings.setJavaScriptEnabled(true);
@@ -418,6 +431,117 @@ public class MainActivity extends Activity {
     }
 
     /**
+     * JNI 回调桥接：Go 侧 $Shizuku检查$ 查询 Shizuku 服务状态。
+     * 返回 JSON：{"available":bool,"granted":bool,"version":int}
+     */
+    @SuppressWarnings("unused")
+    private String checkShizukuBridge() {
+        try {
+            boolean available = Shizuku.pingBinder();
+            boolean granted = false;
+            int version = 0;
+
+            if (available) {
+                granted = Shizuku.checkSelfPermission() == PackageManager.PERMISSION_GRANTED;
+                version = Shizuku.getVersion();
+            }
+
+            return "{\"available\":" + available
+                    + ",\"granted\":" + granted
+                    + ",\"version\":" + version + "}";
+        } catch (Exception e) {
+            Log.e(TAG, "Shizuku 状态检查失败", e);
+            return "{\"available\":false,\"granted\":false,\"version\":0}";
+        }
+    }
+
+    /**
+     * JNI 回调桥接：Go 侧 $Shizuku执行$ 使用 Shizuku 提权执行 Shell 命令。
+     * 返回命令的 stdout+stderr，末尾附加 [exit=退出码]。
+     */
+    @SuppressWarnings("unused")
+    private String executeShizukuBridge(String command) {
+        // 检查 Shizuku 服务是否运行
+        if (!Shizuku.pingBinder()) {
+            return "错误: Shizuku 服务未运行，请先启动 Shizuku App";
+        }
+
+        // 检查是否已授权
+        if (Shizuku.checkSelfPermission() != PackageManager.PERMISSION_GRANTED) {
+            return "错误: 未获得 Shizuku 授权，请在 Shizuku App 中授权 Nebula";
+        }
+
+        Log.i(TAG, "Shizuku 执行: " + command);
+
+        Process p = null;
+        Thread t1 = null;
+        Thread t2 = null;
+        try {
+            // 使用 Shizuku 提权创建进程（以 shell UID 运行）
+            p = Shizuku.newProcess(
+                    new String[]{"sh", "-c", command}, null, null);
+            if (p == null) {
+                return "错误: Shizuku 创建进程失败，请检查 Shizuku 服务状态";
+            }
+
+            // 双线程分别读取 stdout 和 stderr，防止管道阻塞导致死锁
+            java.io.ByteArrayOutputStream out = new java.io.ByteArrayOutputStream();
+            t1 = new Thread(() -> {
+                try {
+                    byte[] buf = new byte[4096];
+                    int n;
+                    java.io.InputStream is = p.getInputStream();
+                    while ((n = is.read(buf)) != -1) {
+                        out.write(buf, 0, n);
+                    }
+                } catch (Exception ignored) {}
+            }, "shizuku-stdout");
+            t2 = new Thread(() -> {
+                try {
+                    byte[] buf = new byte[4096];
+                    int n;
+                    java.io.InputStream es = p.getErrorStream();
+                    while ((n = es.read(buf)) != -1) {
+                        out.write(buf, 0, n);
+                    }
+                } catch (Exception ignored) {}
+            }, "shizuku-stderr");
+
+            t1.start();
+            t2.start();
+
+            try {
+                t1.join();
+                t2.join();
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt(); // 恢复中断标志
+                t1.interrupt();
+                t2.interrupt();
+                return "错误: Shizuku 执行被中断";
+            }
+
+            p.waitFor();
+            String output = out.toString("UTF-8").trim();
+            int exitCode = p.exitValue();
+
+            if (exitCode == 0) {
+                return output.isEmpty() ? "[ok]" : output;
+            }
+            return (output.isEmpty() ? "" : output + "\n") + "[exit=" + exitCode + "]";
+        } catch (Exception e) {
+            Log.e(TAG, "Shizuku 执行失败", e);
+            return "Shizuku 执行异常: " + e.getMessage();
+        } finally {
+            if (p != null) {
+                // 确保进程不会泄漏：终止未完成的读线程并销毁进程
+                if (t1 != null && t1.isAlive()) t1.interrupt();
+                if (t2 != null && t2.isAlive()) t2.interrupt();
+                p.destroy();
+            }
+        }
+    }
+
+    /**
      * 启动前台保活 Service
      */
     private void startKeepAliveService() {
@@ -453,6 +577,9 @@ public class MainActivity extends Activity {
 
     @Override
     protected void onDestroy() {
+        // 注销 Shizuku 监听
+        Shizuku.removeBinderReceivedListener(mBinderReceivedListener);
+        Shizuku.removeBinderDeadListener(mBinderDeadListener);
         if (mWebView != null) {
             mWebView.destroy();
         }

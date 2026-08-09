@@ -16,3 +16,6 @@
 # 保留 WebView 相关
 -keep class * extends android.webkit.WebViewClient
 -keep class * extends android.webkit.WebChromeClient
+
+# 保留 Shizuku（反射调用）
+-keep class rikka.shizuku.** { *; }

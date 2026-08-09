@@ -2015,6 +2015,8 @@ $MIME类型 [文件后缀|文件路径]$
 | `$设备电量$` | 无 | 获取电量百分比和充电状态 JSON：`{"level":85,"charging":true}`（Android / Windows 桌面端均可用，台式机无电池时返回 level=-1） |
 | `$执行DEX$` | 3-4 | 动态加载执行 DEX 文件 |
 | `$发送通知$` | 2 | 发送系统通知栏通知（标题 内容） |
+| `$Shizuku检查$` | 无 | 查询 Shizuku 服务状态 JSON：`{"available":true,"granted":true,"version":13}` |
+| `$Shizuku执行$` | 1 | 通过 Shizuku 以 ADB shell 权限执行终端命令，返回 stdout+stderr |
 
 ```
 $设备信息$
@@ -2026,6 +2028,14 @@ $执行DEX /sdcard/test.dex com.example.Main calc ["arg1",123]$
 
 // $发送通知 标题 内容$
 $发送通知 Nebula提醒 词库执行完毕$
+
+// Shizuku 状态检查
+$Shizuku检查$
+
+// $Shizuku执行 命令$（需安装 Shizuku App 并授权）
+$Shizuku执行 settings put global airplane_mode_on 1$
+$Shizuku执行 pm list packages$
+$Shizuku执行 ip addr show$
 
 ```
 
