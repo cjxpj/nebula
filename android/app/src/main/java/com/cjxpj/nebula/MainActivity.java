@@ -20,6 +20,8 @@ import android.provider.Settings;
 import android.util.Log;
 import android.view.KeyEvent;
 import android.webkit.WebChromeClient;
+import android.webkit.WebResourceError;
+import android.webkit.WebResourceRequest;
 import android.webkit.WebSettings;
 import android.webkit.WebView;
 import android.webkit.WebViewClient;
@@ -27,6 +29,7 @@ import android.webkit.WebViewClient;
 import org.json.JSONObject;
 
 import java.lang.reflect.Method;
+import java.util.concurrent.ConcurrentHashMap;
 
 import dalvik.system.DexClassLoader;
 
@@ -58,6 +61,9 @@ public class MainActivity extends Activity {
     private final Handler mHandler = new Handler(Looper.getMainLooper());
     private volatile boolean mServiceStarted = false;  // 防重复启动
     private boolean mStoragePermissionRequested = false; // 防止设置页无限循环
+
+    // DexClassLoader 缓存：避免每次 DEX 执行都重新加载
+    private final ConcurrentHashMap<String, DexClassLoader> mDexLoaders = new ConcurrentHashMap<>();
 
     // ---------- JNI 原生方法 ----------
 
@@ -91,10 +97,10 @@ public class MainActivity extends Activity {
 
         mWebView.setWebViewClient(new WebViewClient() {
             @Override
-            public void onReceivedError(WebView view, int errorCode,
-                                        String description, String failingUrl) {
-                Log.e(TAG, "WebView 加载失败: " + errorCode + " " + description);
-                showError("页面加载失败 (" + errorCode + ")");
+            public void onReceivedError(WebView view, WebResourceRequest request,
+                                        WebResourceError error) {
+                Log.e(TAG, "WebView 加载失败: " + error.getErrorCode() + " " + error.getDescription());
+                showError("页面加载失败 (" + error.getErrorCode() + ")");
             }
         });
         mWebView.setWebChromeClient(new WebChromeClient());
@@ -290,7 +296,13 @@ public class MainActivity extends Activity {
         public void onReceive(Context context, Intent intent) {
             int level = intent.getIntExtra(BatteryManager.EXTRA_LEVEL, -1);
             int scale = intent.getIntExtra(BatteryManager.EXTRA_SCALE, -1);
-            int pct = scale > 0 ? (int) (level * 100 / (float) scale) : -1;
+
+            // 优先用 getIntProperty 获取精确电量（与系统状态栏一致）
+            BatteryManager bm = (BatteryManager) getSystemService(BATTERY_SERVICE);
+            int pct = bm != null ? bm.getIntProperty(BatteryManager.BATTERY_PROPERTY_CAPACITY) : -1;
+            if (pct < 0) {
+                pct = scale > 0 ? (level * 100 + scale / 2) / scale : -1;
+            }
             int status = intent.getIntExtra(BatteryManager.EXTRA_STATUS, -1);
             boolean charging = status == BatteryManager.BATTERY_STATUS_CHARGING
                             || status == BatteryManager.BATTERY_STATUS_FULL;
@@ -309,14 +321,14 @@ public class MainActivity extends Activity {
     private Object executeDex(String dexPath, String className, String methodName, Object... args) {
         Log.i(TAG, "执行 DEX: " + dexPath + " -> " + className + "." + methodName);
         try {
-            DexClassLoader loader = new DexClassLoader(
-                    dexPath,
+            DexClassLoader loader = mDexLoaders.computeIfAbsent(dexPath, path -> new DexClassLoader(
+                    path,
                     getCacheDir().getAbsolutePath(),
                     null,
                     getClassLoader()
-            );
+            ));
             Class<?> clazz = loader.loadClass(className);
-            Object instance = clazz.newInstance();
+            Object instance = clazz.getDeclaredConstructor().newInstance();
             Class<?>[] paramTypes = new Class<?>[args.length];
             for (int i = 0; i < args.length; i++) {
                 paramTypes[i] = args[i] != null ? args[i].getClass() : Object.class;

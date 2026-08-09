@@ -11,6 +11,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"syscall"
+	"unsafe"
 
 	"github.com/cjxpj/nebula/appfiles"
 	"github.com/cjxpj/nebula/dic"
@@ -79,6 +80,11 @@ func main() {
 	funcs.Register("打开浏览器", "1", func(d *dto.DicInputs) (any, error) {
 		err := openBrowser(d.Inputs.String(1))
 		return "", err
+	})
+
+	// 设备电量（Windows 笔记本）
+	funcs.Register("设备电量", "0", func(d *dto.DicInputs) (any, error) {
+		return getBatteryStatus(), nil
 	})
 
 	funcs.Register("回收站", "1", func(d *dto.DicInputs) (any, error) {
@@ -203,4 +209,37 @@ func main() {
 		fmt.Println("未知命令")
 		return
 	}
+}
+
+// ---------- 设备电量 ----------
+
+type systemPowerStatus struct {
+	ACLineStatus        byte
+	BatteryFlag         byte
+	BatteryLifePercent  byte
+	Reserved1           byte
+	BatteryLifeTime     uint32
+	BatteryFullLifeTime uint32
+}
+
+func getBatteryStatus() string {
+	kernel32 := syscall.NewLazyDLL("kernel32.dll")
+	proc := kernel32.NewProc("GetSystemPowerStatus")
+
+	var sps systemPowerStatus
+	ret, _, _ := proc.Call(uintptr(unsafe.Pointer(&sps)))
+	if ret == 0 {
+		return `{"level":-1,"charging":false,"error":"call failed"}`
+	}
+
+	// 255 表示未知
+	level := sps.BatteryLifePercent
+	if level == 255 {
+		return `{"level":-1,"charging":false,"error":"unknown"}`
+	}
+
+	// ACLineStatus: 0=电池供电, 1=外接电源, 255=未知
+	charging := sps.ACLineStatus == 1
+
+	return fmt.Sprintf(`{"level":%d,"charging":%v}`, level, charging)
 }

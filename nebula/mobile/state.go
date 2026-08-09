@@ -6,7 +6,7 @@ import "sync"
 var (
 	mu              sync.RWMutex
 	deviceInfo      string
-	batteryLevel    int
+	batteryLevel    int = -1
 	batteryCharging bool
 )
 

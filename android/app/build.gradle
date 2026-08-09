@@ -46,6 +46,12 @@ android {
         targetCompatibility JavaVersion.VERSION_11
     }
 
+    gradle.projectsEvaluated {
+        tasks.withType(JavaCompile) {
+            options.compilerArgs << "-Xlint:deprecation"
+        }
+    }
+
     // .so 放在 jniLibs 目录下，打包时自动包含
     sourceSets {
         main {
