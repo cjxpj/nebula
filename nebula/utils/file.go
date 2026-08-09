@@ -24,6 +24,7 @@ import (
 
 	"github.com/cjxpj/nebula/debugLog"
 	"gopkg.in/ini.v1"
+	"gopkg.in/yaml.v3"
 )
 
 var httpClient = &http.Client{Timeout: 30 * time.Second}
@@ -840,6 +841,45 @@ func (fq *FileQueue) SaveIni(file *ini.File) error {
 	defer fileMutex.Unlock()
 
 	return file.SaveTo(fq.FileName)
+}
+
+// 加载yaml
+func (fq *FileQueue) LoadYaml() (map[string]interface{}, error) {
+	fileMutex.RLock()
+	defer fileMutex.RUnlock()
+
+	data, err := os.ReadFile(fq.FileName)
+	if err != nil {
+		return nil, err
+	}
+
+	var result map[string]interface{}
+	err = yaml.Unmarshal(data, &result)
+	if err != nil {
+		return nil, err
+	}
+	return result, nil
+}
+
+// 保存yaml
+func (fq *FileQueue) SaveYaml(data map[string]interface{}) error {
+	fileMutex.Lock()
+	defer fileMutex.Unlock()
+
+	// 检查文件夹是否存在，不存在则创建
+	dir := filepath.Dir(fq.FileName)
+	if _, err := os.Stat(dir); os.IsNotExist(err) {
+		if err := os.MkdirAll(dir, 0755); err != nil {
+			return err
+		}
+	}
+
+	yamlData, err := yaml.Marshal(data)
+	if err != nil {
+		return err
+	}
+
+	return os.WriteFile(fq.FileName, yamlData, 0644)
 }
 
 // 打开文件

@@ -23,6 +23,20 @@ func DicBattery(d *dto.DicInputs) (any, error) {
 	return fmt.Sprintf(`{"level":%d,"charging":%v}`, mobile.GetBatteryLevel(), mobile.IsBatteryCharging()), nil
 }
 
+// ---------- 发送通知 ----------
+
+// DicSendNotification 词库函数：$发送通知 标题 内容$
+// 通过 JNI 回调 Android 系统通知栏发送通知。
+func DicSendNotification(d *dto.DicInputs) (any, error) {
+	if mobile.SendNotificationFunc == nil {
+		return nil, fmt.Errorf("发送通知 仅支持 Android 端")
+	}
+	return nil, mobile.SendNotificationFunc(
+		d.Inputs.String(1),
+		d.Inputs.String(2),
+	)
+}
+
 // ---------- 执行 DEX ----------
 
 // DicExecuteDex 词库函数：$执行DEX dex路径 类名 方法名 [参数JSON]$

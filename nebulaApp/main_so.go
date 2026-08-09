@@ -71,6 +71,38 @@ package main
 //    if (attached) (*gJVM)->DetachCurrentThread(gJVM);
 //    return copy;
 //}
+//
+//// 从任意线程回调 Java 的 sendNotificationBridge，显示系统通知
+//static int callSendNotification(const char* title, const char* content) {
+//    if (gJVM == NULL) return -1;
+//
+//    JNIEnv* env;
+//    jint ret = (*gJVM)->GetEnv(gJVM, (void**)&env, JNI_VERSION_1_6);
+//    int attached = 0;
+//    if (ret == JNI_EDETACHED) {
+//        (*gJVM)->AttachCurrentThread(gJVM, &env, NULL);
+//        attached = 1;
+//    }
+//
+//    jclass cls = (*env)->GetObjectClass(env, gActivity);
+//    jmethodID mid = (*env)->GetMethodID(env, cls, "sendNotificationBridge",
+//        "(Ljava/lang/String;Ljava/lang/String;)V");
+//    if (mid == NULL) {
+//        if (attached) (*gJVM)->DetachCurrentThread(gJVM);
+//        return -1;
+//    }
+//
+//    jstring jTitle   = (*env)->NewStringUTF(env, title);
+//    jstring jContent = (*env)->NewStringUTF(env, content);
+//
+//    (*env)->CallVoidMethod(env, gActivity, mid, jTitle, jContent);
+//
+//    (*env)->DeleteLocalRef(env, jTitle);
+//    (*env)->DeleteLocalRef(env, jContent);
+//
+//    if (attached) (*gJVM)->DetachCurrentThread(gJVM);
+//    return 0;
+//}
 import "C"
 import (
 	"fmt"
@@ -88,11 +120,13 @@ func init() {
 	funcs.Registers(
 		dto.RegisterDicFunc{Name: "设备信息", L: "0", Fn: funcs.DicDeviceInfo},
 		dto.RegisterDicFunc{Name: "设备电量", L: "0", Fn: funcs.DicBattery},
+		dto.RegisterDicFunc{Name: "发送通知", L: "2", Fn: funcs.DicSendNotification},
 		dto.RegisterDicFunc{Name: "执行DEX", L: "3|4", Fn: funcs.DicExecuteDex},
 	)
 
-	// 设置 DEX 回调桥接
+	// 设置回调桥接
 	funcs.DexCallback = dexCallback
+	mobile.SendNotificationFunc = sendNotificationCallback
 }
 
 // dexCallback 从 Go 协程回调 Java executeDexBridge
@@ -112,6 +146,21 @@ func dexCallback(dexPath, className, methodName, argsJson string) (string, error
 	}
 	defer C.free(unsafe.Pointer(result))
 	return C.GoString(result), nil
+}
+
+// sendNotificationCallback 从 Go 协程回调 Java sendNotificationBridge，发送系统通知
+func sendNotificationCallback(title, content string) error {
+	cTitle := C.CString(title)
+	cContent := C.CString(content)
+	defer C.free(unsafe.Pointer(cTitle))
+	defer C.free(unsafe.Pointer(cContent))
+
+	ret := C.callSendNotification(cTitle, cContent)
+	if ret != 0 {
+		return fmt.Errorf("发送通知失败")
+	}
+	log.Printf("[nebula] 通知已发送: %s - %s", title, content)
+	return nil
 }
 
 // setDeviceInfo 接收 Java 侧采集的设备信息 JSON
@@ -143,13 +192,16 @@ func Java_com_cjxpj_nebula_MainActivity_registerDevice(env *C.JNIEnv, obj C.jobj
 
 //export Java_com_cjxpj_nebula_MainActivity_RunNebula
 func Java_com_cjxpj_nebula_MainActivity_RunNebula(env *C.JNIEnv, obj C.jobject) {
-	dic.Start()
+	startupResult := dic.Start()
+	if startupResult != "" {
+		mobile.SetStartupUrl(startupResult)
+	}
 }
 
 //export Java_com_cjxpj_nebula_MainActivity_getOpuiUrl
 func Java_com_cjxpj_nebula_MainActivity_getOpuiUrl(env *C.JNIEnv, obj C.jobject) C.jstring {
-	url := ""
-	if dto.ServerConfig.OPUI != nil {
+	url := mobile.GetStartupUrl() // 优先使用词库自定义启动页
+	if url == "" && dto.ServerConfig.OPUI != nil {
 		url = dto.ServerConfig.OPUI.Addr
 	}
 	cUrl := C.CString(url)

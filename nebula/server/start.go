@@ -110,5 +110,6 @@ func Start(infoServerPath string) []string {
 	}
 
 	res = append(res, "Main")
+	res = append(res, "启动首页")
 	return res
 }

@@ -3,6 +3,10 @@ package com.cjxpj.nebula;
 import android.Manifest;
 import android.annotation.SuppressLint;
 import android.app.Activity;
+import android.app.Notification;
+import android.app.NotificationChannel;
+import android.app.NotificationManager;
+import android.app.PendingIntent;
 import android.content.BroadcastReceiver;
 import android.content.Context;
 import android.content.Intent;
@@ -30,6 +34,7 @@ import org.json.JSONObject;
 
 import java.lang.reflect.Method;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.atomic.AtomicInteger;
 
 import dalvik.system.DexClassLoader;
 
@@ -64,6 +69,11 @@ public class MainActivity extends Activity {
 
     // DexClassLoader 缓存：避免每次 DEX 执行都重新加载
     private final ConcurrentHashMap<String, DexClassLoader> mDexLoaders = new ConcurrentHashMap<>();
+
+    // 通知相关
+    private static final String NOTIFY_CHANNEL_ID = "nebula_notify";
+    private static final String NOTIFY_CHANNEL_NAME = "Nebula 通知";
+    private final AtomicInteger mNotifyIdCounter = new AtomicInteger(1000);
 
     // ---------- JNI 原生方法 ----------
 
@@ -365,6 +375,46 @@ public class MainActivity extends Activity {
 
         Object result = executeDex(dexPath, className, methodName, args);
         return result != null ? result.toString() : "null";
+    }
+
+    /**
+     * JNI 回调桥接：Go 侧 $发送通知$ 词库函数通过此方法发送系统通知。
+     */
+    @SuppressWarnings("unused")
+    private void sendNotificationBridge(String title, String content) {
+        Log.i(TAG, "发送通知: " + title + " - " + content);
+
+        NotificationManager nm = (NotificationManager) getSystemService(Context.NOTIFICATION_SERVICE);
+        if (nm == null) return;
+
+        // 创建通知渠道（已存在则无操作）
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            NotificationChannel channel = new NotificationChannel(
+                    NOTIFY_CHANNEL_ID,
+                    NOTIFY_CHANNEL_NAME,
+                    NotificationManager.IMPORTANCE_DEFAULT
+            );
+            nm.createNotificationChannel(channel);
+        }
+
+        // 点击通知回到 MainActivity
+        Intent intent = new Intent(this, MainActivity.class);
+        intent.setFlags(Intent.FLAG_ACTIVITY_SINGLE_TOP);
+        PendingIntent pendingIntent = PendingIntent.getActivity(
+                this, 0, intent,
+                PendingIntent.FLAG_IMMUTABLE | PendingIntent.FLAG_UPDATE_CURRENT
+        );
+
+        Notification notification = new Notification.Builder(this, NOTIFY_CHANNEL_ID)
+                .setContentTitle(title)
+                .setContentText(content)
+                .setSmallIcon(android.R.drawable.ic_menu_manage)
+                .setContentIntent(pendingIntent)
+                .setAutoCancel(true)
+                .build();
+
+        int notifyId = mNotifyIdCounter.incrementAndGet();
+        nm.notify(notifyId, notification);
     }
 
     /**

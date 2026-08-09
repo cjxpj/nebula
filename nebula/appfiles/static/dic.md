@@ -1959,6 +1959,39 @@ $读词库 [文件路径] [触发词] [是否正则|true/false]$
 $写词库 [文件路径] [触发词] [内容]$
 ```
 
+#### 配置读写
+
+> 用于读写配置文件，支持 `.ini` 和 `.yaml`/`.yml` 两种格式，根据文件后缀自动选择解析方式。
+>
+> **文件名简写：**
+> - `.ini`：`system` → `private/system/system.ini`，`config` → `private/system/config.ini`
+> - `.yaml`：`system.yaml` → `private/system/system.yaml`，`config.yaml` → `private/system/config.yaml`
+>
+> 其余路径相对于 `NebulaData/`。
+>
+> **节点（`节.键`）格式：** 对于 INI 表示 `[节]` 下的键；对于 YAML 表示嵌套键，如 `Bot.Secret` 对应顶层 `Bot` 下的 `Secret` 字段。
+
+```
+$读配置 [文件] [节点] [默认值]$          // 文件不存在或键为空时返回默认值（可省略，默认为空串）
+$写配置 [文件] [节点] [值]$             // 文件不存在则自动新建，值可省略（默认为空串）
+```
+
+**INI 示例：**
+```
+$读配置 config.ini Server.启用 false$     // 读取 [Server] 启用，无值时返回 "false"
+$读配置 system.ini HTTP.端口 8080$        // 读取 [HTTP] 端口，无值时返回 "8080"
+$写配置 config.ini Test.name hello$       // 写入 [Test] name = hello
+$写配置 a.ini data.key yes$               // 写入 NebulaData/a.ini，不存在则新建
+```
+
+**YAML 示例：**
+```
+$读配置 config.yaml Bot.Secret 123456$    // 读取 Bot.Secret，无值时返回 "123456"
+$读配置 system.yaml Server.Port 8080$     // 读取 Server.Port，无值时返回 "8080"
+$写配置 config.yaml Test.name hello$      // 写入 Test.name = hello
+$写配置 a.yaml Data.key yes$              // 写入 NebulaData/a.yaml，不存在则新建
+```
+
 #### 随机文件名和文件夹名
 
 ```
@@ -1981,6 +2014,7 @@ $MIME类型 [文件后缀|文件路径]$
 | `$设备信息$` | 无 | 获取手机型号、系统版本等 JSON |
 | `$设备电量$` | 无 | 获取电量百分比和充电状态 JSON：`{"level":85,"charging":true}`（Android / Windows 桌面端均可用，台式机无电池时返回 level=-1） |
 | `$执行DEX$` | 3-4 | 动态加载执行 DEX 文件 |
+| `$发送通知$` | 2 | 发送系统通知栏通知（标题 内容） |
 
 ```
 $设备信息$
@@ -1989,6 +2023,10 @@ $设备电量$
 // $执行DEX dex路径 类名 方法名 [参数JSON数组]$
 $执行DEX /sdcard/test.dex com.example.Main run$
 $执行DEX /sdcard/test.dex com.example.Main calc ["arg1",123]$
+
+// $发送通知 标题 内容$
+$发送通知 Nebula提醒 词库执行完毕$
+
 ```
 
 ## 六、数据库

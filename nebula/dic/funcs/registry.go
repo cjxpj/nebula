@@ -282,6 +282,8 @@ func Setup() {
 		f{Name: "读图片", L: "1|2", Fn: readImage},
 
 		// ========== 其他 ==========
+		f{Name: "读配置", L: "2|3", Fn: readConfig},
+		f{Name: "写配置", L: "2|3", Fn: writeConfig},
 		f{Name: "GIF拆帧", L: "1", Fn: getGif},
 		f{Name: "图片相似度", L: "2", Fn: imageSimilarity},
 		f{Name: "排序", L: "2|3", Fn: doSort},

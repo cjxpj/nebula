@@ -14,7 +14,7 @@ import (
 	"github.com/cjxpj/nebula/utils"
 )
 
-func Start() {
+func Start() string {
 
 	file := utils.NewFile()
 
@@ -41,12 +41,15 @@ func Start() {
 	infoDic.SetGlobal_v(GV)
 
 	res := dic_server.Start(dto.ServerConfig.Router.Http.Addr)
-	// 遍历res
+	// 遍历res，收集最后一个非空返回值作为启动页
+	var startupResult string
 	for _, t := range res {
 		if dicRes := dic_api.Api.DicRun(infoDic, t); dicRes != "" {
 			fmt.Printf("%v\n", dicRes)
+			startupResult = dicRes
 		}
 	}
+	return startupResult
 	// fmt.Println("启动成功，耗时：", time.Since(start))
 }
 
