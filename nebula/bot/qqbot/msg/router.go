@@ -8,7 +8,7 @@ import (
 	"github.com/patrickmn/go-cache"
 )
 
-const APIURL = "https://api.sgroup.qq.com"
+const APIURL = "https://api.bot.qq.com"
 
 // =============QQBot路由数据================
 type RouterQQBot struct {

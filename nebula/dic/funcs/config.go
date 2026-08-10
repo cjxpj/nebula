@@ -34,7 +34,8 @@ func loadYaml(filePath, _ string) (map[string]any, error) {
 
 // 读配置 词库函数：$读配置 [文件] [节点] [默认值]$
 // 支持 .ini、.yaml、.yml 配置文件，根据文件后缀自动选择解析方式。
-// 节点格式为 节.键（如 Server.启用 或 Bot.Secret）。
+// 文件名可省略扩展名，自动匹配已存在的 .ini/.yml/.yaml。
+// 节点格式：YAML 为嵌套路径（如 A.B.C 表示 A 下的 B 下的 C），INI 为 节.键（如 A.B.C 表示 [A.B] 节的 C 键）。
 // 键不存在或值为空时返回默认值，默认值可省略（默认为空串）。
 func readConfig(d *dto.DicInputs) (any, error) {
 	if d.Inputs.Len() < 2 {
@@ -43,7 +44,7 @@ func readConfig(d *dto.DicInputs) (any, error) {
 
 	fileName := d.Inputs.String(1)
 	filePath := resolveConfigPath(fileName)
-	section, key := parseNode(d.Inputs.String(2))
+	node := d.Inputs.String(2)
 
 	defaultVal := ""
 	if d.Inputs.Len() >= 3 {
@@ -51,8 +52,9 @@ func readConfig(d *dto.DicInputs) (any, error) {
 	}
 
 	if isYamlFile(filePath) {
-		return readYaml(filePath, section, key, defaultVal)
+		return readYaml(filePath, parseYamlPath(node), defaultVal)
 	}
+	section, key := parseIniNode(node)
 	return readIni(filePath, section, key, defaultVal)
 }
 
@@ -69,37 +71,39 @@ func readIni(filePath, section, key, defaultVal string) (any, error) {
 	return val, nil
 }
 
-func readYaml(filePath, section, key, defaultVal string) (any, error) {
+// readYaml 读取 yaml 配置，path 为嵌套路径（如 A.B.C 表示 A 下的 B 下的 C）
+func readYaml(filePath string, path []string, defaultVal string) (any, error) {
 	yamlData, err := loadYaml(filePath, "")
 	if err != nil {
 		return defaultVal, nil
 	}
 
-	sectionMap, ok := yamlData[section]
-	if !ok {
-		return defaultVal, nil
+	var current any = yamlData
+	for i, seg := range path {
+		child, ok := current.(map[string]any)
+		if !ok {
+			return defaultVal, nil
+		}
+		val, ok := child[seg]
+		if !ok {
+			return defaultVal, nil
+		}
+		if i == len(path)-1 {
+			strVal := fmt.Sprintf("%v", val)
+			if strVal == "" {
+				return defaultVal, nil
+			}
+			return strVal, nil
+		}
+		current = val
 	}
-
-	sectionMapTyped, ok := sectionMap.(map[string]any)
-	if !ok {
-		return defaultVal, nil
-	}
-
-	val, ok := sectionMapTyped[key]
-	if !ok {
-		return defaultVal, nil
-	}
-
-	strVal := fmt.Sprintf("%v", val)
-	if strVal == "" {
-		return defaultVal, nil
-	}
-	return strVal, nil
+	return defaultVal, nil
 }
 
 // 写配置 词库函数：$写配置 [文件] [节点] [值]$
 // 支持 .ini、.yaml、.yml 配置文件，根据文件后缀自动选择解析方式。
-// 节点格式为 节.键（如 Server.启用 或 Bot.Secret）。
+// 文件名可省略扩展名，自动匹配已存在的 .ini/.yml/.yaml，都不存在默认按 .ini 创建。
+// 节点格式：YAML 为嵌套路径（如 A.B.C 表示 A 下的 B 下的 C），INI 为 节.键（如 A.B.C 表示 [A.B] 节的 C 键）。
 // 值可省略，默认为空串。
 func writeConfig(d *dto.DicInputs) (any, error) {
 	if d.Inputs.Len() < 2 {
@@ -108,7 +112,7 @@ func writeConfig(d *dto.DicInputs) (any, error) {
 
 	fileName := d.Inputs.String(1)
 	filePath := resolveConfigPath(fileName)
-	section, key := parseNode(d.Inputs.String(2))
+	node := d.Inputs.String(2)
 
 	value := ""
 	if d.Inputs.Len() >= 3 {
@@ -116,8 +120,9 @@ func writeConfig(d *dto.DicInputs) (any, error) {
 	}
 
 	if isYamlFile(filePath) {
-		return writeYaml(filePath, section, key, value)
+		return writeYaml(filePath, parseYamlPath(node), value)
 	}
+	section, key := parseIniNode(node)
 	return writeIni(filePath, section, key, value)
 }
 
@@ -137,25 +142,38 @@ func writeIni(filePath, section, key, value string) (any, error) {
 	return nil, nil
 }
 
-func writeYaml(filePath, section, key, value string) (any, error) {
+// writeYaml 写入 yaml 配置，path 为嵌套路径，中间节点不存在时自动创建
+func writeYaml(filePath string, path []string, value string) (any, error) {
 	yamlData, err := loadYaml(filePath, "")
 	if err != nil {
 		return nil, err
 	}
-
-	sectionMap, ok := yamlData[section]
-	if !ok {
-		sectionMap = make(map[string]any)
-		yamlData[section] = sectionMap
+	if yamlData == nil {
+		yamlData = make(map[string]any)
 	}
 
-	sectionMapTyped, ok := sectionMap.(map[string]any)
-	if !ok {
-		sectionMapTyped = make(map[string]any)
-		yamlData[section] = sectionMapTyped
+	var current any = yamlData
+	for i, seg := range path {
+		if i == len(path)-1 {
+			current.(map[string]any)[seg] = value
+			break
+		}
+		m, ok := current.(map[string]any)
+		if !ok {
+			return nil, fmt.Errorf("yaml配置节点路径 %q 处不是嵌套结构", seg)
+		}
+		next, ok := m[seg]
+		if !ok {
+			next = make(map[string]any)
+			m[seg] = next
+		}
+		child, ok := next.(map[string]any)
+		if !ok {
+			child = make(map[string]any)
+			m[seg] = child
+		}
+		current = child
 	}
-
-	sectionMapTyped[key] = value
 
 	file := utils.NewFile()
 	file.SetPath(filePath)
@@ -165,15 +183,28 @@ func writeYaml(filePath, section, key, value string) (any, error) {
 	return nil, nil
 }
 
-// parseNode 解析 "节.键" 格式的节点名
-func parseNode(node string) (section, key string) {
-	if before, after, ok := strings.Cut(node, "."); ok {
-		return before, after
+// parseIniNode 解析 INI 节点名：A.B.C → 节 [A.B]，键 C（按最后一个点拆分，支持多层节）
+func parseIniNode(node string) (section, key string) {
+	if i := strings.LastIndex(node, "."); i >= 0 {
+		return node[:i], node[i+1:]
 	}
 	return "", node
 }
 
+// parseYamlPath 将节点名按 "." 拆分为嵌套路径（如 A.B.C → [A B C]），跳过空段
+func parseYamlPath(node string) []string {
+	parts := strings.Split(node, ".")
+	path := make([]string, 0, len(parts))
+	for _, p := range parts {
+		if p != "" {
+			path = append(path, p)
+		}
+	}
+	return path
+}
+
 // resolveConfigPath 解析文件名简写为实际路径，同时支持 ini 和 yaml
+// 省略扩展名时自动匹配已存在的 .ini / .yml / .yaml，都不存在默认按 .ini 创建
 func resolveConfigPath(fileName string) string {
 	switch fileName {
 	case "system":
@@ -184,9 +215,25 @@ func resolveConfigPath(fileName string) string {
 		return "private/system/system.yaml"
 	case "config.yaml", "config.yml":
 		return "private/system/config.yaml"
-	default:
-		return fileName
 	}
+
+	if filepath.Ext(fileName) == "" {
+		for _, ext := range []string{".ini", ".yml", ".yaml"} {
+			path := fileName + ext
+			if configFileExists(path) {
+				return path
+			}
+		}
+		return fileName + ".ini"
+	}
+	return fileName
+}
+
+// configFileExists 检查配置文件（相对路径基于 NebulaData）是否存在
+func configFileExists(path string) bool {
+	file := utils.NewFile()
+	file.SetPath(path)
+	return file.FileExists()
 }
 
 // isYamlFile 判断文件路径是否为 yaml 格式

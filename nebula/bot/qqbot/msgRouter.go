@@ -194,6 +194,38 @@ func BotMessage(w http.ResponseWriter, r *http.Request, bot *qqbot_msg.RouterQQB
 				fmt.Println("[QQBot] ================================")
 			}
 
+		case "GROUP_JOIN_REQUEST": // 用户入群申请
+			if bot.Debug {
+				m := &qqbot_msg.JoinRequestEvent{}
+				json.Unmarshal(payload.Data, m)
+				fmt.Printf("[QQBot 来源] 入群申请 | 群=%s 申请人=%s 理由=%s\n",
+					m.GroupOpenID, m.ApplicantID, m.ApplyReason)
+			}
+			qqBOTGroupEventRun(payload, bot)
+			w.Write([]byte("Bot Message"))
+			if bot.Debug {
+				fmt.Println("[QQBot 返回] HTTP 200 OK (Bot Message)")
+				fmt.Println("[QQBot] ================================")
+			}
+
+		case "INTERACTION_CREATE": // 按钮点击/交互事件
+			if bot.Debug {
+				m := &qqbot_msg.InteractionEvent{}
+				json.Unmarshal(payload.Data, m)
+				btnData := ""
+				if m.Data != nil && m.Data.Resolved != nil {
+					btnData = m.Data.Resolved.ButtonData
+				}
+				fmt.Printf("[QQBot 来源] 按钮点击 | 群=%s 用户=%s 按钮=%s\n",
+					m.GroupOpenID, m.UserOpenID, btnData)
+			}
+			qqBOTGroupEventRun(payload, bot)
+			w.Write([]byte("Bot Message"))
+			if bot.Debug {
+				fmt.Println("[QQBot 返回] HTTP 200 OK (Bot Message)")
+				fmt.Println("[QQBot] ================================")
+			}
+
 		default:
 			if bot.Debug {
 				fmt.Printf("[QQBot] 未支持的消息类型: %s\n", payload.Type)

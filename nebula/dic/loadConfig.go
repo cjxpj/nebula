@@ -55,6 +55,9 @@ func Start() string {
 
 func loadConfig() {
 
+	// 加载 IP 黑名单
+	dic_server.LoadIPBlacklist()
+
 	file := utils.NewFile()
 
 	file.SetPath("private/ttf/font.ttf")
@@ -109,6 +112,7 @@ func loadConfig() {
 		dto.ServerConfig.OPUI = &dto.OPUI{
 			Addr:   "/" + path,
 			Secret: opUi.Key("密钥").String(),
+			Cors:   opUi.Key("跨域").MustBool(false),
 		}
 	}
 

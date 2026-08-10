@@ -41,6 +41,8 @@ type OPUI struct {
 	Addr string
 	// 密钥
 	Secret string
+	// 跨域开关
+	Cors bool
 }
 
 type ServerConfigInfo struct {

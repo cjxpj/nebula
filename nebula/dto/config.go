@@ -168,13 +168,14 @@ func LoadConfig_feishu(FeiShu_Config *ini.Section) {
 
 func LoadConfig_websocket(WebSocket_Config *ini.Section) {
 	if ok, _ := WebSocket_Config.Key("启用").Bool(); ok {
-		corsOk, _ := WebSocket_Config.Key("跨域").Bool()
+		// 跨域默认 true（允许），显式设为 false 才限制同源
+		corsOk := WebSocket_Config.Key("跨域").MustBool(true)
 		wsPath := "/" + WebSocket_Config.Key("访问路径").String()
 		wsConn := &websocket.Upgrader{
-			CheckOrigin: func(r *http.Request) bool {
-				// 跨域连接
-				return corsOk
-			},
+			CheckOrigin: func(r *http.Request) bool { return true },
+		}
+		if !corsOk {
+			wsConn.CheckOrigin = nil // 回退到 gorilla/websocket 默认同源检查
 		}
 		ServerConfig.Ws = &ServerRouterWebSocket{
 			Open: true,

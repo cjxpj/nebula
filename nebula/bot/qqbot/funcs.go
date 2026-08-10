@@ -10,6 +10,7 @@ import (
 	"sync"
 
 	qqbot_msg "github.com/cjxpj/nebula/bot/qqbot/msg"
+	"github.com/cjxpj/nebula/debugLog"
 	"github.com/cjxpj/nebula/dto"
 )
 
@@ -296,13 +297,14 @@ var ActiveFuncs = map[string]dto.DicFunc{
 		},
 	},
 	"群单发MD": {
-		L: "3",
+		L: "3|4",
 		Fn: func(d *dto.DicInputs) (any, error) {
 			bot := getBotByIndex(d.Inputs.Int(1))
 			if bot == nil {
 				return "QQBot未启用或未配置", nil
 			}
-			if _, err := bot.API.ReplyGroupAnyMarkdownMessage("", d.Inputs.String(2), d.Inputs.String(3)); err != nil {
+			kb := qqbot_msg.ParseKeyboardJSON(d.Inputs.String(4))
+			if _, err := bot.API.ReplyGroupAnyMarkdownWithKeyboard("", d.Inputs.String(2), d.Inputs.String(3), kb); err != nil {
 				return "发送失败: " + err.Error(), nil
 			}
 			return "发送成功", nil
@@ -365,6 +367,56 @@ var ActiveFuncs = map[string]dto.DicFunc{
 			return "发送成功", nil
 		},
 	},
+	"禁": {
+		L: "4",
+		Fn: func(d *dto.DicInputs) (any, error) {
+			bot := getBotByIndex(d.Inputs.Int(1))
+			if bot == nil {
+				return "", nil
+			}
+			groupOpenID := d.Inputs.String(2)
+			memberOpenID := d.Inputs.String(3)
+			seconds := d.Inputs.String(4)
+			if err := bot.API.SetMemberMute(groupOpenID, memberOpenID, seconds); err != nil {
+				debugLog.Infof("[QQBot] 禁言失败: %v", err)
+			}
+			return "", nil
+		},
+	},
+	"群信息": {
+		L: "2",
+		Fn: func(d *dto.DicInputs) (any, error) {
+			bot := getBotByIndex(d.Inputs.Int(1))
+			if bot == nil {
+				return "", nil
+			}
+			groupOpenID := d.Inputs.String(2)
+			info, err := bot.API.GetGroupInfo(groupOpenID)
+			if err != nil {
+				debugLog.Infof("[QQBot] 获取群信息失败: %v", err)
+				return "", nil
+			}
+			data, _ := json.Marshal(info)
+			return string(data), nil
+		},
+	},
+	"入群审批": {
+		L: "4|5",
+		Fn: func(d *dto.DicInputs) (any, error) {
+			bot := getBotByIndex(d.Inputs.Int(1))
+			if bot == nil {
+				return "", nil
+			}
+			groupOpenID := d.Inputs.String(2)
+			memberOpenID := d.Inputs.String(3)
+			op := d.Inputs.String(4)
+			joinRequestID := d.Inputs.String(5)
+			if err := bot.API.ApproveJoinRequest(groupOpenID, memberOpenID, op, joinRequestID, "", false); err != nil {
+				debugLog.Infof("[QQBot] 入群审批失败: %v", err)
+			}
+			return "", nil
+		},
+	},
 }
 
 // ========== ReplyFuncs：回复发送（依赖 PushContext，用于 Bot 消息处理） ==========
@@ -397,38 +449,28 @@ var ReplyFuncs = map[string]dto.DicFunc{
 			if ctx == nil || ctx.Bot == nil || ctx.Bot.API == nil {
 				return "", fmt.Errorf("QQBot上下文未初始化")
 			}
+			pLen, kb := popMDKeyboard(d)
+
 			// 简单MD文本发送
-			if d.Inputs.LenOk(1) {
-				ctx.Bot.API.ReplyGroupAnyMarkdownMessage(ctx.MsgID, ctx.GroupOpenID, d.Inputs.String(1))
+			if pLen == 1 {
+				ctx.Bot.API.ReplyGroupAnyMarkdownWithKeyboard(ctx.MsgID, ctx.GroupOpenID, d.Inputs.String(1), kb)
 				return "", nil
 			}
 			// CustomTemplateId + key=value 参数对
-			if (d.Inputs.Len()-1)%2 != 0 {
+			if (pLen-1)%2 != 0 {
 				return nil, fmt.Errorf("要设置对应键跟值")
 			}
 			params := make([]*qqbot_msg.MarkdownParams, 0)
-			list := d.Inputs.StringAfterList(2)
-			for i := 0; i < len(list); i += 2 {
-				key := list[i]
-				val := list[i+1]
-				val = strings.ReplaceAll(val, "\n", "\r")
-				val = mdRe.ReplaceAllString(val, "[\r\n$1]($2)")
-				val = mdReAt.ReplaceAllString(val, "<$1\r\n$2>")
-				val = strings.ReplaceAll(val, "```", "'''")
-				if strings.HasPrefix(val, "#") {
-					val = " " + val
-				}
-				vals := strings.Split(val, "\r\n")
-				params = append(params, &qqbot_msg.MarkdownParams{
-					Key:    key,
-					Values: vals,
-				})
+			for i := 2; i <= pLen; i += 2 {
+				key := d.Inputs.String(i)
+				val := mdFormatVal(d.Inputs.String(i + 1))
+				params = append(params, &qqbot_msg.MarkdownParams{Key: key, Values: strings.Split(val, "\r\n")})
 			}
 			md := &qqbot_msg.Markdown{
 				CustomTemplateId: d.Inputs.String(1),
 				Params:           params,
 			}
-			ctx.Bot.API.ReplyGroupMarkdownMessage(ctx.MsgID, ctx.GroupOpenID, md)
+			ctx.Bot.API.ReplyGroupMarkdownWithKeyboard(ctx.MsgID, ctx.GroupOpenID, md, kb)
 			return "", nil
 		},
 	},
@@ -455,6 +497,81 @@ var ReplyFuncs = map[string]dto.DicFunc{
 			go func() {
 				ctx.Bot.API.ReplyGroupVoiceMessage(ctx.MsgID, ctx.GroupOpenID, d.Inputs.String(1))
 			}()
+			return "", nil
+		},
+	},
+	"禁": {
+		L: "2|3",
+		Fn: func(d *dto.DicInputs) (any, error) {
+			ctx := GetPushContext()
+			if ctx == nil || ctx.Bot == nil || ctx.Bot.API == nil {
+				return "", nil
+			}
+			var groupOpenID, memberOpenID, seconds string
+			if d.Inputs.Len() == 3 {
+				groupOpenID = d.Inputs.String(1)
+				memberOpenID = d.Inputs.String(2)
+				seconds = d.Inputs.String(3)
+			} else {
+				groupOpenID = ctx.GroupOpenID
+				memberOpenID = d.Inputs.String(1)
+				seconds = d.Inputs.String(2)
+			}
+			if groupOpenID == "" {
+				return "", nil
+			}
+			if err := ctx.Bot.API.SetMemberMute(groupOpenID, memberOpenID, seconds); err != nil {
+				debugLog.Infof("[QQBot] 禁言失败: %v", err)
+			}
+			return "", nil
+		},
+	},
+	"获取群信息": {
+		L: "0|1",
+		Fn: func(d *dto.DicInputs) (any, error) {
+			ctx := GetPushContext()
+			if ctx == nil || ctx.Bot == nil || ctx.Bot.API == nil {
+				return "", nil
+			}
+			groupOpenID := d.Inputs.String(1)
+			if groupOpenID == "" {
+				groupOpenID = ctx.GroupOpenID
+			}
+			if groupOpenID == "" {
+				return "", nil
+			}
+			info, err := ctx.Bot.API.GetGroupInfo(groupOpenID)
+			if err != nil {
+				debugLog.Infof("[QQBot] 获取群信息失败: %v", err)
+				return "", nil
+			}
+			data, _ := json.Marshal(info)
+			return string(data), nil
+		},
+	},
+	"入群审批": {
+		L: "2|3",
+		Fn: func(d *dto.DicInputs) (any, error) {
+			ctx := GetPushContext()
+			if ctx == nil || ctx.Bot == nil || ctx.Bot.API == nil {
+				return "", nil
+			}
+			var groupOpenID, memberOpenID, op string
+			if d.Inputs.Len() == 3 {
+				groupOpenID = d.Inputs.String(1)
+				memberOpenID = d.Inputs.String(2)
+				op = d.Inputs.String(3)
+			} else {
+				groupOpenID = ctx.GroupOpenID
+				memberOpenID = d.Inputs.String(1)
+				op = d.Inputs.String(2)
+			}
+			if groupOpenID == "" {
+				return "", nil
+			}
+			if err := ctx.Bot.API.ApproveJoinRequest(groupOpenID, memberOpenID, op, "", "", false); err != nil {
+				debugLog.Infof("[QQBot] 入群审批失败: %v", err)
+			}
 			return "", nil
 		},
 	},

@@ -42,11 +42,12 @@ const (
 	intentGuildMsg     = 1 << 9  // 私域消息（需审批）
 	intentDirectMsg    = 1 << 12 // 频道私聊（需审批）
 	intentGroupC2C     = 1 << 25 // 群聊和C2C（需审批）
+	intentInteraction  = 1 << 26 // 交互事件（按钮回调）
 	intentAudit        = 1 << 27 // 消息审核（需审批）
 	intentPublicGuild  = 1 << 30 // 公域消息（默认权限）
 
-	intentPrivateMin = intentGUILDS | intentGuildMembers | intentGuildMsg | intentGroupC2C | intentDirectMsg | intentAudit
-	intentPublicMsg  = intentGUILDS | intentGuildMembers | intentGroupC2C | intentPublicGuild | intentDirectMsg | intentAudit
+	intentPrivateMin = intentGUILDS | intentGuildMembers | intentGuildMsg | intentGroupC2C | intentDirectMsg | intentInteraction | intentAudit
+	intentPublicMsg  = intentGUILDS | intentGuildMembers | intentGroupC2C | intentPublicGuild | intentDirectMsg | intentInteraction | intentAudit
 )
 
 // wsIntentProbes 订阅意图组合列表，逐个尝试直到成功
@@ -438,7 +439,7 @@ func wsReadOp(ctx context.Context, conn *websocket.Conn, bot *qqbot_msg.RouterQQ
 // getWsGatewayUrl 获取 WebSocket 网关地址
 func getWsGatewayUrl(bot *qqbot_msg.RouterQQBot) string {
 	// 尝试从 API 获取（无需鉴权）
-	req, err := http.NewRequest("GET", "https://api.sgroup.qq.com/gateway", nil)
+	req, err := http.NewRequest("GET", "https://api.bot.qq.com/gateway", nil)
 	if err == nil {
 		client := &http.Client{Timeout: 3 * time.Second}
 		resp, err := client.Do(req)
@@ -455,7 +456,7 @@ func getWsGatewayUrl(bot *qqbot_msg.RouterQQBot) string {
 			}
 		}
 	}
-	return "wss://api.sgroup.qq.com/websocket"
+	return "wss://api.bot.qq.com/websocket"
 }
 
 // ================= WS 消息分发 =================
@@ -487,7 +488,9 @@ func wsDispatch(bot *qqbot_msg.RouterQQBot, t string, d json.RawMessage) {
 	case "C2C_MESSAGE_CREATE":
 		qqBOTGroupPrivateRun(payload, bot)
 	case "GROUP_MEMBER_ADD", "GROUP_MEMBER_REMOVE",
-		"GROUP_ADD_ROBOT", "GROUP_DEL_ROBOT":
+		"GROUP_ADD_ROBOT", "GROUP_DEL_ROBOT",
+		"GROUP_JOIN_REQUEST",
+		"INTERACTION_CREATE":
 		qqBOTGroupEventRun(payload, bot)
 	case "GROUP_MSG_REJECT", "GROUP_MSG_RECEIVE",
 		"FRIEND_ADD", "FRIEND_DEL",

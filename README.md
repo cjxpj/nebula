@@ -181,13 +181,22 @@ nebula/
 # 基础消息发送
 $发送文本 [文本] [图片数据]$
 
-# Markdown 消息
-$发送MD [Markdown内容]$
+# Markdown 消息（支持自定义按钮）
+$发送MD [Markdown内容] [键盘JSON(可选)]$
+$发送MD [模板ID] [键1] [值1]... [键盘JSON(可选)]$
 
-# 群管理功能
+# 消息按钮示例（指令按钮，点击自动填入 /确认）
+$发送MD # 菜单 {"rows":[{"buttons":[{"id":"1","render_data":{"label":"确认","visited_label":"已确认","style":1},"action":{"type":2,"permission":{"type":2},"data":"/确认","enter":true,"unsupport_tips":"请升级"}}]}]}
+
+# 群管理功能（通过官方 API）
 $禁言 [群号] [QQ号] [秒数]$
 $全体禁言 [群号]$
 $撤回 [消息ID]$
+
+# 群事件（词库监听）
+[内部]入群         // 成员加入
+[内部]退群         // 成员退出
+[内部]入群申请     // 用户申请入群（%成员%=申请人OpenID）
 
 # 互动功能
 $点赞 [QQ号] [次数]$

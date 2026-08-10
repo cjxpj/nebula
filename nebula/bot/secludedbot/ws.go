@@ -28,8 +28,8 @@ var (
 	started    atomic.Bool
 )
 
-// isConnected 只读获取连接状态
-func isConnected() bool {
+// IsConnected 只读获取连接状态
+func IsConnected() bool {
 	mu.Lock()
 	defer mu.Unlock()
 	return connected && conn != nil
@@ -133,7 +133,7 @@ func connectAndLogin(wsUrl, token string) error {
 // readLoop 持续读取消息并派发处理
 func readLoop(onMessage func(raw []byte, header *rawPacketHeader)) {
 	for {
-		if !isConnected() || stopping.Load() {
+		if !IsConnected() || stopping.Load() {
 			return
 		}
 		mu.Lock()

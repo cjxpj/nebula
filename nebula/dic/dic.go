@@ -339,6 +339,8 @@ func (m *dicImpl) DicRunTimeout(D *dic_dto.Dic, trigger string, timeout time.Dur
 			return r.text, true
 		case <-time.After(3 * time.Second):
 			// 强制终止：goroutine 可能仍持有 dicRun，无法安全调用 Close()
+			// 但必须清理以避免资源泄漏 —— 3 秒后引擎大概率已退出行间循环
+			dicRun.Close()
 			return "", true
 		}
 	}

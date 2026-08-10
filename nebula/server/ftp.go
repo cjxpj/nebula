@@ -752,7 +752,14 @@ func (ftp *ftpSession) handleSTOR(arg string) {
 	}
 
 	// 确保目录存在
-	os.MkdirAll(filepath.Dir(abs), 0755)
+	if err := os.MkdirAll(filepath.Dir(abs), 0755); err != nil {
+		ftp.closeDataConn()
+		if ftp.debug {
+			debugLog.Errorf(ftp.logPrefix()+" STOR 创建目录失败: %v", err)
+		}
+		ftp.reply(550, fmt.Sprintf("Cannot create directory: %v", err))
+		return
+	}
 
 	file, err := os.Create(abs)
 	if err != nil {

@@ -21,7 +21,7 @@ func (d *RouterQQBot) CheckOnce(key string) bool {
 
 // GetAccessToken 获取 QQBot Access Token
 func GetAccessToken(appId, clientSecret string) (*AccessTokenResponse, error) {
-	url := "https://bots.qq.com/app/getAppAccessToken"
+	url := "https://api.bot.qq.com/app/getAppAccessToken"
 	body := map[string]string{
 		"appId":        appId,
 		"clientSecret": clientSecret,

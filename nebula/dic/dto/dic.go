@@ -152,6 +152,7 @@ func NewDicPro(dicPath string) (*dto.DicInfoData, error) {
 	if err != nil {
 		return nil, err
 	}
+	defer openFile.Close()
 	buildDic := run.Parse(dicPath, openFile)
 	return buildDic, nil
 }

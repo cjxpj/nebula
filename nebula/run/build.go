@@ -104,23 +104,25 @@ func findUnescaped(s, sub string, start int) int {
 	}
 }
 
-// 在 $...$ 内部：按空格切分；支持 "\ " 保留空格，"\\"=>"\", "\$"=>"$"
+// 在 $...$ 内部：按空格切分；支持 "\\"=>"\", "\$"=>"$"
+// 支持 "..." 双引号包裹：引号内的空格视为文本内容，不参与切分；\" 表示字面引号
 func splitWithEscape(s string) []string {
 	var args []string
 	var b strings.Builder
 	escaped := false
+	inQuote := false
 
 	for i := 0; i < len(s); i++ {
 		ch := s[i]
 
 		if escaped {
 			switch ch {
-			case ' ':
-				b.WriteByte(' ') // \  + 空格 → 字面空格
 			case '\\':
 				b.WriteByte('\\') // \\ → \
 			case '$':
 				b.WriteByte('$') // \$ → $
+			case '"':
+				b.WriteByte('"') // \" → 字面引号
 			default:
 				// 未知转义：按字面写回
 				b.WriteByte('\\')
@@ -135,7 +137,12 @@ func splitWithEscape(s string) []string {
 			continue
 		}
 
-		if ch == ' ' {
+		if ch == '"' {
+			inQuote = !inQuote
+			continue
+		}
+
+		if !inQuote && ch == ' ' {
 			if b.Len() > 0 {
 				args = append(args, b.String())
 				b.Reset()

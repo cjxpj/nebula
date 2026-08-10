@@ -2,8 +2,25 @@ package qqbot_msg
 
 import (
 	"encoding/base64"
+	"encoding/json"
 	"fmt"
+	"strconv"
+	"strings"
+	"time"
 )
+
+// ParseKeyboardJSON 解析键盘 JSON 字符串，非 JSON 或空字符串返回 nil
+func ParseKeyboardJSON(jsonStr string) *Keyboard {
+	jsonStr = strings.TrimSpace(jsonStr)
+	if jsonStr == "" || jsonStr[0] != '{' {
+		return nil
+	}
+	var kb Keyboard
+	if err := json.Unmarshal([]byte(jsonStr), &kb); err != nil {
+		return nil
+	}
+	return &kb
+}
 
 // 回复子频道消息
 func (b *QQBot) ReplyChannelMessage(messageID, channelID, content string) (*MessageResponse, error) {
@@ -205,6 +222,11 @@ func (b *QQBot) ReplyGroupVideoMessage(messageID, groupOpenID, video string) (*M
 
 // 回复群markdown
 func (b *QQBot) ReplyGroupMarkdownMessage(messageID, groupOpenID string, md *Markdown) (*MessageResponse, error) {
+	return b.ReplyGroupMarkdownWithKeyboard(messageID, groupOpenID, md, nil)
+}
+
+// 回复群markdown（带键盘）
+func (b *QQBot) ReplyGroupMarkdownWithKeyboard(messageID, groupOpenID string, md *Markdown, kb *Keyboard) (*MessageResponse, error) {
 	if groupOpenID == "" || md == nil {
 		return nil, fmt.Errorf("groupOpenID或markdown为空")
 	}
@@ -217,6 +239,7 @@ func (b *QQBot) ReplyGroupMarkdownMessage(messageID, groupOpenID string, md *Mar
 		Markdown: md,
 		MsgId:    messageID,
 		MsgSeq:   b.Count,
+		Keyboard: kb,
 	}
 
 	var resp MessageResponse
@@ -228,6 +251,11 @@ func (b *QQBot) ReplyGroupMarkdownMessage(messageID, groupOpenID string, md *Mar
 
 // 回复群任意markdown
 func (b *QQBot) ReplyGroupAnyMarkdownMessage(messageID, groupOpenID, text string) (*MessageResponse, error) {
+	return b.ReplyGroupAnyMarkdownWithKeyboard(messageID, groupOpenID, text, nil)
+}
+
+// 回复群任意markdown（带键盘）
+func (b *QQBot) ReplyGroupAnyMarkdownWithKeyboard(messageID, groupOpenID, text string, kb *Keyboard) (*MessageResponse, error) {
 	if groupOpenID == "" || text == "" {
 		return nil, fmt.Errorf("groupOpenID或文本为空")
 	}
@@ -235,15 +263,14 @@ func (b *QQBot) ReplyGroupAnyMarkdownMessage(messageID, groupOpenID, text string
 
 	b.Count++
 
-	md := &Markdown{
-		Content: text,
-	}
+	md := &Markdown{Content: text}
 
 	msg := MessageToSend{
 		MsgType:  2,
 		Markdown: md,
 		MsgId:    messageID,
 		MsgSeq:   b.Count,
+		Keyboard: kb,
 	}
 
 	var resp MessageResponse
@@ -255,6 +282,11 @@ func (b *QQBot) ReplyGroupAnyMarkdownMessage(messageID, groupOpenID, text string
 
 // 回复私聊任意markdown
 func (b *QQBot) ReplyPrivateAnyMarkdownMessage(messageID, openID, text string) (*MessageResponse, error) {
+	return b.ReplyPrivateAnyMarkdownWithKeyboard(messageID, openID, text, nil)
+}
+
+// 回复私聊任意markdown（带键盘）
+func (b *QQBot) ReplyPrivateAnyMarkdownWithKeyboard(messageID, openID, text string, kb *Keyboard) (*MessageResponse, error) {
 	if openID == "" || text == "" {
 		return nil, fmt.Errorf("openID或文本为空")
 	}
@@ -262,15 +294,14 @@ func (b *QQBot) ReplyPrivateAnyMarkdownMessage(messageID, openID, text string) (
 
 	b.Count++
 
-	md := &Markdown{
-		Content: text,
-	}
+	md := &Markdown{Content: text}
 
 	msg := MessageToSend{
 		MsgType:  2,
 		Markdown: md,
 		MsgId:    messageID,
 		MsgSeq:   b.Count,
+		Keyboard: kb,
 	}
 
 	var resp MessageResponse
@@ -282,6 +313,11 @@ func (b *QQBot) ReplyPrivateAnyMarkdownMessage(messageID, openID, text string) (
 
 // 回复私聊markdown
 func (b *QQBot) ReplyPrivateMarkdownMessage(messageID, openID string, md *Markdown) (*MessageResponse, error) {
+	return b.ReplyPrivateMarkdownWithKeyboard(messageID, openID, md, nil)
+}
+
+// 回复私聊markdown（带键盘）
+func (b *QQBot) ReplyPrivateMarkdownWithKeyboard(messageID, openID string, md *Markdown, kb *Keyboard) (*MessageResponse, error) {
 	if openID == "" || md == nil {
 		return nil, fmt.Errorf("openID或markdown为空")
 	}
@@ -294,6 +330,7 @@ func (b *QQBot) ReplyPrivateMarkdownMessage(messageID, openID string, md *Markdo
 		Markdown: md,
 		MsgId:    messageID,
 		MsgSeq:   b.Count,
+		Keyboard: kb,
 	}
 
 	var resp MessageResponse
@@ -460,4 +497,130 @@ func (b *QQBot) ReplyGroupPrivateVideoMessage(messageID, openID, video string) (
 		return nil, err
 	}
 	return &resp, nil
+}
+
+// ============= 群信息 ============
+
+// GetGroupInfo 获取群信息
+func (b *QQBot) GetGroupInfo(groupOpenID string) (*GroupInfo, error) {
+	if groupOpenID == "" {
+		return nil, fmt.Errorf("groupOpenID为空")
+	}
+	url := fmt.Sprintf("/v2/groups/%s/info", groupOpenID)
+	var resp GroupInfo
+	if err := b.Get(url, &resp); err != nil {
+		return nil, err
+	}
+	return &resp, nil
+}
+
+// GetBotState 获取机器人群内状态
+func (b *QQBot) GetBotState(groupOpenID string) (*BotState, error) {
+	if groupOpenID == "" {
+		return nil, fmt.Errorf("groupOpenID为空")
+	}
+	url := fmt.Sprintf("/v2/groups/%s/bot_state", groupOpenID)
+	var resp BotState
+	if err := b.Get(url, &resp); err != nil {
+		return nil, err
+	}
+	return &resp, nil
+}
+
+// ============= 群禁言管理 ============
+
+// GetMemberMuteStatus 查询群禁言状态
+func (b *QQBot) GetMuteStatus(groupOpenID string) (*MuteStatusResponse, error) {
+	if groupOpenID == "" {
+		return nil, fmt.Errorf("groupOpenID为空")
+	}
+	url := fmt.Sprintf("/v2/groups/%s/restrict_chat_setting", groupOpenID)
+	var resp MuteStatusResponse
+	if err := b.Get(url, &resp); err != nil {
+		return nil, err
+	}
+	return &resp, nil
+}
+
+// SetMemberMute 设置用户禁言，seconds 为 0 表示解除禁言
+func (b *QQBot) SetMemberMute(groupOpenID, memberOpenID, seconds string) error {
+	if groupOpenID == "" || memberOpenID == "" {
+		return fmt.Errorf("groupOpenID或memberOpenID为空")
+	}
+	op := "add"
+	if seconds == "0" {
+		op = "del"
+	}
+
+	expireAt := ""
+	if op != "del" {
+		sec, err := strconv.Atoi(seconds)
+		if err != nil {
+			return fmt.Errorf("禁言秒数格式错误: %w", err)
+		}
+		expireAt = time.Now().Add(time.Duration(sec) * time.Second).Format(time.RFC3339)
+	}
+
+	url := fmt.Sprintf("/v2/groups/%s/restrict_chat_setting", groupOpenID)
+	req := &SetMemberMuteRequest{
+		Members: []SetMuteMember{{
+			Op:           op,
+			MemberOpenID: memberOpenID,
+			MuteExpireAt: expireAt,
+		}},
+	}
+	return b.Send(url, req, nil)
+}
+
+// ============= 入群申请审批 ============
+
+// GetJoinRequests 拉取入群申请列表
+func (b *QQBot) GetJoinRequests(groupOpenID, cursor string, limit int) (*JoinRequestListResponse, error) {
+	if groupOpenID == "" {
+		return nil, fmt.Errorf("groupOpenID为空")
+	}
+	url := fmt.Sprintf("/v2/groups/%s/join_request_list", groupOpenID)
+	if cursor != "" || limit > 0 {
+		url += "?"
+		if cursor != "" {
+			url += fmt.Sprintf("cursor=%s", cursor)
+		}
+		if limit > 0 {
+			if cursor != "" {
+				url += "&"
+			}
+			url += fmt.Sprintf("limit=%d", limit)
+		}
+	}
+	var resp JoinRequestListResponse
+	if err := b.Get(url, &resp); err != nil {
+		return nil, err
+	}
+	return &resp, nil
+}
+
+// ApproveJoinRequest 审批入群请求
+func (b *QQBot) ApproveJoinRequest(groupOpenID, memberOpenID, op, joinRequestID, rejectReason string, addToBlacklist bool) error {
+	if groupOpenID == "" || memberOpenID == "" {
+		return fmt.Errorf("groupOpenID或memberOpenID为空")
+	}
+	url := fmt.Sprintf("/v2/groups/%s/approval_join_request/%s", groupOpenID, memberOpenID)
+	body := &ApproveJoinRequest{
+		Op:                   op,
+		JoinRequestID:        joinRequestID,
+		RejectReason:         rejectReason,
+		AddToMemberBlacklist: addToBlacklist,
+	}
+	return b.Send(url, body, nil)
+}
+
+// ============= 交互事件响应 ============
+
+// ReplyInteraction 回应交互事件（按钮点击等），code=0 表示成功
+func (b *QQBot) ReplyInteraction(interactionID string, code int) error {
+	if interactionID == "" {
+		return fmt.Errorf("interactionID不能为空")
+	}
+	url := fmt.Sprintf("/interactions/%s", interactionID)
+	return b.Send(url, InteractionResponse{Code: code}, nil)
 }

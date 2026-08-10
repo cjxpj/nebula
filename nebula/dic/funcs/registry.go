@@ -235,7 +235,8 @@ func Setup() {
 		}},
 
 		// ========== HTML / Markdown ==========
-		f{Name: "HTML解析", L: "1", Fn: htmlParse},
+		f{Name: "HTML解析", L: "1..", Fn: htmlParse},
+		f{Name: "HTML文本", L: "1..", Fn: htmlText},
 		f{Name: "HTML编码", L: "1", Fn: htmlEncode},
 		f{Name: "HTML解码", L: "1", Fn: htmlDecode},
 		f{Name: "MD转HTML", L: "1", Fn: markdownToHtml},

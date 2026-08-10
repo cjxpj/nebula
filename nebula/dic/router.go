@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/url"
 	"strconv"
+	"time"
 
 	"github.com/cjxpj/nebula/appfiles"
 	"github.com/cjxpj/nebula/debugLog"
@@ -38,6 +39,28 @@ func dicWebRouter(w http.ResponseWriter, r *http.Request) {
 		// 检查是否为 WebSocket 升级请求
 		conn, err := s.Ws.Conn.Upgrade(w, r, nil)
 		if err == nil {
+			// 心跳机制：防止中间代理/防火墙断开空闲连接
+			const (
+				pongWait   = 60 * time.Second
+				pingPeriod = (pongWait * 9) / 10
+				writeWait  = 10 * time.Second
+			)
+			conn.SetReadDeadline(time.Now().Add(pongWait))
+			conn.SetPongHandler(func(string) error {
+				conn.SetReadDeadline(time.Now().Add(pongWait))
+				return nil
+			})
+			go func() {
+				ticker := time.NewTicker(pingPeriod)
+				defer ticker.Stop()
+				for range ticker.C {
+					conn.SetWriteDeadline(time.Now().Add(writeWait))
+					if err := conn.WriteMessage(websocket.PingMessage, nil); err != nil {
+						return
+					}
+				}
+			}()
+
 			responseData := dto.HTTPRequestInfo{
 				Path:        path,
 				Type:        getType,

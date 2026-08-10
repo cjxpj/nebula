@@ -19,6 +19,30 @@ import (
 var mdRe = regexp.MustCompile(`(?s)\[((?:\\.|[^\]\\])+)\]\(((?:\\.|[^)\\])+)\)`)
 var mdReAt = regexp.MustCompile(`<(.+?)(\/)?>`)
 
+// popMDKeyboard 从参数末尾弹出键盘 JSON，返回有效参数数量和键盘对象
+func popMDKeyboard(d *dto.DicInputs) (int, *qqbot_msg.Keyboard) {
+	l := d.Inputs.Len()
+	if l == 0 {
+		return 0, nil
+	}
+	if kb := qqbot_msg.ParseKeyboardJSON(d.Inputs.String(l)); kb != nil {
+		return l - 1, kb
+	}
+	return l, nil
+}
+
+// mdFormatVal 格式化 MD 参数值（换行/链接转义等）
+func mdFormatVal(val string) string {
+	val = strings.ReplaceAll(val, "\n", "\r")
+	val = mdRe.ReplaceAllString(val, "[\r\n$1]($2)")
+	val = mdReAt.ReplaceAllString(val, "<$1\r\n$2>")
+	val = strings.ReplaceAll(val, "```", "'''")
+	if strings.HasPrefix(val, "#") {
+		val = " " + val
+	}
+	return val
+}
+
 // 群消息处理
 func qqBOTGroupRun(payload *qqbot_msg.Payload, bot *qqbot_msg.RouterQQBot) {
 	// 解析消息数据
@@ -200,10 +224,11 @@ func qqBOTGroupRun(payload *qqbot_msg.Payload, bot *qqbot_msg.RouterQQBot) {
 		dic.SetFunc("发送MD", dto.DicFunc{
 			L: "1..",
 			Fn: func(d *dto.DicInputs) (any, error) {
+				pLen, kb := popMDKeyboard(d)
 
-				if d.Inputs.LenOk(1) {
+				if pLen == 1 {
 					_, mErr := bot.API.
-						ReplyGroupAnyMarkdownMessage(m.ID, m.GroupOpenID, d.Inputs.String(1))
+						ReplyGroupAnyMarkdownWithKeyboard(m.ID, m.GroupOpenID, d.Inputs.String(1), kb)
 					if mErr != nil {
 						fmt.Println("QQBot回复失败", mErr)
 					}
@@ -211,30 +236,15 @@ func qqBOTGroupRun(payload *qqbot_msg.Payload, bot *qqbot_msg.RouterQQBot) {
 				}
 
 				// 2 开始，必须是 key-value 成对
-				if (d.Inputs.Len()-1)%2 != 0 {
+				if (pLen-1)%2 != 0 {
 					return nil, fmt.Errorf("要设置对应键跟值")
 				}
 
 				params := make([]*qqbot_msg.MarkdownParams, 0)
-
-				list := d.Inputs.StringAfterList(2)
-				for i := 0; i < len(list); i += 2 {
-					key := list[i]
-					// 分割换行
-					val := list[i+1]
-					val = strings.ReplaceAll(val, "\n", "\r")
-					val = mdRe.ReplaceAllString(val, "[\r\n$1]($2)")
-					val = mdReAt.ReplaceAllString(val, "<$1\r\n$2>")
-					val = strings.ReplaceAll(val, "```", "'''")
-					if strings.HasPrefix(val, "#") {
-						val = " " + val
-					}
-					vals := strings.Split(val, "\r\n")
-
-					params = append(params, &qqbot_msg.MarkdownParams{
-						Key:    key,
-						Values: vals,
-					})
+				for i := 2; i <= pLen; i += 2 {
+					key := d.Inputs.String(i)
+					val := mdFormatVal(d.Inputs.String(i + 1))
+					params = append(params, &qqbot_msg.MarkdownParams{Key: key, Values: strings.Split(val, "\r\n")})
 				}
 
 				md := &qqbot_msg.Markdown{
@@ -243,7 +253,7 @@ func qqBOTGroupRun(payload *qqbot_msg.Payload, bot *qqbot_msg.RouterQQBot) {
 				}
 
 				_, mErr := bot.API.
-					ReplyGroupMarkdownMessage(m.ID, m.GroupOpenID, md)
+					ReplyGroupMarkdownWithKeyboard(m.ID, m.GroupOpenID, md, kb)
 
 				if mErr != nil {
 					fmt.Println("QQBot回复失败", mErr)
@@ -465,10 +475,11 @@ func qqBOTGroupATRun(payload *qqbot_msg.Payload, bot *qqbot_msg.RouterQQBot) {
 		dic.SetFunc("发送MD", dto.DicFunc{
 			L: "1..",
 			Fn: func(d *dto.DicInputs) (any, error) {
+				pLen, kb := popMDKeyboard(d)
 
-				if d.Inputs.LenOk(1) {
+				if pLen == 1 {
 					_, mErr := bot.API.
-						ReplyGroupAnyMarkdownMessage(m.ID, m.GroupOpenID, d.Inputs.String(1))
+						ReplyGroupAnyMarkdownWithKeyboard(m.ID, m.GroupOpenID, d.Inputs.String(1), kb)
 					if mErr != nil {
 						fmt.Println("QQBot回复失败", mErr)
 					}
@@ -476,30 +487,15 @@ func qqBOTGroupATRun(payload *qqbot_msg.Payload, bot *qqbot_msg.RouterQQBot) {
 				}
 
 				// 2 开始，必须是 key-value 成对
-				if (d.Inputs.Len()-1)%2 != 0 {
+				if (pLen-1)%2 != 0 {
 					return nil, fmt.Errorf("要设置对应键跟值")
 				}
 
 				params := make([]*qqbot_msg.MarkdownParams, 0)
-
-				list := d.Inputs.StringAfterList(2)
-				for i := 0; i < len(list); i += 2 {
-					key := list[i]
-					// 分割换行
-					val := list[i+1]
-					val = strings.ReplaceAll(val, "\n", "\r")
-					val = mdRe.ReplaceAllString(val, "[\r\n$1]($2)")
-					val = mdReAt.ReplaceAllString(val, "<$1\r\n$2>")
-					val = strings.ReplaceAll(val, "```", "'''")
-					if strings.HasPrefix(val, "#") {
-						val = " " + val
-					}
-					vals := strings.Split(val, "\r\n")
-
-					params = append(params, &qqbot_msg.MarkdownParams{
-						Key:    key,
-						Values: vals,
-					})
+				for i := 2; i <= pLen; i += 2 {
+					key := d.Inputs.String(i)
+					val := mdFormatVal(d.Inputs.String(i + 1))
+					params = append(params, &qqbot_msg.MarkdownParams{Key: key, Values: strings.Split(val, "\r\n")})
 				}
 
 				md := &qqbot_msg.Markdown{
@@ -508,7 +504,7 @@ func qqBOTGroupATRun(payload *qqbot_msg.Payload, bot *qqbot_msg.RouterQQBot) {
 				}
 
 				_, mErr := bot.API.
-					ReplyGroupMarkdownMessage(m.ID, m.GroupOpenID, md)
+					ReplyGroupMarkdownWithKeyboard(m.ID, m.GroupOpenID, md, kb)
 
 				if mErr != nil {
 					fmt.Println("QQBot回复失败", mErr)
@@ -594,81 +590,126 @@ func qqBOTGroupATRun(payload *qqbot_msg.Payload, bot *qqbot_msg.RouterQQBot) {
 	}
 }
 
-// 群事件处理（入群/退群）
+// 群事件处理（入群/退群/入群申请）
+// qqBOTGroupEventRun 群事件分发入口
 func qqBOTGroupEventRun(payload *qqbot_msg.Payload, bot *qqbot_msg.RouterQQBot) {
-	m := &qqbot_msg.GroupMemberEvent{}
-	err := json.Unmarshal([]byte(payload.Data), m)
-	if err != nil {
-		debugLog.Infof("QQBot群事件数据验证失败")
-		return
-	}
-
-	botDicPath := utils.NewFileQueue(filepath.Join(bot.FilePath, "dic"))
-	botDicList, err := botDicPath.GetFileList()
-	if err != nil {
-		return
-	}
-
-	// 处理消息次数
 	qqbot_msg.MsgCount++
-
-	// 根据事件类型确定消息内容和来源
-	eventType := payload.Type
-	var msg string
-	var source string
-	switch eventType {
-	case "GROUP_MEMBER_ADD":
-		msg = "群成员加入"
-		source = "入群"
-	case "GROUP_MEMBER_REMOVE":
-		msg = "群成员退出"
-		source = "退群"
-	default:
-		return
-	}
 
 	appId := ""
 	if bot.API != nil {
 		appId = bot.API.AppId
 	}
 
-	// 取成员ID：GROUP_MEMBER_ADD/REMOVE 用 member_openid，GROUP_ADD_ROBOT/DEL_ROBOT 用 op_member_openid
-	memberID := m.MemberOpenID
-	if memberID == "" {
-		memberID = m.OpMemberOpenID
+	valData, msg, groupOpenID, ok := parseGroupEvent(payload, appId)
+	if !ok {
+		return
 	}
 
-	valData := dto.NewVal().
-		Set("来源", source).
-		Set("群号", m.GroupOpenID).
-		Set("成员", memberID).
-		Set("用户", m.UserOpenID).
-		Set("robot", appId).
-		Set("Robot", appId)
+	// 交互事件需要先回应，否则客户端会一直 loading
+	if payload.Type == "INTERACTION_CREATE" {
+		interactionEvent := &qqbot_msg.InteractionEvent{}
+		if err := json.Unmarshal([]byte(payload.Data), interactionEvent); err == nil {
+			bot.API.ReplyInteraction(interactionEvent.ID, 0)
+		}
+	}
 
-	// 记录群
-	RecordGroup(bot, m.GroupOpenID)
+	RecordGroup(bot, groupOpenID)
+	runGroupEventDic(bot, payload.Id, groupOpenID, valData, msg)
+}
 
-	// 词库
+// parseGroupEvent 解析群事件 payload，返回 valData、触发词、群号
+func parseGroupEvent(payload *qqbot_msg.Payload, appId string) (*dto.Val, string, string, bool) {
+	switch payload.Type {
+	case "GROUP_MEMBER_ADD", "GROUP_MEMBER_REMOVE",
+		"GROUP_ADD_ROBOT", "GROUP_DEL_ROBOT":
+		m := &qqbot_msg.GroupMemberEvent{}
+		if err := json.Unmarshal([]byte(payload.Data), m); err != nil {
+			debugLog.Infof("QQBot群事件数据验证失败")
+			return nil, "", "", false
+		}
+
+		source := "退群"
+		msg := "群成员退出"
+		if payload.Type == "GROUP_MEMBER_ADD" || payload.Type == "GROUP_ADD_ROBOT" {
+			source = "入群"
+			msg = "群成员加入"
+		}
+
+		memberID := m.MemberOpenID
+		if memberID == "" {
+			memberID = m.OpMemberOpenID
+		}
+
+		return dto.NewVal().
+			Set("来源", source).
+			Set("群号", m.GroupOpenID).
+			Set("成员", memberID).
+			Set("用户", m.UserOpenID).
+			Set("robot", appId).
+			Set("Robot", appId), msg, m.GroupOpenID, true
+
+	case "GROUP_JOIN_REQUEST":
+		m := &qqbot_msg.JoinRequestEvent{}
+		if err := json.Unmarshal([]byte(payload.Data), m); err != nil {
+			debugLog.Infof("QQBot入群申请数据验证失败")
+			return nil, "", "", false
+		}
+		return dto.NewVal().
+			Set("来源", "入群申请").
+			Set("群号", m.GroupOpenID).
+			Set("成员", m.ApplicantID).
+			Set("用户", m.ApplicantID).
+			Set("robot", appId).
+			Set("Robot", appId), "入群申请", m.GroupOpenID, true
+
+	case "INTERACTION_CREATE":
+		m := &qqbot_msg.InteractionEvent{}
+		if err := json.Unmarshal([]byte(payload.Data), m); err != nil || m.Data == nil || m.Data.Resolved == nil {
+			return nil, "", "", false
+		}
+		// 将按钮 data 作为触发词，词库中可监听按钮指令
+		trigger := m.Data.Resolved.ButtonData
+		if trigger == "" {
+			return nil, "", "", false
+		}
+		groupOpenID := m.GroupOpenID
+		if groupOpenID == "" {
+			groupOpenID = m.UserOpenID // 单聊场景用 UserOpenID
+		}
+		return dto.NewVal().
+			Set("来源", "按钮").
+			Set("群号", groupOpenID).
+			Set("成员", m.GroupMemberOpenID).
+			Set("用户", m.UserOpenID).
+			Set("robot", appId).
+			Set("Robot", appId), trigger, groupOpenID, true
+	}
+	return nil, "", "", false
+}
+
+// runGroupEventDic 遍历词库并执行群事件回复
+func runGroupEventDic(bot *qqbot_msg.RouterQQBot, msgID, groupOpenID string, valData *dto.Val, msg string) {
+	botDicList, err := utils.NewFileQueue(filepath.Join(bot.FilePath, "dic")).GetFileList()
+	if err != nil {
+		return
+	}
+
 	for _, v := range botDicList {
-		dicPath := filepath.Join(bot.FilePath, "dic", v)
-		FileData, err := utils.NewFileQueue(dicPath).ReadFromFile()
+		FileData, err := utils.NewFileQueue(filepath.Join(bot.FilePath, "dic", v)).ReadFromFile()
 		if err != nil {
 			continue
 		}
 
 		SetPushContext(&PushContext{
 			Bot:         bot,
-			MsgID:       payload.Id,
-			GroupOpenID: m.GroupOpenID,
+			MsgID:       msgID,
+			GroupOpenID: groupOpenID,
 		})
 
-		dic := dic_dto.NewDic(dicPath, FileData).
+		dic := dic_dto.NewDic(filepath.Join(bot.FilePath, "dic", v), FileData).
 			SetGlobal_v(valData)
-
 		dic.AddFuncs(ReplyFuncs)
 
-		// 内部事件使用 DicRunPrivate
 		rMsg := dic_api.Api.DicRunPrivate(dic, msg)
 		rMsg = strings.ReplaceAll(rMsg, "\\r", "\n")
 
@@ -677,14 +718,12 @@ func qqBOTGroupEventRun(payload *qqbot_msg.Payload, bot *qqbot_msg.RouterQQBot) 
 				if i == 1 {
 					rMsg = ""
 				}
-				_, mErr := bot.API.ReplyGroupImgMessage(payload.Id, m.GroupOpenID, img, rMsg)
-				if mErr != nil {
+				if _, mErr := bot.API.ReplyGroupImgMessage(msgID, groupOpenID, img, rMsg); mErr != nil {
 					fmt.Println("QQBot回复图文失败", mErr)
 				}
 			}
 		} else if rMsg != "" {
-			_, mErr := bot.API.ReplyGroupMessage(payload.Id, m.GroupOpenID, rMsg)
-			if mErr != nil {
+			if _, mErr := bot.API.ReplyGroupMessage(msgID, groupOpenID, rMsg); mErr != nil {
 				debugLog.Infof("QQBot回复失败%v", mErr)
 			}
 		}
@@ -796,32 +835,18 @@ func qqBOTGroupPrivateRun(payload *qqbot_msg.Payload, bot *qqbot_msg.RouterQQBot
 		dic.SetFunc("发送MD", dto.DicFunc{
 			L: "2..",
 			Fn: func(d *dto.DicInputs) (any, error) {
+				pLen, kb := popMDKeyboard(d)
 
 				// 2 开始，必须是 key-value 成对
-				if (d.Inputs.Len()-1)%2 != 0 {
+				if (pLen-1)%2 != 0 {
 					return nil, fmt.Errorf("要设置对应键跟值")
 				}
 
 				params := make([]*qqbot_msg.MarkdownParams, 0)
-
-				list := d.Inputs.StringAfterList(2)
-				for i := 0; i < len(list); i += 2 {
-					key := list[i]
-					// 分割换行
-					val := list[i+1]
-					val = strings.ReplaceAll(val, "\n", "\r")
-					val = mdRe.ReplaceAllString(val, "[\r\n$1]($2)")
-					val = mdReAt.ReplaceAllString(val, "<$1\r\n$2>")
-					val = strings.ReplaceAll(val, "```", "'''")
-					if strings.HasPrefix(val, "#") {
-						val = " " + val
-					}
-					vals := strings.Split(val, "\r\n")
-
-					params = append(params, &qqbot_msg.MarkdownParams{
-						Key:    key,
-						Values: vals,
-					})
+				for i := 2; i <= pLen; i += 2 {
+					key := d.Inputs.String(i)
+					val := mdFormatVal(d.Inputs.String(i + 1))
+					params = append(params, &qqbot_msg.MarkdownParams{Key: key, Values: strings.Split(val, "\r\n")})
 				}
 
 				md := &qqbot_msg.Markdown{
@@ -830,7 +855,7 @@ func qqBOTGroupPrivateRun(payload *qqbot_msg.Payload, bot *qqbot_msg.RouterQQBot
 				}
 
 				_, mErr := bot.API.
-					ReplyPrivateMarkdownMessage(m.ID, userID, md)
+					ReplyPrivateMarkdownWithKeyboard(m.ID, userID, md, kb)
 
 				if mErr != nil {
 					fmt.Println("QQBot回复失败", mErr)

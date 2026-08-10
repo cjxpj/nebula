@@ -38,7 +38,41 @@ func GetClientIP(r *http.Request) string {
 	if err != nil {
 		ip = r.RemoteAddr
 	}
+	// 回环地址 → 返回本机局域网 IP
+	if ip == "::1" || ip == "127.0.0.1" {
+		if lan := getLocalIP(); lan != "" {
+			return lan
+		}
+	}
 	return ip
+}
+
+// getLocalIP 获取本机第一个非回环 IPv4 地址
+func getLocalIP() string {
+	interfaces, err := net.Interfaces()
+	if err != nil {
+		return ""
+	}
+	for _, iface := range interfaces {
+		if iface.Flags&net.FlagUp == 0 || iface.Flags&net.FlagLoopback != 0 {
+			continue
+		}
+		addrs, err := iface.Addrs()
+		if err != nil {
+			continue
+		}
+		for _, addr := range addrs {
+			ipNet, ok := addr.(*net.IPNet)
+			if !ok {
+				continue
+			}
+			ip4 := ipNet.IP.To4()
+			if ip4 != nil && !ip4.IsLoopback() {
+				return ip4.String()
+			}
+		}
+	}
+	return ""
 }
 
 // FtpDir 获取 FTP 根目录路径

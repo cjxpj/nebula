@@ -240,7 +240,8 @@ func (v *Val) Set(key string, val any) *Val {
 		return v
 	}
 	value, ok := v.objlock.Load(key)
-	if !ok || (ok && !value.(bool)) {
+	isLocked, typeOk := value.(bool)
+	if !ok || (ok && !typeOk) || (ok && !isLocked) {
 		v.obj.Store(key, val)
 	}
 	return v

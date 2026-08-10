@@ -71,6 +71,7 @@ type HttpOpUiConfig_opui struct {
 	Open   bool   `json:"open"`
 	Path   string `json:"path"`
 	Secret string `json:"secret"`
+	Cors   bool   `json:"cors"`
 }
 
 type HttpOpUiConfig_bg struct {
@@ -95,6 +96,276 @@ type HttpOpUiConfig_sftp struct {
 	Username string `json:"username"`
 	Password string `json:"password"`
 	Debug    bool   `json:"debug"`
+}
+
+// ---------- 安全检测：登录事件追踪 ----------
+
+var (
+	serverStartTime = time.Now()
+	loginEventsMu   sync.Mutex
+	loginEvents     = make([]LoginEvent, 0, 20)
+)
+
+type LoginEvent struct {
+	Time   string `json:"time"`
+	Type   string `json:"type"`   // "admin_login" / "admin_login_fail" / "bot_online" / "bot_offline"
+	Detail string `json:"detail"` // 描述信息
+	IP     string `json:"ip"`
+}
+
+func addLoginEvent(eventType, detail, ip string) {
+	loginEventsMu.Lock()
+	e := LoginEvent{
+		Time:   time.Now().Format("01-02 15:04:05"),
+		Type:   eventType,
+		Detail: detail,
+		IP:     ip,
+	}
+	loginEvents = append(loginEvents, e)
+	if len(loginEvents) > 50 {
+		loginEvents = loginEvents[len(loginEvents)-50:]
+	}
+	loginEventsMu.Unlock()
+
+	// 广播通知给所有 OPUI WebSocket 客户端（排除当前登录者自己）
+	notifyData, _ := json.Marshal(map[string]string{
+		"type":       "login_event",
+		"event_type": eventType,
+		"detail":     detail,
+		"ip":         ip,
+		"time":       e.Time,
+	})
+	broadcastOpuiNotifyExcept(notifyData, ip)
+}
+
+// SecurityInfo 安全检测返回数据
+type SecurityInfo struct {
+	ServerStart string       `json:"server_start"`
+	Uptime      string       `json:"uptime"`
+	LoginEvents []LoginEvent `json:"login_events"`
+	OnlineList  []OnlineItem `json:"online_list"`
+}
+
+type OnlineItem struct {
+	Name   string `json:"name"`
+	Type   string `json:"type"` // "bot" / "service"
+	Online bool   `json:"online"`
+	Detail string `json:"detail"`
+}
+
+func ternary(cond bool, t, f string) string {
+	if cond {
+		return t
+	}
+	return f
+}
+
+func formatDuration(d time.Duration) string {
+	if d < time.Minute {
+		return "刚刚启动"
+	}
+	h := int(d.Hours())
+	m := int(d.Minutes()) % 60
+	if h > 0 {
+		return fmt.Sprintf("%d小时%d分钟", h, m)
+	}
+	return fmt.Sprintf("%d分钟", m)
+}
+
+// ---------- OPUI WebSocket 通知广播 ----------
+
+type opuiClientInfo struct {
+	IP        string
+	Connected time.Time
+}
+
+var (
+	opuiNotifyUpgrader = websocket.Upgrader{
+		CheckOrigin: func(r *http.Request) bool { return true },
+	}
+	opuiNotifyClients   = make(map[*websocket.Conn]*opuiClientInfo)
+	opuiNotifyClientsMu sync.Mutex
+)
+
+func addOpuiNotifyClient(conn *websocket.Conn, ip string) {
+	opuiNotifyClientsMu.Lock()
+	opuiNotifyClients[conn] = &opuiClientInfo{IP: ip, Connected: time.Now()}
+	opuiNotifyClientsMu.Unlock()
+	broadcastOnlineUpdate()
+}
+
+func removeOpuiNotifyClient(conn *websocket.Conn) {
+	opuiNotifyClientsMu.Lock()
+	delete(opuiNotifyClients, conn)
+	opuiNotifyClientsMu.Unlock()
+	broadcastOnlineUpdate()
+}
+
+func broadcastOnlineUpdate() {
+	data, _ := json.Marshal(map[string]string{"type": "online_update"})
+	broadcastOpuiNotify(data)
+}
+
+func broadcastOpuiNotify(msg []byte) {
+	opuiNotifyClientsMu.Lock()
+	defer opuiNotifyClientsMu.Unlock()
+	for conn := range opuiNotifyClients {
+		conn.WriteMessage(websocket.TextMessage, msg)
+	}
+}
+
+func broadcastOpuiNotifyExcept(msg []byte, excludeIP string) {
+	opuiNotifyClientsMu.Lock()
+	defer opuiNotifyClientsMu.Unlock()
+	for conn, info := range opuiNotifyClients {
+		if info.IP == excludeIP {
+			continue
+		}
+		conn.WriteMessage(websocket.TextMessage, msg)
+	}
+}
+
+// GetOpuiOnlineClients 返回当前 OPUI 在线用户列表
+func GetOpuiOnlineClients() []map[string]interface{} {
+	opuiNotifyClientsMu.Lock()
+	defer opuiNotifyClientsMu.Unlock()
+	list := make([]map[string]interface{}, 0, len(opuiNotifyClients))
+	for _, info := range opuiNotifyClients {
+		list = append(list, map[string]interface{}{
+			"name":   info.IP,
+			"type":   "opui",
+			"online": true,
+			"detail": "已连接 " + formatDuration(time.Since(info.Connected)),
+		})
+	}
+	return list
+}
+
+// wsResponseWriter 实现 http.ResponseWriter，用于 WebSocket 消息处理时捕获输出
+type wsResponseWriter struct {
+	header http.Header
+	buf    bytes.Buffer
+	code   int
+}
+
+func (w *wsResponseWriter) Header() http.Header {
+	if w.header == nil {
+		w.header = make(http.Header)
+	}
+	return w.header
+}
+
+func (w *wsResponseWriter) Write(b []byte) (int, error) {
+	return w.buf.Write(b)
+}
+
+func (w *wsResponseWriter) WriteHeader(code int) {
+	w.code = code
+}
+
+// ---------- IP 黑名单 ----------
+
+const ipBlacklistFile = "private/system/ip_blacklist.json"
+
+var (
+	ipBlacklist   = make(map[string]bool)
+	ipBlacklistMu sync.Mutex
+)
+
+func LoadIPBlacklist() {
+	ff := utils.NewFileQueue(ipBlacklistFile)
+	data, err := ff.ReadFromFile()
+	if err != nil {
+		return
+	}
+	var list []string
+	if json.Unmarshal([]byte(data), &list) == nil {
+		ipBlacklistMu.Lock()
+		ipBlacklist = make(map[string]bool, len(list))
+		for _, ip := range list {
+			ipBlacklist[strings.TrimSpace(ip)] = true
+		}
+		ipBlacklistMu.Unlock()
+	}
+}
+
+func saveIPBlacklist() {
+	ipBlacklistMu.Lock()
+	list := make([]string, 0, len(ipBlacklist))
+	for ip := range ipBlacklist {
+		list = append(list, ip)
+	}
+	ipBlacklistMu.Unlock()
+	data, _ := json.Marshal(list)
+	utils.NewFileQueue(ipBlacklistFile).WriteToFile(string(data))
+}
+
+// ---------- 防火墙（词库实现） ----------
+
+// CheckFirewall IP黑名单 + 防火墙词库检查，返回 true 表示已拦截（已写入响应）
+func CheckFirewall(w http.ResponseWriter, r *http.Request) bool {
+	ip := r.RemoteAddr
+	if fwd := r.Header.Get("X-Forwarded-For"); fwd != "" {
+		ip = strings.Split(fwd, ",")[0]
+	}
+	if real := r.Header.Get("X-Real-IP"); real != "" {
+		ip = real
+	}
+	ip = strings.TrimSpace(ip)
+	if colon := strings.LastIndex(ip, ":"); colon > 0 && !strings.Contains(ip, ".") {
+		// IPv6: [::1]:1234, 处理纯 IPv6
+	} else if colon > 0 {
+		ip = ip[:colon] // strip port
+	}
+
+	// IP 黑名单检查
+	ipBlacklistMu.Lock()
+	blocked := ipBlacklist[ip]
+	ipBlacklistMu.Unlock()
+	if blocked {
+		http.Error(w, "403 Forbidden: IP is blacklisted", http.StatusForbidden)
+		return true
+	}
+
+	// 防火墙词库检查
+	ff := utils.NewFileQueue(dto.CONFIG_SYSTEM_PATH)
+	cf, err := ff.LoadIni()
+	if err != nil {
+		return false
+	}
+	fwSec := cf.Section("防火墙")
+	if fwSec == nil || !fwSec.Key("启用").MustBool(false) {
+		return false
+	}
+	dicPath := fwSec.Key("词库").String()
+	if dicPath == "" {
+		return false
+	}
+
+	fileData, err := utils.NewFileQueue(dicPath).ReadFromFile()
+	if err != nil {
+		return false
+	}
+
+	dic := dic_dto.NewDic(dicPath, fileData)
+	dic.Val.G.Set("IP", ip)
+	dic.Val.G.Set("路径", r.URL.Path)
+	dic.Val.G.Set("方法", r.Method)
+	dic.Val.G.Set("UA", r.UserAgent())
+	dic.Val.G.Set("请求头", fmt.Sprintf("%v", r.Header))
+
+	result := dic_api.Api.DicRun(dic, "检查")
+	if result != "" {
+		// 对输出结果做最终变量插值，确保 %IP%、%路径% 等变量被正确替换
+		result = utils.AnyToString(dic.Val.Text(result))
+		if strings.HasPrefix(result, "放行") {
+			return false
+		}
+		http.Error(w, result, http.StatusForbidden)
+		return true
+	}
+
+	return false
 }
 
 // BeerWebFrp 协议消息类型
@@ -1532,6 +1803,146 @@ func OpUI(w http.ResponseWriter, r *http.Request, getpath string) {
 		getpath = "/index.html"
 	}
 
+	// OPUI WebSocket 统一通信（API 请求 + 事件推送）
+	if getpath == "/ws" {
+		// 仅处理 WebSocket 升级请求，忽略普通 HTTP 请求（如浏览器直接访问 /ws）
+		if !websocket.IsWebSocketUpgrade(r) {
+			return
+		}
+		conn, err := opuiNotifyUpgrader.Upgrade(w, r, nil)
+		if err != nil {
+			debugLog.Errorf("[OPUI] ws upgrade failed: %v", err)
+			return
+		}
+
+		// 心跳机制：防止中间代理/防火墙断开空闲连接
+		const (
+			pongWait   = 60 * time.Second
+			pingPeriod = (pongWait * 9) / 10
+			writeWait  = 10 * time.Second
+		)
+		conn.SetReadDeadline(time.Now().Add(pongWait))
+		conn.SetPongHandler(func(string) error {
+			conn.SetReadDeadline(time.Now().Add(pongWait))
+			return nil
+		})
+		pingDone := make(chan struct{})
+		go func() {
+			ticker := time.NewTicker(pingPeriod)
+			defer ticker.Stop()
+			for {
+				select {
+				case <-pingDone:
+					return
+				case <-ticker.C:
+					conn.SetWriteDeadline(time.Now().Add(writeWait))
+					if err := conn.WriteMessage(websocket.PingMessage, nil); err != nil {
+						return
+					}
+				}
+			}
+		}()
+
+		addOpuiNotifyClient(conn, utils.GetClientIP(r))
+		var writeMu sync.Mutex // 保护 conn.WriteMessage 并发写入
+		// 限制并发处理数，防止 goroutine 爆炸 + OpUI 共享状态竞争
+		sem := make(chan struct{}, 10)
+		go func() {
+			// 连接内认证：密钥不再走 URL 参数，改为连接后首条 check_opui_key 消息验证
+			authenticatedKey := ""
+			defer func() {
+				close(pingDone)
+				removeOpuiNotifyClient(conn)
+				conn.Close()
+			}()
+			for {
+				_, msg, readErr := conn.ReadMessage()
+				if readErr != nil {
+					break
+				}
+				var wsMsg struct {
+					ID   string          `json:"id"`
+					Type string          `json:"type"`
+					Data json.RawMessage `json:"data"`
+				}
+				if err := json.Unmarshal(msg, &wsMsg); err != nil || wsMsg.Type == "" {
+					continue
+				}
+
+				// ping/pong 应用层心跳：客户端通过 ping 检测连接是否存活，服务端快速回复 pong
+				if wsMsg.Type == "ping" {
+					resp, _ := json.Marshal(map[string]interface{}{
+						"id": wsMsg.ID, "type": "pong",
+					})
+					writeMu.Lock()
+					conn.WriteMessage(websocket.TextMessage, resp)
+					writeMu.Unlock()
+					continue
+				}
+
+				// check_opui_key 在连接内处理：验证密钥并标记认证状态
+				if wsMsg.Type == "check_opui_key" {
+					var authReq struct {
+						Key string `json:"key"`
+					}
+					valid := false
+					if json.Unmarshal(wsMsg.Data, &authReq) == nil && authReq.Key != "" {
+						ff := utils.NewFileQueue(dto.CONFIG_SYSTEM_PATH)
+						f, err := ff.LoadIni()
+						if err == nil {
+							storedKey := f.Section("管理面板").Key("密钥").String()
+							if storedKey == "" || storedKey == authReq.Key {
+								authenticatedKey = authReq.Key
+								valid = true
+								clientIP := utils.GetClientIP(r)
+								addLoginEvent("admin_login", "OPUI 管理员登录成功", clientIP)
+							} else {
+								clientIP := utils.GetClientIP(r)
+								addLoginEvent("admin_login_fail", "OPUI 登录失败: 密钥错误", clientIP)
+							}
+						}
+					}
+					resp, _ := json.Marshal(map[string]interface{}{
+						"id": wsMsg.ID, "type": wsMsg.Type, "data": json.RawMessage(fmt.Sprintf(`{"valid":%t}`, valid)),
+					})
+					writeMu.Lock()
+					conn.WriteMessage(websocket.TextMessage, resp)
+					writeMu.Unlock()
+					continue
+				}
+
+				// 构造虚拟 HTTP 请求
+				fakeReq, _ := http.NewRequest("POST", "/", bytes.NewReader(msg))
+				fakeReq.Header.Set("Content-Type", "application/json")
+				fakeReq.RemoteAddr = r.RemoteAddr
+				if authenticatedKey != "" {
+					fakeReq.Header.Set("X-OPUI-Key", authenticatedKey)
+				}
+
+				// 异步处理：每条消息独立 goroutine，读循环不被阻塞
+				go func(msgID, msgType string, req *http.Request) {
+					// 在 goroutine 内获取信号量，避免阻塞读循环
+					sem <- struct{}{}
+					defer func() { <-sem }()
+					cw := &wsResponseWriter{header: make(http.Header)}
+					OpUI(cw, req, "/api")
+
+					respData := cw.buf.Bytes()
+					if len(respData) == 0 {
+						respData = []byte(`{"status":"ok"}`)
+					}
+					resp, _ := json.Marshal(map[string]interface{}{
+						"id": msgID, "type": msgType, "data": json.RawMessage(respData),
+					})
+					writeMu.Lock()
+					conn.WriteMessage(websocket.TextMessage, resp)
+					writeMu.Unlock()
+				}(wsMsg.ID, wsMsg.Type, fakeReq)
+			}
+		}()
+		return
+	}
+
 	if r.Method == http.MethodPost &&
 		strings.HasPrefix(r.Header.Get("Content-Type"), "application/json") {
 		var h *HttpOpUiData
@@ -1607,7 +2018,7 @@ func OpUI(w http.ResponseWriter, r *http.Request, getpath string) {
 			f, err := ff.LoadIni()
 			if err != nil {
 				debugLog.Errorf("[OPUI] get_opui LoadIni failed: %v", err)
-				w.Write([]byte(`{"open":false,"path":"","secret":""}`))
+				w.Write([]byte(`{"open":false,"path":"","secret":"","cors":false}`))
 				return
 			}
 			d := f.Section("管理面板")
@@ -1615,6 +2026,7 @@ func OpUI(w http.ResponseWriter, r *http.Request, getpath string) {
 			j.Open = d.Key("启用").MustBool(false)
 			j.Path = d.Key("访问路径").String()
 			j.Secret = d.Key("密钥").String()
+			j.Cors = d.Key("跨域").MustBool(false)
 			r, err := json.Marshal(j)
 			if err != nil {
 				debugLog.Errorf("[OPUI] get_opui json.Marshal failed: %v", err)
@@ -1639,12 +2051,14 @@ func OpUI(w http.ResponseWriter, r *http.Request, getpath string) {
 			d.Key("启用").SetValue(strconv.FormatBool(j.Open))
 			d.Key("访问路径").SetValue(j.Path)
 			d.Key("密钥").SetValue(j.Secret)
+			d.Key("跨域").SetValue(strconv.FormatBool(j.Cors))
 			ff.SaveIni(f)
 
 			if j.Open {
 				dto.ServerConfig.OPUI = &dto.OPUI{
 					Addr:   "/" + j.Path,
 					Secret: j.Secret,
+					Cors:   j.Cors,
 				}
 			} else {
 				dto.ServerConfig.OPUI = nil
@@ -1748,9 +2162,12 @@ func OpUI(w http.ResponseWriter, r *http.Request, getpath string) {
 			}
 			d := f.Section("管理面板")
 			storedKey := d.Key("密钥").String()
+			clientIP := utils.GetClientIP(r)
 			if storedKey != "" && storedKey == j.Key {
+				addLoginEvent("admin_login", "OPUI 管理员登录成功", clientIP)
 				w.Write([]byte(`{"valid":true}`))
 			} else {
+				addLoginEvent("admin_login_fail", "OPUI 登录失败: 密钥错误", clientIP)
 				w.Write([]byte(`{"valid":false}`))
 			}
 			return
@@ -1786,11 +2203,11 @@ func OpUI(w http.ResponseWriter, r *http.Request, getpath string) {
 				Open: j.Open,
 				Addr: "/" + j.WebSocket,
 				Conn: &websocket.Upgrader{
-					CheckOrigin: func(r *http.Request) bool {
-						// 跨域连接
-						return j.Cors
-					},
+					CheckOrigin: func(r *http.Request) bool { return true },
 				},
+			}
+			if !j.Cors {
+				dto.ServerConfig.Ws.Conn.CheckOrigin = nil
 			}
 			d.Key("启用").SetValue(strconv.FormatBool(j.Open))
 			d.Key("跨域").SetValue(strconv.FormatBool(j.Cors))
@@ -2967,6 +3384,147 @@ func OpUI(w http.ResponseWriter, r *http.Request, getpath string) {
 				},
 			})
 			w.Write(jsonResp)
+			return
+
+		case "get_sys_status":
+			data, err := getSysStatus()
+			if err != nil {
+				debugLog.Errorf("[OPUI] get_sys_status failed: %v", err)
+				http.Error(w, `{"status":"error","error":"collect failed"}`, http.StatusInternalServerError)
+				return
+			}
+			if r, err := json.Marshal(data); err == nil {
+				w.Write(r)
+			} else {
+				http.Error(w, `{"status":"error","error":"marshal failed"}`, http.StatusInternalServerError)
+			}
+			return
+
+		case "security_info":
+			info := SecurityInfo{
+				ServerStart: serverStartTime.Format("2006-01-02 15:04:05"),
+				Uptime:      formatDuration(time.Since(serverStartTime)),
+			}
+
+			// 登录事件
+			loginEventsMu.Lock()
+			info.LoginEvents = make([]LoginEvent, len(loginEvents))
+			copy(info.LoginEvents, loginEvents)
+			loginEventsMu.Unlock()
+
+			// 在线列表 = OPUI 已连接用户
+			rawClients := GetOpuiOnlineClients()
+			info.OnlineList = make([]OnlineItem, 0, len(rawClients))
+			for _, c := range rawClients {
+				info.OnlineList = append(info.OnlineList, OnlineItem{
+					Name:   c["name"].(string),
+					Type:   c["type"].(string),
+					Online: c["online"].(bool),
+					Detail: c["detail"].(string),
+				})
+			}
+
+			if r, err := json.Marshal(info); err == nil {
+				w.Write(r)
+			} else {
+				http.Error(w, `{"status":"error","error":"marshal failed"}`, http.StatusInternalServerError)
+			}
+			return
+
+		case "ip_blacklist_list":
+			ipBlacklistMu.Lock()
+			list := make([]string, 0, len(ipBlacklist))
+			for ip := range ipBlacklist {
+				list = append(list, ip)
+			}
+			ipBlacklistMu.Unlock()
+			r, _ := json.Marshal(list)
+			w.Write(r)
+			return
+
+		case "ip_blacklist_add":
+			var j struct {
+				IP string `json:"ip"`
+			}
+			if err := json.Unmarshal(h.Data, &j); err != nil || j.IP == "" {
+				http.Error(w, `{"status":"error","error":"invalid ip"}`, http.StatusBadRequest)
+				return
+			}
+			ipBlacklistMu.Lock()
+			ipBlacklist[strings.TrimSpace(j.IP)] = true
+			ipBlacklistMu.Unlock()
+			saveIPBlacklist()
+			// 广播安全事件
+			notifyData, _ := json.Marshal(map[string]string{
+				"type":   "ip_blacklist",
+				"action": "add",
+				"ip":     j.IP,
+			})
+			broadcastOpuiNotify(notifyData)
+			w.Write([]byte(`{"status":"ok"}`))
+			return
+
+		case "ip_blacklist_remove":
+			var j struct {
+				IP string `json:"ip"`
+			}
+			if err := json.Unmarshal(h.Data, &j); err != nil || j.IP == "" {
+				http.Error(w, `{"status":"error","error":"invalid ip"}`, http.StatusBadRequest)
+				return
+			}
+			ipBlacklistMu.Lock()
+			delete(ipBlacklist, strings.TrimSpace(j.IP))
+			ipBlacklistMu.Unlock()
+			saveIPBlacklist()
+			notifyData, _ := json.Marshal(map[string]string{
+				"type":   "ip_blacklist",
+				"action": "remove",
+				"ip":     j.IP,
+			})
+			broadcastOpuiNotify(notifyData)
+			w.Write([]byte(`{"status":"ok"}`))
+			return
+
+		case "firewall_get_config":
+			ff := utils.NewFileQueue(dto.CONFIG_SYSTEM_PATH)
+			cf, err := ff.LoadIni()
+			if err != nil {
+				w.Write([]byte(`{"enabled":false,"dic_path":""}`))
+				return
+			}
+			fwSec := cf.Section("防火墙")
+			var enabled bool
+			var dicPath string
+			if fwSec != nil {
+				enabled = fwSec.Key("启用").MustBool(false)
+				dicPath = fwSec.Key("词库").String()
+			}
+			r, _ := json.Marshal(map[string]interface{}{
+				"enabled":  enabled,
+				"dic_path": dicPath,
+			})
+			w.Write(r)
+			return
+
+		case "firewall_save_config":
+			var j struct {
+				Enabled bool   `json:"enabled"`
+				DicPath string `json:"dic_path"`
+			}
+			if err := json.Unmarshal(h.Data, &j); err != nil {
+				http.Error(w, `{"status":"error","error":"invalid json"}`, http.StatusBadRequest)
+				return
+			}
+			ff := utils.NewFileQueue(dto.CONFIG_SYSTEM_PATH)
+			cf, err := ff.LoadIni()
+			if err != nil {
+				http.Error(w, `{"status":"error","error":"config load failed"}`, http.StatusInternalServerError)
+				return
+			}
+			cf.Section("防火墙").Key("启用").SetValue(strconv.FormatBool(j.Enabled))
+			cf.Section("防火墙").Key("词库").SetValue(j.DicPath)
+			ff.SaveIni(cf)
+			w.Write([]byte(`{"status":"ok"}`))
 			return
 
 		default:
