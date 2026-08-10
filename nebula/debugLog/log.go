@@ -5,42 +5,42 @@ package debugLog
 var DefaultLogger = Logger(new(consoleLogger))
 
 // Debug log.Debug
-func Debug(v ...interface{}) {
+func Debug(v ...any) {
 	DefaultLogger.Debug(v...)
 }
 
 // Info log.Info
-func Info(v ...interface{}) {
+func Info(v ...any) {
 	DefaultLogger.Info(v...)
 }
 
 // Warn log.Warn
-func Warn(v ...interface{}) {
+func Warn(v ...any) {
 	DefaultLogger.Warn(v...)
 }
 
 // Error log.Error
-func Error(v ...interface{}) {
+func Error(v ...any) {
 	DefaultLogger.Error(v...)
 }
 
 // Debugf log.Debugf
-func Debugf(format string, v ...interface{}) {
+func Debugf(format string, v ...any) {
 	DefaultLogger.Debugf(format, v...)
 }
 
 // Infof log.Infof
-func Infof(format string, v ...interface{}) {
+func Infof(format string, v ...any) {
 	DefaultLogger.Infof(format, v...)
 }
 
 // Warnf log.Warnf
-func Warnf(format string, v ...interface{}) {
+func Warnf(format string, v ...any) {
 	DefaultLogger.Warnf(format, v...)
 }
 
 // Errorf log.Errorf
-func Errorf(format string, v ...interface{}) {
+func Errorf(format string, v ...any) {
 	DefaultLogger.Errorf(format, v...)
 }
 

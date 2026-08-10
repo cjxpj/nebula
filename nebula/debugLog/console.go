@@ -14,42 +14,42 @@ var _ Logger = (*consoleLogger)(nil)
 type consoleLogger struct{}
 
 // Debug 日志
-func (consoleLogger) Debug(v ...interface{}) {
+func (consoleLogger) Debug(v ...any) {
 	output("Debug", fmt.Sprint(v...))
 }
 
 // Info 日志
-func (consoleLogger) Info(v ...interface{}) {
+func (consoleLogger) Info(v ...any) {
 	output("Info", fmt.Sprint(v...))
 }
 
 // Warn 日志
-func (consoleLogger) Warn(v ...interface{}) {
+func (consoleLogger) Warn(v ...any) {
 	output("Warning", fmt.Sprint(v...))
 }
 
 // Error
-func (consoleLogger) Error(v ...interface{}) {
+func (consoleLogger) Error(v ...any) {
 	output("Error", fmt.Sprint(v...))
 }
 
 // Debugf Debug Format 日志
-func (consoleLogger) Debugf(format string, v ...interface{}) {
+func (consoleLogger) Debugf(format string, v ...any) {
 	output("Debug", fmt.Sprintf(format, v...))
 }
 
 // Infof Info Format 日志
-func (consoleLogger) Infof(format string, v ...interface{}) {
+func (consoleLogger) Infof(format string, v ...any) {
 	output("Info", fmt.Sprintf(format, v...))
 }
 
 // Warnf Warning Format 日志
-func (consoleLogger) Warnf(format string, v ...interface{}) {
+func (consoleLogger) Warnf(format string, v ...any) {
 	output("Warning", fmt.Sprintf(format, v...))
 }
 
 // Errorf Error Format 日志
-func (consoleLogger) Errorf(format string, v ...interface{}) {
+func (consoleLogger) Errorf(format string, v ...any) {
 	output("Error", fmt.Sprintf(format, v...))
 }
 
@@ -58,7 +58,7 @@ func (consoleLogger) Sync() error {
 	return nil
 }
 
-func output(level string, v ...interface{}) {
+func output(level string, v ...any) {
 	pc, file, line, _ := runtime.Caller(3)
 	file = filepath.Base(file)
 	funcName := strings.TrimPrefix(filepath.Ext(runtime.FuncForPC(pc).Name()), ".")

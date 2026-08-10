@@ -27,7 +27,7 @@ type MysqlRes struct {
 	Error        string                   `json:"error"`
 	LastInsertId int64                    `json:"last_insert_id"`
 	RowsAffected int64                    `json:"rows_affected"`
-	Data         []map[string]interface{} `json:"data"`
+	Data         []map[string]any `json:"data"`
 }
 
 func (r *MysqlRes) r() string {
@@ -174,8 +174,8 @@ func mysqlExec(d *dto.DicInputs) (any, error) {
 		defer rows.Close()
 
 		columns, _ := rows.Columns()
-		values := make([]interface{}, len(columns))
-		pointers := make([]interface{}, len(columns))
+		values := make([]any, len(columns))
+		pointers := make([]any, len(columns))
 		for i := range values {
 			pointers[i] = &values[i]
 		}
@@ -186,7 +186,7 @@ func mysqlExec(d *dto.DicInputs) (any, error) {
 				Output.Error = err.Error()
 				return Output.r(), nil
 			}
-			rowData := make(map[string]interface{})
+			rowData := make(map[string]any)
 			for i, col := range columns {
 				rowData[col] = values[i]
 			}

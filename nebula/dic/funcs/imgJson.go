@@ -37,7 +37,7 @@ func (f *DicFunc) DrawImg() string {
 	return ""
 }
 
-func (j *JsonImage) Draw(jsonData []map[string]interface{}) string {
+func (j *JsonImage) Draw(jsonData []map[string]any) string {
 
 	// GIF的图像切片和延迟切片
 	gif_imgs := []*image.Paletted{}
@@ -61,7 +61,7 @@ func (j *JsonImage) Draw(jsonData []map[string]interface{}) string {
 			return "缺少需求字段或类型错误"
 		}
 		var value []string
-		SetValue, ok := json["参数"].([]interface{})
+		SetValue, ok := json["参数"].([]any)
 		if ok {
 			value = make([]string, 0, len(SetValue))
 			for _, vv := range SetValue {

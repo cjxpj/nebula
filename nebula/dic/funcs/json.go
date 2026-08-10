@@ -315,7 +315,7 @@ func (f *DicFunc) JsonLen() string {
 	return "0"
 }
 
-// 根据键列表设置 interface{} 的值
+// 根据键列表设置 any 的值
 func JsonSetValue(data any, keys []string, dvalue string, str bool) any {
 	if len(keys) == 0 {
 		return data

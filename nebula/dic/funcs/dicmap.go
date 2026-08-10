@@ -9,7 +9,7 @@ import (
 	"github.com/iancoleman/orderedmap"
 )
 
-// newMapData 把 JSON 字符串或 map[string]interface{} 转成 orderedmap
+// newMapData 把 JSON 字符串或 map[string]any 转成 orderedmap
 func newMapData(d *dto.DicInputs) (any, error) {
 	result := orderedmap.New()
 	val := d.Inputs.Get(1)

@@ -22,12 +22,12 @@ func loadIni(filePath, _ string) (*ini.File, error) {
 }
 
 // loadYaml 加载 yaml 配置文件，文件不存在时返回空 map
-func loadYaml(filePath, _ string) (map[string]interface{}, error) {
+func loadYaml(filePath, _ string) (map[string]any, error) {
 	file := utils.NewFile()
 	file.SetPath(filePath)
 	yamlData, err := file.LoadYaml()
 	if err != nil {
-		return make(map[string]interface{}), nil
+		return make(map[string]any), nil
 	}
 	return yamlData, nil
 }
@@ -80,7 +80,7 @@ func readYaml(filePath, section, key, defaultVal string) (any, error) {
 		return defaultVal, nil
 	}
 
-	sectionMapTyped, ok := sectionMap.(map[string]interface{})
+	sectionMapTyped, ok := sectionMap.(map[string]any)
 	if !ok {
 		return defaultVal, nil
 	}
@@ -145,13 +145,13 @@ func writeYaml(filePath, section, key, value string) (any, error) {
 
 	sectionMap, ok := yamlData[section]
 	if !ok {
-		sectionMap = make(map[string]interface{})
+		sectionMap = make(map[string]any)
 		yamlData[section] = sectionMap
 	}
 
-	sectionMapTyped, ok := sectionMap.(map[string]interface{})
+	sectionMapTyped, ok := sectionMap.(map[string]any)
 	if !ok {
-		sectionMapTyped = make(map[string]interface{})
+		sectionMapTyped = make(map[string]any)
 		yamlData[section] = sectionMapTyped
 	}
 

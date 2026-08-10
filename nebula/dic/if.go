@@ -157,7 +157,7 @@ func (it *IfText) EvaluatePro(dic *dto.DicInfoData, parsed []map[string]string) 
 		switch p["b"] {
 		case " in ":
 			var jsonOk bool
-			var jsonMap []interface{}
+			var jsonMap []any
 			if err := json.Unmarshal([]byte(a), &jsonMap); err == nil {
 				for _, v := range jsonMap {
 					switch jv := v.(type) {
@@ -166,7 +166,7 @@ func (it *IfText) EvaluatePro(dic *dto.DicInfoData, parsed []map[string]string) 
 							jsonOk = true
 							break
 						}
-					case []interface{}, map[string]interface{}:
+					case []any, map[string]any:
 						if jvv, err := json.Marshal(jv); err == nil {
 							if string(jvv) == c {
 								jsonOk = true
@@ -189,7 +189,7 @@ func (it *IfText) EvaluatePro(dic *dto.DicInfoData, parsed []map[string]string) 
 								jsonOk = true
 								break
 							}
-						case []interface{}, map[string]interface{}:
+						case []any, map[string]any:
 							if jvv, err := json.Marshal(jv); err == nil {
 								if string(jvv) == a {
 									jsonOk = true
@@ -369,7 +369,7 @@ func (it *IfText) Evaluate(dic *dic_dto.DicFunc, parsed []map[string]string) str
 		switch p["b"] {
 		case " in ":
 			var jsonOk bool
-			var jsonMap []interface{}
+			var jsonMap []any
 			if err := json.Unmarshal([]byte(a), &jsonMap); err == nil {
 				for _, v := range jsonMap {
 					switch jv := v.(type) {
@@ -378,7 +378,7 @@ func (it *IfText) Evaluate(dic *dic_dto.DicFunc, parsed []map[string]string) str
 							jsonOk = true
 							break
 						}
-					case []interface{}, map[string]interface{}:
+					case []any, map[string]any:
 						if jvv, err := json.Marshal(jv); err == nil {
 							if string(jvv) == c {
 								jsonOk = true
@@ -401,7 +401,7 @@ func (it *IfText) Evaluate(dic *dic_dto.DicFunc, parsed []map[string]string) str
 								jsonOk = true
 								break
 							}
-						case []interface{}, map[string]interface{}:
+						case []any, map[string]any:
 							if jvv, err := json.Marshal(jv); err == nil {
 								if string(jvv) == a {
 									jsonOk = true

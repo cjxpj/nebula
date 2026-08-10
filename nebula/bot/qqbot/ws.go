@@ -17,7 +17,7 @@ func init() {
 	qqbot_msg.StopWsFunc = StopQQWs
 }
 
-func dbg(bot *qqbot_msg.RouterQQBot, format string, args ...interface{}) {
+func dbg(bot *qqbot_msg.RouterQQBot, format string, args ...any) {
 	if bot == nil || !bot.Debug {
 		return
 	}
@@ -29,7 +29,7 @@ func dbg(bot *qqbot_msg.RouterQQBot, format string, args ...interface{}) {
 	debugLog.Infof(prefix+format, args...)
 }
 
-func mustMarshal(v interface{}) string {
+func mustMarshal(v any) string {
 	raw, _ := json.Marshal(v)
 	return string(raw)
 }
@@ -244,7 +244,7 @@ func wsEventLoop(ctx context.Context, conn *websocket.Conn, bot *qqbot_msg.Route
 				seq := bot.WsSeq
 				bot.WsMutex.Unlock()
 				conn.SetWriteDeadline(time.Now().Add(10 * time.Second))
-				if err := conn.WriteJSON(map[string]interface{}{"op": 1, "d": seq}); err != nil {
+				if err := conn.WriteJSON(map[string]any{"op": 1, "d": seq}); err != nil {
 					select {
 					case errCh <- err:
 					default:
@@ -347,13 +347,13 @@ func wsIdentify(ctx context.Context, conn *websocket.Conn, bot *qqbot_msg.Router
 	}
 	token := fmt.Sprintf("QQBot %s", bot.API.Key.AccessToken)
 
-	identify := map[string]interface{}{
+	identify := map[string]any{
 		"op": 2,
-		"d": map[string]interface{}{
+		"d": map[string]any{
 			"token":   token,
 			"intents": intents,
 			"shard":   []int{0, 1},
-			"properties": map[string]interface{}{
+			"properties": map[string]any{
 				"$os": "windows",
 			},
 		},
@@ -380,9 +380,9 @@ func wsResume(ctx context.Context, conn *websocket.Conn, bot *qqbot_msg.RouterQQ
 	seq := bot.WsSeq
 	bot.WsMutex.Unlock()
 
-	resume := map[string]interface{}{
+	resume := map[string]any{
 		"op": 6,
-		"d": map[string]interface{}{
+		"d": map[string]any{
 			"token":      token,
 			"session_id": sessionID,
 			"seq":        seq,

@@ -1183,7 +1183,7 @@ func generateTaskID() string {
 // findRunningTaskForComponent 检查指定组件是否已有正在运行的任务
 func findRunningTaskForComponent(component string) *InstallTask {
 	var found *InstallTask
-	installTaskStore.Range(func(key, value interface{}) bool {
+	installTaskStore.Range(func(key, value any) bool {
 		task := value.(*InstallTask)
 		task.mu.RLock()
 		status := task.Status
@@ -2651,7 +2651,7 @@ func OpUI(w http.ResponseWriter, r *http.Request, getpath string) {
 			if val, ok := installTaskStore.Load(j.TaskID); ok {
 				task := val.(*InstallTask)
 				status, output, errMsg, progress := task.snapshot()
-				resp := map[string]interface{}{
+				resp := map[string]any{
 					"status":    status,
 					"component": task.Component,
 					"output":    output,

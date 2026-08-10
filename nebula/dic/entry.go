@@ -322,10 +322,10 @@ func Entry(r *dic_dto.DicEntry, txt []string, funcV *dic_dto.DicFunc) error {
 					keys := strings.Split(key, "->")
 					if keys[0] == "[]" {
 						if !r.Sys_v.SetJson.OkLen {
-							if getLen, ok := r.Sys_v.SetJson.Json.(map[string]interface{}); ok {
+							if getLen, ok := r.Sys_v.SetJson.Json.(map[string]any); ok {
 								r.Sys_v.SetJson.Len = len(getLen)
 							}
-							if getLen, ok := r.Sys_v.SetJson.Json.([]interface{}); ok {
+							if getLen, ok := r.Sys_v.SetJson.Json.([]any); ok {
 								r.Sys_v.SetJson.Len = len(getLen)
 							}
 							r.Sys_v.SetJson.OkLen = true
@@ -346,10 +346,10 @@ func Entry(r *dic_dto.DicEntry, txt []string, funcV *dic_dto.DicFunc) error {
 					keys := strings.Split(key, "->")
 					if keys[0] == "[]" {
 						if !r.Sys_v.SetJson.OkLen {
-							if getLen, ok := r.Sys_v.SetJson.Json.(map[string]interface{}); ok {
+							if getLen, ok := r.Sys_v.SetJson.Json.(map[string]any); ok {
 								r.Sys_v.SetJson.Len = len(getLen)
 							}
-							if getLen, ok := r.Sys_v.SetJson.Json.([]interface{}); ok {
+							if getLen, ok := r.Sys_v.SetJson.Json.([]any); ok {
 								r.Sys_v.SetJson.Len = len(getLen)
 							}
 							r.Sys_v.SetJson.OkLen = true
@@ -1204,17 +1204,17 @@ func Entry(r *dic_dto.DicEntry, txt []string, funcV *dic_dto.DicFunc) error {
 	return nil
 }
 
-// UnmarshalJSON 尝试将给定的 JSON 文本解析为 map[string]interface{} 或 []interface{}。
+// UnmarshalJSON 尝试将给定的 JSON 文本解析为 map[string]any 或 []any。
 // 它返回解析后的数据以及遇到的任何错误。
 func UnmarshalJSON(jsonText string) (any, error) {
 	var err error
-	// 尝试将 JSON 文本解析为 map[string]interface{}
+	// 尝试将 JSON 文本解析为 map[string]any
 	var testjs map[string]any
 	if err = json.Unmarshal([]byte(jsonText), &testjs); err == nil {
 		return testjs, nil
 	}
 
-	// 尝试将 JSON 文本解析为 []interface{}
+	// 尝试将 JSON 文本解析为 []any
 	var thisjson []any
 	if err = json.Unmarshal([]byte(jsonText), &thisjson); err == nil {
 		return thisjson, nil

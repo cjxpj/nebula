@@ -844,7 +844,7 @@ func (fq *FileQueue) SaveIni(file *ini.File) error {
 }
 
 // 加载yaml
-func (fq *FileQueue) LoadYaml() (map[string]interface{}, error) {
+func (fq *FileQueue) LoadYaml() (map[string]any, error) {
 	fileMutex.RLock()
 	defer fileMutex.RUnlock()
 
@@ -853,7 +853,7 @@ func (fq *FileQueue) LoadYaml() (map[string]interface{}, error) {
 		return nil, err
 	}
 
-	var result map[string]interface{}
+	var result map[string]any
 	err = yaml.Unmarshal(data, &result)
 	if err != nil {
 		return nil, err
@@ -862,7 +862,7 @@ func (fq *FileQueue) LoadYaml() (map[string]interface{}, error) {
 }
 
 // 保存yaml
-func (fq *FileQueue) SaveYaml(data map[string]interface{}) error {
+func (fq *FileQueue) SaveYaml(data map[string]any) error {
 	fileMutex.Lock()
 	defer fileMutex.Unlock()
 

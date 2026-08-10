@@ -19,8 +19,8 @@ func (f *DicFunc) Sort() string {
 			isDescending = true
 		}
 
-		// 将 JSON 数据解析为 []map[string]interface{} 切片
-		var list []map[string]interface{}
+		// 将 JSON 数据解析为 []map[string]any 切片
+		var list []map[string]any
 		err := json.Unmarshal([]byte(data), &list)
 		if err != nil {
 			return "null"
@@ -101,7 +101,7 @@ func doSort(d *dto.DicInputs) (any, error) {
 			isDescending = true
 		}
 
-		var list []map[string]interface{}
+		var list []map[string]any
 		if err := stdjson.Unmarshal([]byte(data), &list); err != nil {
 			return "null", nil
 		}

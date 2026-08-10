@@ -13,15 +13,15 @@ import (
 // NewJson 方法将 JSON 字符串转换为 map，遍历并替换包含 % 的字符串
 func NewJson(r *dic_dto.DicEntry, v *dto.Val, jsonStr string) string {
 	// 解析 JSON 字符串为 map
-	var data interface{}
+	var data any
 	if err := json.Unmarshal([]byte(jsonStr), &data); err != nil {
 		debugLog.Infof("Error parsing JSON:%v", err)
 		return "error"
 	}
 
 	// 递归遍历 map 并替换 % 中的内容
-	var replace func(interface{}) interface{}
-	replace = func(value interface{}) interface{} {
+	var replace func(any) any
+	replace = func(value any) any {
 		switch value := value.(type) {
 		case string:
 			// 如果是字符串，检查是否以 s% 或 % 开头
@@ -61,13 +61,13 @@ func NewJson(r *dic_dto.DicEntry, v *dto.Val, jsonStr string) string {
 			}
 			// 如果不符合上述规则，直接返回原始值
 			return value
-		case map[string]interface{}:
+		case map[string]any:
 			// 如果是 map，递归遍历其值
 			for k := range value {
 				value[k] = replace(value[k])
 			}
 			return value
-		case []interface{}:
+		case []any:
 			// 如果是切片，递归遍历其元素
 			for i := range value {
 				value[i] = replace(value[i])
@@ -92,8 +92,8 @@ func NewJson(r *dic_dto.DicEntry, v *dto.Val, jsonStr string) string {
 }
 
 // 尝试解析字符串为 JSON
-func tryParseJSON(str string) interface{} {
-	var result interface{}
+func tryParseJSON(str string) any {
+	var result any
 	if err := json.Unmarshal([]byte(str), &result); err == nil {
 		return result
 	}
