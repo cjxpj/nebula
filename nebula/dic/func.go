@@ -2,11 +2,11 @@ package dic
 
 import (
 	"errors"
+	"fmt"
 	"regexp"
 	"strings"
 
 	"github.com/cjxpj/nebula/count"
-	"github.com/cjxpj/nebula/debugLog"
 	dic_api "github.com/cjxpj/nebula/dic/api"
 	dic_dto "github.com/cjxpj/nebula/dic/dto"
 	"github.com/cjxpj/nebula/dic/funcs"
@@ -23,10 +23,7 @@ func RunLine(d *dto.DicInfoData, text string) any {
 	output := run.BuildFuncStr(text, func(valStr []string) (string, bool) {
 		input := utils.NewDicInputs()
 		input.SetString(valStr)
-		resAny, err := RunFuncLine(d, input)
-		if err != nil {
-			debugLog.Infof("[%s]%s：%v", d.Value.Get("_词库路径_"), valStr[0], err)
-		}
+		resAny, _ := RunFuncLine(d, input)
 		if resStr, ok := resAny.(string); ok {
 			return resStr, false
 		}
@@ -51,10 +48,7 @@ func Runs(d *dic_dto.DicFunc, text string) any {
 	output := run.BuildFuncStr(text, func(valStr []string) (string, bool) {
 		input := utils.NewDicInputs()
 		input.SetString(valStr)
-		resAny, err := Funcs(d, &input)
-		if err != nil {
-			debugLog.Infof("[%s]%s：%v", d.Val.Get("_词库路径_"), valStr[0], err)
-		}
+		resAny, _ := Funcs(d, &input)
 		if resStr, ok := resAny.(string); ok {
 			return resStr, false
 		}
@@ -80,10 +74,7 @@ func RunsAny(d *dic_dto.DicFunc, text string) any {
 	output := run.BuildFuncStr(text, func(valStr []string) (string, bool) {
 		input := utils.NewDicInputs()
 		input.SetString(valStr)
-		resAny, err := Funcs(d, &input)
-		if err != nil {
-			debugLog.Infof("[%s]%s：%v", d.Val.Get("_词库路径_"), valStr[0], err)
-		}
+		resAny, _ := Funcs(d, &input)
 		if resAny == nil {
 			return "", false
 		}
@@ -113,10 +104,7 @@ func RunsVal(d *dic_dto.DicFunc, text string, setVal string) (string, bool) {
 	output := run.BuildFuncStr(text, func(valStr []string) (string, bool) {
 		input := utils.NewDicInputs()
 		input.SetString(valStr)
-		resAny, err := Funcs(d, &input)
-		if err != nil {
-			debugLog.Infof("[%s]%s：%v", d.Val.Get("_词库路径_"), valStr[0], err)
-		}
+		resAny, _ := Funcs(d, &input)
 		if resStr, ok := resAny.(string); ok {
 			return resStr, false
 		}
@@ -140,10 +128,7 @@ func Run(d *dic_dto.DicFunc, text string) string {
 	output := run.BuildFuncStr(text, func(valStr []string) (string, bool) {
 		input := utils.NewDicInputs()
 		input.SetString(valStr)
-		resAny, err := Funcs(d, &input)
-		if err != nil {
-			debugLog.Infof("[%s]%s：%v", d.Val.Get("_词库路径_"), valStr[0], err)
-		}
+		resAny, _ := Funcs(d, &input)
 		if resStr, ok := resAny.(string); ok {
 			return resStr, false
 		}
@@ -180,6 +165,10 @@ func RunFuncLine(d *dto.DicInfoData, dic_i utils.DicInputs) (any, error) {
 func Funcs(d *dic_dto.DicFunc, dic_i *utils.DicInputs) (any, error) {
 	if dic_i.LenOk(-1) {
 		return "$$", nil
+	}
+
+	if d.Sys.Stop.Load() {
+		return "", nil
 	}
 
 	// 面对象
@@ -306,8 +295,12 @@ func Funcs(d *dic_dto.DicFunc, dic_i *utils.DicInputs) (any, error) {
 	if fn, ok := d.Dic.MyFunc[dic_i.String(0)]; ok {
 		if inputs.LenOk(fn.L) {
 			res, err := fn.Fn(dto.NewDicInputsWithOutput(d.Dic, d.Val, &inputs, d.Output))
-			if err != nil && err.Error() == "stop" {
+			if err != nil {
 				d.Sys.Stop.Store(true)
+				if err.Error() != "stop" {
+					d.Output.Clear()
+					d.Output.Add(fmt.Sprintf("[%s]%s：%v", d.Val.Get("_词库路径_"), dic_i.String(0), err))
+				}
 			}
 			return res, err
 		}
@@ -316,8 +309,12 @@ func Funcs(d *dic_dto.DicFunc, dic_i *utils.DicInputs) (any, error) {
 	if fnInfo, ok := funcs.GetFunc(dic_i.String(0)); ok {
 		if inputs.LenOk(fnInfo.L) {
 			res, err := fnInfo.Fn(dto.NewDicInputsWithOutput(d.Dic, d.Val, &inputs, d.Output))
-			if err != nil && err.Error() == "stop" {
+			if err != nil {
 				d.Sys.Stop.Store(true)
+				if err.Error() != "stop" {
+					d.Output.Clear()
+					d.Output.Add(fmt.Sprintf("[%s]%s：%v", d.Val.Get("_词库路径_"), dic_i.String(0), err))
+				}
 			}
 			return res, err
 		}

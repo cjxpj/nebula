@@ -1003,7 +1003,11 @@ func Entry(r *dic_dto.DicEntry, txt []string, funcV *dic_dto.DicFunc) error {
 		}
 
 		if strings.HasPrefix(text, "https://") || strings.HasPrefix(text, "http://") {
-			r.Output.Add(utils.AnyToString(Runs(funcV, text)))
+			res := utils.AnyToString(Runs(funcV, text))
+			if r.Sys_v.Stop.Load() {
+				return nil
+			}
+			r.Output.Add(res)
 			continue
 		}
 
@@ -1097,7 +1101,11 @@ func Entry(r *dic_dto.DicEntry, txt []string, funcV *dic_dto.DicFunc) error {
 			case 6:
 				// fmt.Println("键：", vPrefix, "值：", vSuffix)
 				if vPrefix == "" {
-					r.Output.Add(utils.AnyToString(Runs(funcV, text)))
+					res := utils.AnyToString(Runs(funcV, text))
+					if r.Sys_v.Stop.Load() {
+						return nil
+					}
+					r.Output.Add(res)
 					continue
 				}
 
@@ -1199,7 +1207,11 @@ func Entry(r *dic_dto.DicEntry, txt []string, funcV *dic_dto.DicFunc) error {
 		if strings.HasSuffix(text, "\\r") {
 			text = text[:len(text)-2] + "\n"
 		}
-		r.Output.Add(utils.AnyToString(Runs(funcV, text)))
+		res := utils.AnyToString(Runs(funcV, text))
+		if r.Sys_v.Stop.Load() {
+			return nil
+		}
+		r.Output.Add(res)
 	}
 	return nil
 }
