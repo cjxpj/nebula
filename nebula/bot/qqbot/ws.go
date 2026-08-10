@@ -338,7 +338,7 @@ func wsEventLoop(ctx context.Context, conn *websocket.Conn, bot *qqbot_msg.Route
 }
 
 // wsIdentify 发送 Identify(op=2)，不等待响应，由 wsEventLoop 处理后续 READY/op=9
-func wsIdentify(ctx context.Context, conn *websocket.Conn, bot *qqbot_msg.RouterQQBot, intents int) error {
+func wsIdentify(_ context.Context, conn *websocket.Conn, bot *qqbot_msg.RouterQQBot, intents int) error {
 	if bot == nil || bot.API == nil {
 		return fmt.Errorf("bot or bot.API is nil")
 	}
@@ -366,7 +366,7 @@ func wsIdentify(ctx context.Context, conn *websocket.Conn, bot *qqbot_msg.Router
 }
 
 // wsResume 发送 Resume(op=6)，不等待响应，由 wsEventLoop 处理后续 RESUME/op=9
-func wsResume(ctx context.Context, conn *websocket.Conn, bot *qqbot_msg.RouterQQBot) error {
+func wsResume(_ context.Context, conn *websocket.Conn, bot *qqbot_msg.RouterQQBot) error {
 	if bot == nil || bot.API == nil {
 		return fmt.Errorf("bot or bot.API is nil")
 	}
