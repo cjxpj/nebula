@@ -558,8 +558,9 @@ func BuildDic(dicPath, text string) *dto.BuildValue {
 		dicTrigger string // 触发词
 
 		// 词库条目
-		dicText  []*dto.BuildDic // 词库条目
-		dicTexts []string        // 准备添加到词库中的词条
+		dicText          []*dto.BuildDic // 词库条目
+		dicTexts         []string        // 准备添加到词库中的词条
+		dicTextLineNums  []int           // 词条每行对应的原始文件行号（1-based）
 
 		// 内部状态变量
 		neibu    bool
@@ -570,8 +571,9 @@ func BuildDic(dicPath, text string) *dto.BuildValue {
 		chajianText []*dto.BuildDic // 与插件相关的词库条目
 
 		// 头部变量
-		runheadtext []string // 头部文本条目
-		runhead     bool
+		runheadtext     []string // 头部文本条目
+		runheadLineNums []int    // 头部每行对应的原始文件行号（1-based）
+		runhead         bool
 
 		// 多行注释标志
 		zhushi bool
@@ -719,6 +721,7 @@ func BuildDic(dicPath, text string) *dto.BuildValue {
 				continue
 			}
 			runheadtext = append(runheadtext, line)
+			runheadLineNums = append(runheadLineNums, dic_i+1)
 			continue
 		}
 
@@ -732,6 +735,7 @@ func BuildDic(dicPath, text string) *dto.BuildValue {
 						fRunAll = false
 					} else {
 						dicTexts = append(dicTexts, line)
+						dicTextLineNums = append(dicTextLineNums, dic_i+1)
 					}
 				} else {
 
@@ -744,9 +748,9 @@ func BuildDic(dicPath, text string) *dto.BuildValue {
 						duohang = false
 					} else {
 						dicTexts = append(dicTexts, line)
+						dicTextLineNums = append(dicTextLineNums, dic_i+1)
 					}
 				}
-
 			} else {
 				// 判断触发为空就执行记录
 				dicTrigger = line
@@ -809,8 +813,9 @@ func BuildDic(dicPath, text string) *dto.BuildValue {
 
 			if line == "" || dic_i == lines_num {
 				json := &dto.BuildDic{
-					Trigger: dicTrigger,
-					Text:    dicTexts,
+					Trigger:  dicTrigger,
+					Text:     dicTexts,
+					LineNums: dicTextLineNums,
 				}
 				if neibu {
 					neibu = false
@@ -843,17 +848,19 @@ func BuildDic(dicPath, text string) *dto.BuildValue {
 				}
 				dicTrigger = ""
 				dicTexts = nil
+				dicTextLineNums = nil
 			}
 		}
 
 	}
 	result := &dto.BuildValue{
-		Head:        runheadtext,
-		Dic:         dicText,
-		LocalStatic: funcText,
-		LocalFunc:   chajianText,
-		LocalClass:  classText,
-		MyFunc:      myFunc,
+		Head:         runheadtext,
+		HeadLineNums: runheadLineNums,
+		Dic:          dicText,
+		LocalStatic:  funcText,
+		LocalFunc:    chajianText,
+		LocalClass:   classText,
+		MyFunc:       myFunc,
 	}
 
 	// 打印普通json
@@ -900,9 +907,10 @@ func Parse(dicPath string, reader io.Reader) *dto.DicInfoData {
 		dicTrigger string
 		dicTexts   dto.DicLine
 
-		dicText  []*dto.RegDicLine
-		funcText []*dto.RegDicLine
-		funcFn   []*dto.BuildDicFunc
+		dicText         []*dto.RegDicLine
+		dicTextLineNums []int
+		funcText        []*dto.RegDicLine
+		funcFn          []*dto.BuildDicFunc
 
 		dicValue = dto.NewVal()
 		// []*dto.DicInfo
@@ -910,8 +918,9 @@ func Parse(dicPath string, reader io.Reader) *dto.DicInfoData {
 		neibu   bool
 		chajian bool
 
-		runhead     = true
-		runheadtext dto.DicLine
+		runhead         = true
+		runheadtext     dto.DicLine
+		runheadLineNums []int
 
 		zhushi  bool
 		duohang bool
@@ -938,6 +947,7 @@ func Parse(dicPath string, reader io.Reader) *dto.DicInfoData {
 			if len(parts) == 0 {
 				dicTrigger = ""
 				dicTexts = nil
+				dicTextLineNums = nil
 				return
 			}
 
@@ -962,6 +972,7 @@ func Parse(dicPath string, reader io.Reader) *dto.DicInfoData {
 
 			dicTrigger = ""
 			dicTexts = nil
+			dicTextLineNums = nil
 			return
 		}
 
@@ -991,9 +1002,12 @@ func Parse(dicPath string, reader io.Reader) *dto.DicInfoData {
 
 		dicTrigger = ""
 		dicTexts = nil
+		dicTextLineNums = nil
 	}
 
+	lineNum := 0
 	for scanner.Scan() {
+		lineNum++
 		line := scanner.Text()
 		lineLen := len(line)
 
@@ -1095,6 +1109,7 @@ func Parse(dicPath string, reader io.Reader) *dto.DicInfoData {
 				continue
 			}
 			runheadtext = append(runheadtext, line)
+			runheadLineNums = append(runheadLineNums, lineNum)
 			continue
 		}
 
@@ -1106,6 +1121,7 @@ func Parse(dicPath string, reader io.Reader) *dto.DicInfoData {
 					fRunAll = false
 				} else {
 					dicTexts = append(dicTexts, line)
+					dicTextLineNums = append(dicTextLineNums, lineNum)
 				}
 				continue
 			}
@@ -1120,6 +1136,7 @@ func Parse(dicPath string, reader io.Reader) *dto.DicInfoData {
 					duohang = false
 				} else {
 					dicTexts = append(dicTexts, line)
+					dicTextLineNums = append(dicTextLineNums, lineNum)
 				}
 				continue
 			}
@@ -1130,6 +1147,7 @@ func Parse(dicPath string, reader io.Reader) *dto.DicInfoData {
 			}
 
 			dicTexts = append(dicTexts, line)
+			dicTextLineNums = append(dicTextLineNums, lineNum)
 			continue
 		}
 

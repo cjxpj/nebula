@@ -1836,7 +1836,9 @@ func OpUI(w http.ResponseWriter, r *http.Request, getpath string) {
 					return
 				case <-ticker.C:
 					conn.SetWriteDeadline(time.Now().Add(writeWait))
-					if err := conn.WriteMessage(websocket.PingMessage, nil); err != nil {
+					err := conn.WriteMessage(websocket.PingMessage, nil)
+					conn.SetWriteDeadline(time.Time{}) // 写完立即清除，否则残留的 deadline 过期后会阻断所有业务写入
+					if err != nil {
 						return
 					}
 				}
@@ -1851,6 +1853,9 @@ func OpUI(w http.ResponseWriter, r *http.Request, getpath string) {
 			// 连接内认证：密钥不再走 URL 参数，改为连接后首条 check_opui_key 消息验证
 			authenticatedKey := ""
 			defer func() {
+				if r := recover(); r != nil {
+					debugLog.Errorf("[OPUI] ws read loop panic: %v", r)
+				}
 				close(pingDone)
 				removeOpuiNotifyClient(conn)
 				conn.Close()
@@ -1924,6 +1929,22 @@ func OpUI(w http.ResponseWriter, r *http.Request, getpath string) {
 					// 在 goroutine 内获取信号量，避免阻塞读循环
 					sem <- struct{}{}
 					defer func() { <-sem }()
+
+					// 捕获 panic，防止单个消息处理崩溃导致整个进程退出
+					defer func() {
+						if r := recover(); r != nil {
+							debugLog.Errorf("[OPUI] ws handler panic (type=%s, id=%s): %v", msgType, msgID, r)
+							resp, _ := json.Marshal(map[string]interface{}{
+								"id":   msgID,
+								"type": msgType,
+								"data": json.RawMessage(`{"status":"error","error":"internal server error"}`),
+							})
+							writeMu.Lock()
+							conn.WriteMessage(websocket.TextMessage, resp)
+							writeMu.Unlock()
+						}
+					}()
+
 					cw := &wsResponseWriter{header: make(http.Header)}
 					OpUI(cw, req, "/api")
 
@@ -3364,6 +3385,14 @@ func OpUI(w http.ResponseWriter, r *http.Request, getpath string) {
 				output = dic_api.Api.DicRun(dic, j.Trigger)
 			}
 
+			// 从输出中提取错误行号（格式：funcName(line:N)：error 或 JS错误(line:N)：error）
+			var errorLine int
+			if re := regexp.MustCompile(`\(line:(\d+)\)`); re != nil {
+				if m := re.FindStringSubmatch(output); len(m) >= 2 {
+					errorLine, _ = strconv.Atoi(m[1])
+				}
+			}
+
 			// 收集运行后的局部/全局变量（值 + 类型）
 			pVars := make(map[string]any)
 			for k, v := range dic.Val.P.GetAll() {
@@ -3374,7 +3403,7 @@ func OpUI(w http.ResponseWriter, r *http.Request, getpath string) {
 				gVars[k] = map[string]any{"v": utils.AnyToString(v), "t": anyTypeName(v)}
 			}
 
-			jsonResp, _ := json.Marshal(map[string]any{
+			resp := map[string]any{
 				"output":   output,
 				"timedOut": timedOut,
 				"segments": parseOutputSegments(output),
@@ -3382,7 +3411,11 @@ func OpUI(w http.ResponseWriter, r *http.Request, getpath string) {
 					"P": pVars,
 					"G": gVars,
 				},
-			})
+			}
+			if errorLine > 0 {
+				resp["errorLine"] = errorLine
+			}
+			jsonResp, _ := json.Marshal(resp)
 			w.Write(jsonResp)
 			return
 

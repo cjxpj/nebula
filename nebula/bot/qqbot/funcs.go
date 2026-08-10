@@ -71,6 +71,21 @@ func getBotByIndex(index int) *qqbot_msg.RouterQQBot {
 	return dto.ServerConfig.QQBots[keys[index]]
 }
 
+// formatMDPair 格式化 MD 模板键值对，绕过渲染限制
+func formatMDPair(key, val string) *qqbot_msg.MarkdownParams {
+	val = strings.ReplaceAll(val, "\n", "\r")
+	val = mdRe.ReplaceAllString(val, "[\r\n$1]($2)")
+	val = mdReAt.ReplaceAllString(val, "<$1\r\n$2>")
+	val = strings.ReplaceAll(val, "```", "'''")
+	if strings.HasPrefix(val, "#") {
+		val = " " + val
+	}
+	return &qqbot_msg.MarkdownParams{
+		Key:    key,
+		Values: strings.Split(val, "\r\n"),
+	}
+}
+
 // getBotKey 从 QQBots map 反查 bot 对应的 key，找不到返回空字符串
 func getBotKey(bot *qqbot_msg.RouterQQBot) string {
 	for k, v := range dto.ServerConfig.QQBots {
@@ -283,6 +298,73 @@ var ActiveFuncs = map[string]dto.DicFunc{
 			return fmt.Sprintf("群发完成: 成功%d 失败%d", success, fail), nil
 		},
 	},
+	"群发MD": {
+		L: "2..",
+		Fn: func(d *dto.DicInputs) (any, error) {
+			bot := getBotByIndex(d.Inputs.Int(1))
+			if bot == nil {
+				return "QQBot未启用或未配置", nil
+			}
+			groups := GetRecordedGroups(bot)
+			if len(groups) == 0 {
+				return "没有已记录的群", nil
+			}
+
+			// 提取键盘参数（从索引3扫描"按钮"，账号序号占索引1）
+			l := d.Inputs.Len()
+			contentEnd := l
+			var kb *qqbot_msg.Keyboard
+			for i := 3; i <= l; i++ {
+				if d.Inputs.String(i) == "按钮" {
+					if i+1 <= l {
+						kb = parseTextButtons(d, i+1, l)
+					}
+					contentEnd = i - 1
+					break
+				}
+			}
+			pLen := contentEnd - 1 // 内容参数个数（去掉账号序号）
+
+			var success, fail int
+			if pLen == 1 {
+				// 简单MD文本发送
+				text := d.Inputs.String(2)
+				for _, g := range groups {
+					if _, err := bot.API.ReplyGroupAnyMarkdownWithKeyboard("", g, text, kb); err != nil {
+						fail++
+					} else {
+						success++
+					}
+				}
+			} else {
+				// CustomTemplateId + key=value 参数对
+				list := d.Inputs.StringAfterList(3)
+				n := len(list)
+				if n > pLen-1 {
+					n = pLen - 1
+				}
+				if n%2 != 0 {
+					n--
+				}
+				params := make([]*qqbot_msg.MarkdownParams, 0, n/2)
+				for i := 0; i < n; i += 2 {
+					params = append(params, formatMDPair(list[i], list[i+1]))
+				}
+				md := &qqbot_msg.Markdown{
+					CustomTemplateId: d.Inputs.String(2),
+					Params:           params,
+				}
+				for _, g := range groups {
+					if _, err := bot.API.ReplyGroupMarkdownWithKeyboard("", g, md, kb); err != nil {
+						fail++
+					} else {
+						success++
+					}
+				}
+			}
+			return fmt.Sprintf("群发MD完成: 成功%d 失败%d", success, fail), nil
+		},
+	},
 	"群单发图": {
 		L: "4",
 		Fn: func(d *dto.DicInputs) (any, error) {
@@ -457,21 +539,22 @@ var ReplyFuncs = map[string]dto.DicFunc{
 				return "", nil
 			}
 			// CustomTemplateId + key=value 参数对
-			params := make([]*qqbot_msg.MarkdownParams, 0)
-			end := pLen
-			if (pLen-1)%2 != 0 {
-				end = pLen - 1 // 忽略末尾不成对的参数
+			list := d.Inputs.StringAfterList(2)
+			n := len(list)
+			if n > pLen-1 {
+				n = pLen - 1
 			}
-			for i := 2; i <= end; i += 2 {
-				key := d.Inputs.String(i)
-				val := mdFormatVal(d.Inputs.String(i + 1))
-				params = append(params, &qqbot_msg.MarkdownParams{Key: key, Values: strings.Split(val, "\r\n")})
+			if n%2 != 0 {
+				n--
 			}
-			md := &qqbot_msg.Markdown{
+			params := make([]*qqbot_msg.MarkdownParams, 0, n/2)
+			for i := 0; i < n; i += 2 {
+				params = append(params, formatMDPair(list[i], list[i+1]))
+			}
+			ctx.Bot.API.ReplyGroupMarkdownWithKeyboard(ctx.MsgID, ctx.GroupOpenID, &qqbot_msg.Markdown{
 				CustomTemplateId: d.Inputs.String(1),
 				Params:           params,
-			}
-			ctx.Bot.API.ReplyGroupMarkdownWithKeyboard(ctx.MsgID, ctx.GroupOpenID, md, kb)
+			}, kb)
 			return "", nil
 		},
 	},

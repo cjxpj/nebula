@@ -250,6 +250,11 @@ func runCommandAsync(d *dto.DicInputs) (any, error) {
 		return "", errors.New("未启动终端")
 	}
 
+	// 清空 stdout/stderr，避免与之前 runCommand 设置的缓冲区冲突
+	// 同时确保异步进程输出不依赖当前执行上下文
+	cmd.Cmd.Stdout = nil
+	cmd.Cmd.Stderr = nil
+
 	go func() {
 		if err := cmd.Cmd.Run(); err != nil {
 			debugLog.Info(err)

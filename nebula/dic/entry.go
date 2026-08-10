@@ -116,6 +116,12 @@ func Entry(r *dic_dto.DicEntry, txt []string, funcV *dic_dto.DicFunc) error {
 		textLen := len(text)
 
 		RunDicindex++
+		// 从行号映射表获取真实文件行号
+		if int(RunDicindex)-1 < len(r.LineNums) && r.LineNums[int(RunDicindex)-1] > 0 {
+			funcV.CurLine = r.LineNums[int(RunDicindex)-1]
+		} else {
+			funcV.CurLine = int(RunDicindex)
+		}
 
 		if r.Sys_v.Stop.Load() {
 			return nil
@@ -195,7 +201,11 @@ func Entry(r *dic_dto.DicEntry, txt []string, funcV *dic_dto.DicFunc) error {
 				r.Sys_v.NodeJs.Content = []string{}
 				res, err := vm.RunString(scriptText)
 				if err != nil {
-					r.Output.Add(err.Error())
+					if funcV.CurLine > 0 {
+						r.Output.Add(fmt.Sprintf("JS错误(line:%d)：%v", funcV.CurLine, err))
+					} else {
+						r.Output.Add(err.Error())
+					}
 					return nil
 				}
 				if res == goja.Undefined() {
@@ -997,7 +1007,13 @@ func Entry(r *dic_dto.DicEntry, txt []string, funcV *dic_dto.DicFunc) error {
 
 		if textLen > 2 && text[:2] == "#:" {
 			go func() {
-				Runs(funcV, utils.AnyToString(count.RunCountText(r.Val, text[2:])))
+				// 创建独立的执行上下文，避免主流程终止/STOP 时异步执行被掐断
+				independentFuncV := &dic_dto.DicFunc{
+					Val: funcV.Val,
+					Sys: &dto.LocalDicValue{},
+					Dic: funcV.Dic,
+				}
+				Runs(independentFuncV, utils.AnyToString(count.RunCountText(r.Val, text[2:])))
 			}()
 			continue
 		}

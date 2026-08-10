@@ -299,7 +299,11 @@ func Funcs(d *dic_dto.DicFunc, dic_i *utils.DicInputs) (any, error) {
 				d.Sys.Stop.Store(true)
 				if err.Error() != "stop" {
 					d.Output.Clear()
-					d.Output.Add(fmt.Sprintf("[%s]%s：%v", d.Val.Get("_词库路径_"), dic_i.String(0), err))
+					if d.CurLine > 0 {
+						d.Output.Add(fmt.Sprintf("[%s]%s(line:%d)：%v", d.Val.Get("_词库路径_"), dic_i.String(0), d.CurLine, err))
+					} else {
+						d.Output.Add(fmt.Sprintf("[%s]%s：%v", d.Val.Get("_词库路径_"), dic_i.String(0), err))
+					}
 				}
 			}
 			return res, err
@@ -313,7 +317,11 @@ func Funcs(d *dic_dto.DicFunc, dic_i *utils.DicInputs) (any, error) {
 				d.Sys.Stop.Store(true)
 				if err.Error() != "stop" {
 					d.Output.Clear()
-					d.Output.Add(fmt.Sprintf("[%s]%s：%v", d.Val.Get("_词库路径_"), dic_i.String(0), err))
+					if d.CurLine > 0 {
+						d.Output.Add(fmt.Sprintf("[%s]%s(line:%d)：%v", d.Val.Get("_词库路径_"), dic_i.String(0), d.CurLine, err))
+					} else {
+						d.Output.Add(fmt.Sprintf("[%s]%s：%v", d.Val.Get("_词库路径_"), dic_i.String(0), err))
+					}
 				}
 			}
 			return res, err

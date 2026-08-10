@@ -28,6 +28,9 @@ type DicEntry struct {
 	Sys_v   *dto.LocalDicValue
 	Trigger bool
 	Dic     *dto.BuildValue
+	// 当前处理 txt 每行对应的原始文件行号（1-based），与 txt 一一对应
+	// 为 nil 时表示无行号映射（如递归调用、非调试场景）
+	LineNums []int
 }
 
 func (d *DicEntry) Close() {
@@ -55,4 +58,6 @@ type DicFunc struct {
 	// 准备输出内容
 	Output *dto.SingleValue
 	Dic    *dto.BuildValue
+	// 当前执行行号（1-based），用于调试报错定位
+	CurLine int
 }

@@ -94,8 +94,9 @@ type LocalDicValueForEach struct {
 
 // 词库结构
 type BuildDic struct {
-	Trigger string   `json:"trigger"`
-	Text    []string `json:"text"`
+	Trigger  string   `json:"trigger"`
+	Text     []string `json:"text"`
+	LineNums []int    `json:"-"` // 每行文本对应的原始文件行号（1-based），用于调试定位
 }
 
 // =================================================
@@ -150,13 +151,14 @@ type DicClass struct {
 }
 
 type BuildValue struct {
-	Head        []string             `json:"头部"`
-	Dic         []*BuildDic          `json:"词库"`
-	LocalStatic []*BuildDic          `json:"内部"`
-	LocalFunc   []*BuildDic          `json:"函数"`
-	LocalClass  map[string]*DicClass `json:"整合包"`
-	MyFunc      map[string]DicFunc   `json:"自定义函数"`
-	BotImports  []string             `json:"bot引入"`
+	Head          []string             `json:"头部"`
+	HeadLineNums  []int                `json:"-"` // 头部每行对应的原始文件行号（1-based）
+	Dic           []*BuildDic          `json:"词库"`
+	LocalStatic   []*BuildDic          `json:"内部"`
+	LocalFunc     []*BuildDic          `json:"函数"`
+	LocalClass    map[string]*DicClass `json:"整合包"`
+	MyFunc        map[string]DicFunc   `json:"自定义函数"`
+	BotImports    []string             `json:"bot引入"`
 }
 
 // 词库参数数据
