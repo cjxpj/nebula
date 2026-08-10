@@ -74,34 +74,36 @@ func napCatBOTGroupUploadFileRun(msgData *MessagePayload) {
 
 	for _, v := range botDicList {
 		go func() {
-			FileData, err := utils.NewFileQueue(dto.ServerConfig.NapCatBot.FilePath + "/dic/" + v).ReadFromFile()
+			dicPath := dto.ServerConfig.NapCatBot.FilePath + "/dic/" + v
+			FileData, err := utils.NewFileQueue(dicPath).ReadFromFile()
 			if err != nil {
 				return
 			}
 
 			// 回复消息
-			dic := dic_dto.NewDic(dto.ServerConfig.NapCatBot.FilePath, FileData).
-				SetGlobal_v(valData)
+		dic := dic_dto.NewDic(dicPath, FileData).
+			SetGlobal_v(valData)
+		dic.Val.P.Set("_词库路径_", dicPath)
 
-			dic.AddFuncs(Funcs)
+		dic.AddFuncs(Funcs)
 
-			dic.SetFunc("调用", dto.DicFunc{
-				L: "2..",
-				Fn: func(d *dto.DicInputs) (any, error) {
-					go func() {
-						qqVal := dic.NewDicVal()
-						sleepTime := d.Inputs.Int(1)
-						time.Sleep(time.Duration(sleepTime) * time.Millisecond)
-						rMsg := dic_api.Api.DicRunPrivateVal(dic, d.Inputs.StringAfter(2), qqVal)
-						if rMsg != "" {
-							rMsg = strings.ReplaceAll(rMsg, "\\r", "\n")
-							SendGroupText(groupID, rMsg)
-						}
-					}()
-					return "", nil
-				}})
+		dic.SetFunc("调用", dto.DicFunc{
+			L: "2..",
+			Fn: func(d *dto.DicInputs) (any, error) {
+				go func() {
+					qqVal := dic.NewDicVal()
+					sleepTime := d.Inputs.Int(1)
+					time.Sleep(time.Duration(sleepTime) * time.Millisecond)
+					rMsg := dic_api.Api.DicRunPrivateVal(dic, d.Inputs.StringAfter(2), qqVal)
+					if rMsg != "" {
+						rMsg = strings.ReplaceAll(rMsg, "\\r", "\n")
+						SendGroupText(groupID, rMsg)
+					}
+				}()
+				return "", nil
+			}})
 
-			rMsg := dic_api.Api.DicRunPrivate(dic, "上传文件")
+		rMsg := dic_api.Api.DicRunPrivate(dic, "上传文件")
 			if rMsg != "" {
 				rMsg = strings.ReplaceAll(rMsg, "\\r", "\n")
 				debugLog.Infof("%v", rMsg)
@@ -179,34 +181,36 @@ func napCatBOTGroupRecallRun(msgData *MessagePayload) {
 
 	for _, v := range botDicList {
 		go func() {
-			FileData, err := utils.NewFileQueue(dto.ServerConfig.NapCatBot.FilePath + "/dic/" + v).ReadFromFile()
+			dicPath := dto.ServerConfig.NapCatBot.FilePath + "/dic/" + v
+			FileData, err := utils.NewFileQueue(dicPath).ReadFromFile()
 			if err != nil {
 				return
 			}
 
 			// 回复消息
-			dic := dic_dto.NewDic(dto.ServerConfig.NapCatBot.FilePath, FileData).
-				SetGlobal_v(valData)
+		dic := dic_dto.NewDic(dicPath, FileData).
+			SetGlobal_v(valData)
+		dic.Val.P.Set("_词库路径_", dicPath)
 
-			dic.AddFuncs(Funcs)
+		dic.AddFuncs(Funcs)
 
-			dic.SetFunc("调用", dto.DicFunc{
-				L: "2..",
-				Fn: func(d *dto.DicInputs) (any, error) {
-					go func() {
-						qqVal := dic.NewDicVal()
-						sleepTime := d.Inputs.Int(1)
-						time.Sleep(time.Duration(sleepTime) * time.Millisecond)
-						rMsg := dic_api.Api.DicRunPrivateVal(dic, d.Inputs.StringAfter(2), qqVal)
-						if rMsg != "" {
-							rMsg = strings.ReplaceAll(rMsg, "\\r", "\n")
-							SendGroupText(groupID, rMsg)
-						}
-					}()
-					return "", nil
-				}})
+		dic.SetFunc("调用", dto.DicFunc{
+			L: "2..",
+			Fn: func(d *dto.DicInputs) (any, error) {
+				go func() {
+					qqVal := dic.NewDicVal()
+					sleepTime := d.Inputs.Int(1)
+					time.Sleep(time.Duration(sleepTime) * time.Millisecond)
+					rMsg := dic_api.Api.DicRunPrivateVal(dic, d.Inputs.StringAfter(2), qqVal)
+					if rMsg != "" {
+						rMsg = strings.ReplaceAll(rMsg, "\\r", "\n")
+						SendGroupText(groupID, rMsg)
+					}
+				}()
+				return "", nil
+			}})
 
-			rMsg := dic_api.Api.DicRunPrivate(dic, "撤回")
+		rMsg := dic_api.Api.DicRunPrivate(dic, "撤回")
 			if rMsg != "" {
 				rMsg = strings.ReplaceAll(rMsg, "\\r", "\n")
 				debugLog.Infof("%v", rMsg)
@@ -253,34 +257,36 @@ func napCatBOTProfileLikeRun(msgData *MessagePayload) {
 
 	for _, v := range botDicList {
 		go func() {
-			FileData, err := utils.NewFileQueue(dto.ServerConfig.NapCatBot.FilePath + "/dic/" + v).ReadFromFile()
+			dicPath := dto.ServerConfig.NapCatBot.FilePath + "/dic/" + v
+			FileData, err := utils.NewFileQueue(dicPath).ReadFromFile()
 			if err != nil {
 				return
 			}
 
 			// 回复消息
-			dic := dic_dto.NewDic(dto.ServerConfig.NapCatBot.FilePath, FileData).
-				SetGlobal_v(valData)
+		dic := dic_dto.NewDic(dicPath, FileData).
+			SetGlobal_v(valData)
+		dic.Val.P.Set("_词库路径_", dicPath)
 
-			dic.SetFunc("调用", dto.DicFunc{
-				L: "2..",
-				Fn: func(d *dto.DicInputs) (any, error) {
-					go func() {
-						qqVal := dic.NewDicVal()
-						sleepTime := d.Inputs.Int(1)
-						time.Sleep(time.Duration(sleepTime) * time.Millisecond)
-						rMsg := dic_api.Api.DicRunPrivateVal(dic, d.Inputs.StringAfter(2), qqVal)
-						if rMsg != "" {
-							rMsg = strings.ReplaceAll(rMsg, "\\r", "\n")
-							SendPrivateText(userID, rMsg)
-						}
-					}()
-					return "", nil
-				}})
+		dic.SetFunc("调用", dto.DicFunc{
+			L: "2..",
+			Fn: func(d *dto.DicInputs) (any, error) {
+				go func() {
+					qqVal := dic.NewDicVal()
+					sleepTime := d.Inputs.Int(1)
+					time.Sleep(time.Duration(sleepTime) * time.Millisecond)
+					rMsg := dic_api.Api.DicRunPrivateVal(dic, d.Inputs.StringAfter(2), qqVal)
+					if rMsg != "" {
+						rMsg = strings.ReplaceAll(rMsg, "\\r", "\n")
+						SendPrivateText(userID, rMsg)
+					}
+				}()
+				return "", nil
+			}})
 
-			dic.AddFuncs(Funcs)
+		dic.AddFuncs(Funcs)
 
-			rMsg := dic_api.Api.DicRunPrivate(dic, fmt.Sprintf("点赞 %d", msgData.Times))
+		rMsg := dic_api.Api.DicRunPrivate(dic, fmt.Sprintf("点赞 %d", msgData.Times))
 			if rMsg != "" {
 				rMsg = strings.ReplaceAll(rMsg, "\\r", "\n")
 				body, err := SendPrivateText(userID, rMsg)
@@ -347,34 +353,36 @@ func napCatBOTGroupNudgeRun(msgData *MessagePayload) {
 
 	for _, v := range botDicList {
 		go func() {
-			FileData, err := utils.NewFileQueue(dto.ServerConfig.NapCatBot.FilePath + "/dic/" + v).ReadFromFile()
+			dicPath := dto.ServerConfig.NapCatBot.FilePath + "/dic/" + v
+			FileData, err := utils.NewFileQueue(dicPath).ReadFromFile()
 			if err != nil {
 				return
 			}
 
 			// 回复消息
-			dic := dic_dto.NewDic(dto.ServerConfig.NapCatBot.FilePath, FileData).
-				SetGlobal_v(valData)
+		dic := dic_dto.NewDic(dicPath, FileData).
+			SetGlobal_v(valData)
+		dic.Val.P.Set("_词库路径_", dicPath)
 
-			dic.SetFunc("调用", dto.DicFunc{
-				L: "2..",
-				Fn: func(d *dto.DicInputs) (any, error) {
-					go func() {
-						qqVal := dic.NewDicVal()
-						sleepTime := d.Inputs.Int(1)
-						time.Sleep(time.Duration(sleepTime) * time.Millisecond)
-						rMsg := dic_api.Api.DicRunPrivateVal(dic, d.Inputs.StringAfter(2), qqVal)
-						if rMsg != "" {
-							rMsg = strings.ReplaceAll(rMsg, "\\r", "\n")
-							SendGroupText(groupID, rMsg)
-						}
-					}()
-					return "", nil
-				}})
+		dic.SetFunc("调用", dto.DicFunc{
+			L: "2..",
+			Fn: func(d *dto.DicInputs) (any, error) {
+				go func() {
+					qqVal := dic.NewDicVal()
+					sleepTime := d.Inputs.Int(1)
+					time.Sleep(time.Duration(sleepTime) * time.Millisecond)
+					rMsg := dic_api.Api.DicRunPrivateVal(dic, d.Inputs.StringAfter(2), qqVal)
+					if rMsg != "" {
+						rMsg = strings.ReplaceAll(rMsg, "\\r", "\n")
+						SendGroupText(groupID, rMsg)
+					}
+				}()
+				return "", nil
+			}})
 
-			dic.AddFuncs(Funcs)
+		dic.AddFuncs(Funcs)
 
-			rMsg := dic_api.Api.DicRunPrivate(dic, "戳一戳")
+		rMsg := dic_api.Api.DicRunPrivate(dic, "戳一戳")
 			if rMsg != "" {
 				rMsg = strings.ReplaceAll(rMsg, "\\r", "\n")
 				debugLog.Infof("%v", rMsg)
@@ -441,34 +449,36 @@ func napCatBOTPrivateRun(msgData *MessagePayload) {
 
 	for _, v := range botDicList {
 		go func() {
-			FileData, err := utils.NewFileQueue(dto.ServerConfig.NapCatBot.FilePath + "/dic/" + v).ReadFromFile()
+			dicPath := dto.ServerConfig.NapCatBot.FilePath + "/dic/" + v
+			FileData, err := utils.NewFileQueue(dicPath).ReadFromFile()
 			if err != nil {
 				return
 			}
 
 			// 回复消息
-			dic := dic_dto.NewDic(dto.ServerConfig.NapCatBot.FilePath, FileData).
-				SetGlobal_v(valData)
+		dic := dic_dto.NewDic(dicPath, FileData).
+			SetGlobal_v(valData)
+		dic.Val.P.Set("_词库路径_", dicPath)
 
-			dic.SetFunc("调用", dto.DicFunc{
-				L: "2..",
-				Fn: func(d *dto.DicInputs) (any, error) {
-					go func() {
-						qqVal := dic.NewDicVal()
-						sleepTime := d.Inputs.Int(1)
-						time.Sleep(time.Duration(sleepTime) * time.Millisecond)
-						rMsg := dic_api.Api.DicRunPrivateVal(dic, d.Inputs.StringAfter(2), qqVal)
-						if rMsg != "" {
-							rMsg = strings.ReplaceAll(rMsg, "\\r", "\n")
-							SendGroupText(userID, rMsg)
-						}
-					}()
-					return "", nil
-				}})
+		dic.SetFunc("调用", dto.DicFunc{
+			L: "2..",
+			Fn: func(d *dto.DicInputs) (any, error) {
+				go func() {
+					qqVal := dic.NewDicVal()
+					sleepTime := d.Inputs.Int(1)
+					time.Sleep(time.Duration(sleepTime) * time.Millisecond)
+					rMsg := dic_api.Api.DicRunPrivateVal(dic, d.Inputs.StringAfter(2), qqVal)
+				if rMsg != "" {
+					rMsg = strings.ReplaceAll(rMsg, "\\r", "\n")
+					SendPrivateText(userID, rMsg)
+				}
+			}()
+			return "", nil
+		}})
 
-			dic.AddFuncs(Funcs)
+	dic.AddFuncs(Funcs)
 
-			rMsg := dic_api.Api.DicRun(dic, fmt.Sprintf("#私聊#%s", content))
+	rMsg := dic_api.Api.DicRun(dic, fmt.Sprintf("#私聊#%s", content))
 			if rMsg != "" {
 				rMsg = strings.ReplaceAll(rMsg, "\\r", "\n")
 				fmt.Println(rMsg)
@@ -584,28 +594,29 @@ func napCatBOTGroupRun(msgData *MessagePayload) {
 			}
 
 			// 回复消息
-			dic := dic_dto.NewDic(dicPath, FileData).
-				SetGlobal_v(valData)
+		dic := dic_dto.NewDic(dicPath, FileData).
+			SetGlobal_v(valData)
+		dic.Val.P.Set("_词库路径_", dicPath)
 
-			dic.SetFunc("调用", dto.DicFunc{
-				L: "2..",
-				Fn: func(d *dto.DicInputs) (any, error) {
-					go func() {
-						qqVal := dic.NewDicVal()
-						sleepTime := d.Inputs.Int(1)
-						time.Sleep(time.Duration(sleepTime) * time.Millisecond)
-						rMsg := dic_api.Api.DicRunPrivateVal(dic, d.Inputs.StringAfter(2), qqVal)
-						if rMsg != "" {
-							rMsg = strings.ReplaceAll(rMsg, "\\r", "\n")
-							SendGroupText(groupID, rMsg)
-						}
-					}()
-					return "", nil
-				}})
+		dic.SetFunc("调用", dto.DicFunc{
+			L: "2..",
+			Fn: func(d *dto.DicInputs) (any, error) {
+				go func() {
+					qqVal := dic.NewDicVal()
+					sleepTime := d.Inputs.Int(1)
+					time.Sleep(time.Duration(sleepTime) * time.Millisecond)
+					rMsg := dic_api.Api.DicRunPrivateVal(dic, d.Inputs.StringAfter(2), qqVal)
+					if rMsg != "" {
+						rMsg = strings.ReplaceAll(rMsg, "\\r", "\n")
+						SendGroupText(groupID, rMsg)
+					}
+				}()
+				return "", nil
+			}})
 
-			dic.AddFuncs(Funcs)
+		dic.AddFuncs(Funcs)
 
-			rMsg := dic_api.Api.DicRun(dic, content)
+		rMsg := dic_api.Api.DicRun(dic, content)
 			if rMsg != "" {
 				rMsg = strings.ReplaceAll(rMsg, "\\r", "\n")
 				debugLog.Infof("%v", rMsg)

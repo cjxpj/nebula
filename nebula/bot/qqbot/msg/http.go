@@ -85,6 +85,31 @@ func (b *QQBot) Patch(path string, body any, respObj any) error {
 	return err
 }
 
+func (b *QQBot) Put(path string, body any, respObj any) error {
+	if err := b.EnsureToken(); err != nil {
+		return err
+	}
+	headers := GetQQBotAuthHeader(b.Key.AccessToken)
+
+	if b.Debug {
+		bodyJson, _ := json.Marshal(body)
+		debugLog.Infof("[QQBot PUT] %s%s\n", APIURL, path)
+		debugLog.Infof("[QQBot 请求] %s\n", string(bodyJson))
+	}
+
+	err := putJson(APIURL+path, body, headers, respObj)
+
+	if b.Debug {
+		if err != nil {
+			debugLog.Infof("[QQBot 错误] %v\n", err)
+		} else if respObj != nil {
+			respJson, _ := json.Marshal(respObj)
+			debugLog.Infof("[QQBot PUT返回] %s\n", string(respJson))
+		}
+	}
+	return err
+}
+
 func (b *QQBot) SendChannelImage(path string, imgData []byte, body any, respObj any) error {
 	if err := b.EnsureToken(); err != nil {
 		return err
@@ -278,6 +303,45 @@ func patchJson(url string, body any, headers http.Header, respObj any) error {
 	}
 
 	req, err := http.NewRequest("PATCH", url, bytes.NewBuffer(data))
+	if err != nil {
+		return fmt.Errorf("构造请求失败: %w", err)
+	}
+
+	if headers != nil {
+		req.Header = headers
+	}
+	req.Header.Set("Content-Type", "application/json")
+
+	client := &http.Client{Timeout: 10 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		return fmt.Errorf("HTTP 请求失败: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusCreated {
+		if c, err := io.ReadAll(resp.Body); err == nil {
+			return fmt.Errorf("请求失败，状态码: %d, 内容: %s", resp.StatusCode, string(c))
+		}
+		return fmt.Errorf("请求失败，状态码: %d", resp.StatusCode)
+	}
+
+	if respObj != nil {
+		if err := json.NewDecoder(resp.Body).Decode(respObj); err != nil {
+			return fmt.Errorf("解析响应失败: %w", err)
+		}
+	}
+
+	return nil
+}
+
+func putJson(url string, body any, headers http.Header, respObj any) error {
+	data, err := json.Marshal(body)
+	if err != nil {
+		return fmt.Errorf("编码 JSON 请求失败: %w", err)
+	}
+
+	req, err := http.NewRequest("PUT", url, bytes.NewBuffer(data))
 	if err != nil {
 		return fmt.Errorf("构造请求失败: %w", err)
 	}

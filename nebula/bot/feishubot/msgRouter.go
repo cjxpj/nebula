@@ -17,7 +17,7 @@ import (
 )
 
 func groupMsg(m *feishubot_msg.ImMessageReceiveV1) {
-	botDicPath := utils.NewFileQueue(dto.ServerConfig.NapCatBot.FilePath + "/dic")
+	botDicPath := utils.NewFileQueue(dto.ServerConfig.FeiShuBot.FilePath + "/dic")
 	botDicList, err := botDicPath.GetFileList()
 	if err != nil {
 		return
@@ -33,7 +33,7 @@ func groupMsg(m *feishubot_msg.ImMessageReceiveV1) {
 
 	isAdmin := "null" // 是否是管理员
 	// 主人列表
-	if adminList, err := utils.NewFileQueue(dto.ServerConfig.NapCatBot.FilePath + "/admin.txt").ReadFromFile(); err == nil {
+	if adminList, err := utils.NewFileQueue(dto.ServerConfig.FeiShuBot.FilePath + "/admin.txt").ReadFromFile(); err == nil {
 		for s := range strings.SplitSeq(adminList, ",") {
 			id := strings.TrimSpace(s)
 			if userID == id {
@@ -55,16 +55,18 @@ func groupMsg(m *feishubot_msg.ImMessageReceiveV1) {
 
 	for _, v := range botDicList {
 		go func() {
-			FileData, err := utils.NewFileQueue(dto.ServerConfig.FeiShuBot.FilePath + "/dic/" + v).ReadFromFile()
+			dicPath := dto.ServerConfig.FeiShuBot.FilePath + "/dic/" + v
+			FileData, err := utils.NewFileQueue(dicPath).ReadFromFile()
 			if err != nil {
 				return
 			}
 
 			// 回复消息
-			dic := dic_dto.NewDic(dto.ServerConfig.FeiShuBot.FilePath, FileData).
-				SetGlobal_v(valData)
+		dic := dic_dto.NewDic(dicPath, FileData).
+			SetGlobal_v(valData)
+		dic.Val.P.Set("_词库路径_", dicPath)
 
-			dic.SetFunc("调用", dto.DicFunc{
+		dic.SetFunc("调用", dto.DicFunc{
 				L: "2..",
 				Fn: func(d *dto.DicInputs) (any, error) {
 					go func() {

@@ -3,8 +3,10 @@ package qqbot
 import (
 	"encoding/json"
 	"fmt"
+	"net/url"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
 	"time"
 
@@ -19,16 +21,140 @@ import (
 var mdRe = regexp.MustCompile(`(?s)\[((?:\\.|[^\]\\])+)\]\(((?:\\.|[^)\\])+)\)`)
 var mdReAt = regexp.MustCompile(`<(.+?)(\/)?>`)
 
-// popMDKeyboard 从参数末尾弹出键盘 JSON，返回有效参数数量和键盘对象
+// popMDKeyboard 检测"按钮"关键字，其后的参数为文本按钮定义
+// "标签" → 点击发送 "/标签"；"标签|数据" → 点击发送 "数据"
 func popMDKeyboard(d *dto.DicInputs) (int, *qqbot_msg.Keyboard) {
 	l := d.Inputs.Len()
 	if l == 0 {
 		return 0, nil
 	}
-	if kb := qqbot_msg.ParseKeyboardJSON(d.Inputs.String(l)); kb != nil {
-		return l - 1, kb
+	// 扫描"按钮"关键字：其后的参数为文本按钮定义
+	for i := 2; i <= l; i++ {
+		if d.Inputs.String(i) == "按钮" {
+			if i+1 <= l {
+				kb := parseTextButtons(d, i+1, l)
+				if kb != nil {
+					return i - 1, kb
+				}
+			}
+			return i - 1, nil
+		}
 	}
 	return l, nil
+}
+
+// parseTextButtons 从参数 start..l 解析文本按钮定义
+// 格式: label;key=val;key=val...  尾部 \r 表示该按钮后换行
+// 支持 key: type(0/1/2)、data、enter(true/false)
+func parseTextButtons(d *dto.DicInputs, start, l int) *qqbot_msg.Keyboard {
+	var rows []*qqbot_msg.KeyboardRow
+	var curButtons []*qqbot_msg.Button
+	for i := start; i <= l; i++ {
+		s := d.Inputs.String(i)
+		if s == "" {
+			continue
+		}
+		// 用 ; 分割参数
+		parts := strings.Split(s, ";")
+		label := strings.TrimSpace(parts[0])
+		if label == "" {
+			continue
+		}
+		rawLabel := label
+		// 检测尾部 \r 用于换行
+		newRow := false
+		if before, ok := strings.CutSuffix(label, "\\r"); ok {
+			label = before
+			newRow = true
+		}
+		// label 最多 10 字符
+		if len([]rune(label)) > 10 {
+			label = string([]rune(label)[:10])
+		}
+		// 默认值
+		btnType := 2
+		btnData := rawLabel
+		var btnEnter bool
+		hasType := false
+		hasData := false
+		// 解析 key=value
+		for _, part := range parts[1:] {
+			k, v, ok := strings.Cut(part, "=")
+			if !ok {
+				continue
+			}
+			k = strings.TrimSpace(k)
+			v = strings.TrimSpace(v)
+			switch k {
+			case "type":
+				if t, err := strconv.Atoi(v); err == nil {
+					btnType = t
+					hasType = true
+				}
+			case "data":
+				btnData = v
+				hasData = true
+			case "enter":
+				btnEnter = v == "true" || v == "1"
+			}
+		}
+		// 未显式指定 type 时，根据 data 前缀自动判断类型
+		if !hasType {
+			if strings.HasPrefix(btnData, "http://") || strings.HasPrefix(btnData, "https://") {
+				btnType = 0 // 链接
+			} else if strings.HasPrefix(btnData, "#") {
+				btnType = 1 // 回调
+			}
+		}
+		// 根据类型清理 data 和 label
+		if btnType == 1 && strings.HasPrefix(btnData, "#") {
+			btnData = strings.TrimPrefix(btnData, "#")
+			if !hasData && strings.HasPrefix(label, "#") {
+				label = strings.TrimPrefix(label, "#")
+			}
+		} else if btnType == 0 && (strings.HasPrefix(btnData, "http://") || strings.HasPrefix(btnData, "https://")) {
+			if !hasData {
+				// 用 # 分隔：前面是链接，后面是显示文本
+				if idx := strings.Index(btnData, "#"); idx != -1 {
+					label = btnData[idx+1:]
+					btnData = btnData[:idx]
+				} else if u, err := url.Parse(btnData); err == nil && u.Host != "" {
+					label = u.Host
+				}
+				if len([]rune(label)) > 10 {
+					label = string([]rune(label)[:10])
+				}
+			}
+		}
+		action := &qqbot_msg.ButtonAction{
+			Type:       btnType,
+			Permission: &qqbot_msg.ButtonPermission{Type: 2},
+			Data:       btnData,
+		}
+		if btnEnter {
+			action.Enter = true
+		}
+		curButtons = append(curButtons, &qqbot_msg.Button{
+			ID:         fmt.Sprintf("btn_%d", i-1),
+			RenderData: &qqbot_msg.ButtonRenderData{Label: label},
+			Action:     action,
+		})
+		if newRow {
+			rows = append(rows, &qqbot_msg.KeyboardRow{Buttons: curButtons})
+			curButtons = nil
+		}
+	}
+	if len(curButtons) > 0 {
+		rows = append(rows, &qqbot_msg.KeyboardRow{Buttons: curButtons})
+	}
+	if len(rows) == 0 {
+		return nil
+	}
+	return &qqbot_msg.Keyboard{
+		Content: &qqbot_msg.KeyboardContent{
+			Rows: rows,
+		},
+	}
 }
 
 // mdFormatVal 格式化 MD 参数值（换行/链接转义等）
@@ -159,6 +285,7 @@ func qqBOTGroupRun(payload *qqbot_msg.Payload, bot *qqbot_msg.RouterQQBot) {
 		// 回复消息
 		dic := dic_dto.NewDic(dicPath, FileData).
 			SetGlobal_v(valData)
+		dic.Val.P.Set("_词库路径_", dicPath)
 
 		dic.AddFuncs(ReplyFuncs)
 
@@ -426,6 +553,7 @@ func qqBOTGroupATRun(payload *qqbot_msg.Payload, bot *qqbot_msg.RouterQQBot) {
 		// 回复消息
 		dic := dic_dto.NewDic(dicPath, FileData).
 			SetGlobal_v(valData)
+		dic.Val.P.Set("_词库路径_", dicPath)
 
 		dic.AddFuncs(ReplyFuncs)
 
@@ -644,7 +772,8 @@ func parseGroupEvent(payload *qqbot_msg.Payload, appId string) (*dto.Val, string
 			Set("来源", source).
 			Set("群号", m.GroupOpenID).
 			Set("成员", memberID).
-			Set("用户", m.UserOpenID).
+			Set("QQ", m.UserOpenID).
+			Set("qq", m.UserOpenID).
 			Set("robot", appId).
 			Set("Robot", appId), msg, m.GroupOpenID, true
 
@@ -657,8 +786,8 @@ func parseGroupEvent(payload *qqbot_msg.Payload, appId string) (*dto.Val, string
 		return dto.NewVal().
 			Set("来源", "入群申请").
 			Set("群号", m.GroupOpenID).
-			Set("成员", m.ApplicantID).
-			Set("用户", m.ApplicantID).
+			Set("QQ", m.ApplicantID).
+			Set("qq", m.ApplicantID).
 			Set("robot", appId).
 			Set("Robot", appId), "入群申请", m.GroupOpenID, true
 
@@ -668,19 +797,24 @@ func parseGroupEvent(payload *qqbot_msg.Payload, appId string) (*dto.Val, string
 			return nil, "", "", false
 		}
 		// 将按钮 data 作为触发词，词库中可监听按钮指令
-		trigger := m.Data.Resolved.ButtonData
-		if trigger == "" {
+		btnData := strings.TrimPrefix(m.Data.Resolved.ButtonData, "/")
+		if btnData == "" {
 			return nil, "", "", false
 		}
+		trigger := "按钮事件 " + btnData
 		groupOpenID := m.GroupOpenID
 		if groupOpenID == "" {
 			groupOpenID = m.UserOpenID // 单聊场景用 UserOpenID
 		}
+		userID := m.UserOpenID
+		if userID == "" {
+			userID = m.GroupMemberOpenID // 群聊场景没有 user_openid，用 member_openid
+		}
 		return dto.NewVal().
 			Set("来源", "按钮").
 			Set("群号", groupOpenID).
-			Set("成员", m.GroupMemberOpenID).
-			Set("用户", m.UserOpenID).
+			Set("QQ", userID).
+			Set("qq", userID).
 			Set("robot", appId).
 			Set("Robot", appId), trigger, groupOpenID, true
 	}
@@ -802,6 +936,7 @@ func qqBOTGroupPrivateRun(payload *qqbot_msg.Payload, bot *qqbot_msg.RouterQQBot
 		// 回复消息
 		dic := dic_dto.NewDic(dicPath, FileData).
 			SetGlobal_v(valData)
+		dic.Val.P.Set("_词库路径_", dicPath)
 
 		dic.AddFuncs(ReplyFuncs)
 

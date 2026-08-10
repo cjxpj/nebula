@@ -19,6 +19,14 @@ func ParseKeyboardJSON(jsonStr string) *Keyboard {
 	if err := json.Unmarshal([]byte(jsonStr), &kb); err != nil {
 		return nil
 	}
+	// 兼容 {"rows":[...]} 写法（自动包裹 content）
+	if kb.Content == nil && kb.ID == "" && strings.Contains(jsonStr, `"rows"`) {
+		wrapped := `{"content":` + jsonStr + `}`
+		var kb2 Keyboard
+		if err := json.Unmarshal([]byte(wrapped), &kb2); err == nil {
+			return &kb2
+		}
+	}
 	return &kb
 }
 
@@ -622,5 +630,5 @@ func (b *QQBot) ReplyInteraction(interactionID string, code int) error {
 		return fmt.Errorf("interactionID不能为空")
 	}
 	url := fmt.Sprintf("/interactions/%s", interactionID)
-	return b.Send(url, InteractionResponse{Code: code}, nil)
+	return b.Put(url, InteractionResponse{Code: code}, nil)
 }

@@ -457,11 +457,12 @@ var ReplyFuncs = map[string]dto.DicFunc{
 				return "", nil
 			}
 			// CustomTemplateId + key=value 参数对
-			if (pLen-1)%2 != 0 {
-				return nil, fmt.Errorf("要设置对应键跟值")
-			}
 			params := make([]*qqbot_msg.MarkdownParams, 0)
-			for i := 2; i <= pLen; i += 2 {
+			end := pLen
+			if (pLen-1)%2 != 0 {
+				end = pLen - 1 // 忽略末尾不成对的参数
+			}
+			for i := 2; i <= end; i += 2 {
 				key := d.Inputs.String(i)
 				val := mdFormatVal(d.Inputs.String(i + 1))
 				params = append(params, &qqbot_msg.MarkdownParams{Key: key, Values: strings.Split(val, "\r\n")})

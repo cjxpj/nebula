@@ -376,20 +376,20 @@ type Button struct {
 
 // ButtonRenderData 按钮渲染样式
 type ButtonRenderData struct {
-	Label        string `json:"label"`         // 按钮文字
-	VisitedLabel string `json:"visited_label"` // 点击后按钮文字
-	Style        int    `json:"style"`         // 样式：0 灰色线框，1 蓝色线框
+	Label        string `json:"label"`                   // 按钮文字
+	VisitedLabel string `json:"visited_label,omitempty"` // 点击后按钮文字
+	Style        int    `json:"style,omitempty"`         // 样式：0 灰色线框，1 蓝色线框
 }
 
 // ButtonAction 按钮动作
 type ButtonAction struct {
-	Type          int               `json:"type"`             // 0=跳转，1=回调，2=指令
-	Permission    *ButtonPermission `json:"permission"`       // 权限（必填）
-	Data          string            `json:"data"`             // 操作数据
-	Reply         bool              `json:"reply,omitempty"`  // 指令按钮：是否带引用回复
-	Enter         bool              `json:"enter,omitempty"`  // 指令按钮：点击后直接发送 data
-	Anchor        int               `json:"anchor,omitempty"` // 1=唤起选图器（仅手机端单聊）
-	UnsupportTips string            `json:"unsupport_tips"`   // 不支持时的 toast 文案（必填）
+	Type          int               `json:"type"`                     // 0=跳转，1=回调，2=指令
+	Permission    *ButtonPermission `json:"permission"`               // 权限（必填）
+	Data          string            `json:"data"`                     // 操作数据
+	Reply         bool              `json:"reply,omitempty"`          // 指令按钮：是否带引用回复
+	Enter         bool              `json:"enter,omitempty"`          // 指令按钮：点击后直接发送 data
+	Anchor        int               `json:"anchor,omitempty"`         // 1=唤起选图器（仅手机端单聊）
+	UnsupportTips string            `json:"unsupport_tips,omitempty"` // 不支持时的 toast 文案
 }
 
 // ButtonPermission 按钮操作权限
