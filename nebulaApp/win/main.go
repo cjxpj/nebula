@@ -1,3 +1,4 @@
+//go:generate goversioninfo -64
 //go:build windows
 
 package main

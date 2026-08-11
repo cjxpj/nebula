@@ -293,32 +293,43 @@ func Funcs(d *dic_dto.DicFunc, dic_i *utils.DicInputs) (any, error) {
 	}
 
 	if fn, ok := d.Dic.MyFunc[dic_i.String(0)]; ok {
-		if inputs.LenOk(fn.L) {
-			res, err := fn.Fn(dto.NewDicInputsWithOutput(d.Dic, d.Val, &inputs, d.Output))
-			if err != nil {
-				d.Sys.Stop.Store(true)
-				if err.Error() != "stop" {
-					d.Output.Clear()
-					d.Output.Add(fmt.Sprintf("[%s]%s(line:%d)：%v", d.Val.Get("_词库路径_"), dic_i.String(0), d.CurLine, err))
-				}
-			}
-			return res, err
+		if !inputs.LenOk(fn.L) {
+			return "", paramCountError(d, dic_i.String(0), fn.L, inputs.Len())
 		}
+		res, err := fn.Fn(dto.NewDicInputsWithOutput(d.Dic, d.Val, &inputs, d.Output))
+		if err != nil {
+			d.Sys.Stop.Store(true)
+			if err.Error() != "stop" {
+				d.Output.Clear()
+				d.Output.Add(fmt.Sprintf("[%s]%s(line:%d)：%v", d.Val.Get("_词库路径_"), dic_i.String(0), d.CurLine, err))
+			}
+		}
+		return res, err
 	}
 
 	if fnInfo, ok := funcs.GetFunc(dic_i.String(0)); ok {
-		if inputs.LenOk(fnInfo.L) {
-			res, err := fnInfo.Fn(dto.NewDicInputsWithOutput(d.Dic, d.Val, &inputs, d.Output))
-			if err != nil {
-				d.Sys.Stop.Store(true)
-				if err.Error() != "stop" {
-					d.Output.Clear()
-					d.Output.Add(fmt.Sprintf("[%s]%s(line:%d)：%v", d.Val.Get("_词库路径_"), dic_i.String(0), d.CurLine, err))
-				}
-			}
-			return res, err
+		if !inputs.LenOk(fnInfo.L) {
+			return "", paramCountError(d, dic_i.String(0), fnInfo.L, inputs.Len())
 		}
+		res, err := fnInfo.Fn(dto.NewDicInputsWithOutput(d.Dic, d.Val, &inputs, d.Output))
+		if err != nil {
+			d.Sys.Stop.Store(true)
+			if err.Error() != "stop" {
+				d.Output.Clear()
+				d.Output.Add(fmt.Sprintf("[%s]%s(line:%d)：%v", d.Val.Get("_词库路径_"), dic_i.String(0), d.CurLine, err))
+			}
+		}
+		return res, err
 	}
 
 	return "$" + strings.Join(dic_i.StringList(), " ") + "$", nil
+}
+
+// paramCountError 参数数量校验失败：输出错误并停止执行，避免静默返回原文
+func paramCountError(d *dic_dto.DicFunc, name, rule string, actual int) error {
+	err := fmt.Errorf("参数数量错误(需要%s，实际%d)", rule, actual)
+	d.Sys.Stop.Store(true)
+	d.Output.Clear()
+	d.Output.Add(fmt.Sprintf("[%s]%s(line:%d)：%v", d.Val.Get("_词库路径_"), name, d.CurLine, err))
+	return err
 }
