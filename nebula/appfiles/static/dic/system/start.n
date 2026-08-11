@@ -15,14 +15,6 @@ Main
         start %启动次数%
     <文本
 <函数
-函数>检查更新
-    最新信息:$访问 https://gitee.com/cjxpj/nebuladb/raw/master/nebula/version.json$
-    最新版本:@%最新信息%->version?:null
-    最新版本说明:@%最新信息%->tips
-    如果:%版本%!=%最新版本%&%最新版本%!=null
-    $打印 有新版本要更新(%最新版本%)%换行%更新公告:%最新版本说明%$
-<函数
-#:$%检查更新%$
 $%启动%$
 
 启动首页

@@ -15,6 +15,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"regexp"
+	"runtime"
 	"sort"
 	"strconv"
 	"strings"
@@ -1979,6 +1980,17 @@ func OpUI(w http.ResponseWriter, r *http.Request, getpath string) {
 			return
 		}
 
+		// 扩展部署相关接口仅支持 Windows 端，其他平台直接拒绝
+		switch h.Type {
+		case "install_php", "install_ffmpeg", "install_silk_v3", "install_napcat_bot", "install_python",
+			"get_install_status", "install_progress", "cancel_install", "uninstall":
+			if runtime.GOOS != "windows" {
+				jsonResp, _ := json.Marshal(map[string]string{"status": "error", "error": "扩展部署功能仅支持 Windows 端"})
+				w.Write(jsonResp)
+				return
+			}
+		}
+
 		switch h.Type {
 		case "get_server":
 			ff := utils.NewFileQueue(dto.CONFIG_SYSTEM_PATH)
@@ -3431,6 +3443,11 @@ func OpUI(w http.ResponseWriter, r *http.Request, getpath string) {
 			} else {
 				http.Error(w, `{"status":"error","error":"marshal failed"}`, http.StatusInternalServerError)
 			}
+			return
+
+		case "check_update":
+			jsonResp, _ := json.Marshal(checkUpdate())
+			w.Write(jsonResp)
 			return
 
 		case "security_info":
