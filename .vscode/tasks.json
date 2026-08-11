@@ -1,278 +1,306 @@
 {
-    "version": "2.0.0",
-    "tasks": [
-        {
-            "type": "go",
-            "label": "buildWindows_amd64",
-            "command": "build",
-            "args": [
-                "-trimpath",
-                "-ldflags",
-                "-s -w",
-                "-o",
-                "dist/nebula.exe",
-                "./nebulaApp/win"
-            ],
-            "problemMatcher": [
-                "$go"
-            ],
-            "group": {
-                "kind": "build",
-                "isDefault": true
-            },
-            "detail": "生成 x64 位 Windows 可执行文件",
-            "options": {
-                "env": {
-                    "GO111MODULE": "on",
-                    "GOARCH": "amd64",
-                    "GOOS": "windows",
-                    "CGO_ENABLED": "0"
-                }
-            }
-        },
-        {
-            "type": "go",
-            "label": "buildLinux_amd64",
-            "command": "build",
-            "args": [
-                "-trimpath",
-                "-ldflags",
-                "-s -w",
-                "-o",
-                "dist/nebula",
-                "./nebulaApp/main_linux.go"
-            ],
-            "problemMatcher": [
-                "$go"
-            ],
-            "group": {
-                "kind": "build",
-                "isDefault": true
-            },
-            "detail": "生成 x64 位 Linux 可执行文件",
-            "options": {
-                "env": {
-                    "GO111MODULE": "on",
-                    "GOARCH": "amd64",
-                    "GOOS": "linux",
-                    "CGO_ENABLED": "0"
-                }
-            }
-        },
-        {
-            "type": "go",
-            "label": "Android arm64 (.so)",
-            "command": "build",
-            "args": [
-                "-tags",
-                "so",
-                "-buildmode=c-shared",
-                "-ldflags",
-                "-s -w",
-                "-trimpath",
-                "-o",
-                "dist/libnebula_arm64.so",
-                "./nebulaApp"
-            ],
-            "problemMatcher": [
-                "$go"
-            ],
-            "group": {
-                "kind": "build",
-                "isDefault": true
-            },
-            "detail": "编译 arm64 Android .so 文件",
-            "options": {
-                "env": {
-                    "GOOS": "android",
-                    "GOARCH": "arm64",
-                    "CGO_ENABLED": "1",
-                    "CC": "E:\\android-ndk-r29\\android-ndk-r29\\toolchains\\llvm\\prebuilt\\windows-x86_64\\bin\\aarch64-linux-android29-clang.cmd"
-                }
-            }
-        },
-        {
-            "type": "shell",
-            "label": "复制 .so 到 jniLibs",
-            "command": "xcopy",
-            "args": [
-                "/Y",
-                "dist\\libnebula_arm64.so",
-                "android\\app\\src\\main\\jniLibs\\arm64-v8a\\"
-            ],
-            "problemMatcher": [],
-            "detail": "拷贝 .so 到 jniLibs"
-        },
-        {
-            "type": "shell",
-            "label": "Gradle 打包 APK",
-            "command": ".\\gradlew.bat",
-            "args": [
-                "assembleRelease"
-            ],
-            "problemMatcher": [],
-            "detail": "Gradle 编译 Android APK (release 压缩)",
-            "options": {
-                "cwd": "${workspaceFolder}\\android",
-                "env": {
-                    "JAVA_HOME": "C:\\Program Files\\Java\\jdk-17",
-                    "ANDROID_SDK_ROOT": "E:\\android-sdk"
-                }
-            }
-        },
-        {
-            "type": "shell",
-            "label": "复制 APK 到 dist",
-            "command": "xcopy",
-            "args": [
-                "/Y",
-                "android\\app\\build\\outputs\\apk\\release\\app-release.apk",
-                "dist\\nebula.apk*"
-            ],
-            "problemMatcher": [],
-            "detail": "复制 APK 到 dist 并重命名为 nebula.apk"
-        },
-        {
-            "label": "一键打包 APK",
-            "dependsOrder": "sequence",
-            "dependsOn": [
-                "Android arm64 (.so)",
-                "复制 .so 到 jniLibs",
-                "Gradle 打包 APK",
-                "复制 APK 到 dist"
-            ],
-            "problemMatcher": [],
-            "group": {
-                "kind": "build",
-                "isDefault": true
-            },
-            "detail": "一键打包：编译 .so → 拷贝 jniLibs → Gradle → dist/nebula.apk"
-        },
-        {
-            "type": "shell",
-            "label": "upx 压缩",
-            "command": "upx",
-            "args": [
-                "--best",
-                "--lzma",
-                "dist/nebula.exe",
-                "dist/nebula"
-            ],
-            "problemMatcher": [],
-            "detail": "UPX 压缩"
-        },
-        {
-            "label": "全部编译 (桌面端)",
-            "dependsOrder": "sequence",
-            "dependsOn": [
-                "buildWindows_amd64",
-                "buildLinux_amd64",
-                "upx 压缩"
-            ],
-            "problemMatcher": []
-        },
-        {
-            "label": "发布: 更新版本号",
-            "type": "process",
-            "command": "powershell.exe",
-            "args": [
-                "-NoProfile",
-                "-Command",
-                "$v='${input:releaseVersion}'; $e=(Join-Path $PWD 'nebula\\appfiles\\embed.go'); $t=[IO.File]::ReadAllText($e); $i=$t.IndexOf('var Version string = '); $j=$t.IndexOf('\"',$i); $k=$t.IndexOf('\"',$j+1); $t=$t.Substring(0,$j)+'\"'+$v+'\"'+$t.Substring($k+1); [IO.File]::WriteAllText($e,$t,(New-Object System.Text.UTF8Encoding $false)); $p=(Join-Path $PWD 'nebulaApp\\win\\versioninfo.json'); $j2=[IO.File]::ReadAllText($p) | ConvertFrom-Json; $a=$v.Split('.'); $j2.FixedFileInfo.FileVersion.Major=[int]$a[0]; $j2.FixedFileInfo.FileVersion.Minor=[int]$a[1]; $j2.FixedFileInfo.FileVersion.Patch=[int]$a[2]; $j2.FixedFileInfo.ProductVersion=$j2.FixedFileInfo.FileVersion; $j2.StringFileInfo.FileVersion=$v; $j2.StringFileInfo.ProductVersion=$v; [IO.File]::WriteAllText((Resolve-Path $p),($j2|ConvertTo-Json -Depth 10),(New-Object System.Text.UTF8Encoding $false)); Write-Host '版本号已更新为 '$v"
-            ],
-            "problemMatcher": [],
-            "detail": "更新 embed.go 与 versioninfo.json 中的版本号"
-        },
-        {
-            "label": "发布: 重新生成 resource.syso",
-            "type": "process",
-            "command": "powershell.exe",
-            "args": [
-                "-NoProfile",
-                "-Command",
-                "if (Get-Command goversioninfo -ErrorAction SilentlyContinue) { Push-Location 'nebulaApp\\win'; goversioninfo -64; Pop-Location; Write-Host 'resource.syso 已重新生成' } else { Write-Host '未安装 goversioninfo，跳过（exe 文件版本信息保持旧值）' -ForegroundColor Yellow }"
-            ],
-            "problemMatcher": [],
-            "detail": "用 goversioninfo 重新生成 exe 版本资源"
-        },
-        {
-            "label": "发布: git 提交并打标签",
-            "type": "process",
-            "command": "powershell.exe",
-            "args": [
-                "-NoProfile",
-                "-Command",
-                "git add -A; git commit -m 'release: v${input:releaseVersion}'; git tag -f v${input:releaseVersion}"
-            ],
-            "problemMatcher": [],
-            "detail": "git add -A + commit + 打标签 v<版本>"
-        },
-        {
-            "label": "发布: 推送 GitHub + Gitee",
-            "type": "process",
-            "command": "powershell.exe",
-            "args": [
-                "-NoProfile",
-                "-Command",
-                "if (Get-NetTCPConnection -LocalPort 7890 -State Listen -ErrorAction SilentlyContinue) { $env:HTTP_PROXY='http://127.0.0.1:7890'; $env:HTTPS_PROXY='http://127.0.0.1:7890' }; $b=git branch --show-current; git push origin $b; if ($LASTEXITCODE -ne 0) { exit 1 }; git push --force origin refs/tags/v${input:releaseVersion}; if ($LASTEXITCODE -ne 0) { exit 1 }; $tok=[Environment]::GetEnvironmentVariable('GITEE_TOKEN','User'); if (-not $tok) { Write-Host '未找到 GITEE_TOKEN，请先设置'; exit 1 }; git push --force \"https://cjxpj:$tok@gitee.com/cjxpj/nebula.git\" $b; if ($LASTEXITCODE -ne 0) { exit 1 }; git push --force \"https://cjxpj:$tok@gitee.com/cjxpj/nebula.git\" refs/tags/v${input:releaseVersion}"
-            ],
-            "problemMatcher": [],
-            "detail": "推送分支+tag 到 GitHub(origin) 与 Gitee（自动启用代理）"
-        },
-        {
-            "label": "发布: 创建 GitHub Release",
-            "type": "process",
-            "command": "powershell.exe",
-            "args": [
-                "-NoProfile",
-                "-Command",
-                "if (Get-NetTCPConnection -LocalPort 7890 -State Listen -ErrorAction SilentlyContinue) { $env:HTTP_PROXY='http://127.0.0.1:7890'; $env:HTTPS_PROXY='http://127.0.0.1:7890' }; $gh='C:\\Program Files\\GitHub CLI\\gh.exe'; $n='${input:releaseNotes}'; if (-not $n) { $n='Nebula v${input:releaseVersion} 发布' }; & $gh release create v${input:releaseVersion} dist/nebula.exe dist/nebula dist/nebula.apk --repo cjxpj/nebulaLanguage --title v${input:releaseVersion} --notes $n"
-            ],
-            "problemMatcher": [],
-            "detail": "gh 创建 GitHub Release 并上传 exe/linux/apk"
-        },
-        {
-            "label": "发布: 创建 Gitee Release",
-            "type": "process",
-            "command": "powershell.exe",
-            "args": [
-                "-NoProfile",
-                "-Command",
-                "$tok=[Environment]::GetEnvironmentVariable('GITEE_TOKEN','User'); if (-not $tok) { Write-Host '未找到 GITEE_TOKEN，请先设置'; exit 1 }; $body=@{access_token=$tok; tag_name='v${input:releaseVersion}'; name='v${input:releaseVersion}'; body='${input:releaseNotes}'; target_commitish=(git branch --show-current)} | ConvertTo-Json; $rel=Invoke-RestMethod -Method Post -Uri 'https://gitee.com/api/v5/repos/cjxpj/nebula/releases' -ContentType 'application/json' -Body $body; curl.exe -s -X POST \"https://gitee.com/api/v5/repos/cjxpj/nebula/releases/$($rel.id)/attach_files\" -F \"access_token=$tok\" -F 'file=@dist/nebula.exe'; curl.exe -s -X POST \"https://gitee.com/api/v5/repos/cjxpj/nebula/releases/$($rel.id)/attach_files\" -F \"access_token=$tok\" -F 'file=@dist/nebula'; curl.exe -s -X POST \"https://gitee.com/api/v5/repos/cjxpj/nebula/releases/$($rel.id)/attach_files\" -F \"access_token=$tok\" -F 'file=@dist/nebula.apk'"
-            ],
-            "problemMatcher": [],
-            "detail": "Gitee API 创建 Release 并上传 exe/linux/apk"
-        },
-        {
-            "label": "一键打包发布 (GitHub + Gitee)",
-            "dependsOrder": "sequence",
-            "dependsOn": [
-                "发布: 更新版本号",
-                "发布: 重新生成 resource.syso",
-                "buildWindows_amd64",
-                "buildLinux_amd64",
-                "一键打包 APK",
-                "发布: git 提交并打标签",
-                "发布: 推送 GitHub + Gitee",
-                "发布: 创建 GitHub Release",
-                "发布: 创建 Gitee Release"
-            ],
-            "problemMatcher": [],
-            "detail": "一键打包 win+linux+android → 提交/tag → 推送 GitHub+Gitee → 创建 Releases"
-        }
-    ],
-    "inputs": [
-        {
-            "id": "releaseVersion",
-            "type": "promptString",
-            "description": "请输入新版本号（如 16.18.3）",
-            "default": "16.18.3"
-        },
-        {
-            "id": "releaseNotes",
-            "type": "promptString",
-            "description": "更新说明（可留空，将用于 GitHub/Gitee Release）",
-            "default": ""
-        }
-    ]
+    "version":  "2.0.0",
+    "tasks":  [
+                  {
+                      "type":  "go",
+                      "label":  "buildWindows_amd64",
+                      "command":  "build",
+                      "args":  [
+                                   "-trimpath",
+                                   "-ldflags",
+                                   "-s -w",
+                                   "-o",
+                                   "dist/nebula.exe",
+                                   "./nebulaApp/win"
+                               ],
+                      "problemMatcher":  [
+                                             "$go"
+                                         ],
+                      "group":  {
+                                    "kind":  "build",
+                                    "isDefault":  true
+                                },
+                      "detail":  "生成 x64 位 Windows 可执行文件",
+                      "options":  {
+                                      "env":  {
+                                                  "GO111MODULE":  "on",
+                                                  "GOARCH":  "amd64",
+                                                  "GOOS":  "windows",
+                                                  "CGO_ENABLED":  "0"
+                                              }
+                                  }
+                  },
+                  {
+                      "type":  "go",
+                      "label":  "buildLinux_amd64",
+                      "command":  "build",
+                      "args":  [
+                                   "-trimpath",
+                                   "-ldflags",
+                                   "-s -w",
+                                   "-o",
+                                   "dist/nebula",
+                                   "./nebulaApp/main_linux.go"
+                               ],
+                      "problemMatcher":  [
+                                             "$go"
+                                         ],
+                      "group":  {
+                                    "kind":  "build",
+                                    "isDefault":  true
+                                },
+                      "detail":  "生成 x64 位 Linux 可执行文件",
+                      "options":  {
+                                      "env":  {
+                                                  "GO111MODULE":  "on",
+                                                  "GOARCH":  "amd64",
+                                                  "GOOS":  "linux",
+                                                  "CGO_ENABLED":  "0"
+                                              }
+                                  }
+                  },
+                  {
+                      "type":  "go",
+                      "label":  "Android arm64 (.so)",
+                      "command":  "build",
+                      "args":  [
+                                   "-tags",
+                                   "so",
+                                   "-buildmode=c-shared",
+                                   "-ldflags",
+                                   "-s -w",
+                                   "-trimpath",
+                                   "-o",
+                                   "dist/libnebula_arm64.so",
+                                   "./nebulaApp"
+                               ],
+                      "problemMatcher":  [
+                                             "$go"
+                                         ],
+                      "group":  {
+                                    "kind":  "build",
+                                    "isDefault":  true
+                                },
+                      "detail":  "编译 arm64 Android .so 文件",
+                      "options":  {
+                                      "env":  {
+                                                  "GOOS":  "android",
+                                                  "GOARCH":  "arm64",
+                                                  "CGO_ENABLED":  "1",
+                                                  "CC":  "E:\\android-ndk-r29\\android-ndk-r29\\toolchains\\llvm\\prebuilt\\windows-x86_64\\bin\\aarch64-linux-android29-clang.cmd"
+                                              }
+                                  }
+                  },
+                  {
+                      "type":  "shell",
+                      "label":  "复制 .so 到 jniLibs",
+                      "command":  "xcopy",
+                      "args":  [
+                                   "/Y",
+                                   "dist\\libnebula_arm64.so",
+                                   "android\\app\\src\\main\\jniLibs\\arm64-v8a\\"
+                               ],
+                      "problemMatcher":  [
+
+                                         ],
+                      "detail":  "拷贝 .so 到 jniLibs"
+                  },
+                  {
+                      "type":  "shell",
+                      "label":  "Gradle 打包 APK",
+                      "command":  ".\\gradlew.bat",
+                      "args":  [
+                                   "assembleRelease"
+                               ],
+                      "problemMatcher":  [
+
+                                         ],
+                      "detail":  "Gradle 编译 Android APK (release 压缩)",
+                      "options":  {
+                                      "cwd":  "${workspaceFolder}\\android",
+                                      "env":  {
+                                                  "JAVA_HOME":  "C:\\Program Files\\Java\\jdk-17",
+                                                  "ANDROID_SDK_ROOT":  "E:\\android-sdk"
+                                              }
+                                  }
+                  },
+                  {
+                      "type":  "shell",
+                      "label":  "复制 APK 到 dist",
+                      "command":  "xcopy",
+                      "args":  [
+                                   "/Y",
+                                   "android\\app\\build\\outputs\\apk\\release\\app-release.apk",
+                                   "dist\\nebula.apk*"
+                               ],
+                      "problemMatcher":  [
+
+                                         ],
+                      "detail":  "复制 APK 到 dist 并重命名为 nebula.apk"
+                  },
+                  {
+                      "label":  "一键打包 APK",
+                      "dependsOrder":  "sequence",
+                      "dependsOn":  [
+                                        "Android arm64 (.so)",
+                                        "复制 .so 到 jniLibs",
+                                        "Gradle 打包 APK",
+                                        "复制 APK 到 dist"
+                                    ],
+                      "problemMatcher":  [
+
+                                         ],
+                      "group":  {
+                                    "kind":  "build",
+                                    "isDefault":  true
+                                },
+                      "detail":  "一键打包：编译 .so → 拷贝 jniLibs → Gradle → dist/nebula.apk"
+                  },
+                  {
+                      "type":  "shell",
+                      "label":  "upx 压缩",
+                      "command":  "upx",
+                      "args":  [
+                                   "--best",
+                                   "--lzma",
+                                   "-f",
+                                   "dist/nebula.exe",
+                                   "dist/nebula"
+                               ],
+                      "problemMatcher":  [
+
+                                         ],
+                      "detail":  "UPX 压缩"
+                  },
+                  {
+                      "label":  "全部编译 (桌面端)",
+                      "dependsOrder":  "sequence",
+                      "dependsOn":  [
+                                        "buildWindows_amd64",
+                                        "buildLinux_amd64",
+                                        "upx 压缩"
+                                    ],
+                      "problemMatcher":  [
+
+                                         ]
+                  },
+                  {
+                      "label":  "发布: 更新版本号",
+                      "type":  "process",
+                      "command":  "powershell.exe",
+                      "args":  [
+                                   "-NoProfile",
+                                   "-Command",
+                                   "$v=\u0027${input:releaseVersion}\u0027; $e=(Join-Path $PWD \u0027nebula\\appfiles\\embed.go\u0027); $t=[IO.File]::ReadAllText($e); $i=$t.IndexOf(\u0027var Version string = \u0027); $j=$t.IndexOf(\u0027\"\u0027,$i); $k=$t.IndexOf(\u0027\"\u0027,$j+1); $t=$t.Substring(0,$j)+\u0027\"\u0027+$v+\u0027\"\u0027+$t.Substring($k+1); [IO.File]::WriteAllText($e,$t,(New-Object System.Text.UTF8Encoding $false)); $p=(Join-Path $PWD \u0027nebulaApp\\win\\versioninfo.json\u0027); $j2=[IO.File]::ReadAllText($p) | ConvertFrom-Json; $a=$v.Split(\u0027.\u0027); $j2.FixedFileInfo.FileVersion.Major=[int]$a[0]; $j2.FixedFileInfo.FileVersion.Minor=[int]$a[1]; $j2.FixedFileInfo.FileVersion.Patch=[int]$a[2]; $j2.FixedFileInfo.ProductVersion=$j2.FixedFileInfo.FileVersion; $j2.StringFileInfo.FileVersion=$v; $j2.StringFileInfo.ProductVersion=$v; [IO.File]::WriteAllText((Resolve-Path $p),($j2|ConvertTo-Json -Depth 10),(New-Object System.Text.UTF8Encoding $false)); Write-Host \u0027版本号已更新为 \u0027$v"
+                               ],
+                      "problemMatcher":  [
+
+                                         ],
+                      "detail":  "更新 embed.go 与 versioninfo.json 中的版本号"
+                  },
+                  {
+                      "label":  "发布: 重新生成 resource.syso",
+                      "type":  "process",
+                      "command":  "powershell.exe",
+                      "args":  [
+                                   "-NoProfile",
+                                   "-Command",
+                                   "if (Get-Command goversioninfo -ErrorAction SilentlyContinue) { Push-Location \u0027nebulaApp\\win\u0027; goversioninfo -64; Pop-Location; Write-Host \u0027resource.syso 已重新生成\u0027 } else { Write-Host \u0027未安装 goversioninfo，跳过（exe 文件版本信息保持旧值）\u0027 -ForegroundColor Yellow }"
+                               ],
+                      "problemMatcher":  [
+
+                                         ],
+                      "detail":  "用 goversioninfo 重新生成 exe 版本资源"
+                  },
+                  {
+                      "label":  "发布: git 提交并打标签",
+                      "type":  "process",
+                      "command":  "powershell.exe",
+                      "args":  [
+                                   "-NoProfile",
+                                   "-Command",
+                                   "git add -A; git commit -m \u0027release: v${input:releaseVersion}\u0027; git tag -f v${input:releaseVersion}"
+                               ],
+                      "problemMatcher":  [
+
+                                         ],
+                      "detail":  "git add -A + commit + 打标签 v\u003c版本\u003e"
+                  },
+                  {
+                      "label":  "发布: 推送 GitHub + Gitee",
+                      "type":  "process",
+                      "command":  "powershell.exe",
+                      "args":  [
+                                   "-NoProfile",
+                                   "-Command",
+                                   "if (Get-NetTCPConnection -LocalPort 7890 -State Listen -ErrorAction SilentlyContinue) { $env:HTTP_PROXY=\u0027http://127.0.0.1:7890\u0027; $env:HTTPS_PROXY=\u0027http://127.0.0.1:7890\u0027 }; $b=git branch --show-current; git push origin $b; if ($LASTEXITCODE -ne 0) { exit 1 }; git push --force origin refs/tags/v${input:releaseVersion}; if ($LASTEXITCODE -ne 0) { exit 1 }; $tok=[Environment]::GetEnvironmentVariable(\u0027GITEE_TOKEN\u0027,\u0027User\u0027); if (-not $tok) { Write-Host \u0027未找到 GITEE_TOKEN，请先设置\u0027; exit 1 }; git push --force \"https://cjxpj:$tok@gitee.com/cjxpj/nebula.git\" $b; if ($LASTEXITCODE -ne 0) { exit 1 }; git push --force \"https://cjxpj:$tok@gitee.com/cjxpj/nebula.git\" refs/tags/v${input:releaseVersion}"
+                               ],
+                      "problemMatcher":  [
+
+                                         ],
+                      "detail":  "推送分支+tag 到 GitHub(origin) 与 Gitee（自动启用代理）"
+                  },
+                  {
+                      "label":  "发布: 创建 GitHub Release",
+                      "type":  "process",
+                      "command":  "powershell.exe",
+                      "args":  [
+                                   "-NoProfile",
+                                   "-Command",
+                                   "if (Get-NetTCPConnection -LocalPort 7890 -State Listen -ErrorAction SilentlyContinue) { $env:HTTP_PROXY=\u0027http://127.0.0.1:7890\u0027; $env:HTTPS_PROXY=\u0027http://127.0.0.1:7890\u0027 }; $gh=\u0027C:\\Program Files\\GitHub CLI\\gh.exe\u0027; $n=\u0027${input:releaseNotes}\u0027; if (-not $n) { $n=\u0027Nebula v${input:releaseVersion} 发布\u0027 }; \u0026 $gh release create v${input:releaseVersion} dist/nebula.exe dist/nebula dist/nebula.apk --repo cjxpj/nebula --title v${input:releaseVersion} --notes $n"
+                               ],
+                      "problemMatcher":  [
+
+                                         ],
+                      "detail":  "gh 创建 GitHub Release 并上传 exe/linux/apk"
+                  },
+                  {
+                      "label":  "发布: 创建 Gitee Release",
+                      "type":  "process",
+                      "command":  "powershell.exe",
+                      "args":  [
+                                   "-NoProfile",
+                                   "-Command",
+                                   "$tok=[Environment]::GetEnvironmentVariable(\u0027GITEE_TOKEN\u0027,\u0027User\u0027); if (-not $tok) { Write-Host \u0027未找到 GITEE_TOKEN，请先设置\u0027; exit 1 }; $body=@{access_token=$tok; tag_name=\u0027v${input:releaseVersion}\u0027; name=\u0027v${input:releaseVersion}\u0027; body=\u0027${input:releaseNotes}\u0027; target_commitish=(git branch --show-current)} | ConvertTo-Json; $rel=Invoke-RestMethod -Method Post -Uri \u0027https://gitee.com/api/v5/repos/cjxpj/nebula/releases\u0027 -ContentType \u0027application/json\u0027 -Body $body; curl.exe -s -X POST \"https://gitee.com/api/v5/repos/cjxpj/nebula/releases/$($rel.id)/attach_files\" -F \"access_token=$tok\" -F \u0027file=@dist/nebula.exe\u0027; curl.exe -s -X POST \"https://gitee.com/api/v5/repos/cjxpj/nebula/releases/$($rel.id)/attach_files\" -F \"access_token=$tok\" -F \u0027file=@dist/nebula\u0027; curl.exe -s -X POST \"https://gitee.com/api/v5/repos/cjxpj/nebula/releases/$($rel.id)/attach_files\" -F \"access_token=$tok\" -F \u0027file=@dist/nebula.apk\u0027"
+                               ],
+                      "problemMatcher":  [
+
+                                         ],
+                      "detail":  "Gitee API 创建 Release 并上传 exe/linux/apk"
+                  },
+                  {
+                      "label":  "一键打包发布 (GitHub + Gitee)",
+                      "dependsOrder":  "sequence",
+                      "dependsOn":  [
+                                        "发布: 更新版本号",
+                                        "发布: 重新生成 resource.syso",
+                                        "buildWindows_amd64",
+                                        "buildLinux_amd64",
+                                        "upx 压缩",
+                                        "一键打包 APK",
+                                        "发布: git 提交并打标签",
+                                        "发布: 推送 GitHub + Gitee",
+                                        "发布: 创建 GitHub Release",
+                                        "发布: 创建 Gitee Release"
+                                    ],
+                      "problemMatcher":  [
+
+                                         ],
+                      "detail":  "一键打包 win+linux+android(upx压缩) → 提交/tag → 推送 GitHub+Gitee → 创建 Releases"
+                  }
+              ],
+    "inputs":  [
+                   {
+                       "id":  "releaseVersion",
+                       "type":  "promptString",
+                       "description":  "请输入新版本号（如 16.18.3）",
+                       "default":  "16.18.3"
+                   },
+                   {
+                       "id":  "releaseNotes",
+                       "type":  "promptString",
+                       "description":  "更新说明（可留空，将用于 GitHub/Gitee Release）",
+                       "default":  ""
+                   }
+               ]
 }
