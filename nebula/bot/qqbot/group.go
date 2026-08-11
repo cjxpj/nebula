@@ -121,8 +121,8 @@ func parseTextButtons(d *dto.DicInputs, start, l int) *qqbot_msg.Keyboard {
 		// 根据类型清理 data 和 label
 		if btnType == 1 && strings.HasPrefix(btnData, "#") {
 			btnData = strings.TrimPrefix(btnData, "#")
-			if strings.HasPrefix(label, "#") {
-				label = strings.TrimPrefix(label, "#")
+			if after, ok := strings.CutPrefix(label, "#"); ok {
+				label = after
 			}
 		} else if btnType == 0 && (strings.HasPrefix(btnData, "http://") || strings.HasPrefix(btnData, "https://")) {
 			if !hasData {
