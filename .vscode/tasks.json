@@ -1,4 +1,4 @@
-{
+﻿{
     "version":  "2.0.0",
     "tasks":  [
                   {
@@ -185,6 +185,20 @@
                                          ]
                   },
                   {
+                      "label":  "发布: 清空 dist 文件夹",
+                      "type":  "process",
+                      "command":  "powershell.exe",
+                      "args":  [
+                                   "-NoProfile",
+                                   "-Command",
+                                   "if (Test-Path dist) { Remove-Item dist/* -Recurse -Force; Write-Host \u0027dist 文件夹已清空\u0027 } else { New-Item dist -ItemType Directory | Out-Null; Write-Host \u0027dist 文件夹已创建\u0027 }"
+                               ],
+                      "problemMatcher":  [
+
+                                         ],
+                      "detail":  "清空 dist 构建输出目录"
+                  },
+                  {
                       "label":  "发布: 更新版本号",
                       "type":  "process",
                       "command":  "powershell.exe",
@@ -272,6 +286,7 @@
                       "label":  "一键打包发布 (GitHub + Gitee)",
                       "dependsOrder":  "sequence",
                       "dependsOn":  [
+                                        "发布: 清空 dist 文件夹",
                                         "发布: 更新版本号",
                                         "发布: 重新生成 resource.syso",
                                         "buildWindows_amd64",

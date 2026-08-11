@@ -70,7 +70,7 @@ require (
 	github.com/nfnt/resize v0.0.0-20180221191011-83c6a9932646 // indirect
 	github.com/tklauser/go-sysconf v0.3.14 // indirect
 	github.com/tklauser/numcpus v0.8.0 // indirect
-	github.com/yusufpapurcu/wmi v1.2.4 // indirect
+	github.com/yusufpapurcu/wmi v1.2.4
 	go.uber.org/multierr v1.11.0 // indirect
 	golang.ngrok.com/muxado/v2 v2.0.0 // indirect
 	golang.org/x/sync v0.22.0 // indirect
