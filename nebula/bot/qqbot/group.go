@@ -67,16 +67,28 @@ func parseTextButtons(d *dto.DicInputs, start, l int) *qqbot_msg.Keyboard {
 			label = before
 			newRow = true
 		}
-		// label 最多 10 字符
-		if len([]rune(label)) > 10 {
-			label = string([]rune(label)[:10])
-		}
 		// 默认值
 		btnType := 2
 		btnData := rawLabel
 		var btnEnter bool
 		hasType := false
 		hasData := false
+		// | 拆分后覆盖 btnData 和 hasData
+		if before, after, ok := strings.Cut(label, "|"); ok {
+			label = strings.TrimSpace(before)
+			btnData = strings.TrimSpace(after)
+			hasData = true
+			// label 以 # 开头表示回调按钮
+			if after0, ok0 := strings.CutPrefix(label, "#"); ok0 {
+				label = after0
+				hasType = true
+				btnType = 1
+			}
+		}
+		// label 最多 10 字符
+		if len([]rune(label)) > 10 {
+			label = string([]rune(label)[:10])
+		}
 		// 解析 key=value
 		for _, part := range parts[1:] {
 			k, v, ok := strings.Cut(part, "=")
@@ -109,7 +121,7 @@ func parseTextButtons(d *dto.DicInputs, start, l int) *qqbot_msg.Keyboard {
 		// 根据类型清理 data 和 label
 		if btnType == 1 && strings.HasPrefix(btnData, "#") {
 			btnData = strings.TrimPrefix(btnData, "#")
-			if !hasData && strings.HasPrefix(label, "#") {
+			if strings.HasPrefix(label, "#") {
 				label = strings.TrimPrefix(label, "#")
 			}
 		} else if btnType == 0 && (strings.HasPrefix(btnData, "http://") || strings.HasPrefix(btnData, "https://")) {
