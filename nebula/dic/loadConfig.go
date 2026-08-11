@@ -1,7 +1,10 @@
 package dic
 
 import (
+	"bytes"
+	"compress/gzip"
 	"fmt"
+	"io"
 	"net/http"
 	"strings"
 
@@ -62,8 +65,20 @@ func loadConfig() {
 
 	file.SetPath("private/ttf/font.ttf")
 	if !file.FileExists() {
-		if data, err := appfiles.GetFile("font.ttf"); err == nil {
-			file.WriteFileByte(data)
+		if data, err := appfiles.GetFile("font.ttf.gz"); err == nil {
+			// gzip 解压字体
+			gr, err := gzip.NewReader(bytes.NewReader(data))
+			if err != nil {
+				fmt.Println("gzip decompress font err:", err)
+			} else {
+				decompressed, err := io.ReadAll(gr)
+				gr.Close()
+				if err != nil {
+					fmt.Println("gzip read font err:", err)
+				} else {
+					file.WriteFileByte(decompressed)
+				}
+			}
 		} else {
 			fmt.Println("embed err:", err)
 		}

@@ -201,11 +201,7 @@ func Entry(r *dic_dto.DicEntry, txt []string, funcV *dic_dto.DicFunc) error {
 				r.Sys_v.NodeJs.Content = []string{}
 				res, err := vm.RunString(scriptText)
 				if err != nil {
-					if funcV.CurLine > 0 {
-						r.Output.Add(fmt.Sprintf("JS错误(line:%d)：%v", funcV.CurLine, err))
-					} else {
-						r.Output.Add(err.Error())
-					}
+					r.Output.Add(fmt.Sprintf("JS错误(line:%d)：%v", funcV.CurLine, err))
 					return nil
 				}
 				if res == goja.Undefined() {
