@@ -358,8 +358,7 @@ skipGroupCheck:
 				SetGlobal_v(msgValData)
 
 			// 设置当前上下文（供词库函数使用）
-			pushContext.current = &msgMeta
-			pushContext.text = msgContent
+			setPushContext(&msgMeta, msgContent)
 
 			dic.AddFuncs(Funcs)
 
@@ -416,16 +415,39 @@ skipGroupCheck:
 			}
 
 			// 清空上下文
-			pushContext.current = nil
-			pushContext.text = ""
+			clearPushContext()
 		}()
 	}
 }
 
 // pushContext 给词库函数使用（例如 群单发 / 私聊 等无需指定 qq 时使用当前上下文）
 var pushContext struct {
+	mu      sync.RWMutex
 	current *pushElem
 	text    string
+}
+
+func setPushContext(current *pushElem, text string) {
+	pushContext.mu.Lock()
+	pushContext.current = current
+	pushContext.text = text
+	pushContext.mu.Unlock()
+}
+
+func clearPushContext() {
+	pushContext.mu.Lock()
+	pushContext.current = nil
+	pushContext.text = ""
+	pushContext.mu.Unlock()
+}
+
+func pushContextAccount() string {
+	pushContext.mu.RLock()
+	defer pushContext.mu.RUnlock()
+	if pushContext.current != nil {
+		return pushContext.current.Account
+	}
+	return ""
 }
 
 // ReplyText 用 SendOicqMsg 回复一条文本消息
@@ -487,9 +509,7 @@ func SendText(targetType, targetId, text string) error {
 
 	account := dto.ServerConfig.SecludedBot.Account
 	if account == "" {
-		if pushContext.current != nil && pushContext.current.Account != "" {
-			account = pushContext.current.Account
-		}
+		account = pushContextAccount()
 	}
 	if account == "" {
 		return fmt.Errorf("secluded bot account not set")

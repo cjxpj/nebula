@@ -27,7 +27,10 @@ var (
 func GetGlobalDB() (*sql.DB, error) {
 	globalDBOnce.Do(func() {
 		dir := path.Join(utils.GetAppDir(), "database")
-		os.MkdirAll(dir, 0755)
+		if err := os.MkdirAll(dir, 0755); err != nil {
+			globalDBErr = err
+			return
+		}
 		globalDB, globalDBErr = sql.Open("sqlite", path.Join(dir, "data.db"))
 	})
 	return globalDB, globalDBErr

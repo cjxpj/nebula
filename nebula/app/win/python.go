@@ -30,7 +30,7 @@ func runPythonCode(code string) (string, error) {
 
 	output, err := cmd.CombinedOutput()
 	if err != nil {
-		return fmt.Sprintf("Python 执行失败: %v\n输出:\n%s", err, output), nil
+		return "", fmt.Errorf("Python 执行失败: %v\n输出:\n%s", err, output)
 	}
 
 	return string(output), nil

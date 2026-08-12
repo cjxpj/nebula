@@ -102,11 +102,14 @@ func Start(infoServerPath string) []string {
 		if dto.ServerConfig.Router.TLS && dto.ServerConfig.Router.CertFile != "" && dto.ServerConfig.Router.KeyFile != "" {
 			scheme = "https"
 		}
-		url := fmt.Sprintf("%s://%s:%s%s", scheme, "localhost", port, dto.ServerConfig.OPUI.Addr)
-		if dto.ServerConfig.OPUI != nil && dto.ServerConfig.OPUI.Secret != "" {
-			url += "?key=" + dto.ServerConfig.OPUI.Secret
+		url := fmt.Sprintf("%s://%s:%s", scheme, "localhost", port)
+		if dto.ServerConfig.OPUI != nil {
+			opuiUrl := url + dto.ServerConfig.OPUI.Addr
+			if dto.ServerConfig.OPUI.Secret != "" {
+				opuiUrl += "?key=" + dto.ServerConfig.OPUI.Secret
+			}
+			fmt.Printf("WebUi: %v\n", opuiUrl)
 		}
-		fmt.Printf("WebUi: %v\n", url)
 	}
 
 	res = append(res, "Main")

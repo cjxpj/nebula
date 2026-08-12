@@ -1735,6 +1735,11 @@ a:$访问.新建 url$
 // 切换请求方式
 $访问.切换GET %a%$
 $访问.切换POST %a%$         // 或带 body: $访问.切换POST %a% body$
+$访问.切换PUT %a%$          // 或带 body: $访问.切换PUT %a% body$
+$访问.切换DELETE %a%$       // 或带 body: $访问.切换DELETE %a% body$
+$访问.切换PATCH %a%$        // 或带 body: $访问.切换PATCH %a% body$
+$访问.切换HEAD %a%$
+$访问.切换OPTIONS %a%$
 // 设置 POST 表单数据
 $访问.POST %a% data$
 // 上传文件（form 和 name 不同名）

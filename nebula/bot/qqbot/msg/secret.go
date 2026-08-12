@@ -13,6 +13,9 @@ import (
 func GenerateValidationResult(botSecret, eventTs, plainToken string) (string, error) {
 	// QQ Bot 官方算法：botSecret 作为原始字符串，不足 32 字节时 repeat 扩展
 	seed := botSecret
+	if seed == "" {
+		return "", fmt.Errorf("botSecret is empty")
+	}
 	for len(seed) < ed25519.SeedSize {
 		seed = strings.Repeat(seed, 2)
 	}
@@ -51,6 +54,9 @@ func GenerateValidationResult(botSecret, eventTs, plainToken string) (string, er
 func VerifyWebhookSignature(botSecret, signatureHex, timestamp string, body []byte) bool {
 	// QQ Bot 官方算法：botSecret 作为原始字符串派生密钥对
 	seed := botSecret
+	if seed == "" {
+		return false
+	}
 	for len(seed) < ed25519.SeedSize {
 		seed = strings.Repeat(seed, 2)
 	}

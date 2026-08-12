@@ -166,7 +166,7 @@ func handleSftpConn(conn net.Conn, config *ssh.ServerConfig, debug bool) {
 			for req := range requests {
 				switch req.Type {
 				case "subsystem":
-					if string(req.Payload[4:]) == "sftp" {
+					if len(req.Payload) >= 5 && string(req.Payload[4:]) == "sftp" {
 						req.Reply(true, nil)
 						go serveSftp(channel, debug)
 						return

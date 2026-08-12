@@ -108,6 +108,12 @@ func (r *DicEntry) CloseTrigger() *DicEntry {
 	return r
 }
 
+// WithRecursionDepth 基于父级深度设置递归深度+1，防止 $调用$ 无限递归
+func (r *DicEntry) WithRecursionDepth(parentDepth int) *DicEntry {
+	r.RecursionDepth = parentDepth + 1
+	return r
+}
+
 func (WD *WebDic) SetGlobal_v(v *dto.Val) *WebDic {
 	WD.Val.G = v
 	return WD

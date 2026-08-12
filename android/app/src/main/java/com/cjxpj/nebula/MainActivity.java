@@ -30,8 +30,11 @@ import android.webkit.WebSettings;
 import android.webkit.WebView;
 import android.webkit.WebViewClient;
 
+import androidx.core.content.FileProvider;
+
 import org.json.JSONObject;
 
+import java.io.File;
 import java.lang.reflect.Method;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -74,6 +77,9 @@ public class MainActivity extends Activity {
     // 通知相关
     private static final String NOTIFY_CHANNEL_ID = "nebula_notify";
     private static final String NOTIFY_CHANNEL_NAME = "Nebula 通知";
+    private static final String DOWNLOAD_CHANNEL_ID = "nebula_download";
+    private static final String DOWNLOAD_CHANNEL_NAME = "Nebula 更新";
+    private static final int DOWNLOAD_NOTIFY_ID = 999;
     private final AtomicInteger mNotifyIdCounter = new AtomicInteger(1000);
 
     // Shizuku 监听器
@@ -428,6 +434,89 @@ public class MainActivity extends Activity {
 
         int notifyId = mNotifyIdCounter.incrementAndGet();
         nm.notify(notifyId, notification);
+    }
+
+    /**
+     * JNI 回调桥接：Go 侧在线更新下载进度 → 通知栏进度条
+     */
+    @SuppressWarnings("unused")
+    private void updateDownloadProgressBridge(long progress, long total) {
+        NotificationManager nm = (NotificationManager) getSystemService(Context.NOTIFICATION_SERVICE);
+        if (nm == null) return;
+
+        // 创建通知渠道（已存在则无操作）
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            NotificationChannel channel = new NotificationChannel(
+                    DOWNLOAD_CHANNEL_ID,
+                    DOWNLOAD_CHANNEL_NAME,
+                    NotificationManager.IMPORTANCE_LOW
+            );
+            nm.createNotificationChannel(channel);
+        }
+
+        int pct = total > 0 ? (int) (progress * 100 / total) : 0;
+        String title = pct >= 100 ? "下载完成" : "正在下载更新...";
+        String content = formatFileSize(progress) + " / " + formatFileSize(total);
+
+        Notification notification = new Notification.Builder(this, DOWNLOAD_CHANNEL_ID)
+                .setContentTitle(title)
+                .setContentText(content)
+                .setSmallIcon(android.R.drawable.stat_sys_download)
+                .setProgress(100, pct, pct >= 100)
+                .setOngoing(pct < 100)
+                .build();
+
+        nm.notify(DOWNLOAD_NOTIFY_ID, notification);
+    }
+
+    /**
+     * JNI 回调桥接：Go 侧在线更新下载完成 → 弹出 APK 安装
+     */
+    @SuppressWarnings("unused")
+    private void installApkBridge(String apkPath) {
+        Log.i(TAG, "开始安装 APK: " + apkPath);
+
+        // 取消下载进度通知
+        NotificationManager nm = (NotificationManager) getSystemService(Context.NOTIFICATION_SERVICE);
+        if (nm != null) {
+            nm.cancel(DOWNLOAD_NOTIFY_ID);
+        }
+
+        try {
+            File apkFile = new File(apkPath);
+            if (!apkFile.exists()) {
+                Log.e(TAG, "APK 文件不存在: " + apkPath);
+                return;
+            }
+
+            Intent intent = new Intent(Intent.ACTION_VIEW);
+            intent.setFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
+                Uri apkUri = FileProvider.getUriForFile(this,
+                        getPackageName() + ".fileprovider", apkFile);
+                intent.setDataAndType(apkUri, "application/vnd.android.package-archive");
+                intent.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
+            } else {
+                intent.setDataAndType(Uri.fromFile(apkFile),
+                        "application/vnd.android.package-archive");
+            }
+
+            // 确保在主线程启动 Activity（JNI 回调可能在后台线程）
+            final Intent finalIntent = intent;
+            mHandler.post(() -> startActivity(finalIntent));
+        } catch (Exception e) {
+            Log.e(TAG, "APK 安装失败", e);
+        }
+    }
+
+    /**
+     * 格式化文件大小为可读字符串
+     */
+    private static String formatFileSize(long size) {
+        if (size < 1024) return size + " B";
+        if (size < 1024 * 1024) return String.format("%.1f KB", size / 1024.0);
+        return String.format("%.1f MB", size / (1024.0 * 1024.0));
     }
 
     /**

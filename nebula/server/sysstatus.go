@@ -1,3 +1,5 @@
+//go:build !darwin
+
 package dic_server
 
 import (
@@ -146,14 +148,6 @@ func calcDiskIO(before, after map[string]disk.IOCountersStat, dt float64) map[st
 	result["write_rate"] = float64(writeBytes) / dt / 1024
 
 	return result
-}
-
-// incDiff 计算增量，防止计数器回绕
-func incDiff(after, before uint64) uint64 {
-	if after > before {
-		return after - before
-	}
-	return 0
 }
 
 // skipVirtualFs 跳过虚拟/伪文件系统，只统计真实磁盘

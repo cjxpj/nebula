@@ -170,8 +170,16 @@ func (b *QQBot) GroupPrivateUploadFiles(Type int, openID, content string) (*Grou
 	return &resp, nil
 }
 
+// eventIDOf 提取可选的事件 ID（最后一个参数，用于 INTERACTION_CREATE 等被动消息的 event_id 字段）
+func eventIDOf(eventIDs ...string) string {
+	if len(eventIDs) > 0 {
+		return eventIDs[0]
+	}
+	return ""
+}
+
 // 回复群聊语音
-func (b *QQBot) ReplyGroupVoiceMessage(messageID, groupOpenID, voice string) (*MessageResponse, error) {
+func (b *QQBot) ReplyGroupVoiceMessage(messageID, groupOpenID, voice string, eventIDs ...string) (*MessageResponse, error) {
 	if groupOpenID == "" || voice == "" {
 		return nil, fmt.Errorf("groupOpenID或语音内容为空")
 	}
@@ -190,6 +198,7 @@ func (b *QQBot) ReplyGroupVoiceMessage(messageID, groupOpenID, voice string) (*M
 		Media:   media,
 		MsgId:   messageID,
 		MsgSeq:  b.Count,
+		EventId: eventIDOf(eventIDs...),
 	}
 
 	var resp MessageResponse
@@ -200,7 +209,7 @@ func (b *QQBot) ReplyGroupVoiceMessage(messageID, groupOpenID, voice string) (*M
 }
 
 // 回复群聊视频
-func (b *QQBot) ReplyGroupVideoMessage(messageID, groupOpenID, video string) (*MessageResponse, error) {
+func (b *QQBot) ReplyGroupVideoMessage(messageID, groupOpenID, video string, eventIDs ...string) (*MessageResponse, error) {
 	if groupOpenID == "" || video == "" {
 		return nil, fmt.Errorf("groupOpenID或视频内容为空")
 	}
@@ -219,6 +228,7 @@ func (b *QQBot) ReplyGroupVideoMessage(messageID, groupOpenID, video string) (*M
 		Media:   media,
 		MsgId:   messageID,
 		MsgSeq:  b.Count,
+		EventId: eventIDOf(eventIDs...),
 	}
 
 	var resp MessageResponse
@@ -234,7 +244,7 @@ func (b *QQBot) ReplyGroupMarkdownMessage(messageID, groupOpenID string, md *Mar
 }
 
 // 回复群markdown（带键盘）
-func (b *QQBot) ReplyGroupMarkdownWithKeyboard(messageID, groupOpenID string, md *Markdown, kb *Keyboard) (*MessageResponse, error) {
+func (b *QQBot) ReplyGroupMarkdownWithKeyboard(messageID, groupOpenID string, md *Markdown, kb *Keyboard, eventIDs ...string) (*MessageResponse, error) {
 	if groupOpenID == "" || md == nil {
 		return nil, fmt.Errorf("groupOpenID或markdown为空")
 	}
@@ -248,6 +258,7 @@ func (b *QQBot) ReplyGroupMarkdownWithKeyboard(messageID, groupOpenID string, md
 		MsgId:    messageID,
 		MsgSeq:   b.Count,
 		Keyboard: kb,
+		EventId:  eventIDOf(eventIDs...),
 	}
 
 	var resp MessageResponse
@@ -263,7 +274,7 @@ func (b *QQBot) ReplyGroupAnyMarkdownMessage(messageID, groupOpenID, text string
 }
 
 // 回复群任意markdown（带键盘）
-func (b *QQBot) ReplyGroupAnyMarkdownWithKeyboard(messageID, groupOpenID, text string, kb *Keyboard) (*MessageResponse, error) {
+func (b *QQBot) ReplyGroupAnyMarkdownWithKeyboard(messageID, groupOpenID, text string, kb *Keyboard, eventIDs ...string) (*MessageResponse, error) {
 	if groupOpenID == "" || text == "" {
 		return nil, fmt.Errorf("groupOpenID或文本为空")
 	}
@@ -279,6 +290,7 @@ func (b *QQBot) ReplyGroupAnyMarkdownWithKeyboard(messageID, groupOpenID, text s
 		MsgId:    messageID,
 		MsgSeq:   b.Count,
 		Keyboard: kb,
+		EventId:  eventIDOf(eventIDs...),
 	}
 
 	var resp MessageResponse
@@ -349,7 +361,7 @@ func (b *QQBot) ReplyPrivateMarkdownWithKeyboard(messageID, openID string, md *M
 }
 
 // 回复群聊图文
-func (b *QQBot) ReplyGroupImgMessage(messageID, groupOpenID, img, content string) (*MessageResponse, error) {
+func (b *QQBot) ReplyGroupImgMessage(messageID, groupOpenID, img, content string, eventIDs ...string) (*MessageResponse, error) {
 	if groupOpenID == "" || img == "" {
 		return nil, fmt.Errorf("groupOpenID或图片内容为空")
 	}
@@ -369,6 +381,7 @@ func (b *QQBot) ReplyGroupImgMessage(messageID, groupOpenID, img, content string
 		Content: content,
 		MsgId:   messageID,
 		MsgSeq:  b.Count,
+		EventId: eventIDOf(eventIDs...),
 	}
 
 	var resp MessageResponse
@@ -406,7 +419,7 @@ func (b *QQBot) ReplyGroupPrivateImgMessage(messageID, openID, img, content stri
 }
 
 // 回复群聊
-func (b *QQBot) ReplyGroupMessage(messageID, groupOpenID, content string) (*MessageResponse, error) {
+func (b *QQBot) ReplyGroupMessage(messageID, groupOpenID, content string, eventIDs ...string) (*MessageResponse, error) {
 	if groupOpenID == "" || content == "" {
 		return nil, fmt.Errorf("groupOpenID或消息内容为空")
 	}
@@ -418,6 +431,7 @@ func (b *QQBot) ReplyGroupMessage(messageID, groupOpenID, content string) (*Mess
 		Content: content,
 		MsgId:   messageID,
 		MsgSeq:  b.Count,
+		EventId: eventIDOf(eventIDs...),
 	}
 
 	var resp MessageResponse
@@ -631,4 +645,14 @@ func (b *QQBot) ReplyInteraction(interactionID string, code int) error {
 	}
 	url := fmt.Sprintf("/interactions/%s", interactionID)
 	return b.Put(url, InteractionResponse{Code: code}, nil)
+}
+
+// RespondInteraction 回应互动事件（参考: PUT /interactions/{interaction_id}）
+// 收到 INTERACTION_CREATE 事件后需调用此接口回应，否则客户端会一直 loading 直到超时。
+// interaction_id 从事件的 id 字段获取；同一 interaction_id 只能回应一次，超时后失效。
+func (b *QQBot) RespondInteraction(event *InteractionEvent, code InteractionResponseCode) error {
+	if event == nil || event.ID == "" {
+		return fmt.Errorf("互动事件为空或缺少事件ID")
+	}
+	return b.ReplyInteraction(event.ID, int(code))
 }

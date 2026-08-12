@@ -181,7 +181,7 @@ func Funcs(d *dic_dto.DicFunc, dic_i *utils.DicInputs) (any, error) {
 			isV = true
 		}
 		if className == "自己" {
-			className = d.Val.P.Get("Class").(string)
+			className, _ = d.Val.P.Get("Class").(string)
 		}
 		classData := d.Dic.LocalClass[className]
 		if classData == nil {
@@ -219,7 +219,8 @@ func Funcs(d *dic_dto.DicFunc, dic_i *utils.DicInputs) (any, error) {
 				CloseTrigger().
 				SetGlobal_v(d.Val.G).
 				Set_v(funcv).
-				SetDic_v(d.Dic.Clone())
+				SetDic_v(d.Dic.Clone()).
+				WithRecursionDepth(d.RecursionDepth)
 			RunDic.ClearDicFuncs()
 			resRunDic := dic_api.Api.DicRunLine(RunDic, str)
 			return resRunDic, nil
@@ -246,7 +247,8 @@ func Funcs(d *dic_dto.DicFunc, dic_i *utils.DicInputs) (any, error) {
 				CloseTrigger().
 				SetGlobal_v(d.Val.G).
 				Set_v(funcv).
-				SetDic_v(d.Dic.Clone())
+				SetDic_v(d.Dic.Clone()).
+				WithRecursionDepth(d.RecursionDepth)
 			RunDic.ClearDicFuncs()
 
 			resRunDic := dic_api.Api.DicRunLine(RunDic, str)
@@ -286,7 +288,8 @@ func Funcs(d *dic_dto.DicFunc, dic_i *utils.DicInputs) (any, error) {
 				resDics := dic_dto.NewRunDicEntry().
 					SetGlobal_v(d.Val.G).
 					Set_v(funcv).
-					SetDic_v(d.Dic)
+					SetDic_v(d.Dic).
+					WithRecursionDepth(d.RecursionDepth)
 				return dic_api.Api.DicRunLine(resDics, f.Content), nil
 			}
 		}

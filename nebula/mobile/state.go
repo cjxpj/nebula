@@ -12,6 +12,12 @@ var (
 
 	// SendNotificationFunc 由 main_so.go 注入，通过 JNI 回调 Android 发送系统通知
 	SendNotificationFunc func(title, content string) error
+
+	// UpdateDownloadProgressFunc 在线更新下载进度回调（通知栏进度条）
+	UpdateDownloadProgressFunc func(progress, total int64) error
+
+	// InstallApkFunc 在线更新下载完成后弹出 APK 安装
+	InstallApkFunc func(apkPath string) error
 )
 
 // SetDeviceInfo 由 JNI setDeviceInfo 调用，保存设备信息 JSON。

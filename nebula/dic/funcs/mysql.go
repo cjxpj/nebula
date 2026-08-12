@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"fmt"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/cjxpj/nebula/dto"
@@ -14,6 +15,7 @@ import (
 
 // MysqlConn MySQL 连接对象，保存账号密码地址等信息
 type MysqlConn struct {
+	mu     sync.RWMutex
 	User   string
 	Pass   string
 	Host   string
@@ -49,13 +51,30 @@ func getMysqlConn(d *dto.DicInputs) *MysqlConn {
 }
 
 func (c *MysqlConn) DSN(dbName string) string {
+	c.mu.RLock()
+	defaultDB := c.DBName
+	c.mu.RUnlock()
 	if dbName == "" {
-		dbName = c.DBName
+		dbName = defaultDB
 	}
 	if dbName == "" {
 		return fmt.Sprintf("%s:%s@tcp(%s:%s)/", c.User, c.Pass, c.Host, c.Port)
 	}
 	return fmt.Sprintf("%s:%s@tcp(%s:%s)/%s", c.User, c.Pass, c.Host, c.Port, dbName)
+}
+
+// setDBName 安全写入 DBName（并发安全）
+func (c *MysqlConn) setDBName(name string) {
+	c.mu.Lock()
+	c.DBName = name
+	c.mu.Unlock()
+}
+
+// hasDBName 安全读取 DBName 是否已设置（并发安全）
+func (c *MysqlConn) hasDBName() bool {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.DBName != ""
 }
 
 // mysqlNew 创建 MySQL 连接对象
@@ -94,12 +113,12 @@ func mysqlPing(d *dto.DicInputs) (any, error) {
 
 	db, err := sql.Open("mysql", conn.DSN(""))
 	if err != nil {
-		return "false", nil
+		return "false", err
 	}
 	defer db.Close()
 
 	if err = db.Ping(); err != nil {
-		return "false", nil
+		return "false", err
 	}
 	return "true", nil
 }
@@ -123,7 +142,7 @@ func mysqlExec(d *dto.DicInputs) (any, error) {
 	if inputLen >= 3 {
 		// 连接 数据库名 SQL [绑定参数...]
 		dbName = d.Inputs.String(2)
-		conn.DBName = dbName
+		conn.setDBName(dbName)
 		sqlr = d.Inputs.String(3)
 		bindStart = 4
 	} else {
@@ -225,7 +244,7 @@ func mysqlSwitchDB(d *dto.DicInputs) (any, error) {
 	if conn == nil {
 		return nil, fmt.Errorf("未找到MySQL连接")
 	}
-	conn.DBName = d.Inputs.String(2)
+	conn.setDBName(d.Inputs.String(2))
 	return "", nil
 }
 
@@ -236,7 +255,7 @@ func mysqlWrite(d *dto.DicInputs) (any, error) {
 	if conn == nil {
 		return nil, fmt.Errorf("未找到MySQL连接")
 	}
-	if conn.DBName == "" {
+	if !conn.hasDBName() {
 		return nil, fmt.Errorf("未设置数据库，请先使用 mysql.切换数据库 或 mysql.执行 指定数据库名")
 	}
 
@@ -287,7 +306,7 @@ func mysqlRead(d *dto.DicInputs) (any, error) {
 	if conn == nil {
 		return nil, fmt.Errorf("未找到MySQL连接")
 	}
-	if conn.DBName == "" {
+	if !conn.hasDBName() {
 		return nil, fmt.Errorf("未设置数据库，请先使用 mysql.切换数据库 或 mysql.执行 指定数据库名")
 	}
 
@@ -363,7 +382,7 @@ func mysqlDeleteFile(d *dto.DicInputs) (any, error) {
 	if conn == nil {
 		return nil, fmt.Errorf("未找到MySQL连接")
 	}
-	if conn.DBName == "" {
+	if !conn.hasDBName() {
 		return nil, fmt.Errorf("未设置数据库，请先使用 mysql.切换数据库 或 mysql.执行 指定数据库名")
 	}
 

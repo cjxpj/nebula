@@ -175,6 +175,60 @@ package main
 //    if (attached) (*gJVM)->DetachCurrentThread(gJVM);
 //    return copy;
 //}
+//
+//// 从任意线程回调 Java 的 updateDownloadProgressBridge，更新通知栏下载进度
+//static void callUpdateDownloadProgress(jlong progress, jlong total) {
+//    if (gJVM == NULL) return;
+//
+//    JNIEnv* env;
+//    jint ret = (*gJVM)->GetEnv(gJVM, (void**)&env, JNI_VERSION_1_6);
+//    int attached = 0;
+//    if (ret == JNI_EDETACHED) {
+//        (*gJVM)->AttachCurrentThread(gJVM, &env, NULL);
+//        attached = 1;
+//    }
+//
+//    jclass cls = (*env)->GetObjectClass(env, gActivity);
+//    jmethodID mid = (*env)->GetMethodID(env, cls, "updateDownloadProgressBridge",
+//        "(JJ)V");
+//    if (mid == NULL) {
+//        if (attached) (*gJVM)->DetachCurrentThread(gJVM);
+//        return;
+//    }
+//
+//    (*env)->CallVoidMethod(env, gActivity, mid, (jlong)progress, (jlong)total);
+//
+//    if (attached) (*gJVM)->DetachCurrentThread(gJVM);
+//}
+//
+//// 从任意线程回调 Java 的 installApkBridge，弹出 APK 安装界面
+//static void callInstallApk(const char* apkPath) {
+//    if (gJVM == NULL) return;
+//
+//    JNIEnv* env;
+//    jint ret = (*gJVM)->GetEnv(gJVM, (void**)&env, JNI_VERSION_1_6);
+//    int attached = 0;
+//    if (ret == JNI_EDETACHED) {
+//        (*gJVM)->AttachCurrentThread(gJVM, &env, NULL);
+//        attached = 1;
+//    }
+//
+//    jclass cls = (*env)->GetObjectClass(env, gActivity);
+//    jmethodID mid = (*env)->GetMethodID(env, cls, "installApkBridge",
+//        "(Ljava/lang/String;)V");
+//    if (mid == NULL) {
+//        if (attached) (*gJVM)->DetachCurrentThread(gJVM);
+//        return;
+//    }
+//
+//    jstring jPath = (*env)->NewStringUTF(env, apkPath);
+//
+//    (*env)->CallVoidMethod(env, gActivity, mid, jPath);
+//
+//    (*env)->DeleteLocalRef(env, jPath);
+//
+//    if (attached) (*gJVM)->DetachCurrentThread(gJVM);
+//}
 import "C"
 import (
 	"fmt"
@@ -203,6 +257,8 @@ func init() {
 	mobile.SendNotificationFunc = sendNotificationCallback
 	funcs.ShizukuCheckCallback = shizukuCheckCallback
 	funcs.ShizukuExecCallback = shizukuExecCallback
+	mobile.UpdateDownloadProgressFunc = updateDownloadProgressCallback
+	mobile.InstallApkFunc = installApkCallback
 }
 
 // dexCallback 从 Go 协程回调 Java executeDexBridge
@@ -260,6 +316,20 @@ func shizukuExecCallback(command string) (string, error) {
 	}
 	defer C.free(unsafe.Pointer(result))
 	return C.GoString(result), nil
+}
+
+// updateDownloadProgressCallback 在线更新下载进度回调 → Java 通知栏进度条
+func updateDownloadProgressCallback(progress, total int64) error {
+	C.callUpdateDownloadProgress(C.jlong(progress), C.jlong(total))
+	return nil
+}
+
+// installApkCallback 在线更新下载完成后弹出 APK 安装
+func installApkCallback(apkPath string) error {
+	cPath := C.CString(apkPath)
+	defer C.free(unsafe.Pointer(cPath))
+	C.callInstallApk(cPath)
+	return nil
 }
 
 // setDeviceInfo 接收 Java 侧采集的设备信息 JSON

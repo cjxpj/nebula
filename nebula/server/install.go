@@ -220,12 +220,31 @@ func initNapCatBotConfig(destDir string, qq string, output *[]string) error {
 
 	httpServerToken := randToken(16)
 	// 2. 生成并覆盖两个 token
-	net := cfg["network"].(map[string]any)
-	net["httpServers"].([]any)[0].(map[string]any)["token"] = httpServerToken
+	net, ok := cfg["network"].(map[string]any)
+	if !ok {
+		return fmt.Errorf("配置文件 network 字段格式错误: 期望 map[string]any")
+	}
+	httpServers, ok := net["httpServers"].([]any)
+	if !ok || len(httpServers) == 0 {
+		return fmt.Errorf("配置文件 httpServers 字段格式错误: 期望非空 []any")
+	}
+	httpServer, ok := httpServers[0].(map[string]any)
+	if !ok {
+		return fmt.Errorf("配置文件 httpServers[0] 字段格式错误: 期望 map[string]any")
+	}
+	httpServer["token"] = httpServerToken
 	if output != nil {
 		*output = append(*output, "正在生成HTTP客户端Token ...")
 	}
-	net["httpClients"].([]any)[0].(map[string]any)["token"] = randToken(16)
+	httpClients, ok := net["httpClients"].([]any)
+	if !ok || len(httpClients) == 0 {
+		return fmt.Errorf("配置文件 httpClients 字段格式错误: 期望非空 []any")
+	}
+	httpClient, ok := httpClients[0].(map[string]any)
+	if !ok {
+		return fmt.Errorf("配置文件 httpClients[0] 字段格式错误: 期望 map[string]any")
+	}
+	httpClient["token"] = randToken(16)
 
 	if output != nil {
 		*output = append(*output, "正在生成配置文件 ...")

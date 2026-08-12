@@ -25,6 +25,9 @@ import (
 	"github.com/buger/jsonparser"
 )
 
+// maxRecursionDepth 限制 $调用$ 最大递归深度，防止无限递归导致 goroutine 栈溢出
+const maxRecursionDepth = 100
+
 // 执行
 func (m *dicImpl) DicRunLine(r *dic_dto.DicEntry, txt []string) string {
 	// 重置文本
@@ -52,10 +55,11 @@ func (m *dicImpl) DicRunLine(r *dic_dto.DicEntry, txt []string) string {
 
 	// 函数包
 	funcV := &dic_dto.DicFunc{
-		Val:    r.Val,
-		Sys:    r.Sys_v,
-		Dic:    r.Dic,
-		Output: r.Output,
+		Val:            r.Val,
+		Sys:            r.Sys_v,
+		Dic:            r.Dic,
+		Output:         r.Output,
+		RecursionDepth: r.RecursionDepth,
 	}
 
 	Entry(r, txt, funcV)
@@ -103,6 +107,13 @@ func handleLoopControl(r, runDic *dic_dto.DicEntry, loopType string) (shouldBrea
 }
 
 func Entry(r *dic_dto.DicEntry, txt []string, funcV *dic_dto.DicFunc) error {
+	if r.RecursionDepth > maxRecursionDepth {
+		r.Sys_v.Stop.Store(true)
+		r.Output.Add(fmt.Sprintf("[%s]递归深度超限(line:%d)：$调用$ 递归深度已超过 %d 层，请检查是否存在死循环调用",
+			r.Val.Get("_词库路径_"), funcV.CurLine, maxRecursionDepth))
+		return nil
+	}
+
 	var RunDicindex int16
 	var isif bool
 	var lock bool
@@ -150,7 +161,8 @@ func Entry(r *dic_dto.DicEntry, txt []string, funcV *dic_dto.DicFunc) error {
 
 					RunDics := dic_dto.NewRunDicEntry().
 						SetGlobal_v(r.Val.G).
-						Set_v(r.Val.P)
+						Set_v(r.Val.P).
+						WithRecursionDepth(r.RecursionDepth)
 					res := dic_api.Api.DicRunLine(RunDics, dicLineArr)
 					// 返回文本
 					return vm.ToValue(res)
@@ -192,6 +204,7 @@ func Entry(r *dic_dto.DicEntry, txt []string, funcV *dic_dto.DicFunc) error {
 
 				// 启动事件循环
 				loop.Start()
+				defer loop.Stop()
 
 				for k, v := range r.Val.GetAll() {
 					vm.Set(k, v)
@@ -393,7 +406,8 @@ func Entry(r *dic_dto.DicEntry, txt []string, funcV *dic_dto.DicFunc) error {
 						RunDic := dic_dto.NewRunDicEntry().
 							SetGlobal_v(r.Val.G).
 							Set_v(funcv).
-							SetDic_v(r.Dic)
+							SetDic_v(r.Dic).
+							WithRecursionDepth(r.RecursionDepth)
 						resRunDic := dic_api.Api.DicRunLine(RunDic, content)
 						r.Output.Add(resRunDic)
 					} else {
@@ -429,7 +443,8 @@ func Entry(r *dic_dto.DicEntry, txt []string, funcV *dic_dto.DicFunc) error {
 					RunDic := dic_dto.NewRunDicEntry().
 						SetV(r.Val).
 						SetDic_v(r.Dic).
-						SetRunForEach()
+						SetRunForEach().
+						WithRecursionDepth(r.RecursionDepth)
 					RunDic.Trigger = false
 					startIdx := strings.IndexByte(valName, ',')
 					endIdx := startIdx + 1
@@ -514,7 +529,8 @@ func Entry(r *dic_dto.DicEntry, txt []string, funcV *dic_dto.DicFunc) error {
 					RunDic := dic_dto.NewRunDicEntry().
 						SetV(r.Val).
 						SetDic_v(r.Dic).
-						SetRunFor()
+						SetRunFor().
+						WithRecursionDepth(r.RecursionDepth)
 					RunDic.Trigger = false
 
 					if r.Sys_v.ForGetRun() == nil {
@@ -588,7 +604,8 @@ func Entry(r *dic_dto.DicEntry, txt []string, funcV *dic_dto.DicFunc) error {
 					RunDic := dic_dto.NewRunDicEntry().
 						SetV(r.Val).
 						SetDic_v(r.Dic).
-						SetRunIf()
+						SetRunIf().
+						WithRecursionDepth(r.RecursionDepth)
 					if r.Sys_v.For.IsFor {
 						RunDic.SetRunFor()
 					}

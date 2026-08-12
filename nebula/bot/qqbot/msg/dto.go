@@ -180,8 +180,10 @@ type MessageToSend struct {
 	// 群富媒体
 	Media *GroupMessageFileResponse `json:"media,omitempty"`
 	// 被动消息必填
-	MsgId    string    `json:"msg_id"`
-	MsgSeq   int       `json:"msg_seq"`
+	MsgId  string `json:"msg_id,omitempty"`
+	MsgSeq int    `json:"msg_seq"`
+	// 前置事件 ID，用于 INTERACTION_CREATE 等事件的被动消息（无用户消息可回复时使用）
+	EventId  string    `json:"event_id,omitempty"`
 	Markdown *Markdown `json:"markdown,omitempty"`
 	// 消息按钮，仅 markdown 消息支持
 	Keyboard *Keyboard `json:"keyboard,omitempty"`
@@ -438,5 +440,18 @@ type InteractionResolved struct {
 
 // InteractionResponse 交互回应
 type InteractionResponse struct {
-	Code int `json:"code"` // 0=成功，非 0=失败
+	Code int `json:"code"`
 }
+
+// InteractionResponseCode 互动事件响应结果码
+// 参考: PUT /interactions/{interaction_id}
+type InteractionResponseCode int
+
+const (
+	InteractionCodeSuccess      InteractionResponseCode = 0 // 成功
+	InteractionCodeFailed       InteractionResponseCode = 1 // 操作失败
+	InteractionCodeTooFrequent  InteractionResponseCode = 2 // 操作频繁
+	InteractionCodeDuplicated   InteractionResponseCode = 3 // 重复操作
+	InteractionCodeNoPermission InteractionResponseCode = 4 // 没有权限
+	InteractionCodeAdminOnly    InteractionResponseCode = 5 // 仅管理员操作
+)

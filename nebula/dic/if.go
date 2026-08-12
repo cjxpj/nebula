@@ -211,7 +211,7 @@ func (it *IfText) EvaluatePro(dic *dto.DicInfoData, parsed []map[string]string) 
 				result += no
 			}
 		case "~=":
-			matches, _ := regexp.MatchString("^"+a+"$", c)
+			matches, _ := regexp.MatchString("^"+regexp.QuoteMeta(a)+"$", c)
 			if matches {
 				result += yes
 			} else {
@@ -274,7 +274,7 @@ func (it *IfText) EvaluatePro(dic *dto.DicInfoData, parsed []map[string]string) 
 				}
 			}
 		case "~":
-			matches, _ := regexp.MatchString("^"+a+"$", c)
+			matches, _ := regexp.MatchString("^"+regexp.QuoteMeta(a)+"$", c)
 			if !matches {
 				result += yes
 			} else {
@@ -423,7 +423,7 @@ func (it *IfText) Evaluate(dic *dic_dto.DicFunc, parsed []map[string]string) str
 				result += no
 			}
 		case "~=":
-			matches, _ := regexp.MatchString("^"+a+"$", c)
+			matches, _ := regexp.MatchString("^"+regexp.QuoteMeta(a)+"$", c)
 			if matches {
 				result += yes
 			} else {
@@ -486,7 +486,7 @@ func (it *IfText) Evaluate(dic *dic_dto.DicFunc, parsed []map[string]string) str
 				}
 			}
 		case "~":
-			matches, _ := regexp.MatchString("^"+a+"$", c)
+			matches, _ := regexp.MatchString("^"+regexp.QuoteMeta(a)+"$", c)
 			if !matches {
 				result += yes
 			} else {
@@ -575,19 +575,15 @@ func (it *IfText) EvaluateExpression(expression string) bool {
 	performPendingOperations := func(operator rune) {
 		for len(operators) > 0 && (operators[len(operators)-1] == '&' || operators[len(operators)-1] == '|') {
 			prevOperator := operators[len(operators)-1]
-			if (operator == '|' && prevOperator == '&') || operator == prevOperator && len(operands) != 0 {
-				left := false  // 左操作数
-				right := false // 右操作数
-				if len(operands)-1 > 0 {
-					right = operands[len(operands)-1]
-					operands = operands[:len(operands)-1]
-					left = operands[len(operands)-1]
-					operands = operands[:len(operands)-1]
-				}
+			if (operator == '|' && prevOperator == '&') || (operator == prevOperator && len(operands) >= 2) {
+				right := operands[len(operands)-1]
+				operands = operands[:len(operands)-1]
+				left := operands[len(operands)-1]
+				operands = operands[:len(operands)-1]
 
-				operands = append(operands, evaluateBinaryOperation(left, right, prevOperator)) // 计算并将结果压入操作数栈
+				operands = append(operands, evaluateBinaryOperation(left, right, prevOperator))
 
-				operators = operators[:len(operators)-1] // 弹出操作符
+				operators = operators[:len(operators)-1]
 			} else {
 				break
 			}
@@ -607,38 +603,39 @@ func (it *IfText) EvaluateExpression(expression string) bool {
 		case '(':
 			operators = append(operators, '(') // 将左括号压入操作符栈
 		case ')':
-			for operators[len(operators)-1] != '(' {
+			for len(operators) > 0 && operators[len(operators)-1] != '(' {
+				if len(operands) < 2 {
+					return false
+				}
 				operator := operators[len(operators)-1]
 				operators = operators[:len(operators)-1]
 
-				right := operands[len(operands)-1] // 右操作数
+				right := operands[len(operands)-1]
 				operands = operands[:len(operands)-1]
 
-				left := operands[len(operands)-1] // 左操作数
+				left := operands[len(operands)-1]
 				operands = operands[:len(operands)-1]
 
-				operands = append(operands, evaluateBinaryOperation(left, right, operator)) // 计算并将结果压入操作数栈
+				operands = append(operands, evaluateBinaryOperation(left, right, operator))
 			}
-			operators = operators[:len(operators)-1] // 弹出左括号
+			if len(operators) > 0 {
+				operators = operators[:len(operators)-1] // 弹出左括号
+			}
 		}
 	}
 
 	// 执行剩余的操作
-	for len(operators) > 0 && len(operands) != 0 {
-		left := false  // 左操作数
-		right := false // 右操作数
+	for len(operators) > 0 && len(operands) >= 2 {
 		operator := operators[len(operators)-1]
-		if len(operands)-1 > 0 {
-			operators = operators[:len(operators)-1]
+		operators = operators[:len(operators)-1]
 
-			right = operands[len(operands)-1]
-			operands = operands[:len(operands)-1]
+		right := operands[len(operands)-1]
+		operands = operands[:len(operands)-1]
 
-			left = operands[len(operands)-1]
-			operands = operands[:len(operands)-1]
-		}
-		operands = append(operands, evaluateBinaryOperation(left, right, operator)) // 计算并将结果压入操作数栈
+		left := operands[len(operands)-1]
+		operands = operands[:len(operands)-1]
 
+		operands = append(operands, evaluateBinaryOperation(left, right, operator))
 	}
 
 	// 结果应在操作数栈的顶部

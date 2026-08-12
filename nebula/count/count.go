@@ -470,6 +470,10 @@ func (i *Interpreter) Shift() any {
 			i.Err = errors.New("位移位数不能为负")
 			return nil
 		}
+		if !r.IsInt64() {
+			i.Err = errors.New("位移位数过大")
+			return nil
+		}
 
 		if op == SHL {
 			result = new(big.Int).Lsh(l, uint(r.Int64()))

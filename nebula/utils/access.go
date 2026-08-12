@@ -5,7 +5,15 @@ import (
 	"crypto/tls"
 	"io"
 	"net/http"
+	"time"
 )
+
+var defaultHTTPClient = &http.Client{
+	Timeout: 30 * time.Second,
+	Transport: &http.Transport{
+		TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
+	},
+}
 
 func Get(url string) (string, error) {
 	req, err := http.NewRequest("GET", url, nil)
@@ -15,12 +23,7 @@ func Get(url string) (string, error) {
 
 	req.Header.Set("User-Agent", "Nebula-Client/1.0")
 
-	client := &http.Client{
-		Transport: &http.Transport{
-			TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
-		},
-	}
-	resp, err := client.Do(req)
+	resp, err := defaultHTTPClient.Do(req)
 	if err != nil {
 		return "访问报错", err
 	}
@@ -63,19 +66,12 @@ func Post(inputs []string) string {
 			var headers map[string]string
 			if err := Json.Unmarshal([]byte(inputs[2]), &headers); err == nil {
 				for key, value := range headers {
-					req.Header.Add(key, value)
 					req.Header.Set(key, value)
 				}
 			}
 		}
 
-
-		client := &http.Client{
-			Transport: &http.Transport{
-				TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
-			},
-		}
-		resp, err := client.Do(req)
+		resp, err := defaultHTTPClient.Do(req)
 		if err != nil {
 			return "访问报错"
 		}

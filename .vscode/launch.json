@@ -6,13 +6,13 @@
             "type": "go",
             "request": "launch",
             "mode": "auto",
-            "program": "${workspaceFolder}/nebulaApp/win",
+            "program": "${workspaceFolder}/nebula/app/win",
             "env": {
                 // "CGO_ENABLED": "1",
             },
             "args": [
                 // "run",
-                // "C:\\Users\\29609\\beer\\go\\nebula\\nebulaApp\\win\\NebulaData\\public\\test3.n"
+                // "C:\\Users\\29609\\beer\\go\\nebula\\nebula\\app\\win\\NebulaData\\public\\test3.n"
             ]
         }
     ]

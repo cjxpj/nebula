@@ -1,3 +1,5 @@
+//go:build !darwin
+
 package funcs
 
 import (
@@ -41,14 +43,14 @@ func host_information(d *dto.DicInputs) (any, error) {
 		return strconv.FormatInt(int64(mb), 10), nil
 	case "CPU":
 		Sinfo, err := cpu.Percent(time.Second, false)
-		if err != nil {
+		if err != nil || len(Sinfo) == 0 {
 			return "error", nil
 		}
 		str := strconv.FormatFloat(Sinfo[0], 'f', 2, 64)
 		return str, nil
 	case "CPU百分比":
 		Sinfo, err := cpu.Percent(time.Second, false)
-		if err != nil {
+		if err != nil || len(Sinfo) == 0 {
 			return "error", nil
 		}
 		str := strconv.Itoa(int(Sinfo[0]))

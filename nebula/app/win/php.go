@@ -1,3 +1,5 @@
+//go:build windows
+
 package main
 
 import (
@@ -21,10 +23,17 @@ import (
 	"golang.org/x/sys/windows"
 )
 
-func parseRequestToMap(r *http.Request) (getMap, postMap, fileMap map[string]any, err error) {
+func parseRequestToMap(r *http.Request) (getMap, postMap, fileMap map[string]any, cleanup func(), err error) {
 	getMap = make(map[string]any)
 	postMap = make(map[string]any)
 	fileMap = make(map[string]any)
+
+	var tempFiles []string
+	cleanup = func() {
+		for _, f := range tempFiles {
+			os.Remove(f)
+		}
+	}
 
 	// 解析 GET
 	query := r.URL.Query()
@@ -48,11 +57,16 @@ func parseRequestToMap(r *http.Request) (getMap, postMap, fileMap map[string]any
 				if err != nil {
 					continue
 				}
-				tmp, _ := os.CreateTemp("", "upload-*")
+				tmp, err := os.CreateTemp("", "upload-*")
+				if err != nil {
+					file.Close()
+					continue
+				}
 				io.Copy(tmp, file)
 				file.Close()
 				tmp.Close()
 				fileMap[k] = tmp.Name()
+				tempFiles = append(tempFiles, tmp.Name())
 			}
 		}
 	} else {
@@ -143,8 +157,8 @@ func ensurePHPServerRunning(ctx context.Context, phpDir string) error {
 	if phpJob != 0 {
 		procHandle, err := windows.OpenProcess(windows.PROCESS_TERMINATE|windows.PROCESS_SET_QUOTA, false, uint32(cmd.Process.Pid))
 		if err == nil {
-			if err := windows.AssignProcessToJobObject(phpJob, procHandle); err != nil {
-				fmt.Println("[PHP Job] AssignProcessToJobObject 失败:", err)
+			if terr := windows.AssignProcessToJobObject(phpJob, procHandle); terr != nil {
+				fmt.Println("[PHP Job] AssignProcessToJobObject 失败:", terr)
 			}
 			windows.CloseHandle(procHandle)
 		} else {
@@ -157,9 +171,7 @@ func ensurePHPServerRunning(ctx context.Context, phpDir string) error {
 	phpServerCancel = cancel
 
 	// 监听外部 ctx 取消时，关闭 PHP 服务器
-	phpShutdownWg.Add(1)
-	go func() {
-		defer phpShutdownWg.Done()
+	phpShutdownWg.Go(func() {
 		<-ctx.Done()
 		phpServerMutex.Lock()
 		defer phpServerMutex.Unlock()
@@ -171,7 +183,7 @@ func ensurePHPServerRunning(ctx context.Context, phpDir string) error {
 			phpServerRunning = false
 			phpServerCancel = nil
 		}
-	}()
+	})
 
 	time.Sleep(200 * time.Millisecond) // 等待 PHP 启动
 	return nil
@@ -230,7 +242,10 @@ func runTempPHP(
 				continue
 			}
 			part, _ := writer.CreateFormFile(k, filepath.Base(path))
-			file, _ := os.Open(path)
+			file, err := os.Open(path)
+			if err != nil {
+				continue
+			}
 			io.Copy(part, file)
 			file.Close()
 		}
@@ -257,13 +272,16 @@ func runTempPHP(
 	if body != nil {
 		method = "POST"
 	}
-	req, _ := http.NewRequest(method, urlStr, body)
+	req, err := http.NewRequest(method, urlStr, body)
+	if err != nil {
+		return "", fmt.Errorf("创建请求失败: %v", err)
+	}
 	if contentType != "" {
 		req.Header.Set("Content-Type", contentType)
 	}
 
 	// 执行请求
-	client := &http.Client{}
+	client := &http.Client{Timeout: 30 * time.Second}
 	resp, err := client.Do(req)
 	if err != nil {
 		return "", fmt.Errorf("访问失败: %v", err)

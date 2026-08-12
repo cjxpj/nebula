@@ -154,13 +154,6 @@ type OnlineItem struct {
 	Detail string `json:"detail"`
 }
 
-func ternary(cond bool, t, f string) string {
-	if cond {
-		return t
-	}
-	return f
-}
-
 func formatDuration(d time.Duration) string {
 	if d < time.Minute {
 		return "刚刚启动"
@@ -211,7 +204,9 @@ func broadcastOpuiNotify(msg []byte) {
 	opuiNotifyClientsMu.Lock()
 	defer opuiNotifyClientsMu.Unlock()
 	for conn := range opuiNotifyClients {
-		conn.WriteMessage(websocket.TextMessage, msg)
+		if err := conn.WriteMessage(websocket.TextMessage, msg); err != nil {
+			delete(opuiNotifyClients, conn)
+		}
 	}
 }
 
@@ -222,17 +217,19 @@ func broadcastOpuiNotifyExcept(msg []byte, excludeIP string) {
 		if info.IP == excludeIP {
 			continue
 		}
-		conn.WriteMessage(websocket.TextMessage, msg)
+		if err := conn.WriteMessage(websocket.TextMessage, msg); err != nil {
+			delete(opuiNotifyClients, conn)
+		}
 	}
 }
 
 // GetOpuiOnlineClients 返回当前 OPUI 在线用户列表
-func GetOpuiOnlineClients() []map[string]interface{} {
+func GetOpuiOnlineClients() []map[string]any {
 	opuiNotifyClientsMu.Lock()
 	defer opuiNotifyClientsMu.Unlock()
-	list := make([]map[string]interface{}, 0, len(opuiNotifyClients))
+	list := make([]map[string]any, 0, len(opuiNotifyClients))
 	for _, info := range opuiNotifyClients {
-		list = append(list, map[string]interface{}{
+		list = append(list, map[string]any{
 			"name":   info.IP,
 			"type":   "opui",
 			"online": true,
@@ -703,13 +700,8 @@ func (fc *frpCon) writer() {
 			dataLen := len(job.data)
 			if dataLen > 0 {
 				// 按实际数据量计算：每 25KB 增加 1s，支持极低带宽（如 17KB/s 传 2.7MB）
-				writeTimeout = time.Duration(60+dataLen/25600) * time.Second
-				if writeTimeout < 60*time.Second {
-					writeTimeout = 60 * time.Second
-				}
-				if writeTimeout > 10*time.Minute {
-					writeTimeout = 10 * time.Minute
-				}
+				writeTimeout = max(time.Duration(60+dataLen/25600)*time.Second, 60*time.Second)
+				writeTimeout = min(writeTimeout, 10*time.Minute)
 			}
 			fc.conn.SetWriteDeadline(time.Now().Add(writeTimeout))
 			err := fc.conn.WriteMessage(websocket.TextMessage, job.data)
@@ -948,9 +940,7 @@ func handleFrpProxyRequest(fc *frpCon, msg *frpWSMessage) {
 	const chunkSize = 64 << 10
 	for offset := 0; offset < len(respBody); offset += chunkSize {
 		end := offset + chunkSize
-		if end > len(respBody) {
-			end = len(respBody)
-		}
+		end = min(end, len(respBody))
 		chunk := frpWSChunk{
 			Type:  "http_chunk",
 			ID:    msg.ID,
@@ -1456,7 +1446,10 @@ func generateTaskID() string {
 func findRunningTaskForComponent(component string) *InstallTask {
 	var found *InstallTask
 	installTaskStore.Range(func(key, value any) bool {
-		task := value.(*InstallTask)
+		task, ok := value.(*InstallTask)
+		if !ok {
+			return true
+		}
 		task.mu.RLock()
 		status := task.Status
 		comp := task.Component
@@ -1536,7 +1529,7 @@ var imageMagics = [][]byte{
 
 // findImageStart 在字节流中查找第一个图片数据（文件头魔数）的起始位置，找不到返回 -1
 func findImageStart(data []byte) int {
-	for i := 0; i < len(data); i++ {
+	for i := range len(data) {
 		// WebP：RIFF + 4 字节长度 + WEBP
 		if i+12 <= len(data) && data[i] == 'R' &&
 			bytes.Equal(data[i:i+4], []byte("RIFF")) && bytes.Equal(data[i+8:i+12], []byte("WEBP")) {
@@ -1604,7 +1597,7 @@ func anyTypeName(v any) string {
 	// 兜底：按反射归类，避免常见类型（结构体、自定义切片/字典、指针等）显示为「未知」
 	rv := reflect.ValueOf(v)
 	switch rv.Kind() {
-	case reflect.Ptr:
+	case reflect.Pointer:
 		if rv.IsNil() {
 			return "空"
 		}
@@ -1730,7 +1723,7 @@ func loadDicDebugDefaults() map[string]any {
 		} else {
 			// 旧格式：每行一个 key=value
 			g = nil
-			for _, line := range strings.Split(v, "\n") {
+			for line := range strings.SplitSeq(v, "\n") {
 				if s := strings.TrimSpace(line); s != "" {
 					g = append(g, s)
 				}
@@ -1877,7 +1870,7 @@ func OpUI(w http.ResponseWriter, r *http.Request, getpath string) {
 
 				// ping/pong 应用层心跳：客户端通过 ping 检测连接是否存活，服务端快速回复 pong
 				if wsMsg.Type == "ping" {
-					resp, _ := json.Marshal(map[string]interface{}{
+					resp, _ := json.Marshal(map[string]any{
 						"id": wsMsg.ID, "type": "pong",
 					})
 					writeMu.Lock()
@@ -1908,7 +1901,7 @@ func OpUI(w http.ResponseWriter, r *http.Request, getpath string) {
 							}
 						}
 					}
-					resp, _ := json.Marshal(map[string]interface{}{
+					resp, _ := json.Marshal(map[string]any{
 						"id": wsMsg.ID, "type": wsMsg.Type, "data": json.RawMessage(fmt.Sprintf(`{"valid":%t}`, valid)),
 					})
 					writeMu.Lock()
@@ -1935,7 +1928,7 @@ func OpUI(w http.ResponseWriter, r *http.Request, getpath string) {
 					defer func() {
 						if r := recover(); r != nil {
 							debugLog.Errorf("[OPUI] ws handler panic (type=%s, id=%s): %v", msgType, msgID, r)
-							resp, _ := json.Marshal(map[string]interface{}{
+							resp, _ := json.Marshal(map[string]any{
 								"id":   msgID,
 								"type": msgType,
 								"data": json.RawMessage(`{"status":"error","error":"internal server error"}`),
@@ -1953,7 +1946,7 @@ func OpUI(w http.ResponseWriter, r *http.Request, getpath string) {
 					if len(respData) == 0 {
 						respData = []byte(`{"status":"ok"}`)
 					}
-					resp, _ := json.Marshal(map[string]interface{}{
+					resp, _ := json.Marshal(map[string]any{
 						"id": msgID, "type": msgType, "data": json.RawMessage(respData),
 					})
 					writeMu.Lock()
@@ -2105,7 +2098,7 @@ func OpUI(w http.ResponseWriter, r *http.Request, getpath string) {
 				w.Write([]byte(`{"type":"","data":""}`))
 				return
 			}
-			if err := dic_funcs.EnsureFsTable(db, "opui_bg"); err != nil {
+			if e := dic_funcs.EnsureFsTable(db, "opui_bg"); e != nil {
 				w.Write([]byte(`{"type":"","data":""}`))
 				return
 			}
@@ -2142,7 +2135,7 @@ func OpUI(w http.ResponseWriter, r *http.Request, getpath string) {
 				http.Error(w, `{"status":"error","error":"db not ready"}`, http.StatusInternalServerError)
 				return
 			}
-			if err := dic_funcs.EnsureFsTable(db, "opui_bg"); err != nil {
+			if e := dic_funcs.EnsureFsTable(db, "opui_bg"); e != nil {
 				http.Error(w, `{"status":"error","error":"db init failed"}`, http.StatusInternalServerError)
 				return
 			}
@@ -2343,10 +2336,10 @@ func OpUI(w http.ResponseWriter, r *http.Request, getpath string) {
 				return
 			}
 			// 自动将 http/https 转换为 ws/wss
-			if strings.HasPrefix(j.ServerAddr, "https://") {
-				j.ServerAddr = "wss://" + strings.TrimPrefix(j.ServerAddr, "https://")
-			} else if strings.HasPrefix(j.ServerAddr, "http://") {
-				j.ServerAddr = "ws://" + strings.TrimPrefix(j.ServerAddr, "http://")
+			if after, ok := strings.CutPrefix(j.ServerAddr, "https://"); ok {
+				j.ServerAddr = "wss://" + after
+			} else if after, ok := strings.CutPrefix(j.ServerAddr, "http://"); ok {
+				j.ServerAddr = "ws://" + after
 			}
 			ff := utils.NewFileQueue(dto.CONFIG_SYSTEM_PATH)
 			f, err := ff.LoadIni()
@@ -3099,7 +3092,11 @@ func OpUI(w http.ResponseWriter, r *http.Request, getpath string) {
 				return
 			}
 			if val, ok := installTaskStore.Load(j.TaskID); ok {
-				task := val.(*InstallTask)
+				task, ok := val.(*InstallTask)
+				if !ok {
+					http.Error(w, `{"status":"error","error":"invalid task"}`, http.StatusInternalServerError)
+					return
+				}
 				status, output, errMsg, progress := task.snapshot()
 				resp := map[string]any{
 					"status":    status,
@@ -3115,14 +3112,18 @@ func OpUI(w http.ResponseWriter, r *http.Request, getpath string) {
 			}
 			return
 
-		case "cancel_install":
+		case "install_cancel":
 			var j HttpOpUiConfig_installStatus
 			if err := json.Unmarshal(h.Data, &j); err != nil {
 				http.Error(w, `{"status":"error","error":"invalid json"}`, http.StatusBadRequest)
 				return
 			}
 			if val, ok := installTaskStore.Load(j.TaskID); ok {
-				task := val.(*InstallTask)
+				task, ok := val.(*InstallTask)
+				if !ok {
+					http.Error(w, `{"status":"error","error":"invalid task"}`, http.StatusInternalServerError)
+					return
+				}
 				task.Cancel()
 				w.Write([]byte(`{"status":"ok"}`))
 			} else {
@@ -3450,6 +3451,16 @@ func OpUI(w http.ResponseWriter, r *http.Request, getpath string) {
 			w.Write(jsonResp)
 			return
 
+		case "online_update":
+			go func() {
+				time.Sleep(500 * time.Millisecond) // 等待响应发送完毕
+				if err := doOnlineUpdate(); err != nil {
+					fmt.Println("online_update failed:", err)
+				}
+			}()
+			w.Write([]byte(`{"status":"ok","msg":"正在下载更新，完成后将自动重启"}`))
+			return
+
 		case "security_info":
 			info := SecurityInfo{
 				ServerStart: serverStartTime.Format("2006-01-02 15:04:05"),
@@ -3466,12 +3477,20 @@ func OpUI(w http.ResponseWriter, r *http.Request, getpath string) {
 			rawClients := GetOpuiOnlineClients()
 			info.OnlineList = make([]OnlineItem, 0, len(rawClients))
 			for _, c := range rawClients {
-				info.OnlineList = append(info.OnlineList, OnlineItem{
-					Name:   c["name"].(string),
-					Type:   c["type"].(string),
-					Online: c["online"].(bool),
-					Detail: c["detail"].(string),
-				})
+				item := OnlineItem{}
+				if v, ok := c["name"].(string); ok {
+					item.Name = v
+				}
+				if v, ok := c["type"].(string); ok {
+					item.Type = v
+				}
+				if v, ok := c["online"].(bool); ok {
+					item.Online = v
+				}
+				if v, ok := c["detail"].(string); ok {
+					item.Detail = v
+				}
+				info.OnlineList = append(info.OnlineList, item)
 			}
 
 			if r, err := json.Marshal(info); err == nil {
@@ -3549,7 +3568,7 @@ func OpUI(w http.ResponseWriter, r *http.Request, getpath string) {
 				enabled = fwSec.Key("启用").MustBool(false)
 				dicPath = fwSec.Key("词库").String()
 			}
-			r, _ := json.Marshal(map[string]interface{}{
+			r, _ := json.Marshal(map[string]any{
 				"enabled":  enabled,
 				"dic_path": dicPath,
 			})

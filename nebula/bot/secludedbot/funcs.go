@@ -1026,8 +1026,8 @@ var Funcs = map[string]dto.DicFunc{
 // getCurrentAccount 获取当前机器人账户
 func getCurrentAccount() string {
 	// 优先从消息上下文获取（实时可靠）
-	if pushContext.current != nil && pushContext.current.Account != "" {
-		return pushContext.current.Account
+	if account := pushContextAccount(); account != "" {
+		return account
 	}
 	// 其次从配置获取（上线时保存的）
 	if dto.ServerConfig.SecludedBot != nil && dto.ServerConfig.SecludedBot.Account != "" {

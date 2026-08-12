@@ -7,10 +7,13 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"time"
 
 	yunhubot_dto "github.com/cjxpj/nebula/bot/yunhubot/dto"
 	"github.com/cjxpj/nebula/dto"
 )
+
+var yunhuHTTPClient = &http.Client{Timeout: 30 * time.Second}
 
 // post 公共 POST 逻辑
 func postJson(urlpath string, payload any) error {
@@ -26,7 +29,7 @@ func postJson(urlpath string, payload any) error {
 	}
 	req.Header.Set("Content-Type", "application/json")
 
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := yunhuHTTPClient.Do(req)
 	if err != nil {
 		return err
 	}

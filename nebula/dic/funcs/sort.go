@@ -30,6 +30,9 @@ func (f *DicFunc) Sort() string {
 		sort.Slice(list, func(i, j int) bool {
 			valueI := list[i][sortKey]
 			valueJ := list[j][sortKey]
+			if valueI == nil || valueJ == nil {
+				return false // 无法比较的项保持原序
+			}
 
 			var result bool
 
@@ -109,6 +112,9 @@ func doSort(d *dto.DicInputs) (any, error) {
 		sort.Slice(list, func(i, j int) bool {
 			valueI := list[i][sortKey]
 			valueJ := list[j][sortKey]
+			if valueI == nil || valueJ == nil {
+				return false // 无法比较的项保持原序
+			}
 
 			var result bool
 			switch vI := valueI.(type) {

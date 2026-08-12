@@ -155,7 +155,9 @@ func writeYaml(filePath string, path []string, value string) (any, error) {
 	var current any = yamlData
 	for i, seg := range path {
 		if i == len(path)-1 {
-			current.(map[string]any)[seg] = value
+			if m, ok := current.(map[string]any); ok {
+				m[seg] = value
+			}
 			break
 		}
 		m, ok := current.(map[string]any)

@@ -31,6 +31,8 @@ type DicEntry struct {
 	// 当前处理 txt 每行对应的原始文件行号（1-based），与 txt 一一对应
 	// 为 nil 时表示无行号映射（如递归调用、非调试场景）
 	LineNums []int
+	// 递归深度，用于防止 $调用$ 无限递归导致栈溢出
+	RecursionDepth int
 }
 
 func (d *DicEntry) Close() {
@@ -60,4 +62,6 @@ type DicFunc struct {
 	Dic    *dto.BuildValue
 	// 当前执行行号（1-based），用于调试报错定位
 	CurLine int
+	// 递归深度，用于 Funcs 内部创建子 DicEntry 时传播深度
+	RecursionDepth int
 }

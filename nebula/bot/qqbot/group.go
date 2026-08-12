@@ -60,7 +60,6 @@ func parseTextButtons(d *dto.DicInputs, start, l int) *qqbot_msg.Keyboard {
 		if label == "" {
 			continue
 		}
-		rawLabel := label
 		// 检测尾部 \r 用于换行
 		newRow := false
 		if before, ok := strings.CutSuffix(label, "\\r"); ok {
@@ -69,20 +68,18 @@ func parseTextButtons(d *dto.DicInputs, start, l int) *qqbot_msg.Keyboard {
 		}
 		// 默认值
 		btnType := 2
-		btnData := rawLabel
+		btnData := label
 		var btnEnter bool
 		hasType := false
 		hasData := false
-		// | 拆分后覆盖 btnData 和 hasData
+		// | 拆分：标签|数据，label 的 # 前缀移到 btnData 上由后续统一处理
 		if before, after, ok := strings.Cut(label, "|"); ok {
 			label = strings.TrimSpace(before)
 			btnData = strings.TrimSpace(after)
 			hasData = true
-			// label 以 # 开头表示回调按钮
-			if after0, ok0 := strings.CutPrefix(label, "#"); ok0 {
-				label = after0
-				hasType = true
-				btnType = 1
+			if strings.HasPrefix(label, "#") {
+				btnData = "#" + btnData
+				label = strings.TrimPrefix(label, "#")
 			}
 		}
 		// label 最多 10 字符
@@ -745,16 +742,31 @@ func qqBOTGroupEventRun(payload *qqbot_msg.Payload, bot *qqbot_msg.RouterQQBot) 
 		return
 	}
 
-	// 交互事件需要先回应，否则客户端会一直 loading
+	msgID := payload.Id
+	eventID := ""
+	var interactionEvent *qqbot_msg.InteractionEvent
+
+	// 交互事件需要先回应，否则客户端会一直 loading；被动消息需附带事件 ID（event_id）
 	if payload.Type == "INTERACTION_CREATE" {
-		interactionEvent := &qqbot_msg.InteractionEvent{}
+		interactionEvent = &qqbot_msg.InteractionEvent{}
 		if err := json.Unmarshal([]byte(payload.Data), interactionEvent); err == nil {
-			bot.API.ReplyInteraction(interactionEvent.ID, 0)
+			// 交互事件无用户消息可回复，被动消息使用 event_id 而非 msg_id
+			// event_id 是 WS 帧的事件 ID（payload.Id），不是 d 中的 interaction id
+			msgID = ""
+			eventID = payload.Id
+		} else {
+			interactionEvent = nil
 		}
 	}
 
 	RecordGroup(bot, groupOpenID)
-	runGroupEventDic(bot, payload.Id, groupOpenID, valData, msg)
+	runGroupEventDic(bot, msgID, groupOpenID, eventID, valData, msg)
+
+	// RespondInteraction 必须在发送被动回复（带 event_id）之后调用
+	// 因为 PUT /interactions/{id} 会消耗 interaction，之后再发带 event_id 的消息会被拒绝
+	if interactionEvent != nil {
+		bot.API.RespondInteraction(interactionEvent, qqbot_msg.InteractionCodeSuccess)
+	}
 }
 
 // parseGroupEvent 解析群事件 payload，返回 valData、触发词、群号
@@ -834,7 +846,7 @@ func parseGroupEvent(payload *qqbot_msg.Payload, appId string) (*dto.Val, string
 }
 
 // runGroupEventDic 遍历词库并执行群事件回复
-func runGroupEventDic(bot *qqbot_msg.RouterQQBot, msgID, groupOpenID string, valData *dto.Val, msg string) {
+func runGroupEventDic(bot *qqbot_msg.RouterQQBot, msgID, groupOpenID, eventID string, valData *dto.Val, msg string) {
 	botDicList, err := utils.NewFileQueue(filepath.Join(bot.FilePath, "dic")).GetFileList()
 	if err != nil {
 		return
@@ -849,6 +861,7 @@ func runGroupEventDic(bot *qqbot_msg.RouterQQBot, msgID, groupOpenID string, val
 		SetPushContext(&PushContext{
 			Bot:         bot,
 			MsgID:       msgID,
+			EventID:     eventID,
 			GroupOpenID: groupOpenID,
 		})
 
@@ -864,14 +877,18 @@ func runGroupEventDic(bot *qqbot_msg.RouterQQBot, msgID, groupOpenID string, val
 				if i == 1 {
 					rMsg = ""
 				}
-				if _, mErr := bot.API.ReplyGroupImgMessage(msgID, groupOpenID, img, rMsg); mErr != nil {
+				if _, mErr := bot.API.ReplyGroupImgMessage(msgID, groupOpenID, img, rMsg, eventID); mErr != nil {
 					fmt.Println("QQBot回复图文失败", mErr)
 				}
+				// event_id 只能使用一次，后续图片和词库不能再用
+				eventID = ""
 			}
 		} else if rMsg != "" {
-			if _, mErr := bot.API.ReplyGroupMessage(msgID, groupOpenID, rMsg); mErr != nil {
+			if _, mErr := bot.API.ReplyGroupMessage(msgID, groupOpenID, rMsg, eventID); mErr != nil {
 				debugLog.Infof("QQBot回复失败%v", mErr)
 			}
+			// event_id 只能使用一次，后续词库不能再用
+			eventID = ""
 		}
 	}
 }

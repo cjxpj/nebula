@@ -355,8 +355,8 @@ func dicWebRouter(w http.ResponseWriter, r *http.Request) {
 
 	RunData = dic_api.Api.DicRun(dic, path)
 
-	SendHeade := globalV.Get("输出头部").(string)
-	SendCOOKIE := globalV.Get("COOKIE").(string)
+	SendHeade, _ := globalV.Get("输出头部").(string)
+	SendCOOKIE, _ := globalV.Get("COOKIE").(string)
 
 	var headerMap map[string]string
 	var cookieMap []*dto.SetCookie

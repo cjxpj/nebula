@@ -1,10 +1,10 @@
-/nebulaApp/win/NebulaData/
+/nebula/app/win/NebulaData/
 dist
 debug
 __debug_bin.exe*
-/nebulaApp/win/node_modules/
-/nebulaApp/win/package.json
-/nebulaApp/win/package-lock.json
+/nebula/app/win/node_modules/
+/nebula/app/win/package.json
+/nebula/app/win/package-lock.json
 win.exe
 android/app/src/main/jniLibs/arm64-v8a/libnebula_arm64.so
-nebulaApp/win/nebula.exe
+nebula/app/win/nebula.exe

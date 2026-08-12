@@ -22,6 +22,7 @@ func init() {
 type PushContext struct {
 	Bot         *qqbot_msg.RouterQQBot
 	MsgID       string
+	EventID     string
 	GroupOpenID string
 	ChannelID   string
 	UserOpenID  string
@@ -51,6 +52,18 @@ func GetPushContext() *PushContext {
 	pushMu.RLock()
 	defer pushMu.RUnlock()
 	return currentPush
+}
+
+// ConsumeEventID 原子读取并清除 eventID，确保每次 INTERACTION_CREATE 的 event_id 只被使用一次
+func ConsumeEventID() string {
+	pushMu.Lock()
+	defer pushMu.Unlock()
+	if currentPush == nil {
+		return ""
+	}
+	eid := currentPush.EventID
+	currentPush.EventID = ""
+	return eid
 }
 
 // getBotByIndex 按排序后的账号列表取指定索引的 QQBot（index: 0=第一个, 1=第二个...），不存在返回 nil
@@ -515,10 +528,10 @@ var ReplyFuncs = map[string]dto.DicFunc{
 				rMsg := strings.ReplaceAll(d.Inputs.String(1), "\\r", "\n")
 				if d.Inputs.LenOk(1) {
 					if rMsg != "" {
-						ctx.Bot.API.ReplyGroupMessage(ctx.MsgID, ctx.GroupOpenID, "\n"+rMsg)
+						ctx.Bot.API.ReplyGroupMessage(ctx.MsgID, ctx.GroupOpenID, "\n"+rMsg, ConsumeEventID())
 					}
 				} else {
-					ctx.Bot.API.ReplyGroupImgMessage(ctx.MsgID, ctx.GroupOpenID, d.Inputs.String(2), rMsg)
+					ctx.Bot.API.ReplyGroupImgMessage(ctx.MsgID, ctx.GroupOpenID, d.Inputs.String(2), rMsg, ConsumeEventID())
 				}
 			}()
 			return "", nil
@@ -535,7 +548,7 @@ var ReplyFuncs = map[string]dto.DicFunc{
 
 			// 简单MD文本发送
 			if pLen == 1 {
-				ctx.Bot.API.ReplyGroupAnyMarkdownWithKeyboard(ctx.MsgID, ctx.GroupOpenID, d.Inputs.String(1), kb)
+				ctx.Bot.API.ReplyGroupAnyMarkdownWithKeyboard(ctx.MsgID, ctx.GroupOpenID, d.Inputs.String(1), kb, ConsumeEventID())
 				return "", nil
 			}
 			// CustomTemplateId + key=value 参数对
@@ -554,7 +567,7 @@ var ReplyFuncs = map[string]dto.DicFunc{
 			ctx.Bot.API.ReplyGroupMarkdownWithKeyboard(ctx.MsgID, ctx.GroupOpenID, &qqbot_msg.Markdown{
 				CustomTemplateId: d.Inputs.String(1),
 				Params:           params,
-			}, kb)
+			}, kb, ConsumeEventID())
 			return "", nil
 		},
 	},
@@ -566,7 +579,7 @@ var ReplyFuncs = map[string]dto.DicFunc{
 				return "", fmt.Errorf("QQBot上下文未初始化")
 			}
 			go func() {
-				ctx.Bot.API.ReplyGroupVideoMessage(ctx.MsgID, ctx.GroupOpenID, d.Inputs.String(1))
+				ctx.Bot.API.ReplyGroupVideoMessage(ctx.MsgID, ctx.GroupOpenID, d.Inputs.String(1), ConsumeEventID())
 			}()
 			return "", nil
 		},
@@ -579,7 +592,7 @@ var ReplyFuncs = map[string]dto.DicFunc{
 				return "", fmt.Errorf("QQBot上下文未初始化")
 			}
 			go func() {
-				ctx.Bot.API.ReplyGroupVoiceMessage(ctx.MsgID, ctx.GroupOpenID, d.Inputs.String(1))
+				ctx.Bot.API.ReplyGroupVoiceMessage(ctx.MsgID, ctx.GroupOpenID, d.Inputs.String(1), ConsumeEventID())
 			}()
 			return "", nil
 		},

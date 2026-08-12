@@ -509,12 +509,17 @@ func (ftp *ftpSession) handlePORT(arg string) {
 		ftp.reply(501, "Invalid PORT format")
 		return
 	}
-	h1, _ := strconv.Atoi(parts[0])
-	h2, _ := strconv.Atoi(parts[1])
-	h3, _ := strconv.Atoi(parts[2])
-	h4, _ := strconv.Atoi(parts[3])
-	p1, _ := strconv.Atoi(parts[4])
-	p2, _ := strconv.Atoi(parts[5])
+	var nums [6]int
+	for i, part := range parts {
+		var err error
+		nums[i], err = strconv.Atoi(part)
+		if err != nil {
+			ftp.reply(501, "Invalid PORT format: non-numeric value")
+			return
+		}
+	}
+	h1, h2, h3, h4 := nums[0], nums[1], nums[2], nums[3]
+	p1, p2 := nums[4], nums[5]
 
 	host := fmt.Sprintf("%d.%d.%d.%d", h1, h2, h3, h4)
 	port := p1*256 + p2

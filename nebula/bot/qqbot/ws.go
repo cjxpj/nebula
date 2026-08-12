@@ -281,6 +281,7 @@ func wsEventLoop(ctx context.Context, conn *websocket.Conn, bot *qqbot_msg.Route
 			D  json.RawMessage `json:"d"`
 			S  int             `json:"s"`
 			T  string          `json:"t"`
+			Id string          `json:"id"`
 		}
 		if err := json.Unmarshal(raw, &payload); err != nil {
 			dbg(bot, "解析消息失败: %v, raw=%s", err, string(raw))
@@ -312,7 +313,7 @@ func wsEventLoop(ctx context.Context, conn *websocket.Conn, bot *qqbot_msg.Route
 					close(readyCh)
 				}
 			} else {
-				wsDispatch(bot, payload.T, payload.D)
+				wsDispatch(bot, payload.T, payload.D, payload.Id)
 			}
 
 		case 7: // Reconnect
@@ -461,9 +462,10 @@ func getWsGatewayUrl(bot *qqbot_msg.RouterQQBot) string {
 
 // ================= WS 消息分发 =================
 
-func wsDispatch(bot *qqbot_msg.RouterQQBot, t string, d json.RawMessage) {
+func wsDispatch(bot *qqbot_msg.RouterQQBot, t string, d json.RawMessage, id string) {
 	payload := &qqbot_msg.Payload{
 		Op:   0,
+		Id:   id,
 		Data: d,
 		Type: t,
 	}

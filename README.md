@@ -57,13 +57,13 @@
 1. **下载客户端**
    ```bash
    # 从 Releases 页面下载 nebulaApp.exe
-   # 或使用项目中的预构建版本: nebulaApp\win\nebulaApp.exe
+   # 或使用项目中的预构建版本: nebula\app\win\nebulaApp.exe
    ```
 
 2. **启动服务**
    ```bash
    # 直接双击运行，或使用命令行：
-   .\nebulaApp\win\nebulaApp.exe
+   .\nebula\app\win\nebulaApp.exe
    ```
 
 3. **访问服务**
@@ -74,19 +74,19 @@
 4. **客户端命令**
    ```bash
    # 查看帮助
-   .\nebulaApp\win\nebulaApp.exe -help
+   .\nebula\app\win\nebulaApp.exe -help
    
    # 显示版本
-   .\nebulaApp\win\nebulaApp.exe -v
+   .\nebula\app\win\nebulaApp.exe -v
    
    # 设置开机自启
-   .\nebulaApp\win\nebulaApp.exe -autostart
+   .\nebula\app\win\nebulaApp.exe -autostart
    
    # 取消开机自启
-   .\nebulaApp\win\nebulaApp.exe -noautostart
+   .\nebula\app\win\nebulaApp.exe -noautostart
    
    # 运行指定词库文件
-   .\nebulaApp\win\nebulaApp.exe run [文件路径] [触发词]
+   .\nebula\app\win\nebulaApp.exe run [文件路径] [触发词]
    ```
 
 ### Linux/macOS 平台（Docker 部署）
@@ -142,19 +142,15 @@
 ```
 nebula/
 ├── nebula/                    # 核心引擎模块
+│   ├── app/                   # 多平台客户端（win / wasm / .so）
+│   │   ├── win/               # Windows 客户端
+│   │   └── wasm/              # WebAssembly 支持
 │   ├── appfiles/             # 嵌入式资源文件
 │   ├── bot/                  # 机器人模块（QQ、NapCat、飞书、云湖）
 │   ├── dic/                  # 词库解析和运行引擎
 │   ├── dto/                  # 数据传输对象
 │   ├── server/               # HTTP 服务器实现
 │   └── utils/                # 工具函数
-├── nebulaApp/                # 应用程序模块
-│   ├── win/                  # Windows 特定实现
-│   │   ├── main.go           # Windows 主程序
-│   │   ├── nebulaApp.exe     # Windows 可执行文件
-│   │   ├── install.go        # 组件安装器
-│   │   └── NebulaData/       # 默认数据目录
-│   └── wasm/                 # WebAssembly 支持
 ├── deploy.sh                 # Linux/macOS 部署脚本
 ├── deploy.ps1                # Windows PowerShell 部署脚本
 ├── deploy.bat                # Windows 批处理部署脚本
@@ -350,13 +346,12 @@ cd nebula
 
 # 使用 Go Workspace
 go work use ./nebula
-go work use ./nebulaApp
 
 # 下载依赖
 go mod download
 
 # 构建 Windows 版本
-cd nebulaApp/win
+cd nebula/app/win
 go build -o nebulaApp.exe
 
 # 构建 Linux 版本（Docker 用）

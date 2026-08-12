@@ -2,7 +2,9 @@ package dic
 
 import (
 	"os"
+	"path/filepath"
 	"reflect"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -10,12 +12,18 @@ import (
 	dic_dto "github.com/cjxpj/nebula/dic/dto"
 )
 
-func runHead(t *testing.T, head []string) *dic_dto.Dic {
-	t.Helper()
-	err := os.Chdir("../../nebulaApp/win")
-	if err != nil {
+// chdirToAppWin 切换到 nebula/app/win（NebulaData 所在），基于源码文件位置计算绝对路径，多次调用幂等
+func chdirToAppWin() {
+	_, file, _, _ := runtime.Caller(0)
+	winDir := filepath.Join(filepath.Dir(file), "..", "app", "win")
+	if err := os.Chdir(winDir); err != nil {
 		panic(err)
 	}
+}
+
+func runHead(t *testing.T, head []string) *dic_dto.Dic {
+	t.Helper()
+	chdirToAppWin()
 	content := strings.Join(head, "\n") + "\n"
 	D := dic_dto.NewDic("t.n", content)
 	dic_api.Api.DicRun(D, "Main")

@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"net/url"
 	"regexp"
+	"strings"
 	"time"
 
 	"github.com/cjxpj/nebula/dto"
@@ -57,7 +58,6 @@ func accessGet(d *dto.DicInputs) (any, error) {
 		var headers map[string]string
 		if err := json.Unmarshal([]byte(d.Inputs.String(2)), &headers); err == nil {
 			for key, value := range headers {
-				req.Header.Add(key, value)
 				req.Header.Set(key, value)
 			}
 		}
@@ -114,7 +114,6 @@ func accessPost(d *dto.DicInputs) (any, error) {
 		var headers map[string]string
 		if err := json.Unmarshal([]byte(d.Inputs.String(3)), &headers); err == nil {
 			for key, value := range headers {
-				req.Header.Add(key, value)
 				req.Header.Set(key, value)
 			}
 		}
@@ -288,28 +287,47 @@ func newRequest(d *dto.DicInputs) (any, error) {
 }
 
 // =======================
-// 访问.切换GET / POST
+// 访问.切换请求方式（GET / POST / PUT / DELETE / PATCH / HEAD / OPTIONS）
 // =======================
 
-func changeRequestGet(d *dto.DicInputs) (any, error) {
+func changeRequestMethod(d *dto.DicInputs, method string) (any, error) {
 	req := getAccess(d)
 	if req == nil {
 		return nil, errors.New("未新建请求")
 	}
-	req.Type = "get"
-	return "", nil
-}
-
-func changeRequestPost(d *dto.DicInputs) (any, error) {
-	req := getAccess(d)
-	if req == nil {
-		return nil, errors.New("未新建请求")
-	}
-	req.Type = "post"
+	req.Type = method
 	if d.Inputs.LenOk(2) {
 		req.Body = d.Inputs.String(2)
 	}
 	return "", nil
+}
+
+func changeRequestGet(d *dto.DicInputs) (any, error) {
+	return changeRequestMethod(d, "get")
+}
+
+func changeRequestPost(d *dto.DicInputs) (any, error) {
+	return changeRequestMethod(d, "post")
+}
+
+func changeRequestPut(d *dto.DicInputs) (any, error) {
+	return changeRequestMethod(d, "put")
+}
+
+func changeRequestDelete(d *dto.DicInputs) (any, error) {
+	return changeRequestMethod(d, "delete")
+}
+
+func changeRequestPatch(d *dto.DicInputs) (any, error) {
+	return changeRequestMethod(d, "patch")
+}
+
+func changeRequestHead(d *dto.DicInputs) (any, error) {
+	return changeRequestMethod(d, "head")
+}
+
+func changeRequestOptions(d *dto.DicInputs) (any, error) {
+	return changeRequestMethod(d, "options")
 }
 
 // =======================
@@ -423,6 +441,9 @@ func requestSend(d *dto.DicInputs) (any, error) {
 			TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
 		},
 	}
+	if client.Timeout <= 0 {
+		client.Timeout = 15 * time.Second
+	}
 
 	if req.StopRedirect {
 		client.CheckRedirect = func(req *http.Request, via []*http.Request) error {
@@ -433,10 +454,16 @@ func requestSend(d *dto.DicInputs) (any, error) {
 	var httpReq *http.Request
 	var err error
 
-	if req.Type == "get" {
-		httpReq, err = http.NewRequest("GET", req.Host, nil)
+	method := strings.ToUpper(req.Type)
+	if method == "" {
+		method = "GET"
+	}
+
+	// GET / HEAD / OPTIONS 不携带请求体，其余方式按 body 构建
+	if method == "GET" || method == "HEAD" || method == "OPTIONS" {
+		httpReq, err = http.NewRequest(method, req.Host, nil)
 	} else {
-		httpReq, err = buildPostRequest(req)
+		httpReq, err = buildMethodRequest(method, req)
 	}
 
 	if err != nil {
@@ -466,13 +493,13 @@ func requestSend(d *dto.DicInputs) (any, error) {
 }
 
 // =======================
-// POST 构建
+// 请求体构建（POST / PUT / DELETE / PATCH 等）
 // =======================
 
-func buildPostRequest(req *AccessRequest) (*http.Request, error) {
+func buildMethodRequest(method string, req *AccessRequest) (*http.Request, error) {
 	if len(req.Files) == 0 {
 		body := bytes.NewBufferString(req.Body)
-		r, err := http.NewRequest("POST", req.Host, body)
+		r, err := http.NewRequest(method, req.Host, body)
 		if err != nil {
 			return nil, err
 		}
@@ -515,7 +542,7 @@ func buildPostRequest(req *AccessRequest) (*http.Request, error) {
 
 	writer.Close()
 
-	r, err := http.NewRequest("POST", req.Host, &buf)
+	r, err := http.NewRequest(method, req.Host, &buf)
 	if err != nil {
 		return nil, err
 	}

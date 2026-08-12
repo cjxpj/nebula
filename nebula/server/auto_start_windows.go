@@ -63,8 +63,11 @@ func GetAutoStart() (bool, error) {
 	defer k.Close()
 	_, _, err = k.GetStringValue(autoStartAppName)
 	if err != nil {
-		// 值不存在 = 未设置自启
-		return false, nil
+		// 值不存在（ERROR_FILE_NOT_FOUND）= 未设置自启
+		if errors.Is(err, syscall.Errno(2)) {
+			return false, nil
+		}
+		return false, fmt.Errorf("读取注册表值失败: %w", err)
 	}
 	return true, nil
 }

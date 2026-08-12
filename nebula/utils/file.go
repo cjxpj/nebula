@@ -306,7 +306,7 @@ func (fq *FileQueue) DownloadWithDynamicThreads(url string, maxThreads int, show
 
 	// 1. HEAD 拿大小与 Range 支持
 	client := &http.Client{
-		// Timeout: headerTimeout,
+		Timeout: 30 * time.Minute,
 		Transport: &http.Transport{
 			Proxy:                 http.ProxyFromEnvironment,
 			MaxIdleConns:          idleConns,
@@ -322,13 +322,16 @@ func (fq *FileQueue) DownloadWithDynamicThreads(url string, maxThreads int, show
 			}).DialContext,
 		},
 	}
-	req, _ := http.NewRequest("HEAD", url, nil)
+	req, err := http.NewRequest("HEAD", url, nil)
+	if err != nil {
+		return err
+	}
 	req.Header.Set("User-Agent", userAgent)
 	resp, err := client.Do(req)
 	if err != nil {
 		return err
 	}
-	resp.Body.Close()
+	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
 		return fmt.Errorf("HEAD 失败，状态码 %d", resp.StatusCode)
 	}
@@ -415,7 +418,10 @@ func (fq *FileQueue) DownloadWithDynamicThreads(url string, maxThreads int, show
 		go func() {
 			defer wg.Done()
 			for tk := range tasks {
-				if firstErr != nil {
+				mu.Lock()
+				hasErr := firstErr != nil
+				mu.Unlock()
+				if hasErr {
 					continue
 				}
 				sem <- struct{}{}

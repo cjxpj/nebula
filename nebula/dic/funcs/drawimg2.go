@@ -1061,6 +1061,9 @@ func drawLine(img *image.RGBA, x1, y1, x2, y2 int, col color.Color) {
 	err := dx - dy
 
 	for {
+		if x1 < bounds.Min.X || x1 >= bounds.Max.X || y1 < bounds.Min.Y || y1 >= bounds.Max.Y {
+			break
+		}
 		img.Set(x1, y1, col)
 		if x1 == x2 && y1 == y2 {
 			break

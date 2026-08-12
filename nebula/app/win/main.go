@@ -91,7 +91,14 @@ func main() {
 	funcs.Register("回收站", "1", func(d *dto.DicInputs) (any, error) {
 		fq := utils.NewFileQueue(d.Inputs.String(1))
 		// 检查文件夹是否存在
-		if p, err := os.Stat(fq.FileName); os.IsNotExist(err) || !p.IsDir() {
+		p, err := os.Stat(fq.FileName)
+		if err != nil {
+			if os.IsNotExist(err) {
+				return false, nil
+			}
+			return false, fmt.Errorf("检查文件夹失败: %v", err)
+		}
+		if !p.IsDir() {
 			return false, nil
 		}
 
@@ -118,7 +125,10 @@ func main() {
 
 		// 如果有传入 *http.Request 作为第二个参数
 		if r, ok := d.Inputs.Get(2).(*http.Request); ok {
-			getData, postData, fileData, err := parseRequestToMap(r)
+			getData, postData, fileData, cleanup, err := parseRequestToMap(r)
+			if cleanup != nil {
+				defer cleanup()
+			}
 			if err != nil {
 				return "请求解析失败: " + err.Error(), nil
 			}
