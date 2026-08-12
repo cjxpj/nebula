@@ -3,13 +3,13 @@
                           "FileVersion":  {
                                               "Major":  16,
                                               "Minor":  18,
-                                              "Patch":  4,
+                                              "Patch":  5,
                                               "Build":  0
                                           },
                           "ProductVersion":  {
                                                  "Major":  16,
                                                  "Minor":  18,
-                                                 "Patch":  4,
+                                                 "Patch":  5,
                                                  "Build":  0
                                              },
                           "FileFlagsMask":  "3f",
@@ -22,14 +22,14 @@
                            "Comments":  "",
                            "CompanyName":  "cjxpj",
                            "FileDescription":  "Nebula 词库机器人框架",
-                           "FileVersion":  "16.18.4",
+                           "FileVersion":  "16.18.5",
                            "InternalName":  "nebula",
                            "LegalCopyright":  "Copyright (c) 2026 cjxpj",
                            "LegalTrademarks":  "",
                            "OriginalFilename":  "nebula.exe",
                            "PrivateBuild":  "",
                            "ProductName":  "Nebula",
-                           "ProductVersion":  "16.18.4",
+                           "ProductVersion":  "16.18.5",
                            "SpecialBuild":  ""
                        },
     "VarFileInfo":  {
