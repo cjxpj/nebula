@@ -8,7 +8,6 @@ import (
 	"fmt"
 	"net/http"
 	"os"
-	"os/exec"
 	"os/signal"
 	"path/filepath"
 	"syscall"
@@ -20,6 +19,7 @@ import (
 	"github.com/cjxpj/nebula/dto"
 	dic_server "github.com/cjxpj/nebula/server"
 	"github.com/cjxpj/nebula/utils"
+	"github.com/hymkor/trash-go"
 )
 
 func init() {
@@ -40,9 +40,9 @@ func main() {
 	dto.GV.Set("_PythonPath_", "python")
 
 	// 检测文件是否存在ffmpeg.exe
-	ffmpegPath := utils.FindFfmpegExe("private/extensions/ffmpeg")
+	ffmpegPath := utils.FindFfmpegExe(filepath.Join(utils.GetAppDir(), "private", "extensions", "ffmpeg"))
 	if ffmpegPath != "" {
-		dto.GV.Set("_Ffmpeg_", filepath.Join(utils.GetAppDir(), ffmpegPath))
+		dto.GV.Set("_Ffmpeg_", ffmpegPath)
 	} else {
 		dto.GV.Set("_Ffmpeg_", "ffmpeg")
 	}
@@ -90,29 +90,22 @@ func main() {
 
 	funcs.Register("回收站", "1", func(d *dto.DicInputs) (any, error) {
 		fq := utils.NewFileQueue(d.Inputs.String(1))
-		// 检查文件夹是否存在
-		p, err := os.Stat(fq.FileName)
-		if err != nil {
+		// 检查路径是否存在
+		if _, err := os.Stat(fq.FileName); err != nil {
 			if os.IsNotExist(err) {
 				return false, nil
 			}
-			return false, fmt.Errorf("检查文件夹失败: %v", err)
-		}
-		if !p.IsDir() {
-			return false, nil
+			return false, fmt.Errorf("检查路径失败: %v", err)
 		}
 
-		// 使用Windows API将文件移动到回收站
-		// 首先获取绝对路径
+		// 获取绝对路径
 		absPath, err := filepath.Abs(fq.FileName)
 		if err != nil {
 			return false, nil
 		}
 
-		// 调用Windows API移动到回收站
-		// 这里使用简单的方法：通过cmd命令行调用recycle命令
-		cmd := exec.Command("cmd", "/c", "powershell", "Remove-Item", "-Path", absPath, "-Recurse", "-Force", "-ErrorAction", "SilentlyContinue")
-		if err := cmd.Run(); err != nil {
+		// 使用 Windows Shell API 将文件/文件夹移动到回收站
+		if err := trash.Throw(absPath); err != nil {
 			return false, nil
 		}
 

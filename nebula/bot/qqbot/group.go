@@ -8,6 +8,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	qqbot_msg "github.com/cjxpj/nebula/bot/qqbot/msg"
@@ -20,24 +21,26 @@ import (
 
 var mdRe = regexp.MustCompile(`(?s)\[((?:\\.|[^\]\\])+)\]\(((?:\\.|[^)\\])+)\)`)
 var mdReAt = regexp.MustCompile(`<(.+?)(\/)?>`)
+var groupInviterMap sync.Map // key: botPath+groupOpenID, value: inviter OpenID
 
 // popMDKeyboard 检测"按钮"关键字，其后的参数为文本按钮定义
 // "标签" → 点击发送 "/标签"；"标签|数据" → 点击发送 "数据"
+// 自定义按钮仅简单文本模式（$发送MD "文本" 按钮 ...$）支持；
+// 模板模式（$发送MD 模板ID 键1 值1...$）不支持自定义按钮，仅插入文本，"按钮"按普通键/值处理
 func popMDKeyboard(d *dto.DicInputs) (int, *qqbot_msg.Keyboard) {
 	l := d.Inputs.Len()
 	if l == 0 {
 		return 0, nil
 	}
-	// 扫描"按钮"关键字：其后的参数为文本按钮定义
-	for i := 2; i <= l; i++ {
-		if d.Inputs.String(i) == "按钮" {
-			if i+1 <= l {
-				kb := parseTextButtons(d, i+1, l)
-				if kb != nil {
-					return i - 1, kb
-				}
-			}
-			return i - 1, nil
+	// "按钮"仅在参数2位置（简单文本模式）作为按钮分隔符；
+	// 其后解析不出按钮定义时按普通参数处理
+	if l >= 2 && d.Inputs.String(2) == "按钮" {
+		// "按钮"是最后一个参数时视为分隔符（空键盘），保证 $发送MD "文本" 按钮$ 走简单文本模式
+		if l == 2 {
+			return 1, nil
+		}
+		if kb := parseTextButtons(d, 3, l); kb != nil {
+			return 1, kb
 		}
 	}
 	return l, nil
@@ -278,6 +281,9 @@ func qqBOTGroupRun(payload *qqbot_msg.Payload, bot *qqbot_msg.RouterQQBot) {
 
 	// 词库
 	for _, v := range botDicList {
+		if !strings.HasSuffix(v, ".n") {
+			continue
+		}
 		dicPath := filepath.Join(bot.FilePath, "dic", v)
 		FileData, err := utils.NewFileQueue(dicPath).ReadFromFile()
 		if err != nil {
@@ -362,7 +368,7 @@ func qqBOTGroupRun(payload *qqbot_msg.Payload, bot *qqbot_msg.RouterQQBot) {
 			Fn: func(d *dto.DicInputs) (any, error) {
 				pLen, kb := popMDKeyboard(d)
 
-				if pLen == 1 {
+				if pLen == 1 || (pLen-1)%2 != 0 {
 					_, mErr := bot.API.
 						ReplyGroupAnyMarkdownWithKeyboard(m.ID, m.GroupOpenID, d.Inputs.String(1), kb)
 					if mErr != nil {
@@ -372,10 +378,6 @@ func qqBOTGroupRun(payload *qqbot_msg.Payload, bot *qqbot_msg.RouterQQBot) {
 				}
 
 				// 2 开始，必须是 key-value 成对
-				if (pLen-1)%2 != 0 {
-					return nil, fmt.Errorf("要设置对应键跟值")
-				}
-
 				params := make([]*qqbot_msg.MarkdownParams, 0)
 				for i := 2; i <= pLen; i += 2 {
 					key := d.Inputs.String(i)
@@ -546,6 +548,9 @@ func qqBOTGroupATRun(payload *qqbot_msg.Payload, bot *qqbot_msg.RouterQQBot) {
 
 	// 词库
 	for _, v := range botDicList {
+		if !strings.HasSuffix(v, ".n") {
+			continue
+		}
 		dicPath := filepath.Join(bot.FilePath, "dic", v)
 		FileData, err := utils.NewFileQueue(dicPath).ReadFromFile()
 		if err != nil {
@@ -614,7 +619,7 @@ func qqBOTGroupATRun(payload *qqbot_msg.Payload, bot *qqbot_msg.RouterQQBot) {
 			Fn: func(d *dto.DicInputs) (any, error) {
 				pLen, kb := popMDKeyboard(d)
 
-				if pLen == 1 {
+				if pLen == 1 || (pLen-1)%2 != 0 {
 					_, mErr := bot.API.
 						ReplyGroupAnyMarkdownWithKeyboard(m.ID, m.GroupOpenID, d.Inputs.String(1), kb)
 					if mErr != nil {
@@ -624,10 +629,6 @@ func qqBOTGroupATRun(payload *qqbot_msg.Payload, bot *qqbot_msg.RouterQQBot) {
 				}
 
 				// 2 开始，必须是 key-value 成对
-				if (pLen-1)%2 != 0 {
-					return nil, fmt.Errorf("要设置对应键跟值")
-				}
-
 				params := make([]*qqbot_msg.MarkdownParams, 0)
 				for i := 2; i <= pLen; i += 2 {
 					key := d.Inputs.String(i)
@@ -742,8 +743,8 @@ func qqBOTGroupEventRun(payload *qqbot_msg.Payload, bot *qqbot_msg.RouterQQBot) 
 		return
 	}
 
-	msgID := payload.Id
-	eventID := ""
+	msgID := ""
+	eventID := payload.Id
 	var interactionEvent *qqbot_msg.InteractionEvent
 
 	// 交互事件需要先回应，否则客户端会一直 loading；被动消息需附带事件 ID（event_id）
@@ -760,12 +761,27 @@ func qqBOTGroupEventRun(payload *qqbot_msg.Payload, bot *qqbot_msg.RouterQQBot) 
 	}
 
 	RecordGroup(bot, groupOpenID)
-	runGroupEventDic(bot, msgID, groupOpenID, eventID, valData, msg)
+
+	inviterKey := bot.FilePath + "|" + groupOpenID
+	privateUserID := ""
+	if payload.Type == "GROUP_ADD_ROBOT" {
+		inviter := valData.GetStr("操作者")
+		groupInviterMap.Store(inviterKey, inviter)
+		privateUserID = inviter
+	} else if payload.Type == "GROUP_DEL_ROBOT" {
+		privateUserID = valData.GetStr("操作者")
+		groupInviterMap.Delete(inviterKey)
+	}
+	runGroupEventDic(bot, msgID, groupOpenID, eventID, valData, msg, privateUserID)
 
 	// RespondInteraction 必须在发送被动回复（带 event_id）之后调用
 	// 因为 PUT /interactions/{id} 会消耗 interaction，之后再发带 event_id 的消息会被拒绝
 	if interactionEvent != nil {
-		bot.API.RespondInteraction(interactionEvent, qqbot_msg.InteractionCodeSuccess)
+		code := qqbot_msg.InteractionCodeSuccess
+		if ctx := GetPushContext(); ctx != nil {
+			code = qqbot_msg.InteractionResponseCode(ctx.InteractionCode)
+		}
+		bot.API.RespondInteraction(interactionEvent, code)
 	}
 }
 
@@ -780,24 +796,42 @@ func parseGroupEvent(payload *qqbot_msg.Payload, appId string) (*dto.Val, string
 			return nil, "", "", false
 		}
 
-		source := "退群"
-		msg := "群成员退出"
-		if payload.Type == "GROUP_MEMBER_ADD" || payload.Type == "GROUP_ADD_ROBOT" {
-			source = "入群"
-			msg = "群成员加入"
+		source := "群成员退出"
+		msg := "群成员退群"
+		eventType := "成员"
+		if payload.Type == "GROUP_ADD_ROBOT" {
+			source = "机器人进群"
+			msg = "机器人进群"
+			eventType = "机器人"
+		} else if payload.Type == "GROUP_DEL_ROBOT" {
+			source = "机器人退群"
+			msg = "机器人退群"
+			eventType = "机器人"
+		} else if payload.Type == "GROUP_MEMBER_ADD" {
+			source = "群成员加入"
+			msg = "群成员进群"
 		}
 
 		memberID := m.MemberOpenID
+		operatorID := m.OpMemberOpenID
 		if memberID == "" {
 			memberID = m.OpMemberOpenID
 		}
 
+		// 机器人事件的 UserOpenID 为空，用操作者（添加/移除者）作为 QQ
+		userQQ := m.UserOpenID
+		if userQQ == "" {
+			userQQ = m.OpMemberOpenID
+		}
+
 		return dto.NewVal().
 			Set("来源", source).
+			Set("事件类型", eventType).
 			Set("群号", m.GroupOpenID).
 			Set("成员", memberID).
-			Set("QQ", m.UserOpenID).
-			Set("qq", m.UserOpenID).
+			Set("操作者", operatorID).
+			Set("QQ", userQQ).
+			Set("qq", userQQ).
 			Set("robot", appId).
 			Set("Robot", appId), msg, m.GroupOpenID, true
 
@@ -845,29 +879,97 @@ func parseGroupEvent(payload *qqbot_msg.Payload, appId string) (*dto.Val, string
 	return nil, "", "", false
 }
 
+// ============= 好友事件处理 ============
+
+// qqBOTFriendEventRun 好友事件分发入口（添加/删除好友）
+func qqBOTFriendEventRun(payload *qqbot_msg.Payload, bot *qqbot_msg.RouterQQBot) {
+	qqbot_msg.MsgCount++
+
+	appId := ""
+	if bot.API != nil {
+		appId = bot.API.AppId
+	}
+
+	valData, msg, userOpenID, ok := parseFriendEvent(payload, appId)
+	if !ok {
+		return
+	}
+
+	eventID := payload.Id
+	// 好友事件无群聊上下文，以私信形式回复给该用户
+	runGroupEventDic(bot, "", "", eventID, valData, msg, userOpenID)
+}
+
+// parseFriendEvent 解析好友事件 payload，返回 valData、触发词、用户 OpenID
+func parseFriendEvent(payload *qqbot_msg.Payload, appId string) (*dto.Val, string, string, bool) {
+	switch payload.Type {
+	case "FRIEND_ADD":
+		m := &qqbot_msg.FriendAddEvent{}
+		if err := json.Unmarshal([]byte(payload.Data), m); err != nil {
+			debugLog.Infof("QQBot好友添加事件数据验证失败")
+			return nil, "", "", false
+		}
+		return dto.NewVal().
+			Set("来源", "好友添加").
+			Set("QQ", m.OpenID).
+			Set("qq", m.OpenID).
+			Set("robot", appId).
+			Set("Robot", appId), "好友添加", m.OpenID, true
+
+	case "FRIEND_DEL":
+		m := &qqbot_msg.FriendDelEvent{}
+		if err := json.Unmarshal([]byte(payload.Data), m); err != nil {
+			debugLog.Infof("QQBot好友删除事件数据验证失败")
+			return nil, "", "", false
+		}
+		return dto.NewVal().
+			Set("来源", "好友删除").
+			Set("QQ", m.OpenID).
+			Set("qq", m.OpenID).
+			Set("robot", appId).
+			Set("Robot", appId), "好友删除", m.OpenID, true
+	}
+	return nil, "", "", false
+}
+
 // runGroupEventDic 遍历词库并执行群事件回复
-func runGroupEventDic(bot *qqbot_msg.RouterQQBot, msgID, groupOpenID, eventID string, valData *dto.Val, msg string) {
+func runGroupEventDic(bot *qqbot_msg.RouterQQBot, msgID, groupOpenID, eventID string, valData *dto.Val, msg string, privateUserID string) {
 	botDicList, err := utils.NewFileQueue(filepath.Join(bot.FilePath, "dic")).GetFileList()
 	if err != nil {
 		return
 	}
 
 	for _, v := range botDicList {
+		if !strings.HasSuffix(v, ".n") {
+			continue
+		}
 		FileData, err := utils.NewFileQueue(filepath.Join(bot.FilePath, "dic", v)).ReadFromFile()
 		if err != nil {
 			continue
 		}
 
 		SetPushContext(&PushContext{
-			Bot:         bot,
-			MsgID:       msgID,
-			EventID:     eventID,
-			GroupOpenID: groupOpenID,
+			Bot:           bot,
+			MsgID:         msgID,
+			EventID:       eventID,
+			GroupOpenID:   groupOpenID,
+			PrivateUserID: privateUserID,
 		})
 
 		dic := dic_dto.NewDic(filepath.Join(bot.FilePath, "dic", v), FileData).
 			SetGlobal_v(valData)
 		dic.AddFuncs(ReplyFuncs)
+
+		dic.SetFunc("设置状态", dto.DicFunc{
+			L: "1",
+			Fn: func(d *dto.DicInputs) (any, error) {
+				code := d.Inputs.Int(1)
+				if ctx := GetPushContext(); ctx != nil {
+					ctx.InteractionCode = code
+				}
+				return "", nil
+			},
+		})
 
 		rMsg := dic_api.Api.DicRunPrivate(dic, msg)
 		rMsg = strings.ReplaceAll(rMsg, "\\r", "\n")
@@ -877,15 +979,27 @@ func runGroupEventDic(bot *qqbot_msg.RouterQQBot, msgID, groupOpenID, eventID st
 				if i == 1 {
 					rMsg = ""
 				}
-				if _, mErr := bot.API.ReplyGroupImgMessage(msgID, groupOpenID, img, rMsg, eventID); mErr != nil {
-					fmt.Println("QQBot回复图文失败", mErr)
+				if privateUserID != "" {
+					if _, mErr := bot.API.ReplyGroupPrivateImgMessage(msgID, privateUserID, img, rMsg); mErr != nil {
+						fmt.Println("QQBot私信回复图文失败", mErr)
+					}
+				} else {
+					if _, mErr := bot.API.ReplyGroupImgMessage(msgID, groupOpenID, img, rMsg, eventID); mErr != nil {
+						fmt.Println("QQBot回复图文失败", mErr)
+					}
 				}
 				// event_id 只能使用一次，后续图片和词库不能再用
 				eventID = ""
 			}
 		} else if rMsg != "" {
-			if _, mErr := bot.API.ReplyGroupMessage(msgID, groupOpenID, rMsg, eventID); mErr != nil {
-				debugLog.Infof("QQBot回复失败%v", mErr)
+			if privateUserID != "" {
+				if _, mErr := bot.API.ReplyGroupPrivateMessage(msgID, privateUserID, rMsg); mErr != nil {
+					debugLog.Infof("QQBot私信回复失败%v", mErr)
+				}
+			} else {
+				if _, mErr := bot.API.ReplyGroupMessage(msgID, groupOpenID, rMsg, eventID); mErr != nil {
+					debugLog.Infof("QQBot回复失败%v", mErr)
+				}
 			}
 			// event_id 只能使用一次，后续词库不能再用
 			eventID = ""
@@ -949,6 +1063,9 @@ func qqBOTGroupPrivateRun(payload *qqbot_msg.Payload, bot *qqbot_msg.RouterQQBot
 
 	// 词库
 	for _, v := range botDicList {
+		if !strings.HasSuffix(v, ".n") {
+			continue
+		}
 		dicPath := filepath.Join(bot.FilePath, "dic", v)
 		FileData, err := utils.NewFileQueue(dicPath).ReadFromFile()
 		if err != nil {
@@ -997,15 +1114,21 @@ func qqBOTGroupPrivateRun(payload *qqbot_msg.Payload, bot *qqbot_msg.RouterQQBot
 			}})
 
 		dic.SetFunc("发送MD", dto.DicFunc{
-			L: "2..",
+			L: "1..",
 			Fn: func(d *dto.DicInputs) (any, error) {
 				pLen, kb := popMDKeyboard(d)
 
-				// 2 开始，必须是 key-value 成对
-				if (pLen-1)%2 != 0 {
-					return nil, fmt.Errorf("要设置对应键跟值")
+				// 简单MD文本发送（含换行符才是文本，不含则视为模板ID）
+				if pLen == 1 || (pLen-1)%2 != 0 {
+					_, mErr := bot.API.
+						ReplyPrivateAnyMarkdownWithKeyboard(m.ID, userID, d.Inputs.String(1), kb)
+					if mErr != nil {
+						fmt.Println("QQBot回复失败", mErr)
+					}
+					return "", nil
 				}
 
+				// 2 开始，必须是 key-value 成对
 				params := make([]*qqbot_msg.MarkdownParams, 0)
 				for i := 2; i <= pLen; i += 2 {
 					key := d.Inputs.String(i)

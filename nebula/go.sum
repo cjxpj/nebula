@@ -55,6 +55,8 @@ github.com/hashicorp/golang-lru/v2 v2.0.7 h1:a+bsQ5rvGLjzHuww6tVxozPZFVghXaHOwFs
 github.com/hashicorp/golang-lru/v2 v2.0.7/go.mod h1:QeFd9opnmA6QUJc5vARoKUSoFhyfM2/ZepoAG6RGpeM=
 github.com/hashicorp/yamux v0.1.1 h1:yrQxtgseBDrq9Y652vSRDvsKCJKOUD+GzTS4Y0Y8pvE=
 github.com/hashicorp/yamux v0.1.1/go.mod h1:CtWFDAQgb7dxtzFs4tWbplKIe2jSi3+5vKbgIO0SLnQ=
+github.com/hymkor/trash-go v0.3.0 h1:vVeZFI8PNqbnBlLZAiJngkEKz/Ejpg6mY2dO6741P2Y=
+github.com/hymkor/trash-go v0.3.0/go.mod h1:pZ07qBUuGdTWPdymNtE97NAXHDY5W/b5szvoBVOhJ3U=
 github.com/iancoleman/orderedmap v0.3.0 h1:5cbR2grmZR/DiVt+VJopEhtVs9YGInGIxAoMJn+Ichc=
 github.com/iancoleman/orderedmap v0.3.0/go.mod h1:XuLcCUkdL5owUCQeF2Ue9uuw1EptkJDkXXS7VoV7XGE=
 github.com/inconshreveable/log15 v3.0.0-testing.3+incompatible h1:zaX5fYT98jX5j4UhO/WbfY8T1HkgVrydiDMC9PWqGCo=

@@ -2,7 +2,7 @@
 
 <div align="center">
 
-![版本](https://img.shields.io/badge/%E7%89%88%E6%9C%AC-16.0.7-blue)
+![版本](https://img.shields.io/badge/%E7%89%88%E6%9C%AC-16.18.5-blue)
 ![平台](https://img.shields.io/badge/%E5%B9%B3%E5%8F%B0-Windows%20%7C%20Linux%20%7C%20macOS-green)
 ![语言](https://img.shields.io/badge/%E8%AF%AD%E8%A8%80-Go%20%7C%20Nebula%20Script-orange)
 ![许可证](https://img.shields.io/badge/%E8%AE%B8%E5%8F%AF%E8%AF%81-MIT-yellow)
@@ -23,7 +23,7 @@
 ## 🚀 核心特性
 
 ### 🔧 技术特性
-- **内置完整运行时**：包含 PHP、Python、FFmpeg、SQLite 等依赖
+- **按需扩展运行时**：支持 PHP、Python、FFmpeg 等扩展运行时，通过管理后台一键安装
 - **多机器人支持**：QQ、NapCat、飞书、云湖机器人一体化集成
 - **跨平台部署**：Windows 独立客户端 / Linux & macOS Docker 容器化部署
 - **自动配置管理**：首次启动自动生成配置目录和默认文件
@@ -393,9 +393,9 @@ CGO_ENABLED=0 GOOS=linux go build -tags linux -ldflags="-s -w" -o nebula-app
 
 ### Q1: Windows 客户端启动失败？
 **A**: 
-1. 确保 `.NET Framework` 已安装
-2. 检查防火墙设置，允许程序访问网络
-3. 以管理员身份运行
+1. 检查防火墙设置，允许程序访问网络
+2. 以管理员身份运行
+3. 查看程序日志排查具体错误
 
 ### Q2: Docker 部署无法访问？
 **A**:

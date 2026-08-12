@@ -73,6 +73,9 @@ func napCatBOTGroupUploadFileRun(msgData *MessagePayload) {
 		Set("主人", isAdmin)
 
 	for _, v := range botDicList {
+		if !strings.HasSuffix(v, ".n") {
+			continue
+		}
 		go func() {
 			dicPath := dto.ServerConfig.NapCatBot.FilePath + "/dic/" + v
 			FileData, err := utils.NewFileQueue(dicPath).ReadFromFile()
@@ -180,6 +183,9 @@ func napCatBOTGroupRecallRun(msgData *MessagePayload) {
 		Set("主人", isAdmin)
 
 	for _, v := range botDicList {
+		if !strings.HasSuffix(v, ".n") {
+			continue
+		}
 		go func() {
 			dicPath := dto.ServerConfig.NapCatBot.FilePath + "/dic/" + v
 			FileData, err := utils.NewFileQueue(dicPath).ReadFromFile()
@@ -256,6 +262,9 @@ func napCatBOTProfileLikeRun(msgData *MessagePayload) {
 		Set("主人", isAdmin)
 
 	for _, v := range botDicList {
+		if !strings.HasSuffix(v, ".n") {
+			continue
+		}
 		go func() {
 			dicPath := dto.ServerConfig.NapCatBot.FilePath + "/dic/" + v
 			FileData, err := utils.NewFileQueue(dicPath).ReadFromFile()
@@ -352,6 +361,9 @@ func napCatBOTGroupNudgeRun(msgData *MessagePayload) {
 		Set("主人", isAdmin)
 
 	for _, v := range botDicList {
+		if !strings.HasSuffix(v, ".n") {
+			continue
+		}
 		go func() {
 			dicPath := dto.ServerConfig.NapCatBot.FilePath + "/dic/" + v
 			FileData, err := utils.NewFileQueue(dicPath).ReadFromFile()
@@ -448,6 +460,9 @@ func napCatBOTPrivateRun(msgData *MessagePayload) {
 		Set("主人", isAdmin)
 
 	for _, v := range botDicList {
+		if !strings.HasSuffix(v, ".n") {
+			continue
+		}
 		go func() {
 			dicPath := dto.ServerConfig.NapCatBot.FilePath + "/dic/" + v
 			FileData, err := utils.NewFileQueue(dicPath).ReadFromFile()
@@ -586,6 +601,9 @@ func napCatBOTGroupRun(msgData *MessagePayload) {
 		}
 	}
 	for _, v := range botDicList {
+		if !strings.HasSuffix(v, ".n") {
+			continue
+		}
 		go func() {
 			dicPath := dto.ServerConfig.NapCatBot.FilePath + "/dic/" + v
 			FileData, err := utils.NewFileQueue(dicPath).ReadFromFile()

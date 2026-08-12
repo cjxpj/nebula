@@ -226,6 +226,20 @@ func BotMessage(w http.ResponseWriter, r *http.Request, bot *qqbot_msg.RouterQQB
 				fmt.Println("[QQBot] ================================")
 			}
 
+		case "FRIEND_ADD", "FRIEND_DEL": // 好友添加/删除
+			if bot.Debug {
+				m := &qqbot_msg.FriendAddEvent{}
+				json.Unmarshal(payload.Data, m)
+				fmt.Printf("[QQBot 来源] 好友事件 | 类型=%s 用户=%s\n",
+					payload.Type, m.OpenID)
+			}
+			qqBOTFriendEventRun(payload, bot)
+			w.Write([]byte("Bot Message"))
+			if bot.Debug {
+				fmt.Println("[QQBot 返回] HTTP 200 OK (Bot Message)")
+				fmt.Println("[QQBot] ================================")
+			}
+
 		default:
 			if bot.Debug {
 				fmt.Printf("[QQBot] 未支持的消息类型: %s\n", payload.Type)

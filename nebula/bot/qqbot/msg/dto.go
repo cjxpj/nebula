@@ -455,3 +455,26 @@ const (
 	InteractionCodeNoPermission InteractionResponseCode = 4 // 没有权限
 	InteractionCodeAdminOnly    InteractionResponseCode = 5 // 仅管理员操作
 )
+
+// ============= 好友事件 ============
+
+// FriendAddEvent 好友添加事件（FRIEND_ADD）
+type FriendAddEvent struct {
+	OpenID     string       `json:"openid"`      // 用户 OpenID
+	Timestamp  int64        `json:"timestamp"`   // 事件时间戳（Unix 秒）
+	Scene      int          `json:"scene"`       // 场景
+	SceneParam string       `json:"scene_param"` // 场景参数
+	Author     FriendAuthor `json:"author"`      // 操作者
+}
+
+// FriendDelEvent 好友删除事件（FRIEND_DEL）
+type FriendDelEvent struct {
+	OpenID    string       `json:"openid"`    // 用户 OpenID
+	Timestamp int64        `json:"timestamp"` // 事件时间戳（Unix 秒）
+	Author    FriendAuthor `json:"author"`    // 操作者
+}
+
+// FriendAuthor 好友事件中的 author 字段
+type FriendAuthor struct {
+	UnionOpenID string `json:"union_openid"` // 机器人 UnionOpenID
+}

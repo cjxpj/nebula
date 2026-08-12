@@ -20,12 +20,14 @@ func init() {
 
 // PushContext 存储当前机器人及消息上下文，供 ReplyFuncs 中的回复函数使用
 type PushContext struct {
-	Bot         *qqbot_msg.RouterQQBot
-	MsgID       string
-	EventID     string
-	GroupOpenID string
-	ChannelID   string
-	UserOpenID  string
+	Bot             *qqbot_msg.RouterQQBot
+	MsgID           string
+	EventID         string
+	GroupOpenID     string
+	ChannelID       string
+	UserOpenID      string
+	PrivateUserID   string // 非空时使用私信发送（机器人退群等场景）
+	InteractionCode int    // 按钮交互事件返回码，默认 0 成功
 }
 
 var (
@@ -323,23 +325,30 @@ var ActiveFuncs = map[string]dto.DicFunc{
 				return "没有已记录的群", nil
 			}
 
-			// 提取键盘参数（从索引3扫描"按钮"，账号序号占索引1）
+			// 提取键盘参数（账号序号占参数1，内容从参数2开始）
 			l := d.Inputs.Len()
 			contentEnd := l
 			var kb *qqbot_msg.Keyboard
+			// 按钮只能出现在键值对边界（参数3、5、7...），且其后能解析出按钮定义才作为分隔符
 			for i := 3; i <= l; i++ {
-				if d.Inputs.String(i) == "按钮" {
-					if i+1 <= l {
-						kb = parseTextButtons(d, i+1, l)
-					}
-					contentEnd = i - 1
-					break
+				if d.Inputs.String(i) != "按钮" {
+					continue
 				}
+				if (i-3)%2 != 0 {
+					continue // value 位置的"按钮"当作普通值
+				}
+				if i+1 <= l {
+					if kb = parseTextButtons(d, i+1, l); kb == nil {
+						continue
+					}
+				}
+				contentEnd = i - 1
+				break
 			}
 			pLen := contentEnd - 1 // 内容参数个数（去掉账号序号）
 
 			var success, fail int
-			if pLen == 1 {
+			if pLen == 1 || (pLen-1)%2 != 0 {
 				// 简单MD文本发送
 				text := d.Inputs.String(2)
 				for _, g := range groups {
@@ -352,13 +361,7 @@ var ActiveFuncs = map[string]dto.DicFunc{
 			} else {
 				// CustomTemplateId + key=value 参数对
 				list := d.Inputs.StringAfterList(3)
-				n := len(list)
-				if n > pLen-1 {
-					n = pLen - 1
-				}
-				if n%2 != 0 {
-					n--
-				}
+				n := min(len(list), pLen-1)
 				params := make([]*qqbot_msg.MarkdownParams, 0, n/2)
 				for i := 0; i < n; i += 2 {
 					params = append(params, formatMDPair(list[i], list[i+1]))
@@ -528,10 +531,18 @@ var ReplyFuncs = map[string]dto.DicFunc{
 				rMsg := strings.ReplaceAll(d.Inputs.String(1), "\\r", "\n")
 				if d.Inputs.LenOk(1) {
 					if rMsg != "" {
-						ctx.Bot.API.ReplyGroupMessage(ctx.MsgID, ctx.GroupOpenID, "\n"+rMsg, ConsumeEventID())
+						if ctx.PrivateUserID != "" {
+							ctx.Bot.API.ReplyGroupPrivateMessage(ctx.MsgID, ctx.PrivateUserID, "\n"+rMsg)
+						} else {
+							ctx.Bot.API.ReplyGroupMessage(ctx.MsgID, ctx.GroupOpenID, "\n"+rMsg, ConsumeEventID())
+						}
 					}
 				} else {
-					ctx.Bot.API.ReplyGroupImgMessage(ctx.MsgID, ctx.GroupOpenID, d.Inputs.String(2), rMsg, ConsumeEventID())
+					if ctx.PrivateUserID != "" {
+						ctx.Bot.API.ReplyGroupPrivateImgMessage(ctx.MsgID, ctx.PrivateUserID, d.Inputs.String(2), rMsg)
+					} else {
+						ctx.Bot.API.ReplyGroupImgMessage(ctx.MsgID, ctx.GroupOpenID, d.Inputs.String(2), rMsg, ConsumeEventID())
+					}
 				}
 			}()
 			return "", nil
@@ -547,27 +558,30 @@ var ReplyFuncs = map[string]dto.DicFunc{
 			pLen, kb := popMDKeyboard(d)
 
 			// 简单MD文本发送
-			if pLen == 1 {
-				ctx.Bot.API.ReplyGroupAnyMarkdownWithKeyboard(ctx.MsgID, ctx.GroupOpenID, d.Inputs.String(1), kb, ConsumeEventID())
+			if pLen == 1 || (pLen-1)%2 != 0 {
+				if ctx.PrivateUserID != "" {
+					ctx.Bot.API.ReplyPrivateAnyMarkdownWithKeyboard(ctx.MsgID, ctx.PrivateUserID, d.Inputs.String(1), kb)
+				} else {
+					ctx.Bot.API.ReplyGroupAnyMarkdownWithKeyboard(ctx.MsgID, ctx.GroupOpenID, d.Inputs.String(1), kb, ConsumeEventID())
+				}
 				return "", nil
 			}
 			// CustomTemplateId + key=value 参数对
-			list := d.Inputs.StringAfterList(2)
-			n := len(list)
-			if n > pLen-1 {
-				n = pLen - 1
+			params := make([]*qqbot_msg.MarkdownParams, 0, (pLen-1)/2)
+			for i := 2; i <= pLen; i += 2 {
+				params = append(params, formatMDPair(d.Inputs.String(i), d.Inputs.String(i+1)))
 			}
-			if n%2 != 0 {
-				n--
+			if ctx.PrivateUserID != "" {
+				ctx.Bot.API.ReplyPrivateMarkdownWithKeyboard(ctx.MsgID, ctx.PrivateUserID, &qqbot_msg.Markdown{
+					CustomTemplateId: d.Inputs.String(1),
+					Params:           params,
+				}, kb)
+			} else {
+				ctx.Bot.API.ReplyGroupMarkdownWithKeyboard(ctx.MsgID, ctx.GroupOpenID, &qqbot_msg.Markdown{
+					CustomTemplateId: d.Inputs.String(1),
+					Params:           params,
+				}, kb, ConsumeEventID())
 			}
-			params := make([]*qqbot_msg.MarkdownParams, 0, n/2)
-			for i := 0; i < n; i += 2 {
-				params = append(params, formatMDPair(list[i], list[i+1]))
-			}
-			ctx.Bot.API.ReplyGroupMarkdownWithKeyboard(ctx.MsgID, ctx.GroupOpenID, &qqbot_msg.Markdown{
-				CustomTemplateId: d.Inputs.String(1),
-				Params:           params,
-			}, kb, ConsumeEventID())
 			return "", nil
 		},
 	},
@@ -579,7 +593,11 @@ var ReplyFuncs = map[string]dto.DicFunc{
 				return "", fmt.Errorf("QQBot上下文未初始化")
 			}
 			go func() {
-				ctx.Bot.API.ReplyGroupVideoMessage(ctx.MsgID, ctx.GroupOpenID, d.Inputs.String(1), ConsumeEventID())
+				if ctx.PrivateUserID != "" {
+					ctx.Bot.API.ReplyGroupPrivateVideoMessage(ctx.MsgID, ctx.PrivateUserID, d.Inputs.String(1))
+				} else {
+					ctx.Bot.API.ReplyGroupVideoMessage(ctx.MsgID, ctx.GroupOpenID, d.Inputs.String(1), ConsumeEventID())
+				}
 			}()
 			return "", nil
 		},
@@ -592,7 +610,11 @@ var ReplyFuncs = map[string]dto.DicFunc{
 				return "", fmt.Errorf("QQBot上下文未初始化")
 			}
 			go func() {
-				ctx.Bot.API.ReplyGroupVoiceMessage(ctx.MsgID, ctx.GroupOpenID, d.Inputs.String(1), ConsumeEventID())
+				if ctx.PrivateUserID != "" {
+					ctx.Bot.API.ReplyGroupPrivateVoiceMessage(ctx.MsgID, ctx.PrivateUserID, d.Inputs.String(1))
+				} else {
+					ctx.Bot.API.ReplyGroupVoiceMessage(ctx.MsgID, ctx.GroupOpenID, d.Inputs.String(1), ConsumeEventID())
+				}
 			}()
 			return "", nil
 		},

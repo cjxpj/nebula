@@ -54,6 +54,9 @@ func groupMsg(m *feishubot_msg.ImMessageReceiveV1) {
 		Set("主人", isAdmin)
 
 	for _, v := range botDicList {
+		if !strings.HasSuffix(v, ".n") {
+			continue
+		}
 		go func() {
 			dicPath := dto.ServerConfig.FeiShuBot.FilePath + "/dic/" + v
 			FileData, err := utils.NewFileQueue(dicPath).ReadFromFile()

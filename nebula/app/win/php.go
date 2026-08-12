@@ -143,6 +143,13 @@ func ensurePHPServerRunning(ctx context.Context, phpDir string) error {
 
 	cmdCtx, cancel := context.WithCancel(context.Background())
 	phpExec := dto.GV.GetStr("_PhpPath_")
+
+	// 预检查 PHP 可执行文件是否可用
+	if _, err := exec.LookPath(phpExec); err != nil {
+		cancel()
+		return fmt.Errorf("PHP 启动失败: 未找到 PHP 运行环境，请前往管理后台「扩展部署」页面安装 PHP，或自行安装 PHP 并添加到系统 PATH 环境变量")
+	}
+
 	cmd := exec.CommandContext(cmdCtx, phpExec, "-S", "127.0.0.1:8800", "-t", phpDir)
 	cmd.Stdout = io.Discard
 	cmd.Stderr = io.Discard
