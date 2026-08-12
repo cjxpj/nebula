@@ -340,12 +340,12 @@ func qqBOTGroupRun(payload *qqbot_msg.Payload, bot *qqbot_msg.RouterQQBot) {
 					rMsg = strings.ReplaceAll(rMsg, "\\r", "\n")
 
 					// fmt.Println("QQBot回复:", rMsg)
-					if rMsg, imgs := stripImgTags(rMsg); len(imgs) != 0 {
+					if strippedMsg, imgs := stripImgTags(rMsg); len(imgs) != 0 {
 						for i, img := range imgs {
 							if i == 1 {
-								rMsg = ""
+								strippedMsg = ""
 							}
-							_, mErr := bot.API.ReplyGroupImgMessage(m.ID, m.GroupOpenID, img, rMsg)
+							_, mErr := bot.API.ReplyGroupImgMessage(m.ID, m.GroupOpenID, img, strippedMsg)
 							if mErr != nil {
 								debugLog.Infof("QQBot回复图文失败%v", mErr)
 							}
@@ -450,12 +450,12 @@ func qqBOTGroupRun(payload *qqbot_msg.Payload, bot *qqbot_msg.RouterQQBot) {
 
 		// fmt.Println("QQBot回复:", rMsg)
 
-		if rMsg, imgs := stripImgTags(rMsg); len(imgs) != 0 {
+		if strippedMsg, imgs := stripImgTags(rMsg); len(imgs) != 0 {
 			for i, img := range imgs {
 				if i == 1 {
-					rMsg = ""
+					strippedMsg = ""
 				}
-				_, mErr := bot.API.ReplyGroupImgMessage(m.ID, m.GroupOpenID, img, rMsg)
+				_, mErr := bot.API.ReplyGroupImgMessage(m.ID, m.GroupOpenID, img, strippedMsg)
 				if mErr != nil {
 					fmt.Println("QQBot回复图文失败", mErr)
 				}
@@ -586,15 +586,15 @@ func qqBOTGroupATRun(payload *qqbot_msg.Payload, bot *qqbot_msg.RouterQQBot) {
 					rMsg = strings.ReplaceAll(rMsg, "\\r", "\n")
 
 					// fmt.Println("QQBot回复:", rMsg)
-					if rMsg, imgs := stripImgTags(rMsg); len(imgs) != 0 {
-						if rMsg != "" {
-							rMsg = "\n" + rMsg
+					if strippedMsg, imgs := stripImgTags(rMsg); len(imgs) != 0 {
+						if strippedMsg != "" {
+							strippedMsg = "\n" + strippedMsg
 						}
 						for i, img := range imgs {
 							if i == 1 {
-								rMsg = ""
+								strippedMsg = ""
 							}
-							_, mErr := bot.API.ReplyGroupImgMessage(m.ID, m.GroupOpenID, img, rMsg)
+							_, mErr := bot.API.ReplyGroupImgMessage(m.ID, m.GroupOpenID, img, strippedMsg)
 							if mErr != nil {
 								debugLog.Infof("QQBot回复图文失败%v", mErr)
 							}
@@ -704,15 +704,15 @@ func qqBOTGroupATRun(payload *qqbot_msg.Payload, bot *qqbot_msg.RouterQQBot) {
 
 		// fmt.Println("QQBot回复:", rMsg)
 
-		if rMsg, imgs := stripImgTags(rMsg); len(imgs) != 0 {
-			if rMsg != "" {
-				rMsg = "\n" + rMsg
+		if strippedMsg, imgs := stripImgTags(rMsg); len(imgs) != 0 {
+			if strippedMsg != "" {
+				strippedMsg = "\n" + strippedMsg
 			}
 			for i, img := range imgs {
 				if i == 1 {
-					rMsg = ""
+					strippedMsg = ""
 				}
-				_, mErr := bot.API.ReplyGroupImgMessage(m.ID, m.GroupOpenID, img, rMsg)
+				_, mErr := bot.API.ReplyGroupImgMessage(m.ID, m.GroupOpenID, img, strippedMsg)
 				if mErr != nil {
 					fmt.Println("QQBot回复图文失败", mErr)
 				}
@@ -764,11 +764,12 @@ func qqBOTGroupEventRun(payload *qqbot_msg.Payload, bot *qqbot_msg.RouterQQBot) 
 
 	inviterKey := bot.FilePath + "|" + groupOpenID
 	privateUserID := ""
-	if payload.Type == "GROUP_ADD_ROBOT" {
+	switch payload.Type {
+	case "GROUP_ADD_ROBOT":
 		inviter := valData.GetStr("操作者")
 		groupInviterMap.Store(inviterKey, inviter)
 		privateUserID = inviter
-	} else if payload.Type == "GROUP_DEL_ROBOT" {
+	case "GROUP_DEL_ROBOT":
 		privateUserID = valData.GetStr("操作者")
 		groupInviterMap.Delete(inviterKey)
 	}
@@ -799,15 +800,16 @@ func parseGroupEvent(payload *qqbot_msg.Payload, appId string) (*dto.Val, string
 		source := "群成员退出"
 		msg := "群成员退群"
 		eventType := "成员"
-		if payload.Type == "GROUP_ADD_ROBOT" {
+		switch payload.Type {
+		case "GROUP_ADD_ROBOT":
 			source = "机器人进群"
 			msg = "机器人进群"
 			eventType = "机器人"
-		} else if payload.Type == "GROUP_DEL_ROBOT" {
+		case "GROUP_DEL_ROBOT":
 			source = "机器人退群"
 			msg = "机器人退群"
 			eventType = "机器人"
-		} else if payload.Type == "GROUP_MEMBER_ADD" {
+		case "GROUP_MEMBER_ADD":
 			source = "群成员加入"
 			msg = "群成员进群"
 		}
@@ -974,17 +976,17 @@ func runGroupEventDic(bot *qqbot_msg.RouterQQBot, msgID, groupOpenID, eventID st
 		rMsg := dic_api.Api.DicRunPrivate(dic, msg)
 		rMsg = strings.ReplaceAll(rMsg, "\\r", "\n")
 
-		if rMsg, imgs := stripImgTags(rMsg); len(imgs) != 0 {
+		if strippedMsg, imgs := stripImgTags(rMsg); len(imgs) != 0 {
 			for i, img := range imgs {
 				if i == 1 {
-					rMsg = ""
+					strippedMsg = ""
 				}
 				if privateUserID != "" {
-					if _, mErr := bot.API.ReplyGroupPrivateImgMessage(msgID, privateUserID, img, rMsg); mErr != nil {
+					if _, mErr := bot.API.ReplyGroupPrivateImgMessage(msgID, privateUserID, img, strippedMsg); mErr != nil {
 						fmt.Println("QQBot私信回复图文失败", mErr)
 					}
 				} else {
-					if _, mErr := bot.API.ReplyGroupImgMessage(msgID, groupOpenID, img, rMsg, eventID); mErr != nil {
+					if _, mErr := bot.API.ReplyGroupImgMessage(msgID, groupOpenID, img, strippedMsg, eventID); mErr != nil {
 						fmt.Println("QQBot回复图文失败", mErr)
 					}
 				}
@@ -1096,12 +1098,12 @@ func qqBOTGroupPrivateRun(payload *qqbot_msg.Payload, bot *qqbot_msg.RouterQQBot
 					rMsg := dic_api.Api.DicRunPrivateVal(dic, d.Inputs.StringAfter(2), qqVal)
 					rMsg = strings.ReplaceAll(rMsg, "\\r", "\n")
 
-					if rMsg, imgs := stripImgTags(rMsg); len(imgs) != 0 {
+					if strippedMsg, imgs := stripImgTags(rMsg); len(imgs) != 0 {
 						for i, img := range imgs {
 							if i == 1 {
-								rMsg = ""
+								strippedMsg = ""
 							}
-							bot.API.ReplyGroupPrivateImgMessage(m.ID, userID, img, rMsg)
+							bot.API.ReplyGroupPrivateImgMessage(m.ID, userID, img, strippedMsg)
 						}
 						return
 					}
@@ -1189,12 +1191,12 @@ func qqBOTGroupPrivateRun(payload *qqbot_msg.Payload, bot *qqbot_msg.RouterQQBot
 		rMsg = strings.ReplaceAll(rMsg, "\\r", "\n")
 
 		// fmt.Println("QQBot回复:", rMsg)
-		if rMsg, imgs := stripImgTags(rMsg); len(imgs) != 0 {
+		if strippedMsg, imgs := stripImgTags(rMsg); len(imgs) != 0 {
 			for i, img := range imgs {
 				if i == 1 {
-					rMsg = ""
+					strippedMsg = ""
 				}
-				bot.API.ReplyGroupPrivateImgMessage(m.ID, userID, img, rMsg)
+				bot.API.ReplyGroupPrivateImgMessage(m.ID, userID, img, strippedMsg)
 			}
 		} else if rMsg != "" {
 			bot.API.ReplyGroupPrivateMessage(m.ID, userID, rMsg)

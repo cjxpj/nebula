@@ -62,16 +62,7 @@ func edwardsToMontgomery(pub [32]byte) [32]byte {
 	v.ModInverse(v, edwardsP)
 	u.Mul(u, v).Mod(u, edwardsP)
 
-	// 6. 输出小端序 32 字节
-	uBytes := u.Bytes()
-	if len(uBytes) > 32 {
-		uBytes = uBytes[len(uBytes)-32:]
-	}
-	var result [32]byte
-	for i := 0; i < len(uBytes); i++ {
-		result[31-i] = uBytes[len(uBytes)-1-i] // 转为小端序
-	}
-	// 使用 Pad 确保恰好 32 字节
+	// 6. 使用 FillBytes 确保恰好 32 字节
 	return *(*[32]byte)(u.FillBytes(make([]byte, 32)))
 }
 
@@ -89,7 +80,7 @@ func edwardsPrivateToCurve25519Scalar(seed []byte) [32]byte {
 func reverseBytes(b []byte) []byte {
 	n := len(b)
 	r := make([]byte, n)
-	for i := 0; i < n; i++ {
+	for i := range n {
 		r[i] = b[n-1-i]
 	}
 	return r
