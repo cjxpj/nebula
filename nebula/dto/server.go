@@ -5,6 +5,8 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"sort"
+	"sync"
 
 	feishubot_msg "github.com/cjxpj/nebula/bot/feishubot/msg"
 	napcatbot_dto "github.com/cjxpj/nebula/bot/napcatbot/dto"
@@ -22,6 +24,10 @@ type ServerRouterWebSocket struct {
 	Open bool
 	// 地址
 	Addr string
+	// 跨域
+	Cors bool
+	// 词库路径
+	FilePath string
 	// 连接
 	Conn *websocket.Upgrader
 }
@@ -50,8 +56,10 @@ type ServerConfigInfo struct {
 	Router *ServerHTTP
 	// OPUI
 	OPUI *OPUI
-	// WS地址
-	Ws *ServerRouterWebSocket
+	// 正在监听的WS列表
+	WsList map[string]*ServerRouterWebSocket
+	// WS列表锁
+	WsListMu sync.Mutex
 	// QQBot地址（多开支持，key为INI section名如"QQ"、"QQ2"等）
 	QQBots map[string]*qqbot_msg.RouterQQBot
 	// YunHuBot地址
@@ -67,6 +75,40 @@ type ServerConfigInfo struct {
 	NgrokListener net.Listener
 	// Ngrok 取消上下文（运行时启停用）
 	NgrokCancel context.CancelFunc
+}
+
+// AddWs 添加或更新一个正在监听的 WS 服务
+func (s *ServerConfigInfo) AddWs(ws *ServerRouterWebSocket) {
+	if ws == nil {
+		return
+	}
+	s.WsListMu.Lock()
+	defer s.WsListMu.Unlock()
+	if s.WsList == nil {
+		s.WsList = make(map[string]*ServerRouterWebSocket)
+	}
+	s.WsList[ws.Addr] = ws
+}
+
+// RemoveWs 移除指定地址的 WS 服务
+func (s *ServerConfigInfo) RemoveWs(addr string) {
+	s.WsListMu.Lock()
+	defer s.WsListMu.Unlock()
+	if s.WsList != nil {
+		delete(s.WsList, addr)
+	}
+}
+
+// WsListSnapshot 返回当前监听中的 WS 服务快照（按地址排序）
+func (s *ServerConfigInfo) WsListSnapshot() []*ServerRouterWebSocket {
+	s.WsListMu.Lock()
+	defer s.WsListMu.Unlock()
+	list := make([]*ServerRouterWebSocket, 0, len(s.WsList))
+	for _, ws := range s.WsList {
+		list = append(list, ws)
+	}
+	sort.Slice(list, func(i, j int) bool { return list[i].Addr < list[j].Addr })
+	return list
 }
 
 type NgrokConfig struct {

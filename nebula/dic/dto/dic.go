@@ -87,9 +87,11 @@ func (r *DicEntry) Set_v(v *dto.Val) *DicEntry {
 	return r
 }
 
-// 清空词库函数
+// 清空词库函数（保留内部/特殊，仅清空函数类）
 func (r *DicEntry) ClearDicFuncs() *DicEntry {
-	r.Dic.LocalFunc = nil
+	if r.Dic.DicFuncs != nil {
+		delete(r.Dic.DicFuncs, "函数")
+	}
 	return r
 }
 

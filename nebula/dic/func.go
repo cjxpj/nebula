@@ -154,12 +154,8 @@ func RunFuncLine(d *dto.DicInfoData, dic_i utils.DicInputs) (any, error) {
 		inputs.List[i] = d.Data.Value.Text(d.Value, count.RunCountText(dto.NewDicVals(d.Value, d.Data.Value), line))
 	}
 
-	for _, fn := range d.Data.LocalFunc {
-		if fn.Name == dic_i.String(0) {
-			if fn.Func != nil {
-				return fn.Func(d, inputs)
-			}
-		}
+	if fn := d.Data.DicFuncs[dic_i.String(0)]; fn != nil && fn.Func != nil {
+		return fn.Func(d, inputs)
 	}
 
 	return "$" + strings.Join(dic_i.StringList(), " ") + "$", nil
@@ -244,7 +240,7 @@ func Funcs(d *dic_dto.DicFunc, dic_i *utils.DicInputs) (any, error) {
 	} else {
 		text := strings.Join(dic_i.StringList(), " ")
 		// 局部函数
-		if str, Tstr, _, regex, tparts := run.RunFors(d.Dic.LocalFunc, text, 0); regex != nil {
+		if str, Tstr, _, regex, tparts := run.RunFors(d.Dic.DicFuncs["函数"], text, 0); regex != nil {
 			funcv := dto.NewVal()
 			give, ok := d.Val.P.Get("_继承_").(string)
 			if ok && give != "" {
@@ -370,14 +366,12 @@ func newClassInstance(d *dic_dto.DicFunc, dic_i *utils.DicInputs) (any, error) {
 		newVal.NewObj(classData.LocalValue.GetAll())
 	}
 	instance := &dto.DicClass{
-		LocalValue:  newVal,
-		LocalFunc:   classData.LocalFunc,
-		LocalStatic: classData.LocalStatic,
-		Special:     classData.Special,
+		LocalValue: newVal,
+		DicFuncs:   classData.DicFuncs,
 	}
 
 	// 执行构造函数 [函数:类名]new
-	if str, Tstr, _, regex := run.RunFor(classData.LocalFunc, "new", 0); regex != nil {
+	if str, Tstr, _, regex := run.RunFor(classData.DicFuncs["函数"], "new", 0); regex != nil {
 		funcv := dto.NewVal().
 			Set("触发", Tstr).
 			Set("触发词", "new").
@@ -400,7 +394,7 @@ func newClassInstance(d *dic_dto.DicFunc, dic_i *utils.DicInputs) (any, error) {
 // 返回执行结果与是否命中方法。
 func runClassMethod(d *dic_dto.DicFunc, classData *dto.DicClass, methodArgs []string) (any, bool) {
 	TStr := strings.Join(methodArgs, " ")
-	str, Tstr, _, regex := run.RunFor(classData.LocalFunc, TStr, 0)
+	str, Tstr, _, regex := run.RunFor(classData.DicFuncs["函数"], TStr, 0)
 	if regex == nil {
 		return nil, false
 	}

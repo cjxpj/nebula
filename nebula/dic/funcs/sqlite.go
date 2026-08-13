@@ -9,8 +9,6 @@ import (
 
 	"github.com/cjxpj/nebula/dto"
 	"github.com/cjxpj/nebula/utils"
-
-	_ "github.com/mattn/go-sqlite3"
 )
 
 type SqliteRes struct {

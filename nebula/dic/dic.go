@@ -200,15 +200,13 @@ func (m *dicImpl) DicRunPrivate(D *dic_dto.Dic, trigger string) string {
 // 运行内部-自义定局部变量
 func (m *dicImpl) DicRunPrivateVal(D *dic_dto.Dic, trigger string, v *dto.DicVal) string {
 
-	if D.FuncText != nil {
-		D.Data.LocalFunc = append(D.Data.LocalFunc, D.FuncText...)
-	}
+	D.Data.MergeFuncs(D.FuncText)
 
 	if D.ClassText != nil {
 		maps.Copy(D.Data.LocalClass, D.ClassText)
 	}
 
-	GetDic, GetDicTrigger, _, _ := run.RunFor(D.Data.LocalStatic, trigger, 0)
+	GetDic, GetDicTrigger, _, _ := run.RunFor(D.Data.DicFuncs["内部"], trigger, 0)
 	D.Val.P.Set("触发词", trigger)
 	D.Val.P.Set("触发", GetDicTrigger)
 
@@ -231,9 +229,7 @@ func (m *dicImpl) DicRunEvent(D *dic_dto.Dic, event string, trigger string) stri
 // 运行特殊触发-自义定局部变量
 func (m *dicImpl) DicRunEventVal(D *dic_dto.Dic, event string, trigger string, v *dto.DicVal) string {
 
-	if D.FuncText != nil {
-		D.Data.LocalFunc = append(D.Data.LocalFunc, D.FuncText...)
-	}
+	D.Data.MergeFuncs(D.FuncText)
 
 	if D.ClassText != nil {
 		maps.Copy(D.Data.LocalClass, D.ClassText)
@@ -243,9 +239,7 @@ func (m *dicImpl) DicRunEventVal(D *dic_dto.Dic, event string, trigger string, v
 		GetDic        []string
 		GetDicTrigger string
 	)
-	if D.Data.Special != nil {
-		GetDic, GetDicTrigger, _, _ = run.RunFor(D.Data.Special[event], trigger, 0)
-	}
+	GetDic, GetDicTrigger, _, _ = run.RunFor(D.Data.DicFuncs[event], trigger, 0)
 	D.Val.P.Set("触发词", trigger)
 	D.Val.P.Set("触发", GetDicTrigger)
 
@@ -281,9 +275,7 @@ func (m *dicImpl) DicRun(D *dic_dto.Dic, trigger string) string {
 
 	// fmt.Println("词库文本:", SplitText)
 
-	if D.FuncText != nil {
-		D.Data.LocalFunc = append(D.Data.LocalFunc, D.FuncText...)
-	}
+	D.Data.MergeFuncs(D.FuncText)
 
 	if D.ClassText != nil {
 		maps.Copy(D.Data.LocalClass, D.ClassText)
@@ -328,9 +320,7 @@ func (m *dicImpl) DicRunTimeout(D *dic_dto.Dic, trigger string, timeout time.Dur
 		return m.DicRun(D, trigger), false
 	}
 
-	if D.FuncText != nil {
-		D.Data.LocalFunc = append(D.Data.LocalFunc, D.FuncText...)
-	}
+	D.Data.MergeFuncs(D.FuncText)
 
 	if D.ClassText != nil {
 		maps.Copy(D.Data.LocalClass, D.ClassText)

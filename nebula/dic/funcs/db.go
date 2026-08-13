@@ -12,8 +12,6 @@ import (
 
 	"github.com/cjxpj/nebula/dto"
 	"github.com/cjxpj/nebula/utils"
-
-	_ "modernc.org/sqlite"
 )
 
 var tableNameRe = regexp.MustCompile(`^[a-zA-Z0-9_]{1,32}$`)

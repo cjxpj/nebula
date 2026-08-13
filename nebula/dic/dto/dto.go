@@ -7,7 +7,7 @@ type Dic struct {
 	Val       *dto.DicVal
 	Id        int16
 	Path      string
-	FuncText  []*dto.BuildDic
+	FuncText  map[string][]*dto.BuildDic
 	ClassText map[string]*dto.DicClass
 	// 自义定函数
 	MyFunc map[string]dto.DicFunc

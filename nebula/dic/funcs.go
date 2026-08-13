@@ -3,17 +3,17 @@ package dic
 import (
 	"bufio"
 	"errors"
-	"io"
 	"maps"
+	"net/http"
 	"os"
 	"regexp"
 	"strings"
 	"time"
 
+	"github.com/cjxpj/nebula/appfiles"
+	"github.com/cjxpj/nebula/debugLog"
 	dic_api "github.com/cjxpj/nebula/dic/api"
 	dic_dto "github.com/cjxpj/nebula/dic/dto"
-	"github.com/cjxpj/nebula/dic/funcs"
-	"github.com/cjxpj/nebula/debugLog"
 	"github.com/cjxpj/nebula/dto"
 	"github.com/cjxpj/nebula/run"
 	"github.com/cjxpj/nebula/utils"
@@ -59,13 +59,13 @@ func runDic(d *dto.DicInputs) (any, error) {
 		fv.Reset(d.V.P.GetAll())
 		fv.Set("_词库路径_", dicPath)
 		calldicrun.Set_v(fv)
-		calldicrun.FuncText = d.Dic.LocalFunc
+		calldicrun.FuncText = d.Dic.DicFuncs
 	case "继承函数":
-		calldicrun.FuncText = d.Dic.LocalFunc
+		calldicrun.FuncText = d.Dic.DicFuncs
 	case "互通":
 		d.V.P.Set("_词库路径_", dicPath)
 		calldicrun.Set_v(d.V.P)
-		calldicrun.FuncText = d.Dic.LocalFunc
+		calldicrun.FuncText = d.Dic.DicFuncs
 	}
 
 	DicRes := dic_api.Api.DicRun(calldicrun, chufa)
@@ -112,13 +112,13 @@ func runDicFile(d *dto.DicInputs) (any, error) {
 		fv.Reset(d.V.P.GetAll())
 		fv.Set("_词库路径_", dicPath)
 		calldicrun.Set_v(fv)
-		calldicrun.FuncText = d.Dic.LocalFunc
+		calldicrun.FuncText = d.Dic.DicFuncs
 	case "继承函数":
-		calldicrun.FuncText = d.Dic.LocalFunc
+		calldicrun.FuncText = d.Dic.DicFuncs
 	case "互通":
 		d.V.P.Set("_词库路径_", dicPath)
 		calldicrun.Set_v(d.V.P)
-		calldicrun.FuncText = d.Dic.LocalFunc
+		calldicrun.FuncText = d.Dic.DicFuncs
 	}
 
 	DicRes := dic_api.Api.DicRun(calldicrun, chufa)
@@ -137,7 +137,7 @@ func callDic(d *dto.DicInputs) (any, error) {
 
 	// 判断是否在整合包中执行
 	if classData := d.Dic.ResolveClassData(d.V.P.Get("Class")); classData != nil {
-		GetDic, GetDicTrigger, _, _ := run.RunFor(classData.LocalStatic, trigger, 0)
+		GetDic, GetDicTrigger, _, _ := run.RunFor(classData.DicFuncs["内部"], trigger, 0)
 		funcV := dto.NewVal()
 		funcV.Reset(d.V.P.GetAll())
 		funcV.Set("触发词", trigger)
@@ -149,7 +149,7 @@ func callDic(d *dto.DicInputs) (any, error) {
 		RunDic := dic_api.Api.DicRunLine(RunDics, GetDic)
 		return RunDic, nil
 	}
-	GetDic, GetDicTrigger, _, _ := run.RunFor(d.Dic.LocalStatic, trigger, 0)
+	GetDic, GetDicTrigger, _, _ := run.RunFor(d.Dic.DicFuncs["内部"], trigger, 0)
 	funcV := dto.NewVal()
 	funcV.Reset(d.V.P.GetAll())
 	funcV.Set("触发词", trigger)
@@ -216,66 +216,6 @@ func runWebDicFile(d *dto.DicInputs) (any, error) {
 	webdic.MyFunc = d.Dic.MyFunc
 	webdicRes := dic_api.Api.WebDicRun(webdic)
 	return webdicRes, nil
-}
-
-// 终端.监听执行
-func cmdListenRun(d *dto.DicInputs) (any, error) {
-	cmd, ok := d.Inputs.Get(1).(*funcs.CmdConfig)
-	if !ok {
-		return "", errors.New("参数1终端数据错误")
-	}
-
-	// 注册动作：输出文本
-	stdout, _ := cmd.Cmd.StdoutPipe()
-	// 注册动作：错误文本
-	stderr, _ := cmd.Cmd.StderrPipe()
-
-	if err := cmd.Cmd.Start(); err != nil {
-		debugLog.Error(err)
-		return "", err
-	}
-
-	// 注册动作：断开连接
-	dicpath := d.Inputs.String(2)
-	cmdfileTool := utils.NewFileQueue(dicpath)
-	if !cmdfileTool.FileExists() {
-		return "", errors.New("请创建词库监听文件")
-	}
-
-	// 监听输出
-	go func() {
-		multi := io.MultiReader(stdout, stderr)
-		scanner := bufio.NewScanner(multi)
-		for scanner.Scan() {
-			raw := scanner.Bytes()
-			line, _ := utils.DecodeType(cmd.Decoder, raw)
-
-			// 重新读取
-			cmdfile, _ := cmdfileTool.ReadFromFile()
-			dd := dic_dto.NewDic(dicpath, cmdfile)
-			dd.SetFunc("断开连接", dto.DicFunc{
-				L: "0",
-				Fn: func(d *dto.DicInputs) (any, error) {
-					cmd.Cmd.Process.Kill()
-					return "", nil
-				}})
-			dd.SetFunc("输入文本", dto.DicFunc{
-				L: "1",
-				Fn: func(d *dto.DicInputs) (any, error) {
-					text := d.Inputs.String(1)
-					_, err := cmd.Stdin.Write([]byte(text))
-					return "", err
-				}})
-
-			if res := dic_api.Api.DicRun(dd, line); res != "" {
-				debugLog.Infof("%v", res)
-			}
-		}
-		if err := scanner.Err(); err != nil {
-			debugLog.Infof("终端断开: %v", err)
-		}
-	}()
-	return "", nil
 }
 
 // WS连接
@@ -411,6 +351,162 @@ func wsSend(d *dto.DicInputs) (any, error) {
 			return "", err
 		}
 	}
+	return "", nil
+}
+
+// wsMethods 创建WS返回对象的可用方法
+var wsMethods = map[string][]*dto.BuildDic{
+	"函数": {
+		{Trigger: `设置跨域 (\S+)`, Text: []string{"$WS设置跨域$"}},
+		{Trigger: `设置词库路径 (.+)`, Text: []string{"$WS设置词库路径$"}},
+		{Trigger: `设置访问路径 (.+)`, Text: []string{"$WS设置访问路径$"}},
+		{Trigger: `设置变量 (\S+) (.+)`, Text: []string{"$WS设置变量$"}},
+	},
+}
+
+// 创建WS（监听）
+func wsCreate(d *dto.DicInputs) (any, error) {
+	addr := d.Inputs.String(1)
+	if addr == "" {
+		return "", errors.New("创建WS：访问路径不能为空")
+	}
+	if !strings.HasPrefix(addr, "/") {
+		addr = "/" + addr
+	}
+
+	dicPath := d.Inputs.String(2)
+	if dicPath == "" {
+		return "", errors.New("创建WS：词库路径不能为空")
+	}
+	cors := true
+	if d.Inputs.LenOk(3) {
+		cors = d.Inputs.Bool(3)
+	}
+
+	// 使用默认服务端词库时，若文件不存在则写入内置模板
+	if dicPath == "private/websocket/server.n" {
+		f := utils.NewFileQueue(dicPath)
+		if !f.FileExists() {
+			if s, err := appfiles.GetFileString("dic/websocket/server.n"); err == nil {
+				f.WriteToFile(s)
+			}
+		}
+	}
+
+	wsConn := &websocket.Upgrader{
+		CheckOrigin: func(r *http.Request) bool { return true },
+	}
+	if !cors {
+		wsConn.CheckOrigin = nil
+	}
+
+	ws := &dto.ServerRouterWebSocket{
+		Open:     true,
+		Addr:     addr,
+		Cors:     cors,
+		FilePath: dicPath,
+		Conn:     wsConn,
+	}
+	dto.ServerConfig.AddWs(ws)
+
+	// 返回 WS 对象（面对像），方法内全局变量随 WS 一直存在
+	instance := &dto.DicClass{
+		LocalValue: dto.NewVal().
+			Set("_WS_", ws).
+			Set("访问路径", addr).
+			Set("_词库路径_", dicPath).
+			Set("跨域", cors),
+		DicFuncs: wsMethods,
+	}
+	return instance, nil
+}
+
+// wsInstance 获取当前方法对应的 WS 对象与实例
+func wsInstance(d *dto.DicInputs) (*dto.DicClass, *dto.ServerRouterWebSocket, error) {
+	classData, ok := d.V.P.Get("Class").(*dto.DicClass)
+	if !ok || classData == nil {
+		return nil, nil, errors.New("WS方法：请在WS实例方法中调用")
+	}
+	ws, ok := classData.LocalValue.Get("_WS_").(*dto.ServerRouterWebSocket)
+	if !ok || ws == nil {
+		return nil, nil, errors.New("WS方法：WS实例无效")
+	}
+	return classData, ws, nil
+}
+
+// WS设置跨域
+func wsSetCors(d *dto.DicInputs) (any, error) {
+	classData, ws, err := wsInstance(d)
+	if err != nil {
+		return "", err
+	}
+	cors := d.V.P.GetStr("参数1") == "true" || d.V.P.GetStr("参数1") == "1"
+	ws.Cors = cors
+	ws.Conn = &websocket.Upgrader{
+		CheckOrigin: func(r *http.Request) bool { return true },
+	}
+	if !cors {
+		ws.Conn.CheckOrigin = nil
+	}
+	dto.ServerConfig.AddWs(ws)
+	classData.LocalValue.Set("跨域", cors)
+	return "", nil
+}
+
+// WS设置词库路径
+func wsSetFilePath(d *dto.DicInputs) (any, error) {
+	classData, ws, err := wsInstance(d)
+	if err != nil {
+		return "", err
+	}
+	p := d.V.P.GetStr("参数1")
+	if p == "" {
+		return "", errors.New("WS设置词库路径：路径不能为空")
+	}
+	ws.FilePath = p
+	dto.ServerConfig.AddWs(ws)
+	classData.LocalValue.Set("_词库路径_", p)
+	return "", nil
+}
+
+// WS设置访问路径
+func wsSetAddr(d *dto.DicInputs) (any, error) {
+	classData, ws, err := wsInstance(d)
+	if err != nil {
+		return "", err
+	}
+	p := d.V.P.GetStr("参数1")
+	if p == "" {
+		return "", errors.New("WS设置访问路径：路径不能为空")
+	}
+	if !strings.HasPrefix(p, "/") {
+		p = "/" + p
+	}
+	old := ws.Addr
+	ws.Addr = p
+	dto.ServerConfig.AddWs(ws)
+	if old != "" && old != p {
+		dto.ServerConfig.RemoveWs(old)
+	}
+	classData.LocalValue.Set("访问路径", p)
+	return "", nil
+}
+
+// WS设置变量
+func wsSetVar(d *dto.DicInputs) (any, error) {
+	classData, _, err := wsInstance(d)
+	if err != nil {
+		return "", err
+	}
+	name := d.V.P.GetStr("括号1")
+	if name == "" {
+		return "", errors.New("WS设置变量：变量名不能为空")
+	}
+	val := d.V.P.Get("括号2")
+	if val == nil {
+		val = ""
+	}
+	classData.LocalValue.Set(name, val)
 	return "", nil
 }
 

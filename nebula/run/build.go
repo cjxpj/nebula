@@ -452,12 +452,9 @@ func Web(dicPath string, lines []string) *dto.BuildValue {
 
 	var (
 		// 多行注释
-		zhushi      bool
-		dicText     []string
-		funcText    []*dto.BuildDic
-		chajianText []*dto.BuildDic
-		// 特殊触发
-		specialText map[string][]*dto.BuildDic = make(map[string][]*dto.BuildDic)
+		zhushi   bool
+		dicText  []string
+		funcDict map[string][]*dto.BuildDic = make(map[string][]*dto.BuildDic)
 		// 整合包
 		classText map[string]*dto.DicClass = make(map[string]*dto.DicClass)
 		// 缩进
@@ -550,12 +547,9 @@ func Web(dicPath string, lines []string) *dto.BuildValue {
 				}
 
 				z := BuildDic(dicPath, FileData)
-				funcText = append(funcText, z.LocalStatic...)
-				for key, value := range z.Special {
-					specialText[key] = append(specialText[key], value...)
+				for k, v := range z.DicFuncs {
+					funcDict[k] = append(funcDict[k], v...)
 				}
-
-				chajianText = append(chajianText, z.LocalFunc...)
 				maps.Copy(myFunc, z.MyFunc)
 				for key, value := range z.LocalClass {
 					if classText[key] == nil {
@@ -569,12 +563,10 @@ func Web(dicPath string, lines []string) *dto.BuildValue {
 	}
 
 	result := &dto.BuildValue{
-		Head:        dicText,
-		LocalStatic: funcText,
-		LocalFunc:   chajianText,
-		LocalClass:  classText,
-		Special:     specialText,
-		MyFunc:      myFunc,
+		Head:       dicText,
+		DicFuncs:   funcDict,
+		LocalClass: classText,
+		MyFunc:     myFunc,
 	}
 	return result
 }
@@ -596,16 +588,15 @@ func BuildDic(dicPath, text string) *dto.BuildValue {
 		dicTextLineNums []int           // 词条每行对应的原始文件行号（1-based）
 
 		// 内部状态变量
-		neibu    bool
-		funcText []*dto.BuildDic // 与函数相关的词库条目
+		neibu bool
 
 		// 特殊触发
-		special     string
-		specialText map[string][]*dto.BuildDic = make(map[string][]*dto.BuildDic)
+		special       string
+		buildCategory string // 当前触发的类别：函数/内部/特殊事件名
 
 		// 插件变量
 		chajian     bool
-		chajianText []*dto.BuildDic // 与插件相关的词库条目
+		chajianText map[string][]*dto.BuildDic = make(map[string][]*dto.BuildDic) // 统一函数（函数/内部/特殊）
 
 		// 头部变量
 		runheadtext     []string // 头部文本条目
@@ -728,18 +719,15 @@ func BuildDic(dicPath, text string) *dto.BuildValue {
 					}
 
 					z := BuildDic(dicPath, FileData)
-					funcText = append(funcText, z.LocalStatic...)
-					for key, value := range z.Special {
-						specialText[key] = append(specialText[key], value...)
-					}
-
 					if fHeaderName != "" {
-						for _, value := range z.LocalFunc {
+						for _, value := range z.DicFuncs["函数"] {
 							value.Trigger = fHeaderName + "." + value.Trigger
 						}
 					}
 
-					chajianText = append(chajianText, z.LocalFunc...)
+					for k, v := range z.DicFuncs {
+						chajianText[k] = append(chajianText[k], v...)
+					}
 					maps.Copy(myFunc, z.MyFunc)
 					for key, value := range z.LocalClass {
 						if classText[key] == nil {
@@ -793,6 +781,7 @@ func BuildDic(dicPath, text string) *dto.BuildValue {
 				case "函数":
 					chajian = true
 					classN = class
+					buildCategory = "函数"
 					if fHeaderName != "" {
 						dicTrigger = fHeaderName + rest
 					} else {
@@ -801,11 +790,13 @@ func BuildDic(dicPath, text string) *dto.BuildValue {
 				case "内部":
 					neibu = true
 					classN = class
+					buildCategory = "内部"
 					dicTrigger = rest
 				case "":
 				default:
 					special = category
 					classN = class
+					buildCategory = category
 					dicTrigger = rest
 				}
 
@@ -839,9 +830,9 @@ func BuildDic(dicPath, text string) *dto.BuildValue {
 						if classText[classN] == nil {
 							classText[classN] = dto.NewDicClass()
 						}
-						classText[classN].LocalStatic = append(classText[classN].LocalStatic, json)
+						classText[classN].DicFuncs[buildCategory] = append(classText[classN].DicFuncs[buildCategory], json)
 					} else {
-						funcText = append(funcText, json)
+						chajianText[buildCategory] = append(chajianText[buildCategory], json)
 					}
 				} else if chajian {
 					chajian = false
@@ -849,29 +840,26 @@ func BuildDic(dicPath, text string) *dto.BuildValue {
 						if classText[classN] == nil {
 							classText[classN] = dto.NewDicClass()
 						}
-						classText[classN].LocalFunc = append(classText[classN].LocalFunc, json)
+						classText[classN].DicFuncs[buildCategory] = append(classText[classN].DicFuncs[buildCategory], json)
 					} else {
-						chajianText = append(chajianText, json)
+						chajianText[buildCategory] = append(chajianText[buildCategory], json)
 					}
 				} else if special != "" {
-					specialName := special
 					special = ""
 					if classN != "" {
 						if classText[classN] == nil {
 							classText[classN] = dto.NewDicClass()
 						}
-						if classText[classN].Special == nil {
-							classText[classN].Special = make(map[string][]*dto.BuildDic)
-						}
-						classText[classN].Special[specialName] = append(classText[classN].Special[specialName], json)
+						classText[classN].DicFuncs[buildCategory] = append(classText[classN].DicFuncs[buildCategory], json)
 					} else {
-						specialText[specialName] = append(specialText[specialName], json)
+						chajianText[buildCategory] = append(chajianText[buildCategory], json)
 					}
 				} else {
 					dicText = append(dicText, json)
 				}
 				dicTrigger = ""
 				classN = ""
+				buildCategory = ""
 				dicTexts = nil
 				dicTextLineNums = nil
 			}
@@ -882,10 +870,8 @@ func BuildDic(dicPath, text string) *dto.BuildValue {
 		Head:         runheadtext,
 		HeadLineNums: runheadLineNums,
 		Dic:          dicText,
-		LocalStatic:  funcText,
-		LocalFunc:    chajianText,
+		DicFuncs:     chajianText,
 		LocalClass:   classText,
-		Special:      specialText,
 		MyFunc:       myFunc,
 	}
 
@@ -935,9 +921,7 @@ func Parse(dicPath string, reader io.Reader) *dto.DicInfoData {
 
 		dicText         []*dto.RegDicLine
 		dicTextLineNums []int
-		funcText        []*dto.RegDicLine
-		funcFn          []*dto.BuildDicFunc
-		specialText     = make(map[string][]*dto.RegDicLine)
+		funcFn          map[string]*dto.BuildDicFunc = make(map[string]*dto.BuildDicFunc)
 
 		dicValue = dto.NewVal()
 		// []*dto.DicInfo
@@ -990,12 +974,12 @@ func Parse(dicPath string, reader io.Reader) *dto.DicInfoData {
 				if classText[classN] == nil {
 					classText[classN] = &dto.DicClassInfo{
 						LocalValue: dto.NewVal(),
+						DicFuncs:   make(map[string]*dto.BuildDicFunc),
 					}
 				}
-				classText[classN].LocalFunc =
-					append(classText[classN].LocalFunc, fn)
+				classText[classN].DicFuncs[fn.Name] = fn
 			} else {
-				funcFn = append(funcFn, fn)
+				funcFn[fn.Name] = fn
 			}
 
 			dicTrigger = ""
@@ -1005,46 +989,18 @@ func Parse(dicPath string, reader io.Reader) *dto.DicInfoData {
 			return
 		}
 
-		/* ===== 普通 / 内部 ===== */
+		/* ===== 普通 ===== */
 
 		item := &dto.RegDicLine{
 			Trigger:    dicTrigger,
 			CodeBloack: dicTexts,
 		}
 
+		// 内部/特殊已并入统一函数，遗留解析不再单独收集
 		if neibu {
 			neibu = false
-			if classN != "" {
-				if classText[classN] == nil {
-					classText[classN] = &dto.DicClassInfo{
-						LocalValue: dto.NewVal(),
-					}
-				}
-				classText[classN].LocalStatic =
-					append(classText[classN].LocalStatic, item)
-			} else {
-				funcText = append(funcText, item)
-			}
 		} else if special != "" {
-			specialName := special
 			special = ""
-			if classN != "" {
-				if classText[classN] == nil {
-					classText[classN] = &dto.DicClassInfo{
-						LocalValue: dto.NewVal(),
-					}
-				}
-				if classText[classN].Special == nil {
-					classText[classN].Special = make(map[string][]*dto.RegDicLine)
-				}
-				classText[classN].Special[specialName] =
-					append(classText[classN].Special[specialName], item)
-			} else {
-				if specialText == nil {
-					specialText = make(map[string][]*dto.RegDicLine)
-				}
-				specialText[specialName] = append(specialText[specialName], item)
-			}
 		} else {
 			dicText = append(dicText, item)
 		}
@@ -1236,14 +1192,12 @@ func Parse(dicPath string, reader io.Reader) *dto.DicInfoData {
 
 	return &dto.DicInfoData{
 		Data: &dto.DicInfo{
-			Value:       dicValue,
-			Path:        dicPath,
-			Head:        runheadtext,
-			Dic:         dicText,
-			LocalStatic: funcText,
-			LocalFunc:   funcFn,
-			LocalClass:  classText,
-			Special:     specialText,
+			Value:      dicValue,
+			Path:       dicPath,
+			Head:       runheadtext,
+			Dic:        dicText,
+			DicFuncs:   funcFn,
+			LocalClass: classText,
 		},
 		Value: dto.NewVal(),
 	}

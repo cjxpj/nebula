@@ -5,7 +5,8 @@ package main
 import (
 	"syscall/js"
 
-	"github.com/cjxpj/nebula/dic"
+	dic_api "github.com/cjxpj/nebula/dic/api"
+	dic_dto "github.com/cjxpj/nebula/dic/dto"
 )
 
 func main() {
@@ -24,7 +25,10 @@ func runDic(this js.Value, args []js.Value) any {
 	text := args[0].String()
 
 	// 调用原 dic 处理逻辑
-	result := dic.NewDic("main.n", text).Run("Main")
+	dic := dic_dto.NewDic("main.n", text)
+	defer dic.Close()
+
+	result := dic_api.Api.DicRun(dic, "Main")
 
 	return result // 返回给 JS
 }

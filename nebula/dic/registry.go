@@ -23,6 +23,11 @@ func init() {
 		f{Name: "WS连接", L: "1|2", Fn: wsConnect},
 		f{Name: "WS断开", L: "1", Fn: wsClose},
 		f{Name: "WS发送", L: "2", Fn: wsSend},
+		f{Name: "创建WS", L: "2|3", Fn: wsCreate},
+		f{Name: "WS设置跨域", L: "0", Fn: wsSetCors},
+		f{Name: "WS设置词库路径", L: "0", Fn: wsSetFilePath},
+		f{Name: "WS设置访问路径", L: "0", Fn: wsSetAddr},
+		f{Name: "WS设置变量", L: "0", Fn: wsSetVar},
 		f{Name: "读词库", L: "1|2|3", Fn: readDicFile},
 		f{Name: "写词库", L: "1|2|3", Fn: writeDicFile},
 	)

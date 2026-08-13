@@ -109,14 +109,12 @@ type DicInfoData struct {
 }
 
 type DicInfo struct {
-	Value       *Val                     `json:"变量"`
-	Path        string                   `json:"路径"`
-	Head        DicLine                  `json:"头部"`
-	Dic         []*RegDicLine            `json:"词库"`
-	LocalStatic []*RegDicLine            `json:"内部"`
-	LocalFunc   []*BuildDicFunc          `json:"函数"`
-	LocalClass  map[string]*DicClassInfo `json:"整合包"`
-	Special     map[string][]*RegDicLine `json:"特殊"`
+	Value      *Val                     `json:"变量"`
+	Path       string                   `json:"路径"`
+	Head       DicLine                  `json:"头部"`
+	Dic        []*RegDicLine            `json:"词库"`
+	DicFuncs   map[string]*BuildDicFunc `json:"函数"`
+	LocalClass map[string]*DicClassInfo `json:"整合包"`
 }
 
 // 词库结构
@@ -138,28 +136,22 @@ type Param struct {
 }
 
 type DicClassInfo struct {
-	LocalValue  *Val                     `json:"变量"`
-	LocalStatic []*RegDicLine            `json:"内部"`
-	LocalFunc   []*BuildDicFunc          `json:"函数"`
-	Special     map[string][]*RegDicLine `json:"特殊"`
+	LocalValue *Val                     `json:"变量"`
+	DicFuncs   map[string]*BuildDicFunc `json:"函数"`
 }
 
 // =================================================
 
 type DicClass struct {
-	LocalValue  *Val                   `json:"变量"`
-	LocalFunc   []*BuildDic            `json:"函数"`
-	LocalStatic []*BuildDic            `json:"内部"`
-	Special     map[string][]*BuildDic `json:"特殊"`
+	LocalValue *Val                   `json:"变量"`
+	DicFuncs   map[string][]*BuildDic `json:"函数"`
 }
 
 // NewDicClass 初始化整合包类，避免字段为 nil 导致 JSON 序列化输出 null。
 func NewDicClass() *DicClass {
 	return &DicClass{
-		LocalValue:  NewVal(),
-		LocalFunc:   make([]*BuildDic, 0),
-		LocalStatic: make([]*BuildDic, 0),
-		Special:     make(map[string][]*BuildDic),
+		LocalValue: NewVal(),
+		DicFuncs:   make(map[string][]*BuildDic),
 	}
 }
 
@@ -167,10 +159,8 @@ type BuildValue struct {
 	Head         []string               `json:"头部"`
 	HeadLineNums []int                  `json:"-"` // 头部每行对应的原始文件行号（1-based）
 	Dic          []*BuildDic            `json:"词库"`
-	LocalStatic  []*BuildDic            `json:"内部"`
-	LocalFunc    []*BuildDic            `json:"函数"`
+	DicFuncs     map[string][]*BuildDic `json:"函数"`
 	LocalClass   map[string]*DicClass   `json:"整合包"`
-	Special      map[string][]*BuildDic `json:"特殊"`
 	MyFunc       map[string]DicFunc     `json:"自定义函数"`
 	BotImports   []string               `json:"bot引入"`
 }
@@ -206,14 +196,29 @@ func NewDicInputsWithOutput(dic *BuildValue, v *DicVal, i *utils.DicInputs, outp
 
 // 克隆
 func (v *BuildValue) Clone() *BuildValue {
+	funcs := make(map[string][]*BuildDic, len(v.DicFuncs))
+	for k, val := range v.DicFuncs {
+		funcs[k] = val
+	}
 	return &BuildValue{
-		Head:        v.Head,
-		Dic:         v.Dic,
-		LocalStatic: v.LocalStatic,
-		LocalFunc:   v.LocalFunc,
-		LocalClass:  v.LocalClass,
-		Special:     v.Special,
-		MyFunc:      v.MyFunc,
+		Head:       v.Head,
+		Dic:        v.Dic,
+		DicFuncs:   funcs,
+		LocalClass: v.LocalClass,
+		MyFunc:     v.MyFunc,
+	}
+}
+
+// MergeFuncs 合并运行时注入函数（按类别追加），用于 FuncText 继承。
+func (v *BuildValue) MergeFuncs(fn map[string][]*BuildDic) {
+	if len(fn) == 0 {
+		return
+	}
+	if v.DicFuncs == nil {
+		v.DicFuncs = make(map[string][]*BuildDic, len(fn))
+	}
+	for k, val := range fn {
+		v.DicFuncs[k] = append(v.DicFuncs[k], val...)
 	}
 }
 
@@ -246,10 +251,8 @@ func (v *BuildValue) ResolveClassData(class any) *DicClass {
 
 // 关闭回收
 func (v *BuildValue) Close() {
-	v.LocalFunc = nil
-	v.LocalStatic = nil
+	v.DicFuncs = nil
 	v.LocalClass = nil
-	v.Special = nil
 	v.Dic = nil
 	v.Head = nil
 }

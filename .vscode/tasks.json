@@ -61,6 +61,35 @@
         },
         {
             "type": "go",
+            "label": "buildWasm",
+            "command": "build",
+            "args": [
+                "-trimpath",
+                "-ldflags",
+                "-s -w",
+                "-o",
+                "dist/nebula.wasm",
+                "./nebula/app/wasm"
+            ],
+            "problemMatcher": [
+                "$go"
+            ],
+            "group": {
+                "kind": "build",
+                "isDefault": true
+            },
+            "detail": "生成 WebAssembly (wasm) 文件",
+            "options": {
+                "env": {
+                    "GO111MODULE": "on",
+                    "GOARCH": "wasm",
+                    "GOOS": "js",
+                    "CGO_ENABLED": "0"
+                }
+            }
+        },
+        {
+            "type": "go",
             "label": "Android arm64 (.so)",
             "command": "build",
             "args": [

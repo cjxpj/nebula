@@ -179,11 +179,13 @@ func LoadConfig_websocket(WebSocket_Config *ini.Section) {
 		if !corsOk {
 			wsConn.CheckOrigin = nil // 回退到 gorilla/websocket 默认同源检查
 		}
-		ServerConfig.Ws = &ServerRouterWebSocket{
-			Open: true,
-			Addr: wsPath,
-			Conn: wsConn,
-		}
+		ServerConfig.AddWs(&ServerRouterWebSocket{
+			Open:     true,
+			Addr:     wsPath,
+			Cors:     corsOk,
+			FilePath: "private/websocket/server.n",
+			Conn:     wsConn,
+		})
 		// WS词库
 		wsfile := utils.NewFileQueue("private/websocket")
 		if !wsfile.DirExists() {

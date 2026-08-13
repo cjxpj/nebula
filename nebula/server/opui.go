@@ -49,10 +49,10 @@ type HttpOpUiConfig_server struct {
 	KeyFile             string `json:"key_file"`
 }
 
-type HttpOpUiConfig_websocket struct {
-	Open      bool   `json:"open"`
-	Cors      bool   `json:"cors"`
-	WebSocket string `json:"websocket"`
+type HttpOpUiWebSocketItem struct {
+	Addr string `json:"addr"`
+	Cors bool   `json:"cors"`
+	Open bool   `json:"open"`
 }
 
 type HttpOpUiConfig_ngrok struct {
@@ -2270,46 +2270,32 @@ func OpUI(w http.ResponseWriter, r *http.Request, getpath string) {
 			return
 
 		case "get_websocket":
-			ff := utils.NewFileQueue(dto.CONFIG_SYSTEM_PATH)
-			f, err := ff.LoadIni()
-			if err != nil {
-				utils.ErrorStop("系统配置不存在")
+			list := dto.ServerConfig.WsListSnapshot()
+			items := make([]HttpOpUiWebSocketItem, 0, len(list))
+			for _, ws := range list {
+				items = append(items, HttpOpUiWebSocketItem{
+					Addr: ws.Addr,
+					Cors: ws.Cors,
+					Open: ws.Open,
+				})
 			}
-			d := f.Section("WebSocket")
-			var j HttpOpUiConfig_websocket
-			j.Open = d.Key("启用").MustBool(false)
-			j.Cors = d.Key("跨域").MustBool(false)
-			j.WebSocket = d.Key("访问路径").String()
-			r, _ := json.Marshal(j)
+			r, _ := json.Marshal(map[string]any{"list": items})
 			w.Write(r)
 			return
 
-		case "save_websocket":
-			var j HttpOpUiConfig_websocket
+		case "close_websocket":
+			var j struct {
+				Addr string `json:"addr"`
+			}
 			if err := json.Unmarshal(h.Data, &j); err != nil {
 				http.Error(w, `{"status":"error","error":"invalid json"}`, http.StatusBadRequest)
 				return
 			}
-			ff := utils.NewFileQueue(dto.CONFIG_SYSTEM_PATH)
-			f, err := ff.LoadIni()
-			if err != nil {
-				utils.ErrorStop("系统配置不存在")
+			if j.Addr == "" {
+				http.Error(w, `{"status":"error","error":"addr is empty"}`, http.StatusBadRequest)
+				return
 			}
-			d := f.Section("WebSocket")
-			dto.ServerConfig.Ws = &dto.ServerRouterWebSocket{
-				Open: j.Open,
-				Addr: "/" + j.WebSocket,
-				Conn: &websocket.Upgrader{
-					CheckOrigin: func(r *http.Request) bool { return true },
-				},
-			}
-			if !j.Cors {
-				dto.ServerConfig.Ws.Conn.CheckOrigin = nil
-			}
-			d.Key("启用").SetValue(strconv.FormatBool(j.Open))
-			d.Key("跨域").SetValue(strconv.FormatBool(j.Cors))
-			d.Key("访问路径").SetValue(j.WebSocket)
-			ff.SaveIni(f)
+			dto.ServerConfig.RemoveWs(j.Addr)
 			w.Write([]byte(`{"status":"ok"}`))
 			return
 
