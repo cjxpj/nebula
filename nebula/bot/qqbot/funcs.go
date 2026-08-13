@@ -545,7 +545,7 @@ var ReplyFuncs = map[string]dto.DicFunc{
 		},
 	},
 	"入群审批": {
-		L: "3|4",
+		L: "3|4|5",
 		Fn: func(d *dto.DicInputs) (any, error) {
 			ctx := GetPushContext()
 			if ctx == nil || ctx.Bot == nil || ctx.Bot.API == nil {
@@ -554,11 +554,12 @@ var ReplyFuncs = map[string]dto.DicFunc{
 			groupOpenID := d.Inputs.String(1)
 			memberOpenID := d.Inputs.String(2)
 			op := d.Inputs.String(3)
-			rejectReason := d.Inputs.String(4)
+			joinRequestID := d.Inputs.String(4)
+			rejectReason := d.Inputs.String(5)
 			if groupOpenID == "" {
 				return "", nil
 			}
-			if err := ctx.Bot.API.ApproveJoinRequest(groupOpenID, memberOpenID, op, "", rejectReason, false); err != nil {
+			if err := ctx.Bot.API.ApproveJoinRequest(groupOpenID, memberOpenID, op, joinRequestID, rejectReason, false); err != nil {
 				debugLog.Infof("[QQBot] 入群审批失败: %v", err)
 			}
 			return "", nil
