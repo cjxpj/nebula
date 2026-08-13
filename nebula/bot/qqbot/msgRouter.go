@@ -198,8 +198,8 @@ func BotMessage(w http.ResponseWriter, r *http.Request, bot *qqbot_msg.RouterQQB
 			if bot.Debug {
 				m := &qqbot_msg.JoinRequestEvent{}
 				json.Unmarshal(payload.Data, m)
-				fmt.Printf("[QQBot 来源] 入群申请 | 群=%s 申请人=%s 理由=%s\n",
-					m.GroupOpenID, m.ApplicantID, m.ApplyReason)
+				fmt.Printf("[QQBot 来源] 入群申请 | 群=%s 申请人=%s(%s) 理由=%s\n",
+					m.GroupOpenID, m.MemberOpenID, m.Username, m.VerifyInfo.VerifyMessage)
 			}
 			qqBOTGroupEventRun(payload, bot)
 			w.Write([]byte("Bot Message"))
@@ -208,16 +208,24 @@ func BotMessage(w http.ResponseWriter, r *http.Request, bot *qqbot_msg.RouterQQB
 				fmt.Println("[QQBot] ================================")
 			}
 
-		case "INTERACTION_CREATE": // 按钮点击/交互事件
+		case "INTERACTION_CREATE": // 按钮点击/快捷菜单/交互事件
 			if bot.Debug {
 				m := &qqbot_msg.InteractionEvent{}
 				json.Unmarshal(payload.Data, m)
-				btnData := ""
-				if m.Data != nil && m.Data.Resolved != nil {
-					btnData = m.Data.Resolved.ButtonData
+				it := m.Type
+				if it == 0 && m.Data != nil {
+					it = m.Data.Type
 				}
-				fmt.Printf("[QQBot 来源] 按钮点击 | 群=%s 用户=%s 按钮=%s\n",
-					m.GroupOpenID, m.UserOpenID, btnData)
+				data := ""
+				if m.Data != nil && m.Data.Resolved != nil {
+					if it == 12 {
+						data = m.Data.Resolved.FeatureID // 快捷菜单功能 ID
+					} else {
+						data = m.Data.Resolved.ButtonData
+					}
+				}
+				fmt.Printf("[QQBot 来源] 互动事件 | 类型=%d 场景=%s 群=%s 用户=%s 数据=%s\n",
+					it, m.Scene, m.GroupOpenID, m.UserOpenID, data)
 			}
 			qqBOTGroupEventRun(payload, bot)
 			w.Write([]byte("Bot Message"))

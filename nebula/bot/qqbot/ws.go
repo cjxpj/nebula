@@ -36,18 +36,20 @@ func mustMarshal(v any) string {
 
 // 意图值 — 仅 GUILDS/PUBLIC_GUILD_MESSAGES/GUILD_MEMBERS 为默认权限，其余需审批
 // 文档: https://bot.q.qq.com/wiki/develop/api-v2/dev-prepare/interface-framework/event-emit.html
+// 群事件订阅位：群消息/C2C/好友/机器人进退群/入群申请 = 1<<25(33554432)，群成员进退群 = 1<<24(16777216)，按钮 = 1<<26(67108864)
 const (
 	intentGUILDS       = 1 << 0  // 频道基础（默认权限）
 	intentGuildMembers = 1 << 1  // 频道成员（默认权限）
 	intentGuildMsg     = 1 << 9  // 私域消息（需审批）
 	intentDirectMsg    = 1 << 12 // 频道私聊（需审批）
+	intentGroupMember  = 1 << 24 // 群成员进退群（需审批）
 	intentGroupC2C     = 1 << 25 // 群聊和C2C（需审批）
 	intentInteraction  = 1 << 26 // 交互事件（按钮回调）
 	intentAudit        = 1 << 27 // 消息审核（需审批）
 	intentPublicGuild  = 1 << 30 // 公域消息（默认权限）
 
-	intentPrivateMin = intentGUILDS | intentGuildMembers | intentGuildMsg | intentGroupC2C | intentDirectMsg | intentInteraction | intentAudit
-	intentPublicMsg  = intentGUILDS | intentGuildMembers | intentGroupC2C | intentPublicGuild | intentDirectMsg | intentInteraction | intentAudit
+	intentPrivateMin = intentGUILDS | intentGuildMembers | intentGuildMsg | intentGroupC2C | intentGroupMember | intentDirectMsg | intentInteraction | intentAudit
+	intentPublicMsg  = intentGUILDS | intentGuildMembers | intentGroupC2C | intentGroupMember | intentPublicGuild | intentDirectMsg | intentInteraction | intentAudit
 )
 
 // wsIntentProbes 订阅意图组合列表，逐个尝试直到成功
@@ -311,6 +313,8 @@ func wsEventLoop(ctx context.Context, conn *websocket.Conn, bot *qqbot_msg.Route
 				if !hbRunning {
 					hbRunning = true
 					close(readyCh)
+					// 首次上线，触发 [系统]启动
+					go triggerStartupCallback(bot)
 				}
 			} else {
 				wsDispatch(bot, payload.T, payload.D, payload.Id)

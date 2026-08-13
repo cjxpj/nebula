@@ -80,6 +80,11 @@ func RemoveLeadingAtMentions(s string) string {
 	return reLeadingAt.ReplaceAllString(s, "")
 }
 
+// RemoveLeadingSlash 移除消息开头的 /，用于过滤斜杠指令前缀
+func RemoveLeadingSlash(s string) string {
+	return strings.TrimPrefix(s, "/")
+}
+
 // 去掉所有 ±img=...± 段，并返回净化后文本 + 提取到的 img 值列表
 func stripImgTags(s string) (string, []string) {
 	re := regexp.MustCompile(`±img=(.+?)±`)

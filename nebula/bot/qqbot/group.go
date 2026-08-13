@@ -242,6 +242,11 @@ func qqBOTGroupRun(payload *qqbot_msg.Payload, bot *qqbot_msg.RouterQQBot) {
 		}
 	}
 
+	// 过滤开头 /（独立开关，默认启用）
+	if bot.FilterSlash {
+		msg = RemoveLeadingSlash(msg)
+	}
+
 	appId := ""
 	if bot.API != nil {
 		appId = bot.API.AppId
@@ -275,8 +280,7 @@ func qqBOTGroupRun(payload *qqbot_msg.Payload, bot *qqbot_msg.RouterQQBot) {
 		valData.Set(fmt.Sprintf("AtName%d", i), username)
 	}
 
-	// 记录群和用户
-	RecordGroup(bot, m.GroupOpenID)
+	// 记录用户
 	RecordUser(bot, userID, m.Author.Username)
 
 	// 词库
@@ -543,9 +547,6 @@ func qqBOTGroupATRun(payload *qqbot_msg.Payload, bot *qqbot_msg.RouterQQBot) {
 		Set("Robot", appId).
 		Set("头像", "http://q.qlogo.cn/qqapp/"+appId+"/"+userID+"/640")
 
-	// 记录可用群
-	RecordGroup(bot, m.GroupOpenID)
-
 	// 词库
 	for _, v := range botDicList {
 		if !strings.HasSuffix(v, ".n") {
@@ -738,42 +739,50 @@ func qqBOTGroupEventRun(payload *qqbot_msg.Payload, bot *qqbot_msg.RouterQQBot) 
 		appId = bot.API.AppId
 	}
 
-	valData, msg, groupOpenID, ok := parseGroupEvent(payload, appId)
+	valData, msg, groupOpenID, event, ok := parseGroupEvent(payload, appId)
 	if !ok {
 		return
 	}
 
 	msgID := ""
-	eventID := payload.Id
+	eventID := ""
 	var interactionEvent *qqbot_msg.InteractionEvent
 
-	// 交互事件需要先回应，否则客户端会一直 loading；被动消息需附带事件 ID（event_id）
-	if payload.Type == "INTERACTION_CREATE" {
+	// event_id 被动回复支持事件：
+	// INTERACTION_CREATE / GROUP_ADD_ROBOT / GROUP_MEMBER_ADD。
+	// 群成员退群（GROUP_MEMBER_REMOVE）、入群申请（GROUP_JOIN_REQUEST）为主动推送事件，
+	// 不支持 event_id 被动回复（报 40034027），走主动消息。
+	switch payload.Type {
+	case "INTERACTION_CREATE":
 		interactionEvent = &qqbot_msg.InteractionEvent{}
 		if err := json.Unmarshal([]byte(payload.Data), interactionEvent); err == nil {
 			// 交互事件无用户消息可回复，被动消息使用 event_id 而非 msg_id
 			// event_id 是 WS 帧的事件 ID（payload.Id），不是 d 中的 interaction id
-			msgID = ""
 			eventID = payload.Id
 		} else {
 			interactionEvent = nil
 		}
+	case "GROUP_ADD_ROBOT", "GROUP_MEMBER_ADD":
+		eventID = payload.Id
 	}
-
-	RecordGroup(bot, groupOpenID)
 
 	inviterKey := bot.FilePath + "|" + groupOpenID
 	privateUserID := ""
 	switch payload.Type {
 	case "GROUP_ADD_ROBOT":
+		// 机器人进群：在群里面发言
 		inviter := valData.GetStr("操作者")
 		groupInviterMap.Store(inviterKey, inviter)
-		privateUserID = inviter
 	case "GROUP_DEL_ROBOT":
 		privateUserID = valData.GetStr("操作者")
 		groupInviterMap.Delete(inviterKey)
+	case "INTERACTION_CREATE":
+		// 单聊场景（自定义菜单/消息按钮）无群上下文，回复走私信
+		if interactionEvent != nil && interactionEvent.Scene == "c2c" {
+			privateUserID = interactionEvent.UserOpenID
+		}
 	}
-	runGroupEventDic(bot, msgID, groupOpenID, eventID, valData, msg, privateUserID)
+	runGroupEventDic(bot, msgID, groupOpenID, eventID, valData, event, msg, privateUserID)
 
 	// RespondInteraction 必须在发送被动回复（带 event_id）之后调用
 	// 因为 PUT /interactions/{id} 会消耗 interaction，之后再发带 event_id 的消息会被拒绝
@@ -786,15 +795,15 @@ func qqBOTGroupEventRun(payload *qqbot_msg.Payload, bot *qqbot_msg.RouterQQBot) 
 	}
 }
 
-// parseGroupEvent 解析群事件 payload，返回 valData、触发词、群号
-func parseGroupEvent(payload *qqbot_msg.Payload, appId string) (*dto.Val, string, string, bool) {
+// parseGroupEvent 解析群事件 payload，返回 valData、触发词、群号、特殊触发类别
+func parseGroupEvent(payload *qqbot_msg.Payload, appId string) (*dto.Val, string, string, string, bool) {
 	switch payload.Type {
 	case "GROUP_MEMBER_ADD", "GROUP_MEMBER_REMOVE",
 		"GROUP_ADD_ROBOT", "GROUP_DEL_ROBOT":
 		m := &qqbot_msg.GroupMemberEvent{}
 		if err := json.Unmarshal([]byte(payload.Data), m); err != nil {
 			debugLog.Infof("QQBot群事件数据验证失败")
-			return nil, "", "", false
+			return nil, "", "", "", false
 		}
 
 		source := "群成员退出"
@@ -820,8 +829,12 @@ func parseGroupEvent(payload *qqbot_msg.Payload, appId string) (*dto.Val, string
 			memberID = m.OpMemberOpenID
 		}
 
-		// 机器人事件的 UserOpenID 为空，用操作者（添加/移除者）作为 QQ
+		// 成员事件（ADD/REMOVE）用 member_openid；机器人事件用操作者 op_member_openid
+		// 优先级：user_openid → member_openid → op_member_openid
 		userQQ := m.UserOpenID
+		if userQQ == "" {
+			userQQ = m.MemberOpenID
+		}
 		if userQQ == "" {
 			userQQ = m.OpMemberOpenID
 		}
@@ -835,40 +848,78 @@ func parseGroupEvent(payload *qqbot_msg.Payload, appId string) (*dto.Val, string
 			Set("QQ", userQQ).
 			Set("qq", userQQ).
 			Set("robot", appId).
-			Set("Robot", appId), msg, m.GroupOpenID, true
+			Set("Robot", appId), msg, m.GroupOpenID, "群事件", true
 
 	case "GROUP_JOIN_REQUEST":
 		m := &qqbot_msg.JoinRequestEvent{}
 		if err := json.Unmarshal([]byte(payload.Data), m); err != nil {
 			debugLog.Infof("QQBot入群申请数据验证失败")
-			return nil, "", "", false
+			return nil, "", "", "", false
 		}
+		// 申请理由：验证消息模式取 verify_message 内容
+		reason := m.VerifyInfo.VerifyMessage
+		// 申请问题：问答模式拼接 问题:答案
+		var qas []string
+		if m.VerifyInfo.Method == "admin_review_qa" {
+			for _, qa := range m.VerifyInfo.ReviewQAList {
+				qas = append(qas, qa.Question+":"+qa.Answer)
+			}
+		}
+		qaMsg := strings.Join(qas, ";")
 		return dto.NewVal().
 			Set("来源", "入群申请").
 			Set("群号", m.GroupOpenID).
-			Set("QQ", m.ApplicantID).
-			Set("qq", m.ApplicantID).
+			Set("QQ", m.MemberOpenID).
+			Set("qq", m.MemberOpenID).
+			Set("昵称", m.Username).
+			Set("申请理由", reason).
+			Set("申请问题", qaMsg).
+			Set("申请时间", m.ApplyAt).
+			Set("申请来源", m.ApplySource).
+			Set("申请ID", m.JoinRequestID).
 			Set("robot", appId).
-			Set("Robot", appId), "入群申请", m.GroupOpenID, true
+			Set("Robot", appId), "入群申请", m.GroupOpenID, "群事件", true
 
 	case "INTERACTION_CREATE":
 		m := &qqbot_msg.InteractionEvent{}
 		if err := json.Unmarshal([]byte(payload.Data), m); err != nil || m.Data == nil || m.Data.Resolved == nil {
-			return nil, "", "", false
+			return nil, "", "", "", false
 		}
-		// 将按钮 data 作为触发词，词库中可监听按钮指令
-		btnData := strings.TrimPrefix(m.Data.Resolved.ButtonData, "/")
-		if btnData == "" {
-			return nil, "", "", false
+
+		interactionType := m.Type
+		if interactionType == 0 {
+			interactionType = m.Data.Type
 		}
-		trigger := "按钮事件 " + btnData
+
 		groupOpenID := m.GroupOpenID
-		if groupOpenID == "" {
-			groupOpenID = m.UserOpenID // 单聊场景用 UserOpenID
-		}
 		userID := m.UserOpenID
 		if userID == "" {
 			userID = m.GroupMemberOpenID // 群聊场景没有 user_openid，用 member_openid
+		}
+
+		// 快捷菜单回调 (type=12)：以功能 ID (feature_id) 作为触发词
+		if interactionType == 12 {
+			featureID := m.Data.Resolved.FeatureID
+			if featureID == "" {
+				return nil, "", "", "", false
+			}
+			return dto.NewVal().
+				Set("来源", "快捷菜单").
+				Set("群号", groupOpenID).
+				Set("QQ", userID).
+				Set("qq", userID).
+				Set("功能ID", featureID).
+				Set("robot", appId).
+				Set("Robot", appId), featureID, groupOpenID, "菜单事件", true
+		}
+
+		// 消息按钮回调 (type=11)：以按钮 data 作为触发词
+		if interactionType != 11 {
+			return nil, "", "", "", false
+		}
+		btnData := strings.TrimPrefix(m.Data.Resolved.ButtonData, "/")
+		if btnData == "" {
+			return nil, "", "", "", false
 		}
 		return dto.NewVal().
 			Set("来源", "按钮").
@@ -876,9 +927,9 @@ func parseGroupEvent(payload *qqbot_msg.Payload, appId string) (*dto.Val, string
 			Set("QQ", userID).
 			Set("qq", userID).
 			Set("robot", appId).
-			Set("Robot", appId), trigger, groupOpenID, true
+			Set("Robot", appId), btnData, groupOpenID, "按钮事件", true
 	}
-	return nil, "", "", false
+	return nil, "", "", "", false
 }
 
 // ============= 好友事件处理 ============
@@ -899,7 +950,7 @@ func qqBOTFriendEventRun(payload *qqbot_msg.Payload, bot *qqbot_msg.RouterQQBot)
 
 	eventID := payload.Id
 	// 好友事件无群聊上下文，以私信形式回复给该用户
-	runGroupEventDic(bot, "", "", eventID, valData, msg, userOpenID)
+	runGroupEventDic(bot, "", "", eventID, valData, "", msg, userOpenID)
 }
 
 // parseFriendEvent 解析好友事件 payload，返回 valData、触发词、用户 OpenID
@@ -935,7 +986,7 @@ func parseFriendEvent(payload *qqbot_msg.Payload, appId string) (*dto.Val, strin
 }
 
 // runGroupEventDic 遍历词库并执行群事件回复
-func runGroupEventDic(bot *qqbot_msg.RouterQQBot, msgID, groupOpenID, eventID string, valData *dto.Val, msg string, privateUserID string) {
+func runGroupEventDic(bot *qqbot_msg.RouterQQBot, msgID, groupOpenID, eventID string, valData *dto.Val, event string, msg string, privateUserID string) {
 	botDicList, err := utils.NewFileQueue(filepath.Join(bot.FilePath, "dic")).GetFileList()
 	if err != nil {
 		return
@@ -973,7 +1024,12 @@ func runGroupEventDic(bot *qqbot_msg.RouterQQBot, msgID, groupOpenID, eventID st
 			},
 		})
 
-		rMsg := dic_api.Api.DicRunPrivate(dic, msg)
+		var rMsg string
+		if event != "" {
+			rMsg = dic_api.Api.DicRunEvent(dic, event, msg)
+		} else {
+			rMsg = dic_api.Api.DicRunPrivate(dic, msg)
+		}
 		rMsg = strings.ReplaceAll(rMsg, "\\r", "\n")
 
 		if strippedMsg, imgs := stripImgTags(rMsg); len(imgs) != 0 {
@@ -1005,6 +1061,46 @@ func runGroupEventDic(bot *qqbot_msg.RouterQQBot, msgID, groupOpenID, eventID st
 			}
 			// event_id 只能使用一次，后续词库不能再用
 			eventID = ""
+		}
+	}
+}
+
+// triggerStartupCallback 机器人上线（READY）后触发 [系统]启动
+func triggerStartupCallback(bot *qqbot_msg.RouterQQBot) {
+	botDicList, err := utils.NewFileQueue(filepath.Join(bot.FilePath, "dic")).GetFileList()
+	if err != nil {
+		return
+	}
+
+	appId := ""
+	if bot.API != nil {
+		appId = bot.API.AppId
+	}
+
+	for _, v := range botDicList {
+		if !strings.HasSuffix(v, ".n") {
+			continue
+		}
+		FileData, err := utils.NewFileQueue(filepath.Join(bot.FilePath, "dic", v)).ReadFromFile()
+		if err != nil {
+			continue
+		}
+
+		SetPushContext(&PushContext{Bot: bot})
+
+		valData := dto.NewVal().
+			Set("来源", "机器人上线").
+			Set("robot", appId).
+			Set("Robot", appId)
+
+		dic := dic_dto.NewDic(filepath.Join(bot.FilePath, "dic", v), FileData).
+			SetGlobal_v(valData)
+		dic.AddFuncs(ReplyFuncs)
+
+		rMsg := dic_api.Api.DicRunEvent(dic, "系统", "启动")
+		rMsg = strings.ReplaceAll(rMsg, "\\r", "\n")
+		if rMsg != "" {
+			fmt.Println(rMsg)
 		}
 	}
 }

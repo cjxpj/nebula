@@ -301,6 +301,7 @@ type BotState struct {
 
 // JoinRequestItem 入群申请单条记录
 type JoinRequestItem struct {
+	GroupOpenID   string     `json:"group_openid"`    // 群 OpenID（WS 事件携带，列表接口为空）
 	JoinRequestID string     `json:"join_request_id"` // 申请 ID
 	RiskTips      string     `json:"risk_tips"`       // 安全提示语
 	UnionOpenID   string     `json:"union_openid"`    // 统一标识
@@ -343,13 +344,8 @@ type ApproveJoinRequest struct {
 // ============= 入群申请事件 ============
 
 // JoinRequestEvent 用户入群申请事件（GROUP_JOIN_REQUEST）
-type JoinRequestEvent struct {
-	GroupOpenID string `json:"group_openid"` // 群 OpenID
-	ApplicantID string `json:"applicant_id"` // 申请人 OpenID
-	ApplyTime   string `json:"apply_time"`   // 申请时间戳（秒）
-	ApplyReason string `json:"apply_reason"` // 申请理由
-	RequestID   string `json:"request_id"`   // 申请 ID
-}
+// 事件体字段与入群申请列表记录 JoinRequestItem 一致，直接复用
+type JoinRequestEvent = JoinRequestItem
 
 // ============= 消息按钮 (Keyboard) ============
 

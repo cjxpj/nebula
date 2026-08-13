@@ -433,7 +433,7 @@ var Funcs = map[string]dto.DicFunc{
 		},
 	},
 	"群通知处理": {
-		L: "3|4",
+		L: "4|5",
 		Fn: func(d *dto.DicInputs) (any, error) {
 			groupId := d.Inputs.String(1)
 			msgId := d.Inputs.String(2)

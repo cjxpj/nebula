@@ -301,8 +301,8 @@ func triggerStartupCallback() {
 
 			// debugLog.Infof("[secluded] 启动触发: %s", dicPath)
 
-			// 触发 [内部]启动成功
-			rMsg := dic_api.Api.DicRunPrivate(dic, "启动成功")
+			// 触发 [系统]启动
+			rMsg := dic_api.Api.DicRunEvent(dic, "系统", "启动")
 
 			// debugLog.Infof("[secluded] 返回: %s", rMsg)
 

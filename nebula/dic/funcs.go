@@ -136,21 +136,18 @@ func callDic(d *dto.DicInputs) (any, error) {
 	trigger := strings.Join(triggerParts, " ")
 
 	// 判断是否在整合包中执行
-	if classN, ok := d.V.P.Get("Class").(string); ok {
-		classData := d.Dic.LocalClass[classN]
-		if classData != nil {
-			GetDic, GetDicTrigger, _, _ := run.RunFor(classData.LocalStatic, trigger, 0)
-			funcV := dto.NewVal()
-			funcV.Reset(d.V.P.GetAll())
-			funcV.Set("触发词", trigger)
-			funcV.Set("触发", GetDicTrigger)
-			RunDics := dic_dto.NewRunDicEntry().
-				SetGlobal_v(d.V.G).
-				Set_v(funcV).
-				SetDic_v(d.Dic)
-			RunDic := dic_api.Api.DicRunLine(RunDics, GetDic)
-			return RunDic, nil
-		}
+	if classData := d.Dic.ResolveClassData(d.V.P.Get("Class")); classData != nil {
+		GetDic, GetDicTrigger, _, _ := run.RunFor(classData.LocalStatic, trigger, 0)
+		funcV := dto.NewVal()
+		funcV.Reset(d.V.P.GetAll())
+		funcV.Set("触发词", trigger)
+		funcV.Set("触发", GetDicTrigger)
+		RunDics := dic_dto.NewRunDicEntry().
+			SetGlobal_v(d.V.G).
+			Set_v(funcV).
+			SetDic_v(d.Dic)
+		RunDic := dic_api.Api.DicRunLine(RunDics, GetDic)
+		return RunDic, nil
 	}
 	GetDic, GetDicTrigger, _, _ := run.RunFor(d.Dic.LocalStatic, trigger, 0)
 	funcV := dto.NewVal()

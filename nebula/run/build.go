@@ -420,6 +420,33 @@ func RunFors(jsonData []*dto.BuildDic, trigger string, runNum int) ([]string, st
 	return nil, "", 0, nil, ""
 }
 
+// parseTriggerPrefix 解析触发词行首的 [] 前缀。
+// 返回触发类别（空串表示普通触发）、整合包类名（可为空）和去掉前缀后的触发词。
+// [F]/[L] 缩写自动归一为 [函数]/[内部]；[:类名] 后缀表示整合包，如 [函数:a]、[F:a]。
+func parseTriggerPrefix(line string) (category, class, rest string) {
+	if !strings.HasPrefix(line, "[") {
+		return "", "", line
+	}
+	end := strings.Index(line, "]")
+	if end <= 1 {
+		return "", "", line
+	}
+	tag := line[1:end]
+	rest = line[end+1:]
+	if i := strings.Index(tag, ":"); i >= 0 {
+		category, class = tag[:i], tag[i+1:]
+	} else {
+		category = tag
+	}
+	switch category {
+	case "F", "f":
+		category = "函数"
+	case "L", "l":
+		category = "内部"
+	}
+	return category, class, rest
+}
+
 // 运行网页词库
 func Web(dicPath string, lines []string) *dto.BuildValue {
 
@@ -429,6 +456,8 @@ func Web(dicPath string, lines []string) *dto.BuildValue {
 		dicText     []string
 		funcText    []*dto.BuildDic
 		chajianText []*dto.BuildDic
+		// 特殊触发
+		specialText map[string][]*dto.BuildDic = make(map[string][]*dto.BuildDic)
 		// 整合包
 		classText map[string]*dto.DicClass = make(map[string]*dto.DicClass)
 		// 缩进
@@ -522,6 +551,9 @@ func Web(dicPath string, lines []string) *dto.BuildValue {
 
 				z := BuildDic(dicPath, FileData)
 				funcText = append(funcText, z.LocalStatic...)
+				for key, value := range z.Special {
+					specialText[key] = append(specialText[key], value...)
+				}
 
 				chajianText = append(chajianText, z.LocalFunc...)
 				maps.Copy(myFunc, z.MyFunc)
@@ -541,6 +573,7 @@ func Web(dicPath string, lines []string) *dto.BuildValue {
 		LocalStatic: funcText,
 		LocalFunc:   chajianText,
 		LocalClass:  classText,
+		Special:     specialText,
 		MyFunc:      myFunc,
 	}
 	return result
@@ -558,13 +591,17 @@ func BuildDic(dicPath, text string) *dto.BuildValue {
 		dicTrigger string // 触发词
 
 		// 词库条目
-		dicText          []*dto.BuildDic // 词库条目
-		dicTexts         []string        // 准备添加到词库中的词条
-		dicTextLineNums  []int           // 词条每行对应的原始文件行号（1-based）
+		dicText         []*dto.BuildDic // 词库条目
+		dicTexts        []string        // 准备添加到词库中的词条
+		dicTextLineNums []int           // 词条每行对应的原始文件行号（1-based）
 
 		// 内部状态变量
 		neibu    bool
 		funcText []*dto.BuildDic // 与函数相关的词库条目
+
+		// 特殊触发
+		special     string
+		specialText map[string][]*dto.BuildDic = make(map[string][]*dto.BuildDic)
 
 		// 插件变量
 		chajian     bool
@@ -584,8 +621,7 @@ func BuildDic(dicPath, text string) *dto.BuildValue {
 		// 词库类
 		classText map[string]*dto.DicClass = make(map[string]*dto.DicClass)
 
-		classN   string // 当前类名
-		isClassN bool   // 类名存在标志
+		classN string // 当前触发所属类名（[:类名]）
 
 		fRunAll bool // 函数框选
 
@@ -633,11 +669,6 @@ func BuildDic(dicPath, text string) *dto.BuildValue {
 			if lineLen > 13 && line[:13] == "//@函数头=" {
 				fHeaderName = line[13:]
 			}
-			continue
-		}
-
-		if isClassN && line == "#Class" {
-			isClassN = false
 			continue
 		}
 
@@ -698,6 +729,9 @@ func BuildDic(dicPath, text string) *dto.BuildValue {
 
 					z := BuildDic(dicPath, FileData)
 					funcText = append(funcText, z.LocalStatic...)
+					for key, value := range z.Special {
+						specialText[key] = append(specialText[key], value...)
+					}
 
 					if fHeaderName != "" {
 						for _, value := range z.LocalFunc {
@@ -755,42 +789,24 @@ func BuildDic(dicPath, text string) *dto.BuildValue {
 				// 判断触发为空就执行记录
 				dicTrigger = line
 
-				if !isClassN {
-					if after, ok := strings.CutPrefix(line, "#Class="); ok && after != "" {
-						isClassN = true
-						classN = after
-						continue
+				switch category, class, rest := parseTriggerPrefix(line); category {
+				case "函数":
+					chajian = true
+					classN = class
+					if fHeaderName != "" {
+						dicTrigger = fHeaderName + rest
+					} else {
+						dicTrigger = rest
 					}
-				}
-
-				if lineLen > 3 {
-					switch line[:3] {
-					case "[F]":
-						chajian = true
-						if fHeaderName != "" {
-							dicTrigger = fHeaderName + line[3:]
-						} else {
-							dicTrigger = line[3:]
-						}
-					case "[L]":
-						neibu = true
-						dicTrigger = line[3:]
-					default:
-						if lineLen > 8 {
-							switch line[:8] {
-							case "[函数]":
-								chajian = true
-								if fHeaderName != "" {
-									dicTrigger = fHeaderName + line[8:]
-								} else {
-									dicTrigger = line[8:]
-								}
-							case "[内部]":
-								neibu = true
-								dicTrigger = line[8:]
-							}
-						}
-					}
+				case "内部":
+					neibu = true
+					classN = class
+					dicTrigger = rest
+				case "":
+				default:
+					special = category
+					classN = class
+					dicTrigger = rest
 				}
 
 				if strings.HasSuffix(dicTrigger, " #{") {
@@ -819,12 +835,9 @@ func BuildDic(dicPath, text string) *dto.BuildValue {
 				}
 				if neibu {
 					neibu = false
-					if isClassN {
+					if classN != "" {
 						if classText[classN] == nil {
-							Nv := dto.NewVal()
-							classText[classN] = &dto.DicClass{
-								LocalValue: Nv,
-							}
+							classText[classN] = dto.NewDicClass()
 						}
 						classText[classN].LocalStatic = append(classText[classN].LocalStatic, json)
 					} else {
@@ -832,21 +845,33 @@ func BuildDic(dicPath, text string) *dto.BuildValue {
 					}
 				} else if chajian {
 					chajian = false
-					if isClassN {
+					if classN != "" {
 						if classText[classN] == nil {
-							Nv := dto.NewVal()
-							classText[classN] = &dto.DicClass{
-								LocalValue: Nv,
-							}
+							classText[classN] = dto.NewDicClass()
 						}
 						classText[classN].LocalFunc = append(classText[classN].LocalFunc, json)
 					} else {
 						chajianText = append(chajianText, json)
 					}
+				} else if special != "" {
+					specialName := special
+					special = ""
+					if classN != "" {
+						if classText[classN] == nil {
+							classText[classN] = dto.NewDicClass()
+						}
+						if classText[classN].Special == nil {
+							classText[classN].Special = make(map[string][]*dto.BuildDic)
+						}
+						classText[classN].Special[specialName] = append(classText[classN].Special[specialName], json)
+					} else {
+						specialText[specialName] = append(specialText[specialName], json)
+					}
 				} else {
 					dicText = append(dicText, json)
 				}
 				dicTrigger = ""
+				classN = ""
 				dicTexts = nil
 				dicTextLineNums = nil
 			}
@@ -860,6 +885,7 @@ func BuildDic(dicPath, text string) *dto.BuildValue {
 		LocalStatic:  funcText,
 		LocalFunc:    chajianText,
 		LocalClass:   classText,
+		Special:      specialText,
 		MyFunc:       myFunc,
 	}
 
@@ -911,12 +937,14 @@ func Parse(dicPath string, reader io.Reader) *dto.DicInfoData {
 		dicTextLineNums []int
 		funcText        []*dto.RegDicLine
 		funcFn          []*dto.BuildDicFunc
+		specialText     = make(map[string][]*dto.RegDicLine)
 
 		dicValue = dto.NewVal()
 		// []*dto.DicInfo
 
 		neibu   bool
 		chajian bool
+		special string
 
 		runhead         = true
 		runheadtext     dto.DicLine
@@ -929,7 +957,6 @@ func Parse(dicPath string, reader io.Reader) *dto.DicInfoData {
 
 		classText = make(map[string]*dto.DicClassInfo)
 		classN    string
-		isClassN  bool
 
 		fHeaderName string
 	)
@@ -946,6 +973,7 @@ func Parse(dicPath string, reader io.Reader) *dto.DicInfoData {
 			parts := strings.Split(dicTrigger, " ")
 			if len(parts) == 0 {
 				dicTrigger = ""
+				classN = ""
 				dicTexts = nil
 				dicTextLineNums = nil
 				return
@@ -958,7 +986,7 @@ func Parse(dicPath string, reader io.Reader) *dto.DicInfoData {
 				Func:   nil,
 			}
 
-			if isClassN {
+			if classN != "" {
 				if classText[classN] == nil {
 					classText[classN] = &dto.DicClassInfo{
 						LocalValue: dto.NewVal(),
@@ -971,6 +999,7 @@ func Parse(dicPath string, reader io.Reader) *dto.DicInfoData {
 			}
 
 			dicTrigger = ""
+			classN = ""
 			dicTexts = nil
 			dicTextLineNums = nil
 			return
@@ -985,7 +1014,7 @@ func Parse(dicPath string, reader io.Reader) *dto.DicInfoData {
 
 		if neibu {
 			neibu = false
-			if isClassN {
+			if classN != "" {
 				if classText[classN] == nil {
 					classText[classN] = &dto.DicClassInfo{
 						LocalValue: dto.NewVal(),
@@ -996,11 +1025,32 @@ func Parse(dicPath string, reader io.Reader) *dto.DicInfoData {
 			} else {
 				funcText = append(funcText, item)
 			}
+		} else if special != "" {
+			specialName := special
+			special = ""
+			if classN != "" {
+				if classText[classN] == nil {
+					classText[classN] = &dto.DicClassInfo{
+						LocalValue: dto.NewVal(),
+					}
+				}
+				if classText[classN].Special == nil {
+					classText[classN].Special = make(map[string][]*dto.RegDicLine)
+				}
+				classText[classN].Special[specialName] =
+					append(classText[classN].Special[specialName], item)
+			} else {
+				if specialText == nil {
+					specialText = make(map[string][]*dto.RegDicLine)
+				}
+				specialText[specialName] = append(specialText[specialName], item)
+			}
 		} else {
 			dicText = append(dicText, item)
 		}
 
 		dicTrigger = ""
+		classN = ""
 		dicTexts = nil
 		dicTextLineNums = nil
 	}
@@ -1045,13 +1095,6 @@ func Parse(dicPath string, reader io.Reader) *dto.DicInfoData {
 			if fRunAll, ok := strings.CutPrefix(line, "//@函数头="); ok && fRunAll != "" {
 				fHeaderName = fRunAll
 			}
-			continue
-		}
-
-		/* ===== Class 结束 ===== */
-
-		if isClassN && line == "#Class" {
-			isClassN = false
 			continue
 		}
 
@@ -1159,25 +1202,20 @@ func Parse(dicPath string, reader io.Reader) *dto.DicInfoData {
 
 		dicTrigger = line
 
-		if after, ok := strings.CutPrefix(line, "#Class="); ok && after != "" {
-			isClassN = true
-			classN = after
-			dicTrigger = ""
-			continue
-		}
-
-		if strings.HasPrefix(line, "[F]") {
+		switch category, class, rest := parseTriggerPrefix(line); category {
+		case "函数":
 			chajian = true
-			dicTrigger = line[3:]
-		} else if strings.HasPrefix(line, "[函数]") {
-			chajian = true
-			dicTrigger = line[8:]
-		} else if strings.HasPrefix(line, "[L]") {
+			classN = class
+			dicTrigger = rest
+		case "内部":
 			neibu = true
-			dicTrigger = line[3:]
-		} else if strings.HasPrefix(line, "[内部]") {
-			neibu = true
-			dicTrigger = line[8:]
+			classN = class
+			dicTrigger = rest
+		case "":
+		default:
+			special = category
+			classN = class
+			dicTrigger = rest
 		}
 
 		if fHeaderName != "" && chajian {
@@ -1205,6 +1243,7 @@ func Parse(dicPath string, reader io.Reader) *dto.DicInfoData {
 			LocalStatic: funcText,
 			LocalFunc:   funcFn,
 			LocalClass:  classText,
+			Special:     specialText,
 		},
 		Value: dto.NewVal(),
 	}

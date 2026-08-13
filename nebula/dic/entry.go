@@ -33,6 +33,9 @@ func (m *dicImpl) DicRunLine(r *dic_dto.DicEntry, txt []string) string {
 	// 重置文本
 	r.Output.Clear()
 
+	// 挂载整合包变量表，供 %类名.变量% 解析
+	r.Val.P.Class = r.Dic.ClassValues()
+
 	// 是否生成>默认true
 	if r.Trigger {
 		trigger := "Main"
@@ -1038,6 +1041,16 @@ func Entry(r *dic_dto.DicEntry, txt []string, funcV *dic_dto.DicFunc) error {
 			}
 			r.Output.Add(res)
 			continue
+		}
+
+		// 类成员变量赋值：.成员名:值（写入当前实例）
+		if textLen > 2 && text[0] == '.' {
+			if idx := strings.IndexByte(text, ':'); idx > 1 {
+				if classData, ok := r.Val.P.Get("Class").(*dto.DicClass); ok && classData != nil {
+					classData.LocalValue.Set(text[1:idx], RunsAny(funcV, text[idx+1:]))
+					continue
+				}
+			}
 		}
 
 		vType, vPrefix, vSuffix := dicBuild.ValTextTest(text)

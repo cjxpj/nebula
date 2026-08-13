@@ -462,7 +462,7 @@ func SetFrpDebug(debug bool) {
 }
 
 // printFrpLink 打印 BeerWebFrp 隧道访问链接。
-// 与 Ngrok 一致，将 “BeerWebFrp启动成功 <链接>” 交给启动词库 start.n
+// 与 Ngrok 一致，将链接作为特殊触发 [BeerWebFrp] 交给启动词库 start.n
 // 匹配并格式化输出（默认输出 “BeerWebFrp：<链接>”），支持用户自定义启动词库。
 func printFrpLink(link string) {
 	if link == "" {
@@ -470,7 +470,7 @@ func printFrpLink(link string) {
 	}
 	if dic, err := dic_dto.RunDic("private/system/start.n"); err == nil && dic != nil {
 		defer dic.Close()
-		if out := dic_api.Api.DicRun(dic, "BeerWebFrp启动成功 "+link); out != "" {
+		if out := dic_api.Api.DicRunEvent(dic, "BeerWebFrp", "启动 "+link); out != "" {
 			fmt.Printf("%v\n", out)
 			return
 		}
@@ -1286,16 +1286,17 @@ func StopSftp() {
 }
 
 type HttpOpUiConfig_qq struct {
-	Open      bool   `json:"open"`
-	Dic       string `json:"dic"`
-	Path      string `json:"path"`
-	Appid     string `json:"appid"`
-	Secret    string `json:"secret"`
-	AtCompat  bool   `json:"at_compat"`
-	Debug     bool   `json:"debug"`
-	Ws        bool   `json:"ws"`
-	WsIntents int    `json:"ws_intents"`
-	Remark    string `json:"remark"`
+	Open        bool   `json:"open"`
+	Dic         string `json:"dic"`
+	Path        string `json:"path"`
+	Appid       string `json:"appid"`
+	Secret      string `json:"secret"`
+	AtCompat    bool   `json:"at_compat"`
+	FilterSlash bool   `json:"filter_slash"`
+	Debug       bool   `json:"debug"`
+	Ws          bool   `json:"ws"`
+	WsIntents   int    `json:"ws_intents"`
+	Remark      string `json:"remark"`
 }
 
 type HttpOpUiConfig_qq_instance struct {
@@ -1603,7 +1604,7 @@ func anyTypeName(v any) string {
 		}
 		return anyTypeName(rv.Elem().Interface())
 	case reflect.Slice, reflect.Array:
-		return "列表"
+		return "数组"
 	case reflect.Map:
 		return "字典"
 	case reflect.Struct:
@@ -1611,6 +1612,76 @@ func anyTypeName(v any) string {
 	default:
 		return "未知"
 	}
+}
+
+// varDebugItem 将变量值转换为调试展示结构；类实例额外携带成员变量，供前端折叠展示
+func varDebugItem(v any) map[string]any {
+	return varDebugItemDepth(v, 0)
+}
+
+// varDebugItemDepth 递归构建变量调试结构，限制深度避免循环引用
+func varDebugItemDepth(v any, depth int) map[string]any {
+	// 类实例：展示为「类」类型，值用变量数量概括，成员变量放入 children 供前端折叠
+	if cls, ok := v.(*dto.DicClass); ok {
+		item := map[string]any{"t": "类", "v": "类实例"}
+		if cls != nil && cls.LocalValue != nil {
+			members := cls.LocalValue.GetAll()
+			item["v"] = fmt.Sprintf("类实例（%d 个变量）", len(members))
+			if depth < 3 && len(members) > 0 {
+				children := make(map[string]any, len(members))
+				for k, cv := range members {
+					children[k] = varDebugItemDepth(cv, depth+1)
+				}
+				item["children"] = children
+			}
+		}
+		return item
+	}
+	// 字符串：词库变量多为字符串存储，尝试智能识别类型（布尔/数值/JSON），便于调试展示
+	if s, ok := v.(string); ok {
+		return stringDebugItem(s, depth)
+	}
+	return map[string]any{
+		"v": utils.AnyToString(v),
+		"t": anyTypeName(v),
+	}
+}
+
+// stringDebugItem 对字符串变量做类型识别：布尔/数值/JSON 对象/数组，其余按字符串展示
+func stringDebugItem(s string, depth int) map[string]any {
+	if s == "true" || s == "false" {
+		return map[string]any{"v": s, "t": "布尔"}
+	}
+	if _, err := strconv.ParseFloat(s, 64); err == nil {
+		return map[string]any{"v": s, "t": "数值"}
+	}
+	if depth < 3 {
+		if j := utils.IsJSONResult(s); j != nil {
+			switch jv := j.(type) {
+			case map[string]any:
+				item := map[string]any{"v": s, "t": "对象"}
+				if len(jv) > 0 {
+					children := make(map[string]any, len(jv))
+					for k, cv := range jv {
+						children[k] = varDebugItemDepth(cv, depth+1)
+					}
+					item["children"] = children
+				}
+				return item
+			case []any:
+				item := map[string]any{"v": s, "t": "数组"}
+				if len(jv) > 0 {
+					children := make(map[string]any, len(jv))
+					for i, cv := range jv {
+						children[strconv.Itoa(i)] = varDebugItemDepth(cv, depth+1)
+					}
+					item["children"] = children
+				}
+				return item
+			}
+		}
+	}
+	return map[string]any{"v": s, "t": "字符串"}
 }
 
 // outputImgRe 匹配输出中的图片标记：±img=xxx± / <img src=...> / ![alt](url)
@@ -2488,7 +2559,8 @@ func OpUI(w http.ResponseWriter, r *http.Request, getpath string) {
 					j.Path = d.Key("访问路径").String()
 					j.Appid = d.Key("APPID").String()
 					j.Secret = d.Key("密钥").String()
-					j.AtCompat = d.Key("全量艾特兼容").MustBool(false)
+					j.AtCompat = d.Key("全量艾特兼容").MustBool(true)
+					j.FilterSlash = d.Key("过滤开头斜杠").MustBool(true)
 					j.Debug = d.Key("调试打印").MustBool(false)
 					j.Ws = d.Key("WebSocket").MustBool(false)
 					j.WsIntents = d.Key("监听码").MustInt(0)
@@ -2537,6 +2609,7 @@ func OpUI(w http.ResponseWriter, r *http.Request, getpath string) {
 			d.Key("APPID").SetValue(j.Config.Appid)
 			d.Key("密钥").SetValue(j.Config.Secret)
 			d.Key("全量艾特兼容").SetValue(strconv.FormatBool(j.Config.AtCompat))
+			d.Key("过滤开头斜杠").SetValue(strconv.FormatBool(j.Config.FilterSlash))
 			d.Key("调试打印").SetValue(strconv.FormatBool(j.Config.Debug))
 			d.Key("WebSocket").SetValue(strconv.FormatBool(j.Config.Ws))
 			d.Key("监听码").SetValue(strconv.Itoa(j.Config.WsIntents))
@@ -2607,7 +2680,8 @@ func OpUI(w http.ResponseWriter, r *http.Request, getpath string) {
 			d.Key("访问路径").SetValue("qq-bot" + strconv.Itoa(newNum))
 			d.Key("APPID").SetValue("")
 			d.Key("密钥").SetValue("")
-			d.Key("全量艾特兼容").SetValue("false")
+			d.Key("全量艾特兼容").SetValue("true")
+			d.Key("过滤开头斜杠").SetValue("true")
 			d.Key("调试打印").SetValue("false")
 			d.Key("WebSocket").SetValue("true")
 			d.Key("监听码").SetValue("0")
@@ -2616,16 +2690,17 @@ func OpUI(w http.ResponseWriter, r *http.Request, getpath string) {
 			j := HttpOpUiConfig_qq_instance{
 				Section: newSection,
 				Config: HttpOpUiConfig_qq{
-					Open:      false,
-					Dic:       "private/bot/qq" + strconv.Itoa(newNum),
-					Path:      "qq-bot" + strconv.Itoa(newNum),
-					Appid:     "",
-					Secret:    "",
-					AtCompat:  false,
-					Debug:     false,
-					Ws:        true,
-					WsIntents: 0,
-					Remark:    "",
+					Open:        false,
+					Dic:         "private/bot/qq" + strconv.Itoa(newNum),
+					Path:        "qq-bot" + strconv.Itoa(newNum),
+					Appid:       "",
+					Secret:      "",
+					AtCompat:    true,
+					FilterSlash: true,
+					Debug:       false,
+					Ws:          true,
+					WsIntents:   0,
+					Remark:      "",
 				},
 			}
 			r, _ := json.Marshal(j)
@@ -3406,14 +3481,14 @@ func OpUI(w http.ResponseWriter, r *http.Request, getpath string) {
 				}
 			}
 
-			// 收集运行后的局部/全局变量（值 + 类型）
+			// 收集运行后的局部/全局变量（值 + 类型，类实例携带成员变量供前端折叠）
 			pVars := make(map[string]any)
 			for k, v := range dic.Val.P.GetAll() {
-				pVars[k] = map[string]any{"v": utils.AnyToString(v), "t": anyTypeName(v)}
+				pVars[k] = varDebugItem(v)
 			}
 			gVars := make(map[string]any)
 			for k, v := range dic.Val.G.GetAll() {
-				gVars[k] = map[string]any{"v": utils.AnyToString(v), "t": anyTypeName(v)}
+				gVars[k] = varDebugItem(v)
 			}
 
 			resp := map[string]any{

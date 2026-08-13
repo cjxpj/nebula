@@ -17,12 +17,12 @@ Main
 <函数
 $%启动%$
 
-启动首页
+[系统]首页
 $打开配置 system.ini$
 $读配置 system.ini 管理面板 访问路径$
 
-Ngrok启动成功 https?://.+
+[Ngrok]启动 https?://.+
 NgrokUrl：%参数1%
 
-BeerWebFrp启动成功 https?://.+
+[BeerWebFrp]启动 https?://.+
 BeerWebFrp：%参数1%

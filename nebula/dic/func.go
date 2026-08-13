@@ -52,6 +52,9 @@ func Runs(d *dic_dto.DicFunc, text string) any {
 		if resStr, ok := resAny.(string); ok {
 			return resStr, false
 		}
+		if resAny != nil {
+			return utils.AnyToString(resAny), false
+		}
 		return "", false
 	}, func(s string) (string, bool) {
 		resAny := d.Val.Text(s)
@@ -171,6 +174,25 @@ func Funcs(d *dic_dto.DicFunc, dic_i *utils.DicInputs) (any, error) {
 		return "", nil
 	}
 
+	// 创建类包实例
+	if dic_i.String(0) == "new" {
+		return newClassInstance(d, dic_i)
+	}
+
+	// 实例方法调用：$变量.方法 参数$（变量值为实例）
+	if s := dic_i.String(0); len(s) > 2 && s[0] != '.' && s[0] != '%' {
+		if dot := strings.IndexByte(s, '.'); dot > 0 && dot < len(s)-1 {
+			if value, ok := d.Val.GetVal(s[:dot]); ok {
+				if classData, isClass := value.(*dto.DicClass); isClass {
+					methodArgs := append([]string{s[dot+1:]}, dic_i.StringAfterList(1)...)
+					if res, ok := runClassMethod(d, classData, methodArgs); ok {
+						return res, nil
+					}
+				}
+			}
+		}
+	}
+
 	// 面对象
 	if className := dic_i.String(0); dic_i.LenOk("2..") && len(className) > 1 && (className[0] == '.' || className[0] == '%') {
 		classType := className[0]
@@ -180,10 +202,18 @@ func Funcs(d *dic_dto.DicFunc, dic_i *utils.DicInputs) (any, error) {
 		if classType == '%' && !strings.HasSuffix(className, "%") {
 			isV = true
 		}
+		var classData *dto.DicClass
 		if className == "自己" {
-			className, _ = d.Val.P.Get("Class").(string)
+			classData = d.Dic.ResolveClassData(d.Val.P.Get("Class"))
+		} else {
+			classData = d.Dic.ResolveClassData(className)
+			if classData == nil {
+				// 变量间接：className 是变量，值为类名或实例
+				if value, ok := d.Val.GetVal(className); ok {
+					classData = d.Dic.ResolveClassData(value)
+				}
+			}
 		}
-		classData := d.Dic.LocalClass[className]
 		if classData == nil {
 			return "", errors.New("非整合包")
 		}
@@ -207,23 +237,9 @@ func Funcs(d *dic_dto.DicFunc, dic_i *utils.DicInputs) (any, error) {
 			return "未知整合包方法", nil
 		}
 
-		TStr := strings.Join(dic_i.StringAfterList(1), " ")
 		// 整合包局部函数
-		if str, Tstr, _, regex := run.RunFor(classData.LocalFunc, TStr, 0); regex != nil {
-			funcv := dto.NewVal()
-			funcv.Set("触发", Tstr)
-			funcv.Set("触发词", TStr)
-			funcv.Set("Class", className)
-			dto.ValRunTrigger(TStr, Tstr, d.Val.NewDicVal(funcv), d.Val)
-			RunDic := dic_dto.NewRunDicEntry().
-				CloseTrigger().
-				SetGlobal_v(d.Val.G).
-				Set_v(funcv).
-				SetDic_v(d.Dic.Clone()).
-				WithRecursionDepth(d.RecursionDepth)
-			RunDic.ClearDicFuncs()
-			resRunDic := dic_api.Api.DicRunLine(RunDic, str)
-			return resRunDic, nil
+		if res, ok := runClassMethod(d, classData, dic_i.StringAfterList(1)); ok {
+			return res, nil
 		}
 	} else {
 		text := strings.Join(dic_i.StringList(), " ")
@@ -335,4 +351,70 @@ func paramCountError(d *dic_dto.DicFunc, name, rule string, actual int) error {
 	d.Output.Clear()
 	d.Output.Add(fmt.Sprintf("[%s]%s(line:%d)：%v", d.Val.Get("_词库路径_"), name, d.CurLine, err))
 	return err
+}
+
+// newClassInstance 创建类包实例并执行构造函数：$new 类名$
+// 返回实例数据（*DicClass），可赋值给变量后用 %变量.成员% 读取、$.变量 函数$ 调用。
+func newClassInstance(d *dic_dto.DicFunc, dic_i *utils.DicInputs) (any, error) {
+	className := dic_i.String(1)
+	if className == "" {
+		return "", errors.New("new 参数错误：$new 类名$")
+	}
+	classData := d.Dic.LocalClass[className]
+	if classData == nil {
+		return "", fmt.Errorf("非整合包：%s", className)
+	}
+
+	newVal := dto.NewVal()
+	if classData.LocalValue != nil {
+		newVal.NewObj(classData.LocalValue.GetAll())
+	}
+	instance := &dto.DicClass{
+		LocalValue:  newVal,
+		LocalFunc:   classData.LocalFunc,
+		LocalStatic: classData.LocalStatic,
+		Special:     classData.Special,
+	}
+
+	// 执行构造函数 [函数:类名]new
+	if str, Tstr, _, regex := run.RunFor(classData.LocalFunc, "new", 0); regex != nil {
+		funcv := dto.NewVal().
+			Set("触发", Tstr).
+			Set("触发词", "new").
+			Set("Class", instance)
+		dto.ValRunTrigger("new", Tstr, d.Val.NewDicVal(funcv), d.Val)
+		RunDic := dic_dto.NewRunDicEntry().
+			CloseTrigger().
+			SetGlobal_v(d.Val.G).
+			Set_v(funcv).
+			SetDic_v(d.Dic.Clone()).
+			WithRecursionDepth(d.RecursionDepth)
+		RunDic.ClearDicFuncs()
+		d.Output.Add(dic_api.Api.DicRunLine(RunDic, str))
+	}
+
+	return instance, nil
+}
+
+// runClassMethod 执行类方法（函数）：methodArgs 为 [方法名, 参数...]。
+// 返回执行结果与是否命中方法。
+func runClassMethod(d *dic_dto.DicFunc, classData *dto.DicClass, methodArgs []string) (any, bool) {
+	TStr := strings.Join(methodArgs, " ")
+	str, Tstr, _, regex := run.RunFor(classData.LocalFunc, TStr, 0)
+	if regex == nil {
+		return nil, false
+	}
+	funcv := dto.NewVal()
+	funcv.Set("触发", Tstr)
+	funcv.Set("触发词", TStr)
+	funcv.Set("Class", classData)
+	dto.ValRunTrigger(TStr, Tstr, d.Val.NewDicVal(funcv), d.Val)
+	RunDic := dic_dto.NewRunDicEntry().
+		CloseTrigger().
+		SetGlobal_v(d.Val.G).
+		Set_v(funcv).
+		SetDic_v(d.Dic.Clone()).
+		WithRecursionDepth(d.RecursionDepth)
+	RunDic.ClearDicFuncs()
+	return dic_api.Api.DicRunLine(RunDic, str), true
 }

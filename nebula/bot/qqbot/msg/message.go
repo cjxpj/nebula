@@ -627,6 +627,13 @@ func (b *QQBot) ApproveJoinRequest(groupOpenID, memberOpenID, op, joinRequestID,
 		return fmt.Errorf("groupOpenID或memberOpenID为空")
 	}
 	url := fmt.Sprintf("/v2/groups/%s/approval_join_request/%s", groupOpenID, memberOpenID)
+	// 入参使用中文：同意/拒绝，映射为 QQ API 要求的英文值
+	switch op {
+	case "同意", "通过":
+		op = "approve"
+	case "拒绝":
+		op = "decline"
+	}
 	body := &ApproveJoinRequest{
 		Op:                   op,
 		JoinRequestID:        joinRequestID,

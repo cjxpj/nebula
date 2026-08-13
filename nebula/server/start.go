@@ -65,15 +65,21 @@ func StopNgrok() {
 	}
 }
 
+// StartEvent 启动事件，Event 为空时按普通触发词处理
+type StartEvent struct {
+	Event   string
+	Trigger string
+}
+
 // 启动服务器
-func Start(infoServerPath string) []string {
-	res := make([]string, 0)
+func Start(infoServerPath string) []StartEvent {
+	res := make([]StartEvent, 0)
 	if dto.ServerConfig.Ngrok != nil {
 		authToken := dto.ServerConfig.Ngrok.Token
 		ngrokUrl := dto.ServerConfig.Ngrok.Addr
 
 		if u, err := StartNgrok(authToken, ngrokUrl); err == nil {
-			res = append(res, fmt.Sprintf("Ngrok启动成功 %s", u))
+			res = append(res, StartEvent{Event: "Ngrok", Trigger: "启动 " + u})
 		} else {
 			debugLog.Errorf("Ngrok配置失败>%v", err)
 		}
@@ -112,7 +118,7 @@ func Start(infoServerPath string) []string {
 		}
 	}
 
-	res = append(res, "Main")
-	res = append(res, "启动首页")
+	res = append(res, StartEvent{Trigger: "Main"})
+	res = append(res, StartEvent{Event: "系统", Trigger: "首页"})
 	return res
 }

@@ -47,7 +47,13 @@ func Start() string {
 	// 遍历res，收集最后一个非空返回值作为启动页
 	var startupResult string
 	for _, t := range res {
-		if dicRes := dic_api.Api.DicRun(infoDic, t); dicRes != "" {
+		var dicRes string
+		if t.Event != "" {
+			dicRes = dic_api.Api.DicRunEvent(infoDic, t.Event, t.Trigger)
+		} else {
+			dicRes = dic_api.Api.DicRun(infoDic, t.Trigger)
+		}
+		if dicRes != "" {
 			fmt.Printf("%v\n", dicRes)
 			startupResult = dicRes
 		}

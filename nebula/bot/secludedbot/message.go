@@ -220,9 +220,9 @@ func dispatchPush(elems []pushElem, rawData json.RawMessage) {
 		}
 	}
 	// 全体禁言事件
-	isInternalEvent := false
+	isGroupEvent := false
 	if content == "" && meta.All == "All" && meta.Time != "" {
-		isInternalEvent = true
+		isGroupEvent = true
 		if meta.Time == "0" {
 			content = "全体禁言关闭"
 		} else {
@@ -231,7 +231,7 @@ func dispatchPush(elems []pushElem, rawData json.RawMessage) {
 	}
 	// 成员禁言/解禁事件
 	if content == "" && meta.People == "People" && meta.Time != "" {
-		isInternalEvent = true
+		isGroupEvent = true
 		content = "成员禁言 " + meta.Time
 	}
 	// 如果第一段就包含 Text（某些实现），也取
@@ -343,7 +343,7 @@ skipGroupCheck:
 		dicFile := v
 		msgMeta := meta
 		msgContent := content
-		msgIsInternal := isInternalEvent
+		msgIsGroupEvent := isGroupEvent
 		msgImgUrls := imgUrls
 		msgValData := valData
 
@@ -401,8 +401,8 @@ skipGroupCheck:
 			})
 
 			var rMsg string
-			if msgIsInternal {
-				rMsg = dic_api.Api.DicRunPrivate(dic, msgContent)
+			if msgIsGroupEvent {
+				rMsg = dic_api.Api.DicRunEvent(dic, "群事件", msgContent)
 			} else {
 				rMsg = dic_api.Api.DicRun(dic, msgContent)
 			}

@@ -221,6 +221,43 @@ func (m *dicImpl) DicRunPrivateVal(D *dic_dto.Dic, trigger string, v *dto.DicVal
 
 }
 
+// 运行特殊触发
+func (m *dicImpl) DicRunEvent(D *dic_dto.Dic, event string, trigger string) string {
+	newV := dto.NewDicVal()
+	newV.G = D.Val.G
+	return m.DicRunEventVal(D, event, trigger, newV)
+}
+
+// 运行特殊触发-自义定局部变量
+func (m *dicImpl) DicRunEventVal(D *dic_dto.Dic, event string, trigger string, v *dto.DicVal) string {
+
+	if D.FuncText != nil {
+		D.Data.LocalFunc = append(D.Data.LocalFunc, D.FuncText...)
+	}
+
+	if D.ClassText != nil {
+		maps.Copy(D.Data.LocalClass, D.ClassText)
+	}
+
+	var (
+		GetDic        []string
+		GetDicTrigger string
+	)
+	if D.Data.Special != nil {
+		GetDic, GetDicTrigger, _, _ = run.RunFor(D.Data.Special[event], trigger, 0)
+	}
+	D.Val.P.Set("触发词", trigger)
+	D.Val.P.Set("触发", GetDicTrigger)
+
+	dicRun := dic_dto.NewRunDicEntry().
+		SetV(D.Val).
+		SetDic(D.Data)
+	dicRun.Dic.MyFunc = D.MyFunc
+
+	return m.DicRunLine(dicRun, GetDic)
+
+}
+
 // 新建运行
 func (m *dicImpl) NewDicRunLine(D *dic_dto.DicEntry, txt []string) string {
 	D.Set_v(dto.NewVal())

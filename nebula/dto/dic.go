@@ -116,6 +116,7 @@ type DicInfo struct {
 	LocalStatic []*RegDicLine            `json:"内部"`
 	LocalFunc   []*BuildDicFunc          `json:"函数"`
 	LocalClass  map[string]*DicClassInfo `json:"整合包"`
+	Special     map[string][]*RegDicLine `json:"特殊"`
 }
 
 // 词库结构
@@ -137,28 +138,41 @@ type Param struct {
 }
 
 type DicClassInfo struct {
-	LocalValue  *Val            `json:"变量"`
-	LocalStatic []*RegDicLine   `json:"内部"`
-	LocalFunc   []*BuildDicFunc `json:"函数"`
+	LocalValue  *Val                     `json:"变量"`
+	LocalStatic []*RegDicLine            `json:"内部"`
+	LocalFunc   []*BuildDicFunc          `json:"函数"`
+	Special     map[string][]*RegDicLine `json:"特殊"`
 }
 
 // =================================================
 
 type DicClass struct {
-	LocalValue  *Val        `json:"变量"`
-	LocalFunc   []*BuildDic `json:"函数"`
-	LocalStatic []*BuildDic `json:"内部"`
+	LocalValue  *Val                   `json:"变量"`
+	LocalFunc   []*BuildDic            `json:"函数"`
+	LocalStatic []*BuildDic            `json:"内部"`
+	Special     map[string][]*BuildDic `json:"特殊"`
+}
+
+// NewDicClass 初始化整合包类，避免字段为 nil 导致 JSON 序列化输出 null。
+func NewDicClass() *DicClass {
+	return &DicClass{
+		LocalValue:  NewVal(),
+		LocalFunc:   make([]*BuildDic, 0),
+		LocalStatic: make([]*BuildDic, 0),
+		Special:     make(map[string][]*BuildDic),
+	}
 }
 
 type BuildValue struct {
-	Head          []string             `json:"头部"`
-	HeadLineNums  []int                `json:"-"` // 头部每行对应的原始文件行号（1-based）
-	Dic           []*BuildDic          `json:"词库"`
-	LocalStatic   []*BuildDic          `json:"内部"`
-	LocalFunc     []*BuildDic          `json:"函数"`
-	LocalClass    map[string]*DicClass `json:"整合包"`
-	MyFunc        map[string]DicFunc   `json:"自定义函数"`
-	BotImports    []string             `json:"bot引入"`
+	Head         []string               `json:"头部"`
+	HeadLineNums []int                  `json:"-"` // 头部每行对应的原始文件行号（1-based）
+	Dic          []*BuildDic            `json:"词库"`
+	LocalStatic  []*BuildDic            `json:"内部"`
+	LocalFunc    []*BuildDic            `json:"函数"`
+	LocalClass   map[string]*DicClass   `json:"整合包"`
+	Special      map[string][]*BuildDic `json:"特殊"`
+	MyFunc       map[string]DicFunc     `json:"自定义函数"`
+	BotImports   []string               `json:"bot引入"`
 }
 
 // 词库参数数据
@@ -198,8 +212,36 @@ func (v *BuildValue) Clone() *BuildValue {
 		LocalStatic: v.LocalStatic,
 		LocalFunc:   v.LocalFunc,
 		LocalClass:  v.LocalClass,
+		Special:     v.Special,
 		MyFunc:      v.MyFunc,
 	}
+}
+
+// ClassValues 返回整合包变量表（类名 -> 类变量），供 %类名.变量% 解析使用。
+func (v *BuildValue) ClassValues() map[string]*Val {
+	if v.LocalClass == nil {
+		return nil
+	}
+	m := make(map[string]*Val, len(v.LocalClass))
+	for name, c := range v.LocalClass {
+		if c != nil {
+			m[name] = c.LocalValue
+		}
+	}
+	return m
+}
+
+// ResolveClassData 解析类标识（string 类名 或 *DicClass 实例）为类数据。
+func (v *BuildValue) ResolveClassData(class any) *DicClass {
+	switch c := class.(type) {
+	case string:
+		if c != "" {
+			return v.LocalClass[c]
+		}
+	case *DicClass:
+		return c
+	}
+	return nil
 }
 
 // 关闭回收
@@ -207,6 +249,7 @@ func (v *BuildValue) Close() {
 	v.LocalFunc = nil
 	v.LocalStatic = nil
 	v.LocalClass = nil
+	v.Special = nil
 	v.Dic = nil
 	v.Head = nil
 }

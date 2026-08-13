@@ -1,4 +1,7 @@
 
+[系统]启动
+$打印 QQBot 已上线，AppId=%robot%$
+
 你好
 你好啊
 
@@ -7,16 +10,25 @@
 文本
 
 菜单
-$发送MD # 功能菜单\n## 请选择\n- 你好\n- 图片\n- 文本 {"rows":[{"buttons":[{"id":"1","render_data":{"label":"你好","visited_label":"你好","style":1},"action":{"type":2,"permission":{"type":2},"data":"你好","enter":true,"unsupport_tips":"请升级"}},{"id":"2","render_data":{"label":"图片","visited_label":"图片","style":1},"action":{"type":2,"permission":{"type":2},"data":"图片","enter":true,"unsupport_tips":"请升级"}}]}]}$
+$发送MD "# 功能菜单\n## 请选择\n- 你好\n- 图片\n- 文本" 按钮 你好 图片$
 
-[内部]入群
+[群事件]群成员进群
 $发送文本 欢迎 %成员% 加入本群！$
 
-[内部]退群
+[群事件]群成员退群
 $发送文本 %成员% 离开了本群$
 
-[内部]入群申请
-$发送MD %成员% 申请加入本群\n请管理员处理 {"rows":[{"buttons":[{"id":"1","render_data":{"label":"同意","visited_label":"已同意","style":1},"action":{"type":2,"permission":{"type":1},"data":"/同意","enter":true,"unsupport_tips":"请升级"}}]}]}$
+[群事件]入群申请
+$发送MD "%昵称%（%QQ%）申请加入本群\n请管理员处理" 按钮 #同意|同意_%QQ% #拒绝|拒绝_%QQ%$
 
-/同意
-$发送文本 已同意 %成员% 的入群申请！
+[按钮事件]同意_(.+)
+$入群审批 %群号% %括号1% 同意$
+已同意 %括号1% 的入群申请
+
+[按钮事件]拒绝_(.+)
+$入群审批 %群号% %括号1% 拒绝 不符合入群条件$
+已拒绝 %括号1% 的入群申请
+
+// 快捷菜单（自定义菜单）回调，管理端配置的功能 ID 作为触发词
+[菜单事件]帮助
+$发送文本 你好，%QQ%！这里是帮助菜单$

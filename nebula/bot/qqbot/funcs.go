@@ -126,25 +126,9 @@ func getSortedBotKeys() []string {
 	return keys
 }
 
-// ========== 群列表/用户列表记录 ==========
+// ========== 用户列表记录 ==========
 
 var recordMu sync.Mutex
-
-// RecordGroup 记录群号到 bot 目录下的 groups.json
-func RecordGroup(bot *qqbot_msg.RouterQQBot, groupOpenID string) {
-	if bot == nil || groupOpenID == "" {
-		return
-	}
-	p := filepath.Join(bot.FilePath, "groups.json")
-	recordMu.Lock()
-	defer recordMu.Unlock()
-	groups := loadStringSet(p)
-	if groups[groupOpenID] {
-		return // 已存在，跳过写入
-	}
-	groups[groupOpenID] = true
-	saveStringSet(p, groups)
-}
 
 // RecordUser 记录用户 ID+昵称到 bot 目录下的 users.json
 func RecordUser(bot *qqbot_msg.RouterQQBot, userID, username string) {
@@ -164,20 +148,6 @@ func RecordUser(bot *qqbot_msg.RouterQQBot, userID, username string) {
 	}
 	users[key] = true
 	saveStringSet(p, users)
-}
-
-// GetRecordedGroups 获取已记录的群列表
-func GetRecordedGroups(bot *qqbot_msg.RouterQQBot) []string {
-	if bot == nil {
-		return nil
-	}
-	groups := loadStringSet(filepath.Join(bot.FilePath, "groups.json"))
-	result := make([]string, 0, len(groups))
-	for g := range groups {
-		result = append(result, g)
-	}
-	sort.Strings(result)
-	return result
 }
 
 func loadStringSet(path string) map[string]bool {
@@ -284,101 +254,6 @@ var ActiveFuncs = map[string]dto.DicFunc{
 				return "发送失败: " + err.Error(), nil
 			}
 			return "发送成功", nil
-		},
-	},
-	"群发": {
-		L: "2",
-		Fn: func(d *dto.DicInputs) (any, error) {
-			bot := getBotByIndex(d.Inputs.Int(1))
-			if bot == nil {
-				return "QQBot未启用或未配置", nil
-			}
-			rMsg := d.Inputs.String(2)
-			if rMsg == "" {
-				return "内容为空", nil
-			}
-			rMsg = strings.ReplaceAll(rMsg, "\\r", "\n")
-			groups := GetRecordedGroups(bot)
-			if len(groups) == 0 {
-				return "没有已记录的群", nil
-			}
-			var success, fail int
-			for _, g := range groups {
-				if _, err := bot.API.ReplyGroupMessage("", g, rMsg); err != nil {
-					fail++
-				} else {
-					success++
-				}
-			}
-			return fmt.Sprintf("群发完成: 成功%d 失败%d", success, fail), nil
-		},
-	},
-	"群发MD": {
-		L: "2..",
-		Fn: func(d *dto.DicInputs) (any, error) {
-			bot := getBotByIndex(d.Inputs.Int(1))
-			if bot == nil {
-				return "QQBot未启用或未配置", nil
-			}
-			groups := GetRecordedGroups(bot)
-			if len(groups) == 0 {
-				return "没有已记录的群", nil
-			}
-
-			// 提取键盘参数（账号序号占参数1，内容从参数2开始）
-			l := d.Inputs.Len()
-			contentEnd := l
-			var kb *qqbot_msg.Keyboard
-			// 按钮只能出现在键值对边界（参数3、5、7...），且其后能解析出按钮定义才作为分隔符
-			for i := 3; i <= l; i++ {
-				if d.Inputs.String(i) != "按钮" {
-					continue
-				}
-				if (i-3)%2 != 0 {
-					continue // value 位置的"按钮"当作普通值
-				}
-				if i+1 <= l {
-					if kb = parseTextButtons(d, i+1, l); kb == nil {
-						continue
-					}
-				}
-				contentEnd = i - 1
-				break
-			}
-			pLen := contentEnd - 1 // 内容参数个数（去掉账号序号）
-
-			var success, fail int
-			if pLen == 1 || (pLen-1)%2 != 0 {
-				// 简单MD文本发送
-				text := d.Inputs.String(2)
-				for _, g := range groups {
-					if _, err := bot.API.ReplyGroupAnyMarkdownWithKeyboard("", g, text, kb); err != nil {
-						fail++
-					} else {
-						success++
-					}
-				}
-			} else {
-				// CustomTemplateId + key=value 参数对
-				list := d.Inputs.StringAfterList(3)
-				n := min(len(list), pLen-1)
-				params := make([]*qqbot_msg.MarkdownParams, 0, n/2)
-				for i := 0; i < n; i += 2 {
-					params = append(params, formatMDPair(list[i], list[i+1]))
-				}
-				md := &qqbot_msg.Markdown{
-					CustomTemplateId: d.Inputs.String(2),
-					Params:           params,
-				}
-				for _, g := range groups {
-					if _, err := bot.API.ReplyGroupMarkdownWithKeyboard("", g, md, kb); err != nil {
-						fail++
-					} else {
-						success++
-					}
-				}
-			}
-			return fmt.Sprintf("群发MD完成: 成功%d 失败%d", success, fail), nil
 		},
 	},
 	"群单发图": {
@@ -499,7 +374,7 @@ var ActiveFuncs = map[string]dto.DicFunc{
 		},
 	},
 	"入群审批": {
-		L: "4|5",
+		L: "4|5|6",
 		Fn: func(d *dto.DicInputs) (any, error) {
 			bot := getBotByIndex(d.Inputs.Int(1))
 			if bot == nil {
@@ -509,7 +384,8 @@ var ActiveFuncs = map[string]dto.DicFunc{
 			memberOpenID := d.Inputs.String(3)
 			op := d.Inputs.String(4)
 			joinRequestID := d.Inputs.String(5)
-			if err := bot.API.ApproveJoinRequest(groupOpenID, memberOpenID, op, joinRequestID, "", false); err != nil {
+			rejectReason := d.Inputs.String(6)
+			if err := bot.API.ApproveJoinRequest(groupOpenID, memberOpenID, op, joinRequestID, rejectReason, false); err != nil {
 				debugLog.Infof("[QQBot] 入群审批失败: %v", err)
 			}
 			return "", nil
@@ -669,26 +545,20 @@ var ReplyFuncs = map[string]dto.DicFunc{
 		},
 	},
 	"入群审批": {
-		L: "2|3",
+		L: "3|4",
 		Fn: func(d *dto.DicInputs) (any, error) {
 			ctx := GetPushContext()
 			if ctx == nil || ctx.Bot == nil || ctx.Bot.API == nil {
 				return "", nil
 			}
-			var groupOpenID, memberOpenID, op string
-			if d.Inputs.Len() == 3 {
-				groupOpenID = d.Inputs.String(1)
-				memberOpenID = d.Inputs.String(2)
-				op = d.Inputs.String(3)
-			} else {
-				groupOpenID = ctx.GroupOpenID
-				memberOpenID = d.Inputs.String(1)
-				op = d.Inputs.String(2)
-			}
+			groupOpenID := d.Inputs.String(1)
+			memberOpenID := d.Inputs.String(2)
+			op := d.Inputs.String(3)
+			rejectReason := d.Inputs.String(4)
 			if groupOpenID == "" {
 				return "", nil
 			}
-			if err := ctx.Bot.API.ApproveJoinRequest(groupOpenID, memberOpenID, op, "", "", false); err != nil {
+			if err := ctx.Bot.API.ApproveJoinRequest(groupOpenID, memberOpenID, op, "", rejectReason, false); err != nil {
 				debugLog.Infof("[QQBot] 入群审批失败: %v", err)
 			}
 			return "", nil

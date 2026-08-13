@@ -24,6 +24,8 @@ type RouterQQBot struct {
 	API *QQBot
 	// 全量消息艾特兼容
 	AtCompat bool
+	// 过滤开头斜杠指令前缀
+	FilterSlash bool
 	// 调试打印
 	Debug bool
 	// 备注名

@@ -66,7 +66,8 @@ func LoadConfig_qq(QQBot_Config *ini.Section, sectionName string) {
 		appId := QQBot_Config.Key("APPID").String()
 		secret := QQBot_Config.Key("密钥").String()
 		dicPath := QQBot_Config.Key("词库").String()
-		atCompat, _ := QQBot_Config.Key("全量艾特兼容").Bool()
+		atCompat := QQBot_Config.Key("全量艾特兼容").MustBool(true)
+		filterSlash := QQBot_Config.Key("过滤开头斜杠").MustBool(true)
 		debug, _ := QQBot_Config.Key("调试打印").Bool()
 		ws, _ := QQBot_Config.Key("WebSocket").Bool()
 		wsIntents := QQBot_Config.Key("监听码").MustInt(0)
@@ -82,16 +83,17 @@ func LoadConfig_qq(QQBot_Config *ini.Section, sectionName string) {
 		api.Debug = debug
 		ServerConfig.QQBots[sectionName] = &qqbot_msg.RouterQQBot{
 			// 缓存 50 秒，3 分钟内没有访问就删除
-			LastMsg:   cache.New(50*time.Second, 3*time.Minute),
-			Open:      true,
-			Addr:      "/" + QQBot_Config.Key("访问路径").String(),
-			FilePath:  dicPath,
-			API:       api,
-			AtCompat:  atCompat,
-			Debug:     debug,
-			Remark:    QQBot_Config.Key("备注").String(),
-			Ws:        ws,
-			WsIntents: wsIntents,
+			LastMsg:     cache.New(50*time.Second, 3*time.Minute),
+			Open:        true,
+			Addr:        "/" + QQBot_Config.Key("访问路径").String(),
+			FilePath:    dicPath,
+			API:         api,
+			AtCompat:    atCompat,
+			FilterSlash: filterSlash,
+			Debug:       debug,
+			Remark:      QQBot_Config.Key("备注").String(),
+			Ws:          ws,
+			WsIntents:   wsIntents,
 		}
 
 		// 启动 WS 连接

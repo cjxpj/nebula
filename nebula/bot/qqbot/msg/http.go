@@ -18,12 +18,6 @@ func (b *QQBot) Send(path string, body any, respObj any) error {
 	}
 	headers := GetQQBotAuthHeader(b.Key.AccessToken)
 
-	if b.Debug {
-		bodyJson, _ := json.Marshal(body)
-		debugLog.Infof("[QQBot 发送] %s%s\n", APIURL, path)
-		debugLog.Infof("[QQBot 请求] %s\n", string(bodyJson))
-	}
-
 	err := postJson(APIURL+path, body, headers, respObj)
 
 	if b.Debug {
@@ -42,10 +36,6 @@ func (b *QQBot) Get(path string, respObj any) error {
 		return err
 	}
 	headers := GetQQBotAuthHeader(b.Key.AccessToken)
-
-	if b.Debug {
-		debugLog.Infof("[QQBot GET] %s%s\n", APIURL, path)
-	}
 
 	err := getJson(APIURL+path, headers, respObj)
 
@@ -66,12 +56,6 @@ func (b *QQBot) Patch(path string, body any, respObj any) error {
 	}
 	headers := GetQQBotAuthHeader(b.Key.AccessToken)
 
-	if b.Debug {
-		bodyJson, _ := json.Marshal(body)
-		debugLog.Infof("[QQBot PATCH] %s%s\n", APIURL, path)
-		debugLog.Infof("[QQBot 请求] %s\n", string(bodyJson))
-	}
-
 	err := patchJson(APIURL+path, body, headers, respObj)
 
 	if b.Debug {
@@ -90,12 +74,6 @@ func (b *QQBot) Put(path string, body any, respObj any) error {
 		return err
 	}
 	headers := GetQQBotAuthHeader(b.Key.AccessToken)
-
-	if b.Debug {
-		bodyJson, _ := json.Marshal(body)
-		debugLog.Infof("[QQBot PUT] %s%s\n", APIURL, path)
-		debugLog.Infof("[QQBot 请求] %s\n", string(bodyJson))
-	}
 
 	err := putJson(APIURL+path, body, headers, respObj)
 
@@ -226,6 +204,7 @@ func postJson(url string, body any, headers http.Header, respObj any) error {
 	if err != nil {
 		return fmt.Errorf("编码 JSON 请求失败: %w", err)
 	}
+	debugLog.Infof("[QQBot POST] %s\n%s\n", url, string(data))
 
 	req, err := http.NewRequest("POST", url, bytes.NewBuffer(data))
 	if err != nil {
@@ -264,6 +243,7 @@ func postJson(url string, body any, headers http.Header, respObj any) error {
 }
 
 func getJson(url string, headers http.Header, respObj any) error {
+	debugLog.Infof("[QQBot GET] %s\n", url)
 	req, err := http.NewRequest("GET", url, nil)
 	if err != nil {
 		return fmt.Errorf("构造请求失败: %w", err)
@@ -301,6 +281,7 @@ func patchJson(url string, body any, headers http.Header, respObj any) error {
 	if err != nil {
 		return fmt.Errorf("编码 JSON 请求失败: %w", err)
 	}
+	debugLog.Infof("[QQBot PATCH] %s\n%s\n", url, string(data))
 
 	req, err := http.NewRequest("PATCH", url, bytes.NewBuffer(data))
 	if err != nil {
@@ -340,6 +321,7 @@ func putJson(url string, body any, headers http.Header, respObj any) error {
 	if err != nil {
 		return fmt.Errorf("编码 JSON 请求失败: %w", err)
 	}
+	debugLog.Infof("[QQBot PUT] %s\n%s\n", url, string(data))
 
 	req, err := http.NewRequest("PUT", url, bytes.NewBuffer(data))
 	if err != nil {
