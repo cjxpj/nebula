@@ -4,7 +4,6 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
-	"strings"
 	"testing"
 
 	"github.com/cjxpj/nebula/debugLog"
@@ -23,7 +22,7 @@ func chdirToAppWin() {
 func Test_log(t *testing.T) {
 	t.Run("build_dic", func(t *testing.T) {
 		chdirToAppWin()
-		text := strings.NewReader(`开头
+		text := `开头
 		#引入=f
 		
 		Main
@@ -40,8 +39,8 @@ func Test_log(t *testing.T) {
 		[L]内部
 		ok` + "\r\n" + `3
 
-		`)
-		r := Parse("test.n", text)
+		`
+		r := BuildDic("test.n", text)
 		debugLog.Infof("===========词库===========")
 		debugLog.Infof("%v", utils.AnyToString(r))
 		debugLog.Infof("===========结尾===========")

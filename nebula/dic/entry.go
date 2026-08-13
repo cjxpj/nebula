@@ -1258,26 +1258,6 @@ func Entry(r *dic_dto.DicEntry, txt []string, funcV *dic_dto.DicFunc) error {
 	return nil
 }
 
-// UnmarshalJSON 尝试将给定的 JSON 文本解析为 map[string]any 或 []any。
-// 它返回解析后的数据以及遇到的任何错误。
-func UnmarshalJSON(jsonText string) (any, error) {
-	var err error
-	// 尝试将 JSON 文本解析为 map[string]any
-	var testjs map[string]any
-	if err = json.Unmarshal([]byte(jsonText), &testjs); err == nil {
-		return testjs, nil
-	}
-
-	// 尝试将 JSON 文本解析为 []any
-	var thisjson []any
-	if err = json.Unmarshal([]byte(jsonText), &thisjson); err == nil {
-		return thisjson, nil
-	}
-
-	// 如果两次尝试都失败，返回错误
-	return nil, fmt.Errorf("解析 JSON 失败: %v", err)
-}
-
 // SplitValChain 按 >>> 分割赋予值内容，跳过 $...$ 函数块内部的 >>>，用于赋予值连续执行
 func SplitValChain(text string) []string {
 	var parts []string

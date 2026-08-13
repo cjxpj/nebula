@@ -99,49 +99,6 @@ type BuildDic struct {
 	LineNums []int    `json:"-"` // 每行文本对应的原始文件行号（1-based），用于调试定位
 }
 
-// =================================================
-
-type DicLine []string
-
-type DicInfoData struct {
-	Data  *DicInfo `json:"data"`
-	Value *Val     `json:"value"`
-}
-
-type DicInfo struct {
-	Value      *Val                     `json:"变量"`
-	Path       string                   `json:"路径"`
-	Head       DicLine                  `json:"头部"`
-	Dic        []*RegDicLine            `json:"词库"`
-	DicFuncs   map[string]*BuildDicFunc `json:"函数"`
-	LocalClass map[string]*DicClassInfo `json:"整合包"`
-}
-
-// 词库结构
-type RegDicLine struct {
-	Trigger    string  `json:"触发词"`
-	CodeBloack DicLine `json:"代码块"`
-}
-
-type BuildDicFunc struct {
-	Name   string                                                     `json:"name"`
-	Params []Param                                                    `json:"params"`
-	Text   DicLine                                                    `json:"text"`
-	Func   func(dic *DicInfoData, input utils.DicInputs) (any, error) `json:"-"`
-}
-
-type Param struct {
-	Name    string `json:"name"`
-	Default string `json:"default"`
-}
-
-type DicClassInfo struct {
-	LocalValue *Val                     `json:"变量"`
-	DicFuncs   map[string]*BuildDicFunc `json:"函数"`
-}
-
-// =================================================
-
 type DicClass struct {
 	LocalValue *Val                   `json:"变量"`
 	DicFuncs   map[string][]*BuildDic `json:"函数"`

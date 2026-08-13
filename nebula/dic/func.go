@@ -18,31 +18,6 @@ import (
 )
 
 // 函数跟变量
-func RunLine(d *dto.DicInfoData, text string) any {
-	var resA any
-	output := run.BuildFuncStr(text, func(valStr []string) (string, bool) {
-		input := utils.NewDicInputs()
-		input.SetString(valStr)
-		resAny, _ := RunFuncLine(d, input)
-		if resStr, ok := resAny.(string); ok {
-			return resStr, false
-		}
-		return "", false
-	}, func(s string) (string, bool) {
-		resAny := d.Data.Value.Text(d.Value, s)
-		if resStr, ok := resAny.(string); ok {
-			return resStr, false
-		}
-		resA = resAny
-		return "", true
-	})
-	if resA != nil {
-		return resA
-	}
-	return output
-}
-
-// 函数跟变量
 func Runs(d *dic_dto.DicFunc, text string) any {
 	var resA any
 	output := run.BuildFuncStr(text, func(valStr []string) (string, bool) {
@@ -140,25 +115,6 @@ func Run(d *dic_dto.DicFunc, text string) string {
 		return s, false
 	})
 	return output
-}
-
-func RunFuncLine(d *dto.DicInfoData, dic_i utils.DicInputs) (any, error) {
-	if dic_i.LenOk(-1) {
-		return "$$", nil
-	}
-
-	inputs := utils.NewDicInputs()
-	inputs.Set(make([]any, dic_i.Len()+1))
-
-	for i, line := range dic_i.List {
-		inputs.List[i] = d.Data.Value.Text(d.Value, count.RunCountText(dto.NewDicVals(d.Value, d.Data.Value), line))
-	}
-
-	if fn := d.Data.DicFuncs[dic_i.String(0)]; fn != nil && fn.Func != nil {
-		return fn.Func(d, inputs)
-	}
-
-	return "$" + strings.Join(dic_i.StringList(), " ") + "$", nil
 }
 
 func Funcs(d *dic_dto.DicFunc, dic_i *utils.DicInputs) (any, error) {
@@ -275,12 +231,10 @@ func Funcs(d *dic_dto.DicFunc, dic_i *utils.DicInputs) (any, error) {
 		}
 	}
 
-	lines := make([]any, dic_i.Len()+1)
 	inputs := utils.NewDicInputs()
 	inputs.Set(make([]any, dic_i.Len()+1))
 
 	for i, line := range dic_i.List {
-		lines[i] = line
 		inputs.List[i] = d.Val.Text(count.RunCountText(d.Val, line))
 	}
 

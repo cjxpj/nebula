@@ -1,20 +1,32 @@
 package run
 
 import (
-	"bufio"
-	"fmt"
-	"io"
 	"maps"
 	"regexp"
 	"strings"
 	"sync"
 
 	"github.com/cjxpj/nebula/appfiles"
-	dicBuild "github.com/cjxpj/nebula/build"
 	"github.com/cjxpj/nebula/debugLog"
 	"github.com/cjxpj/nebula/dto"
 	"github.com/cjxpj/nebula/utils"
 )
+
+// triggerRegexCache 缓存触发词编译结果，避免每次匹配都重新编译正则。
+var triggerRegexCache sync.Map
+
+// compileTriggerRegex 编译触发词正则（带缓存）。编译失败返回 nil。
+func compileTriggerRegex(t string) *regexp.Regexp {
+	if v, ok := triggerRegexCache.Load(t); ok {
+		return v.(*regexp.Regexp)
+	}
+	regex, err := regexp.Compile("^(" + t + ")$")
+	if err != nil {
+		return nil
+	}
+	actual, _ := triggerRegexCache.LoadOrStore(t, regex)
+	return actual.(*regexp.Regexp)
+}
 
 // 自义定替换函数
 func ReplaceFunc(input, old string, replaceFunc func(string) string) string {
@@ -75,9 +87,8 @@ func BuildFuncStr(
 
 	// 余下外部文本
 	if outside := str[start:]; len(outside) > 0 {
-		if out, _ := process2(outside); true {
-			result.WriteString(out)
-		}
+		out, _ := process2(outside)
+		result.WriteString(out)
 	}
 
 	return result.String()
@@ -218,145 +229,6 @@ func ReplaceProcessedContent(str, strStart, strEnd string, process func(string) 
 	return result.String()
 }
 
-func SplitFuncString(input, delimiterStart, delimiterEnd string) []string {
-	var result []string
-	start := 0
-
-	for start < len(input) {
-		// 查找起始分隔符的位置
-		openIndex := strings.Index(input[start:], delimiterStart)
-		if openIndex == -1 {
-			// 如果没有找到起始分隔符，直接添加剩余的部分
-			remaining := strings.Fields(input[start:])
-			result = append(result, remaining...)
-			break
-		}
-		openIndex += start
-
-		// 添加起始分隔符之前的部分
-		parts := strings.Fields(input[start:openIndex])
-		result = append(result, parts...)
-
-		// 查找结束分隔符的位置，处理嵌套情况
-		nestedLevel := 1
-		closeIndex := openIndex + len(delimiterStart)
-
-		for nestedLevel > 0 && closeIndex < len(input) {
-			nextOpenIndex := strings.Index(input[closeIndex:], delimiterStart)
-			nextCloseIndex := strings.Index(input[closeIndex:], delimiterEnd)
-
-			if nextCloseIndex == -1 {
-				// 如果找不到结束分隔符，直接添加剩余的部分
-				remaining := strings.Fields(input[start:])
-				result = append(result, remaining...)
-				return result
-			}
-
-			if nextOpenIndex != -1 && nextOpenIndex < nextCloseIndex {
-				// 找到嵌套的起始分隔符
-				nestedLevel++
-				closeIndex += nextOpenIndex + len(delimiterStart)
-			} else {
-				// 找到结束分隔符
-				nestedLevel--
-				closeIndex += nextCloseIndex + len(delimiterEnd)
-			}
-		}
-
-		// 将起始分隔符和结束分隔符之间的内容连同前面的内容作为整体添加到结果中
-		result[len(result)-1] += input[openIndex:closeIndex]
-
-		// 更新开始位置
-		start = closeIndex
-	}
-
-	return result
-}
-
-func ReplaceProcessedsContent(str, strStart, strEnd string, process func(string) string) string {
-	var result strings.Builder
-	start := 0
-
-	for start < len(str) {
-		// 查找开始子串的位置
-		openIndex := strings.Index(str[start:], strStart)
-		if openIndex == -1 {
-			// 如果找不到开始标记，添加剩余的部分到结果字符串
-			result.WriteString(str[start:])
-			break
-		}
-		openIndex += start
-
-		// 查找结束子串的位置，处理嵌套
-		nestedLevel := 1
-		closeIndex := openIndex + len(strStart)
-
-		for nestedLevel > 0 && closeIndex < len(str) {
-			nextOpenIndex := strings.Index(str[closeIndex:], strStart)
-			nextCloseIndex := strings.Index(str[closeIndex:], strEnd)
-
-			if nextCloseIndex == -1 {
-				// 如果找不到结束标记，添加剩余的部分到结果字符串
-				result.WriteString(str[start:])
-				return result.String()
-			}
-
-			if nextOpenIndex != -1 && nextOpenIndex < nextCloseIndex {
-				// 找到嵌套的开始标记
-				nestedLevel++
-				closeIndex += nextOpenIndex + len(strStart)
-			} else {
-				// 找到结束标记
-				nestedLevel--
-				closeIndex += nextCloseIndex + len(strEnd)
-			}
-		}
-
-		// 添加从开始到当前开始标记之前的内容到结果字符串
-		result.WriteString(str[start:openIndex])
-
-		// 提取标记之间的内容并处理
-		content := str[openIndex+len(strStart) : closeIndex-len(strEnd)]
-		processedContent := process(content)
-
-		// 将处理后的内容添加到结果字符串
-		result.WriteString(processedContent)
-
-		// 更新开始位置为结束标记之后
-		start = closeIndex
-	}
-
-	return result.String()
-}
-
-// 遍历触发词文本
-func GetTriggerCodeBlock(jsonData []*dto.RegDicLine, trigger string, runNum int) ([]string, string, int, *regexp.Regexp) {
-	jsonDataLen := len(jsonData)
-
-	if runNum > jsonDataLen {
-		return nil, "", 0, nil
-	}
-
-	// 遍历每个条目并输出
-	for i := runNum; i < jsonDataLen; i++ {
-		item := jsonData[i]
-		text := item.CodeBloack
-
-		// 使用动态编译的正则表达式
-		t := item.Trigger
-
-		regex, err := regexp.Compile("^(" + t + ")$")
-		if err != nil {
-			continue
-		}
-		if regex.MatchString(trigger) {
-			return text, t, i, regex
-		}
-	}
-
-	return nil, "", 0, nil
-}
-
 // 遍历触发词文本
 func RunFor(jsonData []*dto.BuildDic, trigger string, runNum int) ([]string, string, int, *regexp.Regexp) {
 	jsonDataLen := len(jsonData)
@@ -373,8 +245,8 @@ func RunFor(jsonData []*dto.BuildDic, trigger string, runNum int) ([]string, str
 		// 使用动态编译的正则表达式
 		t := item.Trigger
 
-		regex, err := regexp.Compile("^(" + t + ")$")
-		if err != nil {
+		regex := compileTriggerRegex(t)
+		if regex == nil {
 			continue
 		}
 		if regex.MatchString(trigger) {
@@ -408,8 +280,8 @@ func RunFors(jsonData []*dto.BuildDic, trigger string, runNum int) ([]string, st
 			t = t[:tindex]
 		}
 
-		regex, err := regexp.Compile("^(" + t + ")$")
-		if err != nil {
+		regex := compileTriggerRegex(t)
+		if regex == nil {
 			continue
 		}
 		if regex.MatchString(trigger) {
@@ -888,317 +760,4 @@ func BuildDic(dicPath, text string) *dto.BuildValue {
 	// }
 
 	return result
-}
-
-func parseParams(parts []string) []dto.Param {
-	params := make([]dto.Param, 0, len(parts))
-	for _, p := range parts {
-		if p == "" {
-			continue
-		}
-		if name, def, ok := strings.Cut(p, "="); ok {
-			params = append(params, dto.Param{
-				Name:    name,
-				Default: def,
-			})
-		} else {
-			params = append(params, dto.Param{
-				Name:    p,
-				Default: "",
-			})
-		}
-	}
-	return params
-}
-
-func Parse(dicPath string, reader io.Reader) *dto.DicInfoData {
-	scanner := bufio.NewScanner(reader)
-	scanner.Buffer(make([]byte, 1024), 1024*1024)
-
-	var (
-		dicTrigger string
-		dicTexts   dto.DicLine
-
-		dicText         []*dto.RegDicLine
-		dicTextLineNums []int
-		funcFn          map[string]*dto.BuildDicFunc = make(map[string]*dto.BuildDicFunc)
-
-		dicValue = dto.NewVal()
-		// []*dto.DicInfo
-
-		neibu   bool
-		chajian bool
-		special string
-
-		runhead         = true
-		runheadtext     dto.DicLine
-		runheadLineNums []int
-
-		zhushi  bool
-		duohang bool
-		fRunAll bool
-		suojin  bool
-
-		classText = make(map[string]*dto.DicClassInfo)
-		classN    string
-
-		fHeaderName string
-	)
-
-	commit := func() {
-		if dicTrigger == "" {
-			return
-		}
-
-		/* ===== 函数 ===== */
-		if chajian {
-			chajian = false
-
-			parts := strings.Split(dicTrigger, " ")
-			if len(parts) == 0 {
-				dicTrigger = ""
-				classN = ""
-				dicTexts = nil
-				dicTextLineNums = nil
-				return
-			}
-
-			fn := &dto.BuildDicFunc{
-				Name:   parts[0],
-				Params: parseParams(parts[1:]),
-				Text:   dicTexts,
-				Func:   nil,
-			}
-
-			if classN != "" {
-				if classText[classN] == nil {
-					classText[classN] = &dto.DicClassInfo{
-						LocalValue: dto.NewVal(),
-						DicFuncs:   make(map[string]*dto.BuildDicFunc),
-					}
-				}
-				classText[classN].DicFuncs[fn.Name] = fn
-			} else {
-				funcFn[fn.Name] = fn
-			}
-
-			dicTrigger = ""
-			classN = ""
-			dicTexts = nil
-			dicTextLineNums = nil
-			return
-		}
-
-		/* ===== 普通 ===== */
-
-		item := &dto.RegDicLine{
-			Trigger:    dicTrigger,
-			CodeBloack: dicTexts,
-		}
-
-		// 内部/特殊已并入统一函数，遗留解析不再单独收集
-		if neibu {
-			neibu = false
-		} else if special != "" {
-			special = ""
-		} else {
-			dicText = append(dicText, item)
-		}
-
-		dicTrigger = ""
-		classN = ""
-		dicTexts = nil
-		dicTextLineNums = nil
-	}
-
-	lineNum := 0
-	for scanner.Scan() {
-		lineNum++
-		line := scanner.Text()
-		lineLen := len(line)
-
-		if line != "" && !suojin {
-			line = strings.TrimLeft(line, "\t")
-		}
-
-		/* ===== 多行注释 ===== */
-
-		if zhushi {
-			if lineLen >= 2 && line[lineLen-2:] == "*/" {
-				zhushi = false
-			}
-			continue
-		}
-		if strings.HasPrefix(line, "/*") {
-			zhushi = true
-			continue
-		}
-
-		/* ===== 单行注释 / 指令 ===== */
-
-		if strings.HasPrefix(line, "//") {
-			switch line {
-			case "//@关闭缩进":
-				suojin = true
-			case "//@启用缩进":
-				suojin = false
-			}
-
-			if sendMsg, ok := strings.CutPrefix(line, "//@打印="); ok {
-				fmt.Println("["+dicPath+"]", sendMsg)
-			}
-
-			if fRunAll, ok := strings.CutPrefix(line, "//@函数头="); ok && fRunAll != "" {
-				fHeaderName = fRunAll
-			}
-			continue
-		}
-
-		/* ===== 头部 ===== */
-
-		if runhead {
-			// #引入= 是预编译指令，不进入词行
-			if lineLen > 8 && line[:8] == "#引入=" {
-				path := strings.TrimSpace(line[8:])
-				switch path {
-				case "@NapCat", "@QQBot":
-					continue
-				}
-			}
-			if vType, vPrefix, vSuffix := dicBuild.ValTextTest(line); vType == 6 {
-				if packPath, ok := strings.CutPrefix(vSuffix, "#引入="); ok && packPath != "" {
-					var files []string
-					var wg sync.WaitGroup
-					// 判断是目录还是文件（Parse）
-					if dirName, ok := strings.CutSuffix(packPath, "/*"); ok {
-						dir := "private/" + dirName
-						fq := utils.NewFileQueue(dir)
-						if fq.DirExists() {
-							list, _ := fq.GetFileList()
-							for _, v := range list {
-								files = append(files, dir+"/"+v)
-							}
-						}
-					} else {
-						if !strings.HasSuffix(packPath, ".n") {
-							packPath += ".n"
-						}
-						files = append(files, "private/"+packPath)
-					}
-					for _, fp := range files {
-						wg.Add(1)
-						go func() {
-							defer wg.Done()
-							data, err := utils.NewFileQueue(fp).OpenFile()
-							if err != nil {
-								return
-							}
-							defer data.Close()
-							sub := Parse(fp, data)
-							dicValue.Set(vPrefix, sub)
-						}()
-					}
-					wg.Wait()
-					continue
-				}
-			}
-
-			if line == "" {
-				runhead = false
-				continue
-			}
-			runheadtext = append(runheadtext, line)
-			runheadLineNums = append(runheadLineNums, lineNum)
-			continue
-		}
-
-		/* ===== 正文 ===== */
-
-		if dicTrigger != "" {
-			if fRunAll {
-				if line == "}#" {
-					fRunAll = false
-				} else {
-					dicTexts = append(dicTexts, line)
-					dicTextLineNums = append(dicTextLineNums, lineNum)
-				}
-				continue
-			}
-
-			if !duohang && line == "<?n" {
-				duohang = true
-				continue
-			}
-
-			if duohang {
-				if line == "?>" {
-					duohang = false
-				} else {
-					dicTexts = append(dicTexts, line)
-					dicTextLineNums = append(dicTextLineNums, lineNum)
-				}
-				continue
-			}
-
-			if line == "" {
-				commit()
-				continue
-			}
-
-			dicTexts = append(dicTexts, line)
-			dicTextLineNums = append(dicTextLineNums, lineNum)
-			continue
-		}
-
-		if line == "" {
-			continue
-		}
-
-		/* ===== 新触发 ===== */
-
-		dicTrigger = line
-
-		switch category, class, rest := parseTriggerPrefix(line); category {
-		case "函数":
-			chajian = true
-			classN = class
-			dicTrigger = rest
-		case "内部":
-			neibu = true
-			classN = class
-			dicTrigger = rest
-		case "":
-		default:
-			special = category
-			classN = class
-			dicTrigger = rest
-		}
-
-		if fHeaderName != "" && chajian {
-			dicTrigger = fHeaderName + "." + dicTrigger
-		}
-
-		if strings.HasSuffix(dicTrigger, " #{") {
-			fRunAll = true
-			dicTrigger = dicTrigger[:len(dicTrigger)-3]
-		}
-	}
-
-	if err := scanner.Err(); err != nil {
-		debugLog.Infof("Scanner error for %s: %v", dicPath, err)
-	}
-
-	commit()
-
-	return &dto.DicInfoData{
-		Data: &dto.DicInfo{
-			Value:      dicValue,
-			Path:       dicPath,
-			Head:       runheadtext,
-			Dic:        dicText,
-			DicFuncs:   funcFn,
-			LocalClass: classText,
-		},
-		Value: dto.NewVal(),
-	}
 }

@@ -34,13 +34,6 @@ func NewDicVal() *DicVal {
 	}
 }
 
-func NewDicVals(g, v *Val) *DicVal {
-	return &DicVal{
-		G: g,
-		P: v,
-	}
-}
-
 // value变量
 type Val struct {
 	objlock sync.Map
