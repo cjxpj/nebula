@@ -18,6 +18,12 @@ $ErrorActionPreference = "Stop"
 
 if (-not $SdkPath) {
     $SdkPath = "D:\AppData\Huawei\DevEco Studio\sdk\default\openharmony"
+} elseif (-not (Test-Path (Join-Path $SdkPath "native\llvm\bin\clang.exe"))) {
+    # DEVECO_SDK_HOME may point to ...\sdk without default\openharmony; auto-append.
+    $candidate = Join-Path $SdkPath "default\openharmony"
+    if (Test-Path (Join-Path $candidate "native\llvm\bin\clang.exe")) {
+        $SdkPath = $candidate
+    }
 }
 
 # 路径含空格（如 "DevEco Studio"）时转成 8.3 短路径，避免 cgo 的 --sysroot 参数被空格拆分

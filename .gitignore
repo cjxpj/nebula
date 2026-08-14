@@ -8,3 +8,4 @@ __debug_bin.exe*
 win.exe
 android/app/src/main/jniLibs/arm64-v8a/libnebula_arm64.so
 nebula/app/win/nebula.exe
+.trae/

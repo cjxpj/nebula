@@ -178,6 +178,26 @@
             "detail": "一键打包：编译 .so → 拷贝 jniLibs → Gradle → dist/nebula.apk"
         },
         {
+            "type": "process",
+            "label": "一键打包鸿蒙",
+            "command": "powershell.exe",
+            "args": [
+                "-NoProfile",
+                "-ExecutionPolicy",
+                "Bypass",
+                "-File",
+                "harmony/build_hap.ps1",
+                "-Arch",
+                "arm64"
+            ],
+            "problemMatcher": [],
+            "group": {
+                "kind": "build",
+                "isDefault": true
+            },
+            "detail": "同步版本号 + 编译 libnebula.so + hvigor 打包 HAP/app + 复制到 dist"
+        },
+        {
             "type": "shell",
             "label": "upx 压缩",
             "command": "upx",
@@ -296,13 +316,14 @@
                 "buildLinux_amd64",
                 "upx 压缩",
                 "一键打包 APK",
+                "一键打包鸿蒙",
                 "发布: git 提交并打标签",
                 "发布: 推送 GitHub + Gitee",
                 "发布: 创建 GitHub Release",
                 "发布: 创建 Gitee Release"
             ],
             "problemMatcher": [],
-            "detail": "一键打包 win+linux+android(upx压缩) → 提交/tag → 推送 GitHub+Gitee → 创建 Releases"
+            "detail": "一键打包 win+linux+android+鸿蒙(upx压缩) → 提交/tag → 推送 GitHub+Gitee → 创建 Releases"
         }
     ],
     "inputs": [
