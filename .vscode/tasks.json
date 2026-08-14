@@ -316,14 +316,13 @@
                 "buildLinux_amd64",
                 "upx 压缩",
                 "一键打包 APK",
-                "一键打包鸿蒙",
                 "发布: git 提交并打标签",
                 "发布: 推送 GitHub + Gitee",
                 "发布: 创建 GitHub Release",
                 "发布: 创建 Gitee Release"
             ],
             "problemMatcher": [],
-            "detail": "一键打包 win+linux+android+鸿蒙(upx压缩) → 提交/tag → 推送 GitHub+Gitee → 创建 Releases"
+            "detail": "一键打包 win+linux+android(upx压缩) → 提交/tag → 推送 GitHub+Gitee → 创建 Releases"
         }
     ],
     "inputs": [

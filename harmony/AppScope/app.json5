@@ -2,8 +2,8 @@
   "app": {
     "bundleName": "com.cjxpj.nebula",
     "vendor": "cjxpj",
-    "versionCode": 161902,
-    "versionName": "16.19.2",
+    "versionCode": 162000,
+    "versionName": "16.20.0",
     "icon": "$media:app_icon",
     "label": "$string:app_name"
   }
