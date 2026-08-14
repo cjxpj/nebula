@@ -21,6 +21,9 @@ import (
 
 func Start() string {
 
+	// 启动时清空历史日志文件
+	dic_server.ClearServerLogs()
+
 	file := utils.NewFile()
 
 	loadConfig()

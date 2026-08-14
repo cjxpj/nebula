@@ -624,10 +624,12 @@ func Entry(r *dic_dto.DicEntry, txt []string, funcV *dic_dto.DicFunc) error {
 							r.Output.Add(resRun)
 
 							if r.Sys_v.For.IsFor && RunDic.Sys_v.For.IsFor && RunDic.Sys_v.For.Jump {
+								r.Sys_v.For.Jump = true
 								return nil
 							}
 
 							if r.Sys_v.ForEach.IsFor && RunDic.Sys_v.ForEach.IsFor && RunDic.Sys_v.ForEach.Jump {
+								r.Sys_v.ForEach.Jump = true
 								return nil
 							}
 
@@ -645,11 +647,13 @@ func Entry(r *dic_dto.DicEntry, txt []string, funcV *dic_dto.DicFunc) error {
 						}
 
 						if r.Sys_v.For.IsFor && RunDic.Sys_v.For.IsFor && RunDic.Sys_v.For.Jump {
+							r.Sys_v.For.Jump = true
 							RunDic.Close()
 							return nil
 						}
 
 						if r.Sys_v.ForEach.IsFor && RunDic.Sys_v.ForEach.IsFor && RunDic.Sys_v.ForEach.Jump {
+							r.Sys_v.ForEach.Jump = true
 							RunDic.Close()
 							return nil
 						}

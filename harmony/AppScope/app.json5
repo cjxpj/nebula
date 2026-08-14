@@ -1,0 +1,10 @@
+{
+  "app": {
+    "bundleName": "com.cjxpj.nebula",
+    "vendor": "cjxpj",
+    "versionCode": 161901,
+    "versionName": "16.19.1",
+    "icon": "$media:app_icon",
+    "label": "$string:app_name"
+  }
+}

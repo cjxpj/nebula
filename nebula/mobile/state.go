@@ -69,3 +69,33 @@ func GetStartupUrl() string {
 	defer mu.RUnlock()
 	return startupUrl
 }
+
+// Notification 待发送的系统通知。
+type Notification struct {
+	Title   string
+	Content string
+}
+
+var (
+	notifMu   sync.Mutex
+	notifList []Notification
+)
+
+// PushNotification 将通知放入队列，供鸿蒙端通过 NAPI 轮询拉取。
+func PushNotification(title, content string) {
+	notifMu.Lock()
+	notifList = append(notifList, Notification{Title: title, Content: content})
+	notifMu.Unlock()
+}
+
+// PopNotification 弹出队首通知；无通知时 ok 为 false。
+func PopNotification() (title, content string, ok bool) {
+	notifMu.Lock()
+	defer notifMu.Unlock()
+	if len(notifList) == 0 {
+		return "", "", false
+	}
+	n := notifList[0]
+	notifList = notifList[1:]
+	return n.Title, n.Content, true
+}

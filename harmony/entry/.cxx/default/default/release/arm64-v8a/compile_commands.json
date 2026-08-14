@@ -1,0 +1,8 @@
+[
+{
+  "directory": "C:/Users/admin/Documents/go/nebula/harmony/entry/.cxx/default/default/release/arm64-v8a",
+  "command": "D:\\AppData\\Huawei\\DEVECO~1\\sdk\\default\\OPENHA~1\\native\\llvm\\bin\\CLANG_~1.EXE --target=aarch64-linux-ohos --gcc-toolchain=\"D:/AppData/Huawei/DevEco Studio/sdk/default/openharmony/native/llvm\" --sysroot=\"D:/AppData/Huawei/DevEco Studio/sdk/default/openharmony/native/sysroot\" -Dentry_EXPORTS -I\"D:/AppData/Huawei/DevEco Studio/sdk/default/hms/native/sysroot/usr/include\" -IC:/Users/admin/Documents/go/nebula/harmony/entry/src/main/cpp/include -fdata-sections -ffunction-sections -funwind-tables -fstack-protector-strong -no-canonical-prefixes -fno-addrsig -Wa,--noexecstack -Wformat -Werror=format-security   -D__MUSL__ -O2 -DNDEBUG  -fPIC -o CMakeFiles\\entry.dir\\napi_init.cpp.o -c C:\\Users\\admin\\Documents\\go\\nebula\\harmony\\entry\\src\\main\\cpp\\napi_init.cpp",
+  "file": "C:\\Users\\admin\\Documents\\go\\nebula\\harmony\\entry\\src\\main\\cpp\\napi_init.cpp",
+  "output": "CMakeFiles\\entry.dir\\napi_init.cpp.o"
+}
+]

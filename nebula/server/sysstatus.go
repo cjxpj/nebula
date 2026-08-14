@@ -3,6 +3,8 @@
 package dic_server
 
 import (
+	"os"
+	"path/filepath"
 	"runtime"
 	"strings"
 	"time"
@@ -46,12 +48,6 @@ func getSysStatus() (map[string]any, error) {
 		cpuInfo["model"] = strings.TrimSpace(infos[0].ModelName)
 	}
 
-	// ===== 负载 =====
-	loadInfo := map[string]any{"load1": 0.0, "load5": 0.0, "load15": 0.0}
-	if l, err := sysloadAvg(); err == nil {
-		loadInfo = l
-	}
-	cpuInfo["load"] = loadInfo
 	result["cpu"] = cpuInfo
 
 	// ===== 磁盘 IO（读写速率 + 使用率） =====
@@ -60,12 +56,15 @@ func getSysStatus() (map[string]any, error) {
 	if ioErr == nil && ioAfterErr == nil {
 		diskIO = calcDiskIO(ioBefore, ioAfter, time.Since(start).Seconds())
 	}
-	diskIO["percent"] = diskIOPercent(ioBefore, ioAfter, time.Since(start).Seconds())
+	diskIOPct := diskIOPercent(ioBefore, ioAfter, time.Since(start).Seconds())
+	diskIO["percent"] = diskIOPct
 	result["disk_io"] = diskIO
 
 	// ===== 内存 =====
 	memInfo := map[string]any{"total": uint64(0), "used": uint64(0), "free": uint64(0), "percent": 0.0}
+	memPercent := 0.0
 	if v, err := mem.VirtualMemory(); err == nil {
+		memPercent = v.UsedPercent
 		memInfo = map[string]any{
 			"total":   v.Total,
 			"used":    v.Used,
@@ -76,19 +75,48 @@ func getSysStatus() (map[string]any, error) {
 	result["mem"] = memInfo
 
 	// ===== 磁盘 =====
+	exeDir := ""
+	if exe, err := os.Executable(); err == nil {
+		exeDir = filepath.Dir(exe)
+	}
+
+	parts, _ := disk.Partitions(false)
+	appMountKey := detectAppMount(exeDir, parts)
+	appMountRaw := ""
+
 	disks := []sysDiskUsage{}
-	if parts, err := disk.Partitions(false); err == nil {
-		for _, p := range parts {
-			if skipVirtualFs(p.Fstype) {
-				continue
-			}
-			usage, err := disk.Usage(p.Mountpoint)
-			if err != nil || usage == nil || usage.Total == 0 {
-				continue
-			}
+	seen := map[string]bool{}
+	for _, p := range parts {
+		if skipVirtualFs(p.Fstype) {
+			continue
+		}
+		key := normalizeMount(p.Mountpoint)
+		if key == "" || seen[key] {
+			continue
+		}
+		usage, err := disk.Usage(p.Mountpoint)
+		if err != nil || usage == nil || usage.Total == 0 {
+			continue
+		}
+		seen[key] = true
+		if appMountKey != "" && key == appMountKey {
+			appMountRaw = p.Mountpoint
+		}
+		disks = append(disks, sysDiskUsage{
+			Mount:   p.Mountpoint,
+			FsType:  p.Fstype,
+			Total:   usage.Total,
+			Used:    usage.Used,
+			Free:    usage.Free,
+			Percent: usage.UsedPercent,
+		})
+	}
+	// 星云程序所在磁盘不在分区列表时，单独追加
+	if appMountKey != "" && !seen[appMountKey] && exeDir != "" {
+		if usage, err := disk.Usage(exeDir); err == nil && usage != nil && usage.Total > 0 {
+			appMountRaw = appMountName(exeDir)
 			disks = append(disks, sysDiskUsage{
-				Mount:   p.Mountpoint,
-				FsType:  p.Fstype,
+				Mount:   appMountRaw,
 				Total:   usage.Total,
 				Used:    usage.Used,
 				Free:    usage.Free,
@@ -97,6 +125,14 @@ func getSysStatus() (map[string]any, error) {
 		}
 	}
 	result["disk"] = disks
+	result["app_mount"] = appMountRaw
+
+	// ===== CPU 温度 =====
+	cpuTemp := sysCpuTemp()
+
+	// ===== 综合负载（各资源使用率加权平均） =====
+	result["overall_load"] = calcOverallLoad(percent, memPercent, diskIOPct)
+	result["cpu_temp"] = cpuTemp
 
 	// ===== 主机信息 =====
 	hostInfo := map[string]any{
@@ -120,6 +156,16 @@ func getSysStatus() (map[string]any, error) {
 	result["time"] = time.Now().Unix()
 
 	return result, nil
+}
+
+// calcOverallLoad 计算综合负载：对 CPU / 内存 / 磁盘 IO 使用率加权平均。
+func calcOverallLoad(cpuP, memP, ioP float64) float64 {
+	// CPU 50% · 内存 30% · IO 20%
+	total := 0.50*cpuP + 0.30*memP + 0.20*ioP
+	if total > 100 {
+		total = 100
+	}
+	return total
 }
 
 // calcDiskIO 由前后两次磁盘 IO 计数器计算读写速率（KB/s）
@@ -160,4 +206,62 @@ func skipVirtualFs(fsType string) bool {
 		return true
 	}
 	return false
+}
+
+// pathContains 判断 dir 是否位于 mount 挂载点之下（Windows 忽略大小写）
+func pathContains(dir, mount string) bool {
+	if dir == "" || mount == "" {
+		return false
+	}
+	dir = filepath.Clean(dir)
+	mount = filepath.Clean(mount)
+	if runtime.GOOS == "windows" {
+		dir = strings.ToLower(dir)
+		mount = strings.ToLower(mount)
+	}
+	if len(dir) < len(mount) || dir[:len(mount)] != mount {
+		return false
+	}
+	if len(dir) == len(mount) {
+		return true
+	}
+	// 挂载点本身以分隔符结尾，或下一字符是分隔符，才视为其子路径
+	return os.IsPathSeparator(mount[len(mount)-1]) || os.IsPathSeparator(dir[len(mount)])
+}
+
+// appMountName 生成星云程序所在磁盘的挂载点名称（用于分区列表未覆盖时兜底）
+func appMountName(dir string) string {
+	if runtime.GOOS == "windows" {
+		if vol := filepath.VolumeName(dir); vol != "" {
+			return vol
+		}
+	}
+	return dir
+}
+
+// normalizeMount 规范化挂载点，作为去重与匹配的 key。
+// Windows 忽略大小写并去掉尾部 / 或 \（把 C: 和 C:\ 归一），其它平台保持原样。
+func normalizeMount(m string) string {
+	if runtime.GOOS == "windows" {
+		return strings.ToLower(strings.TrimRight(strings.TrimSpace(m), `/\`))
+	}
+	return m
+}
+
+// detectAppMount 计算星云程序所在磁盘的规范化挂载点。
+// Windows 直接取盘符；其它平台取包含 exeDir 的最长挂载点前缀。
+func detectAppMount(exeDir string, parts []disk.PartitionStat) string {
+	if exeDir == "" {
+		return ""
+	}
+	if runtime.GOOS == "windows" {
+		return normalizeMount(filepath.VolumeName(exeDir))
+	}
+	best := ""
+	for _, p := range parts {
+		if p.Mountpoint != "" && pathContains(exeDir, p.Mountpoint) && len(p.Mountpoint) > len(best) {
+			best = p.Mountpoint
+		}
+	}
+	return normalizeMount(best)
 }

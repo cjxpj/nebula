@@ -1,4 +1,4 @@
-//go:build linux && !so
+//go:build linux && !so && !ohos
 
 package main
 

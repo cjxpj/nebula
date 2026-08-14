@@ -1,0 +1,6 @@
+# ninja log v6
+15	115	8084402579947546	CMakeFiles/entry.dir/napi_init.cpp.o	d8e075f132ccb4d9
+15	25	8084403861197099	clean	856a253bd232881d
+116	456	8084402580958235	C:/Users/admin/Documents/go/nebula/harmony/entry/build/default/intermediates/cmake/default/obj/arm64-v8a/libentry.so	b207be8c42b2cfa3
+17	104	8084403886757737	CMakeFiles/entry.dir/napi_init.cpp.o	d8e075f132ccb4d9
+105	437	8084403887636039	C:/Users/admin/Documents/go/nebula/harmony/entry/build/default/intermediates/cmake/default/obj/arm64-v8a/libentry.so	b207be8c42b2cfa3

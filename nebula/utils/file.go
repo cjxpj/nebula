@@ -66,8 +66,19 @@ func LogStop(text string) {
 	os.Exit(0)
 }
 
+var appDirOverride string
+
+// SetAppDir 设置应用数据目录。
+// 鸿蒙端通过 NAPI 注入沙箱目录；GOOS=linux 下默认返回的相对路径不可写，会触发 ErrorStop 退出。
+func SetAppDir(dir string) {
+	appDirOverride = dir
+}
+
 // GetAppDir 获取应用目录
 func GetAppDir() string {
+	if appDirOverride != "" {
+		return appDirOverride
+	}
 	switch runtime.GOOS {
 	case "android":
 		return "/storage/emulated/0/Documents/" + GPATH

@@ -1,0 +1,3 @@
+# HarmonyOS 混淆规则
+# 如需开启 release 混淆，请在下方按需配置 keep 规则
+-keep

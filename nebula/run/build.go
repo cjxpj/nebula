@@ -337,7 +337,7 @@ func Web(dicPath string, lines []string) *dto.BuildValue {
 	for _, line := range lines {
 		if line != "" {
 			if !suojin {
-				line = strings.TrimLeft(line, " ")
+				line = strings.TrimLeft(line, " \t")
 			}
 		}
 		lineLen := len(line)
@@ -503,7 +503,7 @@ func BuildDic(dicPath, text string) *dto.BuildValue {
 	for dic_i, line := range lines {
 		if line != "" {
 			if !suojin {
-				line = strings.TrimLeft(line, " ")
+				line = strings.TrimLeft(line, " \t")
 			}
 		}
 		lineLen := len(line)

@@ -1,6 +1,7 @@
 package dic_server
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"encoding/base64"
@@ -76,8 +77,14 @@ type HttpOpUiConfig_opui struct {
 }
 
 type HttpOpUiConfig_bg struct {
-	Type string `json:"type"` // "url" | "local" | ""
-	Data string `json:"data"` // URL 或 base64
+	Light HttpOpUiConfig_bgItem `json:"light"` // 亮色主题背景
+	Dark  HttpOpUiConfig_bgItem `json:"dark"`  // 暗色主题背景
+}
+
+type HttpOpUiConfig_bgItem struct {
+	Type  string `json:"type"`  // "url" | "local" | ""
+	Data  string `json:"data"`  // URL 或 base64
+	Color string `json:"color"` // 无背景图时的自定义背景色（如 #f5f5f5），留空表示默认
 }
 
 type HttpOpUiConfig_ftp struct {
@@ -220,6 +227,199 @@ func broadcastOpuiNotifyExcept(msg []byte, excludeIP string) {
 		if err := conn.WriteMessage(websocket.TextMessage, msg); err != nil {
 			delete(opuiNotifyClients, conn)
 		}
+	}
+}
+
+// maxServerLogLines 面板回放日志时最多在内存中收集的最近行数（防止过大卡顿）
+const maxServerLogLines = 20000
+
+// serverLogPageSize 面板回放日志时每页默认返回的行数
+const serverLogPageSize = 300
+
+// serverLogDir 返回服务端日志目录（应用储存目录下的 database/log，绝对路径）
+func serverLogDir() string {
+	p := filepath.Join(utils.GetAppDir(), "database", "log")
+	if abs, err := filepath.Abs(p); err == nil {
+		p = abs
+	}
+	return p
+}
+
+// serverLogFq 返回当前小时对应的日志文件句柄（database/log/YYYYMMDD/HH.txt，按小时区分）
+func serverLogFq() *utils.FileQueue {
+	now := time.Now()
+	return utils.NewFileQueue(filepath.Join(serverLogDir(), now.Format("20060102"), now.Format("15")+".txt"))
+}
+
+// init 重定向标准输出，监听终端全部信息：写入日志文件并实时推送到 OPUI 面板
+func init() {
+	originalStdout := os.Stdout
+	r, w, err := os.Pipe()
+	if err != nil {
+		return
+	}
+	os.Stdout = w
+
+	go func() {
+		reader := bufio.NewReader(r)
+		for {
+			raw, readErr := reader.ReadString('\n')
+			if len(raw) > 0 {
+				// 回显到真实终端，保证开发调试时仍能看到输出
+				_, _ = originalStdout.WriteString(raw)
+				processServerLogLine(raw)
+			}
+			if readErr != nil {
+				return
+			}
+		}
+	}()
+}
+
+// processServerLogLine 处理一行终端输出：写入日志文件并广播到在线面板
+func processServerLogLine(raw string) {
+	line := strings.TrimRight(raw, "\r\n")
+	if line == "" {
+		return
+	}
+	level := parseLogLevel(line)
+
+	// 追加写入当前小时的日志文件，作为面板历史回放的持久化来源
+	serverLogFq().AppendToFile(line + "\n")
+
+	// 无在线面板时跳过序列化，避免不必要的开销
+	opuiNotifyClientsMu.Lock()
+	hasClient := len(opuiNotifyClients) > 0
+	opuiNotifyClientsMu.Unlock()
+	if !hasClient {
+		return
+	}
+	data, _ := json.Marshal(map[string]string{
+		"type":  "server_log",
+		"level": level,
+		"line":  line,
+	})
+	broadcastOpuiNotify(data)
+}
+
+// listServerLogFiles 递归列出 database/log 下所有 .txt 日志文件，按路径升序（即时间升序）
+func listServerLogFiles() []string {
+	var files []string
+	filepath.Walk(serverLogDir(), func(path string, info os.FileInfo, err error) error {
+		if err != nil || info.IsDir() {
+			return nil
+		}
+		if strings.HasSuffix(info.Name(), ".txt") {
+			files = append(files, path)
+		}
+		return nil
+	})
+	sort.Strings(files)
+	return files
+}
+
+// readFileTailLines 流式读取文件末尾最多 need 行（按时间升序返回）。
+// 使用固定容量环形缓冲，内存占用始终有界，避免大日志文件一次性加载导致内存暴涨。
+func readFileTailLines(path string, need int) []string {
+	if need <= 0 {
+		return nil
+	}
+	f, err := os.Open(path)
+	if err != nil {
+		return nil
+	}
+	defer f.Close()
+
+	reader := bufio.NewReaderSize(f, 64*1024)
+	ring := make([]string, need)
+	head := 0   // 下一个写入位置
+	filled := 0 // 环形缓冲中已保存的行数
+	for {
+		raw, readErr := reader.ReadString('\n')
+		if len(raw) > 0 {
+			line := strings.TrimRight(raw, "\r\n")
+			if line != "" {
+				ring[head] = line
+				head = (head + 1) % need
+				if filled < need {
+					filled++
+				}
+			}
+		}
+		if readErr != nil {
+			break
+		}
+	}
+
+	// 从最旧到最新依次取出，保持时间升序
+	start := head - filled
+	if start < 0 {
+		start += need
+	}
+	lines := make([]string, 0, filled)
+	for i := 0; i < filled; i++ {
+		lines = append(lines, ring[(start+i)%need])
+	}
+	return lines
+}
+
+// collectRecentLogLines 收集最近的日志行（时间升序），最多 maxLines 行
+func collectRecentLogLines(maxLines int) []string {
+	files := listServerLogFiles()
+	var lines []string
+	for i := len(files) - 1; i >= 0 && len(lines) < maxLines; i-- {
+		need := maxLines - len(lines)
+		fileLines := readFileTailLines(files[i], need)
+		// 前置到结果前，保持整体时间升序
+		lines = append(fileLines, lines...)
+	}
+	return lines
+}
+
+// readServerLogs 分页读取最近日志：跳过最新的 skip 行，返回其后 limit 行；hasMore 表示是否还有更早的日志
+func readServerLogs(limit, skip int) ([]map[string]string, bool) {
+	if limit <= 0 {
+		limit = serverLogPageSize
+	}
+	if skip < 0 {
+		skip = 0
+	}
+	lines := collectRecentLogLines(maxServerLogLines)
+	total := len(lines)
+	end := total - skip
+	if end <= 0 {
+		return []map[string]string{}, false
+	}
+	start := end - limit
+	if start < 0 {
+		start = 0
+	}
+	logs := make([]map[string]string, 0, end-start)
+	for _, l := range lines[start:end] {
+		logs = append(logs, map[string]string{"level": parseLogLevel(l), "line": l})
+	}
+	return logs, start > 0
+}
+
+// ClearServerLogs 清空 database/log 下的全部日志文件
+func ClearServerLogs() {
+	utils.NewFileQueue(serverLogDir()).DeleteFolder()
+}
+
+// parseLogLevel 从日志行首的 [Level] 提取级别，仅识别已知级别，其余默认 Info
+func parseLogLevel(line string) string {
+	if len(line) == 0 || line[0] != '[' {
+		return "Info"
+	}
+	end := strings.IndexByte(line, ']')
+	if end <= 1 {
+		return "Info"
+	}
+	switch line[1:end] {
+	case "Debug", "Info", "Warning", "Error":
+		return line[1:end]
+	default:
+		return "Info"
 	}
 }
 
@@ -2166,30 +2366,35 @@ func OpUI(w http.ResponseWriter, r *http.Request, getpath string) {
 		case "get_bg":
 			db, err := dic_funcs.GetGlobalDB()
 			if err != nil {
-				w.Write([]byte(`{"type":"","data":""}`))
+				w.Write([]byte(`{"light":{"type":"","data":""},"dark":{"type":"","data":""}}`))
 				return
 			}
 			if e := dic_funcs.EnsureFsTable(db, "opui_bg"); e != nil {
-				w.Write([]byte(`{"type":"","data":""}`))
+				w.Write([]byte(`{"light":{"type":"","data":""},"dark":{"type":"","data":""}}`))
 				return
 			}
-			var bgData HttpOpUiConfig_bg
 			var data string
 			err = db.QueryRow(`SELECT data FROM "opui_bg" WHERE key='bg'`).Scan(&data)
 			if err != nil {
-				w.Write([]byte(`{"type":"","data":""}`))
+				w.Write([]byte(`{"light":{"type":"","data":""},"dark":{"type":"","data":""}}`))
 				return
 			}
-			if err := json.Unmarshal([]byte(data), &bgData); err != nil {
-				// 旧格式：data 为纯文本，需同时读取 type 列
-				var bgType string
-				err2 := db.QueryRow(`SELECT type FROM "opui_bg" WHERE key='bg'`).Scan(&bgType)
-				if err2 != nil {
-					bgData.Type = ""
-				} else {
-					bgData.Type = bgType
+
+			bgData := HttpOpUiConfig_bg{}
+			// 新格式：{"light":{...},"dark":{...}}
+			if err := json.Unmarshal([]byte(data), &bgData); err != nil ||
+				(bgData.Light.Type == "" && bgData.Light.Data == "" && bgData.Light.Color == "" &&
+					bgData.Dark.Type == "" && bgData.Dark.Data == "" && bgData.Dark.Color == "") {
+				// 旧格式：{"type":..,"data":..} 或纯文本，迁移为亮暗共用同一背景
+				var old HttpOpUiConfig_bgItem
+				if e := json.Unmarshal([]byte(data), &old); e != nil {
+					// 纯文本旧格式，需同时读取 type 列
+					var bgType string
+					_ = db.QueryRow(`SELECT type FROM "opui_bg" WHERE key='bg'`).Scan(&bgType)
+					old = HttpOpUiConfig_bgItem{Type: bgType, Data: data}
 				}
-				bgData.Data = data
+				bgData.Light = old
+				bgData.Dark = old
 			}
 			r, _ := json.Marshal(bgData)
 			w.Write(r)
@@ -2228,7 +2433,7 @@ func OpUI(w http.ResponseWriter, r *http.Request, getpath string) {
 						type = excluded.type,
 						data = excluded.data,
 						updated_at = excluded.updated_at
-				`, j.Type, string(bgJson), now)
+				`, "", string(bgJson), now)
 			}
 			if err != nil {
 				http.Error(w, `{"status":"error","error":"save failed"}`, http.StatusInternalServerError)
@@ -3490,6 +3695,23 @@ func OpUI(w http.ResponseWriter, r *http.Request, getpath string) {
 				resp["errorLine"] = errorLine
 			}
 			jsonResp, _ := json.Marshal(resp)
+			w.Write(jsonResp)
+			return
+
+		case "get_server_logs":
+			var j struct {
+				Limit int `json:"limit"`
+				Skip  int `json:"skip"`
+			}
+			_ = json.Unmarshal(h.Data, &j)
+			logs, hasMore := readServerLogs(j.Limit, j.Skip)
+			jsonResp, _ := json.Marshal(map[string]any{"logs": logs, "hasMore": hasMore})
+			w.Write(jsonResp)
+			return
+
+		case "clear_server_logs":
+			ClearServerLogs()
+			jsonResp, _ := json.Marshal(map[string]any{"ok": true})
 			w.Write(jsonResp)
 			return
 

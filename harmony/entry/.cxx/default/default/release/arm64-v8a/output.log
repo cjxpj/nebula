@@ -1,0 +1,4 @@
+ninja: Entering directory `C:\Users\admin\Documents\go\nebula\harmony\entry\.cxx\default\default\release\arm64-v8a'
+[1/2] Building CXX object CMakeFiles/entry.dir/napi_init.cpp.o
+clang++: warning: argument unused during compilation: '--gcc-toolchain=D:/AppData/Huawei/DevEco Studio/sdk/default/openharmony/native/llvm' [-Wunused-command-line-argument]
+[2/2] Linking CXX shared library C:\Users\admin\Documents\go\nebula\harmony\entry\build\default\intermediates\cmake\default\obj\arm64-v8a\libentry.so
