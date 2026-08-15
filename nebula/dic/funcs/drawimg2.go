@@ -49,7 +49,7 @@ func (ndi *NDrawImg) GetColor() *color.NRGBA {
 	return ndi.color
 }
 
-// 创建画布
+// 创建画布（返回面对像对象）
 func drawImgNew(d *dto.DicInputs) (any, error) {
 	var img *image.RGBA
 
@@ -174,12 +174,68 @@ func drawImgNew(d *dto.DicInputs) (any, error) {
 		return nil, fmt.Errorf("解析字体失败：%s", err)
 	}
 
-	return &NDrawImg{
+	return newDrawClass(&NDrawImg{
 		img:   img,
 		color: &color.NRGBA{0, 0, 0, 255}, // 这里可以保留默认
 		font:  font,
 		size:  1.0,
-	}, nil
+	}), nil
+}
+
+// newDrawClass 将画布包装为面对像 Class，方法闭包捕获同一画布实例。
+func newDrawClass(img *NDrawImg) *dto.DicClass {
+	instance := &dto.DicClass{
+		LocalValue: dto.NewVal().Set("_画布_", img),
+	}
+	instance.Fn = map[string]dto.DicFunc{
+		"获取":    wrapDraw(img, drawImgGet, "0|1"),
+		"旋转":    wrapDraw(img, drawImgRotate, "1|2"),
+		"圆角":    wrapDraw(img, drawImgRoundCorners, "0|1|2"),
+		"灰度":    wrapDraw(img, drawImgGrayscale, "0"),
+		"全图马赛克": wrapDraw(img, drawImgAllMosaic, "0|1"),
+		"字体":    wrapDraw(img, drawImgLoadFont, "1"),
+		"大小":    wrapDraw(img, drawImgSetSize, "1"),
+		"设置颜色":  wrapDraw(img, drawImgSetColor, "0|1|2|3|4"),
+		"文本":    wrapDraw(img, drawImgText, "3|4|5|6|7"),
+		"点":     wrapDraw(img, drawImgPoint, "2|3"),
+		"线":     wrapDraw(img, drawImgLine, "4|5"),
+		"喷漆":    wrapDraw(img, drawImgBrushLine, "4|5|6|7|8"),
+		"波浪":    wrapDraw(img, drawImgWaveLine, "4|5|6|7"),
+		"油漆桶":   wrapDraw(img, drawImgFloodFill, "2|3"),
+		"方形":    wrapDraw(img, drawImgRectangleFill, "4|5|6"),
+		"方形描边":  wrapDraw(img, drawImgRectangleStroke, "4|5|6"),
+		"椭圆":    wrapDraw(img, drawImgEllipseFill, "4|5"),
+		"椭圆描边":  wrapDraw(img, drawImgEllipse, "4|5"),
+		"圆形":    wrapDraw(img, drawImgPieFill, "2|3|4|5|6"),
+		"圆形描边":  wrapDraw(img, drawImgPie, "2|3|5|6"),
+		"多边形":   wrapDraw(img, drawImgPolygon, "3.."),
+		"多边形描边": wrapDraw(img, drawImgPolygons, "2.."),
+		"图片":    wrapDraw(img, drawImgPaste, "1|2|3|4|5|6|7|8"),
+		"圆弧":    wrapDraw(img, drawImgArc, "5|6"),
+		"随机点":   wrapDraw(img, drawImgRandomDots, "0|1"),
+		"随机线条":  wrapDraw(img, drawImgRandomLines, "0|1"),
+		"高斯模糊":  wrapDraw(img, drawImgGaussianBlur, "4"),
+		"马赛克":   wrapDraw(img, drawImgMosaic, "4"),
+	}
+	return instance
+}
+
+// wrapDraw 将依赖画布（第一参数）的自由函数包装为画布方法。
+func wrapDraw(img *NDrawImg, fn func(*dto.DicInputs) (any, error), l string) dto.DicFunc {
+	return dto.DicFunc{
+		L: l,
+		Fn: func(d *dto.DicInputs) (any, error) {
+			inputs := utils.NewDicInputs()
+			list := make([]any, 0, d.Inputs.Len()+2)
+			list = append(list, "")
+			list = append(list, img)
+			for i := 1; i <= d.Inputs.Len(); i++ {
+				list = append(list, d.Inputs.Get(i))
+			}
+			inputs.Set(list)
+			return fn(dto.NewDicInputsWithOutput(d.Dic, d.V, &inputs, d.Output))
+		},
+	}
 }
 
 // 获取画笔颜色

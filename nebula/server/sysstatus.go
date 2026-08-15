@@ -154,6 +154,7 @@ func getSysStatus() (map[string]any, error) {
 	}
 	result["host"] = hostInfo
 	result["time"] = time.Now().Unix()
+	result["run_time"] = int64(time.Since(serverStartTime).Seconds())
 
 	return result, nil
 }

@@ -126,7 +126,7 @@ func Funcs(d *dic_dto.DicFunc, dic_i *utils.DicInputs) (any, error) {
 		return "", nil
 	}
 
-	// 创建类包实例
+	// 创建 Class 实例
 	if dic_i.String(0) == "new" {
 		return newClassInstance(d, dic_i)
 	}
@@ -167,7 +167,7 @@ func Funcs(d *dic_dto.DicFunc, dic_i *utils.DicInputs) (any, error) {
 			}
 		}
 		if classData == nil {
-			return "", errors.New("非整合包")
+			return "", errors.New("非Class")
 		}
 
 		if isV {
@@ -186,10 +186,10 @@ func Funcs(d *dic_dto.DicFunc, dic_i *utils.DicInputs) (any, error) {
 		}
 
 		if dic_i.LenOk(0, 1) {
-			return "未知整合包方法", nil
+			return "未知Class方法", nil
 		}
 
-		// 整合包局部函数
+		// Class 局部函数
 		if res, ok := runClassMethod(d, classData, dic_i.StringAfterList(1)); ok {
 			return res, nil
 		}
@@ -303,16 +303,16 @@ func paramCountError(d *dic_dto.DicFunc, name, rule string, actual int) error {
 	return err
 }
 
-// newClassInstance 创建类包实例并执行构造函数：$new 类名$
+// newClassInstance 创建 Class 实例并执行构造函数：$new 类名$
 // 返回实例数据（*DicClass），可赋值给变量后用 %变量.成员% 读取、$.变量 函数$ 调用。
 func newClassInstance(d *dic_dto.DicFunc, dic_i *utils.DicInputs) (any, error) {
 	className := dic_i.String(1)
 	if className == "" {
 		return "", errors.New("new 参数错误：$new 类名$")
 	}
-	classData := d.Dic.LocalClass[className]
+	classData := d.Dic.Class[className]
 	if classData == nil {
-		return "", fmt.Errorf("非整合包：%s", className)
+		return "", fmt.Errorf("非Class：%s", className)
 	}
 
 	newVal := dto.NewVal()
@@ -322,6 +322,7 @@ func newClassInstance(d *dic_dto.DicFunc, dic_i *utils.DicInputs) (any, error) {
 	instance := &dto.DicClass{
 		LocalValue: newVal,
 		DicFuncs:   classData.DicFuncs,
+		Fn:         classData.Fn,
 	}
 
 	// 执行构造函数 [函数:类名]new
@@ -345,8 +346,38 @@ func newClassInstance(d *dic_dto.DicFunc, dic_i *utils.DicInputs) (any, error) {
 }
 
 // runClassMethod 执行类方法（函数）：methodArgs 为 [方法名, 参数...]。
+// 优先匹配 Class.Fn 自定义函数，再回退到 BuildDic 函数。
 // 返回执行结果与是否命中方法。
 func runClassMethod(d *dic_dto.DicFunc, classData *dto.DicClass, methodArgs []string) (any, bool) {
+	// 自定义函数优先
+	if fn, ok := classData.Fn[methodArgs[0]]; ok {
+		inputs := utils.NewDicInputs()
+		list := make([]any, len(methodArgs))
+		list[0] = methodArgs[0]
+		for i := 1; i < len(methodArgs); i++ {
+			list[i] = d.Val.Text(count.RunCountText(d.Val, methodArgs[i]))
+		}
+		inputs.Set(list)
+		if !inputs.LenOk(fn.L) {
+			paramCountError(d, methodArgs[0], fn.L, inputs.Len())
+			return "", true
+		}
+		funcv := dto.NewVal().
+			Set("触发", methodArgs[0]).
+			Set("触发词", strings.Join(methodArgs, " ")).
+			Set("Class", classData)
+		newV := d.Val.NewDicVal(funcv)
+		res, err := fn.Fn(dto.NewDicInputsWithOutput(d.Dic, newV, &inputs, d.Output))
+		if err != nil {
+			d.Sys.Stop.Store(true)
+			if err.Error() != "stop" {
+				d.Output.Clear()
+				d.Output.Add(fmt.Sprintf("[%s]%s(line:%d)：%v", d.Val.Get("_词库路径_"), methodArgs[0], d.CurLine, err))
+			}
+		}
+		return res, true
+	}
+
 	TStr := strings.Join(methodArgs, " ")
 	str, Tstr, _, regex := run.RunFor(classData.DicFuncs["函数"], TStr, 0)
 	if regex == nil {

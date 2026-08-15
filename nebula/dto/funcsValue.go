@@ -19,5 +19,4 @@ type RegisterDicFunc struct {
 	Name string
 	L    string
 	Fn   func(*DicInputs) (any, error)
-	List []RegisterDicFunc
 }

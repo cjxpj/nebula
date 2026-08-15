@@ -271,7 +271,9 @@ func qqBOTGroupRun(payload *qqbot_msg.Payload, bot *qqbot_msg.RouterQQBot) {
 		}()).
 		Set("robot", appId).
 		Set("Robot", appId).
-		Set("头像", "http://q.qlogo.cn/qqapp/"+appId+"/"+userID+"/640")
+		Set("头像", "http://q.qlogo.cn/qqapp/"+appId+"/"+userID+"/640").
+		Set("MsgId", m.ID).
+		Set("MessageID", m.ID)
 
 	for i, id := range atIDs {
 		valData.Set(fmt.Sprintf("AT%d", i), id)
@@ -545,7 +547,9 @@ func qqBOTGroupATRun(payload *qqbot_msg.Payload, bot *qqbot_msg.RouterQQBot) {
 		}()).
 		Set("robot", appId).
 		Set("Robot", appId).
-		Set("头像", "http://q.qlogo.cn/qqapp/"+appId+"/"+userID+"/640")
+		Set("头像", "http://q.qlogo.cn/qqapp/"+appId+"/"+userID+"/640").
+		Set("MsgId", m.ID).
+		Set("MessageID", m.ID)
 
 	// 词库
 	for _, v := range botDicList {
@@ -795,9 +799,7 @@ func qqBOTGroupEventRun(payload *qqbot_msg.Payload, bot *qqbot_msg.RouterQQBot) 
 	// 因为 PUT /interactions/{id} 会消耗 interaction，之后再发带 event_id 的消息会被拒绝
 	if interactionEvent != nil {
 		code := qqbot_msg.InteractionCodeSuccess
-		if ctx != nil {
-			code = qqbot_msg.InteractionResponseCode(ctx.InteractionCode)
-		}
+		code = qqbot_msg.InteractionResponseCode(ctx.InteractionCode)
 		bot.API.RespondInteraction(interactionEvent, code)
 	}
 }
@@ -1025,8 +1027,8 @@ func runGroupEventDic(bot *qqbot_msg.RouterQQBot, ctx *PushContext, valData *dto
 			L: "1",
 			Fn: func(d *dto.DicInputs) (any, error) {
 				code := d.Inputs.Int(1)
-				if ctx := GetPushContext(d); ctx != nil {
-					ctx.InteractionCode = code
+				if pc := GetPushContext(d); pc != nil {
+					pc.InteractionCode = code
 				}
 				return "", nil
 			},
@@ -1165,7 +1167,9 @@ func qqBOTGroupPrivateRun(payload *qqbot_msg.Payload, bot *qqbot_msg.RouterQQBot
 		Set("主人", isAdmin).
 		Set("robot", appId).
 		Set("Robot", appId).
-		Set("头像", "http://q.qlogo.cn/qqapp/"+appId+"/"+userID+"/640")
+		Set("头像", "http://q.qlogo.cn/qqapp/"+appId+"/"+userID+"/640").
+		Set("MsgId", m.ID).
+		Set("MessageID", m.ID)
 
 	// 词库
 	for _, v := range botDicList {

@@ -36,9 +36,25 @@ func sqliteOpen(d *dto.DicInputs) (any, error) {
 	dbf := utils.NewFileQueue(dbPath)
 	db, err := dbf.OpenSqlite()
 	if err == nil {
-		return db, nil
+		return newSqliteClass(db), nil
 	}
 	return d.Inputs.StringDefault(2, "打开失败"), nil
+}
+
+// newSqliteClass 将 SQLite 连接包装为面对像 Class，方法闭包捕获同一数据库实例。
+func newSqliteClass(db *sql.DB) *dto.DicClass {
+	instance := &dto.DicClass{
+		LocalValue: dto.NewVal().Set("_sqlite_", db),
+	}
+	instance.Fn = map[string]dto.DicFunc{
+		"写":     wrapObj(db, sqliteWrite, "2|3"),
+		"读":     wrapObj(db, sqliteRead, "0|1|2|3"),
+		"执行":    wrapObj(db, sqliteExec, "1.."),
+		"删除文件":  wrapObj(db, sqliteDeleteFile, "1"),
+		"删除文件夹": wrapObj(db, sqliteDeleteDir, "1"),
+		"关闭":    wrapObj(db, dbClose, "0"),
+	}
+	return instance
 }
 
 func sqliteWrite(d *dto.DicInputs) (any, error) {

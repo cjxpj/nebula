@@ -17,8 +17,8 @@ import (
 
 // 终端.监听执行
 func cmdListenRun(d *dto.DicInputs) (any, error) {
-	cmd, ok := d.Inputs.Get(1).(*funcs.CmdConfig)
-	if !ok {
+	cmd := getCmdConfig(d.Inputs.Get(1))
+	if cmd == nil {
 		return "", errors.New("参数1终端数据错误")
 	}
 
@@ -73,4 +73,19 @@ func cmdListenRun(d *dto.DicInputs) (any, error) {
 		}
 	}()
 	return "", nil
+}
+
+// getCmdConfig 从参数中提取终端配置，兼容直接传入 *CmdConfig 或面对像 Class 实例。
+func getCmdConfig(v any) *funcs.CmdConfig {
+	switch t := v.(type) {
+	case *funcs.CmdConfig:
+		return t
+	case *dto.DicClass:
+		if raw := t.LocalValue.Get("_终端_"); raw != nil {
+			if cmd, ok := raw.(*funcs.CmdConfig); ok {
+				return cmd
+			}
+		}
+	}
+	return nil
 }

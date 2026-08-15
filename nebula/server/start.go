@@ -3,10 +3,9 @@ package dic_server
 import (
 	"context"
 	"fmt"
+	"net"
 	"net/http"
-	"net/url"
 	"os"
-	"strings"
 
 	"github.com/cjxpj/nebula/debugLog"
 	"github.com/cjxpj/nebula/dto"
@@ -104,14 +103,19 @@ func Start(infoServerPath string) []StartEvent {
 		}
 	}()
 
-	if dto.ServerConfig.OPUI != nil {
-		// 管理面板前端已托管在线上，通过 GET 参数注入 WS 访问路径与登录密码
-		wsPath := strings.TrimPrefix(dto.ServerConfig.OPUI.Addr, "/")
-		webui := "https://nebulaopui.cjxpj.com/?ws=" + url.QueryEscape(wsPath)
-		if dto.ServerConfig.OPUI.Secret != "" {
-			webui += "&key=" + url.QueryEscape(dto.ServerConfig.OPUI.Secret)
+	if _, port, err := net.SplitHostPort(dto.ServerConfig.Router.Http.Addr); err == nil {
+		scheme := "http"
+		if dto.ServerConfig.Router.TLS && dto.ServerConfig.Router.CertFile != "" && dto.ServerConfig.Router.KeyFile != "" {
+			scheme = "https"
 		}
-		fmt.Printf("WebUi: %v\n", webui)
+		url := fmt.Sprintf("%s://%s:%s", scheme, "localhost", port)
+		if dto.ServerConfig.OPUI != nil {
+			opuiUrl := url + dto.ServerConfig.OPUI.Addr
+			if dto.ServerConfig.OPUI.Secret != "" {
+				opuiUrl += "?key=" + dto.ServerConfig.OPUI.Secret
+			}
+			fmt.Printf("WebUi: %v\n", opuiUrl)
+		}
 	}
 
 	res = append(res, StartEvent{Trigger: "Main"})

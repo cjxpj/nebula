@@ -102,13 +102,15 @@ type BuildDic struct {
 type DicClass struct {
 	LocalValue *Val                   `json:"变量"`
 	DicFuncs   map[string][]*BuildDic `json:"函数"`
+	Fn         map[string]DicFunc     `json:"-"` // 自定义函数
 }
 
-// NewDicClass 初始化整合包类，避免字段为 nil 导致 JSON 序列化输出 null。
+// NewDicClass 初始化 Class，避免字段为 nil 导致 JSON 序列化输出 null。
 func NewDicClass() *DicClass {
 	return &DicClass{
 		LocalValue: NewVal(),
 		DicFuncs:   make(map[string][]*BuildDic),
+		Fn:         make(map[string]DicFunc),
 	}
 }
 
@@ -117,7 +119,7 @@ type BuildValue struct {
 	HeadLineNums []int                  `json:"-"` // 头部每行对应的原始文件行号（1-based）
 	Dic          []*BuildDic            `json:"词库"`
 	DicFuncs     map[string][]*BuildDic `json:"函数"`
-	LocalClass   map[string]*DicClass   `json:"整合包"`
+	Class        map[string]*DicClass   `json:"class"`
 	MyFunc       map[string]DicFunc     `json:"自定义函数"`
 	BotImports   []string               `json:"bot引入"`
 }
@@ -158,11 +160,11 @@ func (v *BuildValue) Clone() *BuildValue {
 		funcs[k] = val
 	}
 	return &BuildValue{
-		Head:       v.Head,
-		Dic:        v.Dic,
-		DicFuncs:   funcs,
-		LocalClass: v.LocalClass,
-		MyFunc:     v.MyFunc,
+		Head:     v.Head,
+		Dic:      v.Dic,
+		DicFuncs: funcs,
+		Class:    v.Class,
+		MyFunc:   v.MyFunc,
 	}
 }
 
@@ -179,13 +181,13 @@ func (v *BuildValue) MergeFuncs(fn map[string][]*BuildDic) {
 	}
 }
 
-// ClassValues 返回整合包变量表（类名 -> 类变量），供 %类名.变量% 解析使用。
+// ClassValues 返回 Class 变量表（类名 -> 类变量），供 %类名.变量% 解析使用。
 func (v *BuildValue) ClassValues() map[string]*Val {
-	if v.LocalClass == nil {
+	if v.Class == nil {
 		return nil
 	}
-	m := make(map[string]*Val, len(v.LocalClass))
-	for name, c := range v.LocalClass {
+	m := make(map[string]*Val, len(v.Class))
+	for name, c := range v.Class {
 		if c != nil {
 			m[name] = c.LocalValue
 		}
@@ -198,7 +200,7 @@ func (v *BuildValue) ResolveClassData(class any) *DicClass {
 	switch c := class.(type) {
 	case string:
 		if c != "" {
-			return v.LocalClass[c]
+			return v.Class[c]
 		}
 	case *DicClass:
 		return c
@@ -209,7 +211,7 @@ func (v *BuildValue) ResolveClassData(class any) *DicClass {
 // 关闭回收
 func (v *BuildValue) Close() {
 	v.DicFuncs = nil
-	v.LocalClass = nil
+	v.Class = nil
 	v.Dic = nil
 	v.Head = nil
 }

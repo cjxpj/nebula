@@ -57,7 +57,9 @@ func qqBOTChannelRun(payload *qqbot_msg.Payload, bot *qqbot_msg.RouterQQBot) {
 			Set("昵称", m.Author.Username).
 			Set("QQ", m.Author.ID).
 			Set("管理", getChannelAdminRole(m.Member.Roles)).
-			Set("头像", m.Author.Avatar))
+			Set("头像", m.Author.Avatar).
+			Set("MsgId", m.ID).
+			Set("MessageID", m.ID))
 
 	// 设置PushContext供 #引入=QQBot 函数使用
 	SetPushContext(dic, &PushContext{
@@ -145,7 +147,9 @@ func qqBOTChannelPrivateRun(payload *qqbot_msg.Payload, bot *qqbot_msg.RouterQQB
 			Set("昵称", m.Author.Username).
 			Set("QQ", m.Author.ID).
 			Set("管理", getChannelAdminRole(m.Member.Roles)).
-			Set("头像", m.Author.Avatar))
+			Set("头像", m.Author.Avatar).
+			Set("MsgId", m.ID).
+			Set("MessageID", m.ID))
 
 	// 设置PushContext供 #引入=QQBot 函数使用
 	SetPushContext(dic, &PushContext{

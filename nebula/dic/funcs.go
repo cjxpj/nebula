@@ -50,7 +50,7 @@ func runDic(d *dto.DicInputs) (any, error) {
 			}()
 			return "", nil
 		}})
-	calldicrun.ClassText = d.Dic.LocalClass
+	calldicrun.ClassText = d.Dic.Class
 	calldicrun.Val.P.Set("_词库路径_", dicPath)
 
 	switch dicType {
@@ -103,7 +103,7 @@ func runDicFile(d *dto.DicInputs) (any, error) {
 			}()
 			return "", nil
 		}})
-	calldicrun.ClassText = d.Dic.LocalClass
+	calldicrun.ClassText = d.Dic.Class
 	calldicrun.Val.P.Set("_词库路径_", dicPath)
 
 	switch dicType {
@@ -135,7 +135,7 @@ func callDic(d *dto.DicInputs) (any, error) {
 	}
 	trigger := strings.Join(triggerParts, " ")
 
-	// 判断是否在整合包中执行
+	// 判断是否在 Class 中执行
 	if classData := d.Dic.ResolveClassData(d.V.P.Get("Class")); classData != nil {
 		GetDic, GetDicTrigger, _, _ := run.RunFor(classData.DicFuncs["内部"], trigger, 0)
 		funcV := dto.NewVal()
@@ -354,16 +354,6 @@ func wsSend(d *dto.DicInputs) (any, error) {
 	return "", nil
 }
 
-// wsMethods 创建WS返回对象的可用方法
-var wsMethods = map[string][]*dto.BuildDic{
-	"函数": {
-		{Trigger: `设置跨域 (\S+)`, Text: []string{"$WS设置跨域$"}},
-		{Trigger: `设置词库路径 (.+)`, Text: []string{"$WS设置词库路径$"}},
-		{Trigger: `设置访问路径 (.+)`, Text: []string{"$WS设置访问路径$"}},
-		{Trigger: `设置变量 (\S+) (.+)`, Text: []string{"$WS设置变量$"}},
-	},
-}
-
 // 创建WS（监听）
 func wsCreate(d *dto.DicInputs) (any, error) {
 	addr := d.Inputs.String(1)
@@ -416,98 +406,62 @@ func wsCreate(d *dto.DicInputs) (any, error) {
 			Set("访问路径", addr).
 			Set("_词库路径_", dicPath).
 			Set("跨域", cors),
-		DicFuncs: wsMethods,
+	}
+	instance.Fn = map[string]dto.DicFunc{
+		"设置跨域": {L: "1", Fn: func(d *dto.DicInputs) (any, error) {
+			cors := d.Inputs.Bool(1)
+			ws.Cors = cors
+			ws.Conn = &websocket.Upgrader{
+				CheckOrigin: func(r *http.Request) bool { return true },
+			}
+			if !cors {
+				ws.Conn.CheckOrigin = nil
+			}
+			dto.ServerConfig.AddWs(ws)
+			instance.LocalValue.Set("跨域", cors)
+			return "", nil
+		}},
+		"设置词库路径": {L: "1", Fn: func(d *dto.DicInputs) (any, error) {
+			p := d.Inputs.String(1)
+			if p == "" {
+				return "", errors.New("WS设置词库路径：路径不能为空")
+			}
+			ws.FilePath = p
+			dto.ServerConfig.AddWs(ws)
+			instance.LocalValue.Set("_词库路径_", p)
+			return "", nil
+		}},
+		"设置访问路径": {L: "1", Fn: func(d *dto.DicInputs) (any, error) {
+			p := d.Inputs.String(1)
+			if p == "" {
+				return "", errors.New("WS设置访问路径：路径不能为空")
+			}
+			if !strings.HasPrefix(p, "/") {
+				p = "/" + p
+			}
+			old := ws.Addr
+			ws.Addr = p
+			dto.ServerConfig.AddWs(ws)
+			if old != "" && old != p {
+				dto.ServerConfig.RemoveWs(old)
+			}
+			instance.LocalValue.Set("访问路径", p)
+			return "", nil
+		}},
+		"设置变量": {L: "2", Fn: func(d *dto.DicInputs) (any, error) {
+			name := d.Inputs.String(1)
+			if name == "" {
+				return "", errors.New("WS设置变量：变量名不能为空")
+			}
+			val := d.Inputs.Get(2)
+			if val == nil {
+				val = ""
+			}
+			instance.LocalValue.Set(name, val)
+			return "", nil
+		}},
 	}
 	return instance, nil
-}
-
-// wsInstance 获取当前方法对应的 WS 对象与实例
-func wsInstance(d *dto.DicInputs) (*dto.DicClass, *dto.ServerRouterWebSocket, error) {
-	classData, ok := d.V.P.Get("Class").(*dto.DicClass)
-	if !ok || classData == nil {
-		return nil, nil, errors.New("WS方法：请在WS实例方法中调用")
-	}
-	ws, ok := classData.LocalValue.Get("_WS_").(*dto.ServerRouterWebSocket)
-	if !ok || ws == nil {
-		return nil, nil, errors.New("WS方法：WS实例无效")
-	}
-	return classData, ws, nil
-}
-
-// WS设置跨域
-func wsSetCors(d *dto.DicInputs) (any, error) {
-	classData, ws, err := wsInstance(d)
-	if err != nil {
-		return "", err
-	}
-	cors := d.V.P.GetStr("参数1") == "true" || d.V.P.GetStr("参数1") == "1"
-	ws.Cors = cors
-	ws.Conn = &websocket.Upgrader{
-		CheckOrigin: func(r *http.Request) bool { return true },
-	}
-	if !cors {
-		ws.Conn.CheckOrigin = nil
-	}
-	dto.ServerConfig.AddWs(ws)
-	classData.LocalValue.Set("跨域", cors)
-	return "", nil
-}
-
-// WS设置词库路径
-func wsSetFilePath(d *dto.DicInputs) (any, error) {
-	classData, ws, err := wsInstance(d)
-	if err != nil {
-		return "", err
-	}
-	p := d.V.P.GetStr("参数1")
-	if p == "" {
-		return "", errors.New("WS设置词库路径：路径不能为空")
-	}
-	ws.FilePath = p
-	dto.ServerConfig.AddWs(ws)
-	classData.LocalValue.Set("_词库路径_", p)
-	return "", nil
-}
-
-// WS设置访问路径
-func wsSetAddr(d *dto.DicInputs) (any, error) {
-	classData, ws, err := wsInstance(d)
-	if err != nil {
-		return "", err
-	}
-	p := d.V.P.GetStr("参数1")
-	if p == "" {
-		return "", errors.New("WS设置访问路径：路径不能为空")
-	}
-	if !strings.HasPrefix(p, "/") {
-		p = "/" + p
-	}
-	old := ws.Addr
-	ws.Addr = p
-	dto.ServerConfig.AddWs(ws)
-	if old != "" && old != p {
-		dto.ServerConfig.RemoveWs(old)
-	}
-	classData.LocalValue.Set("访问路径", p)
-	return "", nil
-}
-
-// WS设置变量
-func wsSetVar(d *dto.DicInputs) (any, error) {
-	classData, _, err := wsInstance(d)
-	if err != nil {
-		return "", err
-	}
-	name := d.V.P.GetStr("括号1")
-	if name == "" {
-		return "", errors.New("WS设置变量：变量名不能为空")
-	}
-	val := d.V.P.Get("括号2")
-	if val == nil {
-		val = ""
-	}
-	classData.LocalValue.Set(name, val)
-	return "", nil
 }
 
 // =================== 读词库 ===================

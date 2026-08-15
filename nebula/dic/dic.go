@@ -203,7 +203,7 @@ func (m *dicImpl) DicRunPrivateVal(D *dic_dto.Dic, trigger string, v *dto.DicVal
 	D.Data.MergeFuncs(D.FuncText)
 
 	if D.ClassText != nil {
-		maps.Copy(D.Data.LocalClass, D.ClassText)
+		maps.Copy(D.Data.Class, D.ClassText)
 	}
 
 	GetDic, GetDicTrigger, _, _ := run.RunFor(D.Data.DicFuncs["内部"], trigger, 0)
@@ -232,7 +232,7 @@ func (m *dicImpl) DicRunEventVal(D *dic_dto.Dic, event string, trigger string, v
 	D.Data.MergeFuncs(D.FuncText)
 
 	if D.ClassText != nil {
-		maps.Copy(D.Data.LocalClass, D.ClassText)
+		maps.Copy(D.Data.Class, D.ClassText)
 	}
 
 	var (
@@ -278,7 +278,7 @@ func (m *dicImpl) DicRun(D *dic_dto.Dic, trigger string) string {
 	D.Data.MergeFuncs(D.FuncText)
 
 	if D.ClassText != nil {
-		maps.Copy(D.Data.LocalClass, D.ClassText)
+		maps.Copy(D.Data.Class, D.ClassText)
 	}
 
 	DicHaderText = D.Data.Head
@@ -323,7 +323,7 @@ func (m *dicImpl) DicRunTimeout(D *dic_dto.Dic, trigger string, timeout time.Dur
 	D.Data.MergeFuncs(D.FuncText)
 
 	if D.ClassText != nil {
-		maps.Copy(D.Data.LocalClass, D.ClassText)
+		maps.Copy(D.Data.Class, D.ClassText)
 	}
 
 	GetDic, GetDicTrigger, triggerIdx, _ := run.RunFor(D.Data.Dic, trigger, 0)

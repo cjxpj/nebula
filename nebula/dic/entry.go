@@ -33,7 +33,7 @@ func (m *dicImpl) DicRunLine(r *dic_dto.DicEntry, txt []string) string {
 	// 重置文本
 	r.Output.Clear()
 
-	// 挂载整合包变量表，供 %类名.变量% 解析
+	// 挂载 Class 变量表，供 %类名.变量% 解析
 	r.Val.P.Class = r.Dic.ClassValues()
 
 	// 是否生成>默认true
@@ -1026,7 +1026,7 @@ func Entry(r *dic_dto.DicEntry, txt []string, funcV *dic_dto.DicFunc) error {
 		}
 
 		if textLen > 2 && text[:2] == "#:" {
- 			// 提前捕获执行上下文，避免父级执行完毕 Close 清空引用后异步 goroutine 读到 nil 崩溃
+			// 提前捕获执行上下文，避免父级执行完毕 Close 清空引用后异步 goroutine 读到 nil 崩溃
 			val := funcV.Val
 			dic := funcV.Dic
 			go func() {

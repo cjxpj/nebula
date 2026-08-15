@@ -26,9 +26,9 @@ type MysqlConn struct {
 
 // MysqlRes 执行结果
 type MysqlRes struct {
-	Error        string                   `json:"error"`
-	LastInsertId int64                    `json:"last_insert_id"`
-	RowsAffected int64                    `json:"rows_affected"`
+	Error        string           `json:"error"`
+	LastInsertId int64            `json:"last_insert_id"`
+	RowsAffected int64            `json:"rows_affected"`
 	Data         []map[string]any `json:"data"`
 }
 
@@ -78,7 +78,7 @@ func (c *MysqlConn) hasDBName() bool {
 }
 
 // mysqlNew 创建 MySQL 连接对象
-// 用法: $mysql.新建 账号 密码 地址$
+// 用法: $新建mysql 账号 密码 地址$
 func mysqlNew(d *dto.DicInputs) (any, error) {
 	user := d.Inputs.String(1)
 	pass := d.Inputs.String(2)
@@ -95,16 +95,34 @@ func mysqlNew(d *dto.DicInputs) (any, error) {
 		dbPort = parts[1]
 	}
 
-	return &MysqlConn{
+	return newMysqlClass(&MysqlConn{
 		User: user,
 		Pass: pass,
 		Host: host,
 		Port: dbPort,
-	}, nil
+	}), nil
+}
+
+// newMysqlClass 将 MySQL 连接包装为面对像 Class，方法闭包捕获同一连接实例。
+func newMysqlClass(conn *MysqlConn) *dto.DicClass {
+	instance := &dto.DicClass{
+		LocalValue: dto.NewVal().Set("_mysql_", conn),
+	}
+	instance.Fn = map[string]dto.DicFunc{
+		"PING":  wrapObj(conn, mysqlPing, "0"),
+		"执行":    wrapObj(conn, mysqlExec, "1.."),
+		"切换数据库": wrapObj(conn, mysqlSwitchDB, "1"),
+		"写":     wrapObj(conn, mysqlWrite, "2|3"),
+		"读":     wrapObj(conn, mysqlRead, "0|1|2|3"),
+		"删除文件":  wrapObj(conn, mysqlDeleteFile, "1"),
+		"删除文件夹": wrapObj(conn, mysqlDeleteDir, "1"),
+		"关闭":    wrapObj(conn, mysqlClose, "0"),
+	}
+	return instance
 }
 
 // mysqlPing 检测 MySQL 连接是否可达
-// 用法: $mysql.PING 连接$
+// 用法: $连接.PING$
 func mysqlPing(d *dto.DicInputs) (any, error) {
 	conn := getMysqlConn(d)
 	if conn == nil {
@@ -124,8 +142,9 @@ func mysqlPing(d *dto.DicInputs) (any, error) {
 }
 
 // mysqlExec 在指定数据库上执行 SQL 语句
-// 用法: $mysql.执行 连接 SQL [绑定参数...]$
-//       $mysql.执行 连接 数据库名 SQL [绑定参数...]$
+// 用法: $连接.执行 SQL [绑定参数...]$
+//
+//	$连接.执行 数据库名 SQL [绑定参数...]$
 func mysqlExec(d *dto.DicInputs) (any, error) {
 	Output := MysqlRes{}
 
@@ -238,7 +257,7 @@ func mysqlExec(d *dto.DicInputs) (any, error) {
 }
 
 // mysqlSwitchDB 切换当前连接的默认数据库
-// 用法: $mysql.切换数据库 连接 数据库名$
+// 用法: $连接.切换数据库 数据库名$
 func mysqlSwitchDB(d *dto.DicInputs) (any, error) {
 	conn := getMysqlConn(d)
 	if conn == nil {
@@ -249,7 +268,7 @@ func mysqlSwitchDB(d *dto.DicInputs) (any, error) {
 }
 
 // mysqlWrite 写入 key-value 数据到指定表单
-// 用法: $mysql.写 连接 表单 键 值$
+// 用法: $连接.写 表单 键 值$
 func mysqlWrite(d *dto.DicInputs) (any, error) {
 	conn := getMysqlConn(d)
 	if conn == nil {
@@ -297,10 +316,11 @@ func mysqlWrite(d *dto.DicInputs) (any, error) {
 }
 
 // mysqlRead 读取 key-value 数据
-// 用法: $mysql.读 连接$                — 列出所有表单
-//       $mysql.读 连接 表单$            — 列出表单所有键
-//       $mysql.读 连接 表单 键$         — 读取指定键的值
-//       $mysql.读 连接 表单 键 默认值$   — 读取，不存在返回默认值
+// 用法: $连接.读$                — 列出所有表单
+//
+//	$连接.读 表单$            — 列出表单所有键
+//	$连接.读 表单 键$         — 读取指定键的值
+//	$连接.读 表单 键 默认值$   — 读取，不存在返回默认值
 func mysqlRead(d *dto.DicInputs) (any, error) {
 	conn := getMysqlConn(d)
 	if conn == nil {
@@ -376,7 +396,7 @@ func mysqlRead(d *dto.DicInputs) (any, error) {
 }
 
 // mysqlDeleteFile 删除指定表单中指定 key 的数据
-// 用法: $mysql.删除文件 连接 键$
+// 用法: $连接.删除文件 键$
 func mysqlDeleteFile(d *dto.DicInputs) (any, error) {
 	conn := getMysqlConn(d)
 	if conn == nil {
@@ -404,7 +424,7 @@ func mysqlDeleteFile(d *dto.DicInputs) (any, error) {
 }
 
 // mysqlDeleteDir 删除指定表单中指定 key 的数据（与删除文件同）
-// 用法: $mysql.删除文件夹 连接 键$
+// 用法: $连接.删除文件夹 键$
 func mysqlDeleteDir(d *dto.DicInputs) (any, error) {
 	return mysqlDeleteFile(d)
 }
@@ -420,7 +440,7 @@ func ensureMySQLTable(db *sql.DB, table string) error {
 }
 
 // mysqlClose 关闭 MySQL 连接
-// 用法: $mysql.关闭 连接$
+// 用法: $连接.关闭$
 func mysqlClose(d *dto.DicInputs) (any, error) {
 	conn := getMysqlConn(d)
 	if conn == nil {

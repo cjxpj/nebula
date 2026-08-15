@@ -21,7 +21,7 @@ func newMapData(d *dto.DicInputs) (any, error) {
 			result.Set(k, vv)
 		}
 		result.SetEscapeHTML(false)
-		return result, nil
+		return newMapClass(result), nil
 
 	case string:
 		// 如果是字符串，尝试解析为 JSON
@@ -29,14 +29,26 @@ func newMapData(d *dto.DicInputs) (any, error) {
 		result.SetEscapeHTML(false)
 		if err != nil {
 			// 解析失败，返回空 orderedmap
-			return result, nil
+			return newMapClass(result), nil
 		}
-		return result, nil
+		return newMapClass(result), nil
 
 	default:
 		// 其他类型不支持
 		return nil, fmt.Errorf("unsupported input type: %T", v)
 	}
+}
+
+// newMapClass 将字典包装为面对像 Class，方法闭包捕获同一字典实例。
+func newMapClass(m *orderedmap.OrderedMap) *dto.DicClass {
+	instance := &dto.DicClass{
+		LocalValue: dto.NewVal().Set("_字典_", m),
+	}
+	instance.Fn = map[string]dto.DicFunc{
+		"设置": wrapObj(m, setMapData, "2.."),
+		"获取": wrapObj(m, getMapData, "0"),
+	}
+	return instance
 }
 
 // setMapData 在 orderedmap 中设置嵌套值

@@ -12,7 +12,6 @@ import (
 	"github.com/cjxpj/nebula/bot/yunhubot"
 	"github.com/cjxpj/nebula/dto"
 	dic_server "github.com/cjxpj/nebula/server"
-	"github.com/gorilla/websocket"
 )
 
 // setCORS 设置跨域响应头。若为 OPTIONS 预检请求则处理后返回 true。
@@ -50,14 +49,11 @@ func webRun(w http.ResponseWriter, r *http.Request) {
 	opui := s.OPUI
 	if opui != nil {
 		if getpath, ok := strings.CutPrefix(r.URL.Path, opui.Addr); ok {
-			// 仅 WebSocket 升级走 OpUI；HTTP 访问绕过 OpUI，正常走词库路由
-			if websocket.IsWebSocketUpgrade(r) {
-				if opui.Cors && setCORS(w, r, "*") {
-					return
-				}
-				dic_server.OpUI(w, r, getpath)
+			if opui.Cors && setCORS(w, r, "*") {
 				return
 			}
+			dic_server.OpUI(w, r, getpath)
+			return
 		}
 	}
 

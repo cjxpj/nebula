@@ -80,8 +80,9 @@ func RemoveLeadingAtMentions(s string) string {
 	return reLeadingAt.ReplaceAllString(s, "")
 }
 
-// RemoveLeadingSlash 移除消息开头的 /，用于过滤斜杠指令前缀
+// RemoveLeadingSlash 移除消息开头的 / 或 空格+ /，用于过滤斜杠指令前缀
 func RemoveLeadingSlash(s string) string {
+	s = RemoveLeadingSpace(s)
 	return strings.TrimPrefix(s, "/")
 }
 

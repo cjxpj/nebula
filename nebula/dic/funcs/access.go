@@ -250,20 +250,7 @@ type AccessResponse struct {
 }
 
 // =======================
-// 内部工具函数
-// =======================
-
-func getAccess(d *dto.DicInputs) *AccessRequest {
-	if v := d.Inputs.Get(1); v != nil {
-		if req, ok := v.(*AccessRequest); ok {
-			return req
-		}
-	}
-	return nil
-}
-
-// =======================
-// 访问.新建
+// 新建访问（返回面对像对象）
 // =======================
 
 func newRequest(d *dto.DicInputs) (any, error) {
@@ -283,158 +270,80 @@ func newRequest(d *dto.DicInputs) (any, error) {
 		StopRedirect: false,
 	}
 
-	return req, nil
+	instance := &dto.DicClass{
+		LocalValue: dto.NewVal().
+			Set("_访问_", req).
+			Set("地址", setUrl),
+	}
+	instance.Fn = map[string]dto.DicFunc{
+		"切换GET":     {L: "0", Fn: func(d *dto.DicInputs) (any, error) { return setAccessMethod(req, d, "get") }},
+		"切换POST":    {L: "0|1", Fn: func(d *dto.DicInputs) (any, error) { return setAccessMethod(req, d, "post") }},
+		"切换PUT":     {L: "0|1", Fn: func(d *dto.DicInputs) (any, error) { return setAccessMethod(req, d, "put") }},
+		"切换DELETE":  {L: "0|1", Fn: func(d *dto.DicInputs) (any, error) { return setAccessMethod(req, d, "delete") }},
+		"切换PATCH":   {L: "0|1", Fn: func(d *dto.DicInputs) (any, error) { return setAccessMethod(req, d, "patch") }},
+		"切换HEAD":    {L: "0", Fn: func(d *dto.DicInputs) (any, error) { return setAccessMethod(req, d, "head") }},
+		"切换OPTIONS": {L: "0", Fn: func(d *dto.DicInputs) (any, error) { return setAccessMethod(req, d, "options") }},
+		"禁用跳转": {L: "0", Fn: func(d *dto.DicInputs) (any, error) {
+			req.StopRedirect = true
+			return "", nil
+		}},
+		"启用跳转": {L: "0", Fn: func(d *dto.DicInputs) (any, error) {
+			req.StopRedirect = false
+			return "", nil
+		}},
+		"设置头部": {L: "1", Fn: func(d *dto.DicInputs) (any, error) {
+			var headers map[string]string
+			if err := json.Unmarshal([]byte(d.Inputs.String(1)), &headers); err == nil {
+				req.Headers = headers
+			}
+			return "", nil
+		}},
+		"设置超时": {L: "1", Fn: func(d *dto.DicInputs) (any, error) {
+			req.Timeout = d.Inputs.Int(1)
+			return "", nil
+		}},
+		"POST": {L: "1", Fn: func(d *dto.DicInputs) (any, error) {
+			req.Type = "post"
+			req.Body = d.Inputs.String(1)
+			return "", nil
+		}},
+		"POST文件": {L: "2|3", Fn: func(d *dto.DicInputs) (any, error) {
+			req.Type = "post"
+			field := d.Inputs.String(1)
+			if req.Files[field] == nil {
+				req.Files[field] = make(map[string][]byte)
+			}
+			if d.Inputs.LenOk(2) {
+				req.Files[field][field] = []byte(d.Inputs.String(2))
+			} else {
+				req.Files[field][d.Inputs.String(2)] = []byte(d.Inputs.String(3))
+			}
+			return "", nil
+		}},
+		"发送": {L: "0", Fn: func(d *dto.DicInputs) (any, error) {
+			return sendRequest(req)
+		}},
+		"全部内容": {L: "0", Fn: func(d *dto.DicInputs) (any, error) {
+			return accessAllContent(req)
+		}},
+		"内容": {L: "0", Fn: func(d *dto.DicInputs) (any, error) {
+			return accessContent(req)
+		}},
+	}
+	return instance, nil
 }
 
-// =======================
-// 访问.切换请求方式（GET / POST / PUT / DELETE / PATCH / HEAD / OPTIONS）
-// =======================
-
-func changeRequestMethod(d *dto.DicInputs, method string) (any, error) {
-	req := getAccess(d)
-	if req == nil {
-		return nil, errors.New("未新建请求")
-	}
+// setAccessMethod 切换请求方式，可附带请求体。
+func setAccessMethod(req *AccessRequest, d *dto.DicInputs, method string) (any, error) {
 	req.Type = method
-	if d.Inputs.LenOk(2) {
-		req.Body = d.Inputs.String(2)
+	if d.Inputs.LenOk(1) {
+		req.Body = d.Inputs.String(1)
 	}
 	return "", nil
 }
 
-func changeRequestGet(d *dto.DicInputs) (any, error) {
-	return changeRequestMethod(d, "get")
-}
-
-func changeRequestPost(d *dto.DicInputs) (any, error) {
-	return changeRequestMethod(d, "post")
-}
-
-func changeRequestPut(d *dto.DicInputs) (any, error) {
-	return changeRequestMethod(d, "put")
-}
-
-func changeRequestDelete(d *dto.DicInputs) (any, error) {
-	return changeRequestMethod(d, "delete")
-}
-
-func changeRequestPatch(d *dto.DicInputs) (any, error) {
-	return changeRequestMethod(d, "patch")
-}
-
-func changeRequestHead(d *dto.DicInputs) (any, error) {
-	return changeRequestMethod(d, "head")
-}
-
-func changeRequestOptions(d *dto.DicInputs) (any, error) {
-	return changeRequestMethod(d, "options")
-}
-
-// =======================
-// 访问.禁用跳转
-// =======================
-
-func requestDisableRedirects(d *dto.DicInputs) (any, error) {
-	req := getAccess(d)
-	if req == nil {
-		return nil, errors.New("未新建请求")
-	}
-	req.StopRedirect = true
-	return "", nil
-}
-
-// =======================
-// 访问.启用跳转
-// =======================
-
-func requestEnableRedirects(d *dto.DicInputs) (any, error) {
-	req := getAccess(d)
-	if req == nil {
-		return nil, errors.New("未新建请求")
-	}
-	req.StopRedirect = false
-	return "", nil
-}
-
-// =======================
-// 访问.设置头部
-// =======================
-
-func requestSetHeader(d *dto.DicInputs) (any, error) {
-	req := getAccess(d)
-	if req == nil {
-		return nil, errors.New("未新建请求")
-	}
-
-	var headers map[string]string
-	if err := json.Unmarshal([]byte(d.Inputs.String(2)), &headers); err == nil {
-		req.Headers = headers
-	}
-	return "", nil
-}
-
-// =======================
-// 访问.设置超时
-// =======================
-
-func requestSetTimeout(d *dto.DicInputs) (any, error) {
-	req := getAccess(d)
-	if req == nil {
-		return nil, errors.New("未新建请求")
-	}
-	req.Timeout = d.Inputs.Int(2)
-	return "", nil
-}
-
-// =======================
-// 访问.POST
-// =======================
-
-func requestPost(d *dto.DicInputs) (any, error) {
-	req := getAccess(d)
-	if req == nil {
-		return nil, errors.New("未新建请求")
-	}
-	req.Type = "post"
-	req.Body = d.Inputs.String(2)
-	return "", nil
-}
-
-// =======================
-// 访问.POST文件
-// =======================
-
-func requestPostFile(d *dto.DicInputs) (any, error) {
-	req := getAccess(d)
-	if req == nil {
-		return nil, errors.New("未新建请求")
-	}
-
-	req.Type = "post"
-
-	field := d.Inputs.String(2)
-	if req.Files[field] == nil {
-		req.Files[field] = make(map[string][]byte)
-	}
-
-	if d.Inputs.LenOk(3) {
-		req.Files[field][field] = []byte(d.Inputs.String(3))
-	} else {
-		req.Files[field][d.Inputs.String(4)] = []byte(d.Inputs.String(5))
-	}
-	return "", nil
-}
-
-// =======================
-// 访问.发送
-// =======================
-
-func requestSend(d *dto.DicInputs) (any, error) {
-	req := getAccess(d)
-	if req == nil {
-		return nil, errors.New("未新建请求")
-	}
-
+// sendRequest 发送请求，结果写入 req.Res，不返回数据。
+func sendRequest(req *AccessRequest) (any, error) {
 	client := &http.Client{
 		Timeout: time.Duration(req.Timeout) * time.Second,
 		Transport: &http.Transport{
@@ -554,23 +463,14 @@ func buildMethodRequest(method string, req *AccessRequest) (*http.Request, error
 // 访问.内容 / 全部内容
 // =======================
 
-func requestContent(d *dto.DicInputs) (any, error) {
-	req := getAccess(d)
-	if req == nil {
-		return nil, errors.New("未新建请求")
-	}
+func accessContent(req *AccessRequest) (any, error) {
 	if req.Res == nil {
 		return "", nil
 	}
 	return string(req.Res.Data), nil
 }
 
-func requestAllContent(d *dto.DicInputs) (any, error) {
-	req := getAccess(d)
-	if req == nil {
-		return nil, errors.New("未新建请求")
-	}
-
+func accessAllContent(req *AccessRequest) (any, error) {
 	copyReq := *req
 	if copyReq.Res != nil {
 		copyReq.Res = &AccessResponse{

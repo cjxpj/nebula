@@ -12,7 +12,7 @@ import (
 
 // EmailConfig 邮件连接配置
 type EmailConfig struct {
-	Addr string     // host:port
+	Addr string // host:port
 	From string
 	Auth smtp.Auth
 }
@@ -26,18 +26,30 @@ func getEmailConfig(d *dto.DicInputs) *EmailConfig {
 	return nil
 }
 
-// 邮件.创建 链接 端口 账号 密码
+// 创建邮件 链接 端口 账号 密码
 func emailCreate(d *dto.DicInputs) (any, error) {
 	smtpHost := d.Inputs.String(1)
 	smtpPort := d.Inputs.String(2)
 	from := d.Inputs.String(3)
 	password := d.Inputs.String(4)
 
-	return &EmailConfig{
+	return newEmailClass(&EmailConfig{
 		Addr: smtpHost + ":" + smtpPort,
 		From: from,
 		Auth: smtp.PlainAuth("", from, password, smtpHost),
-	}, nil
+	}), nil
+}
+
+// newEmailClass 将邮件配置包装为面对像 Class，方法闭包捕获同一配置实例。
+func newEmailClass(cfg *EmailConfig) *dto.DicClass {
+	instance := &dto.DicClass{
+		LocalValue: dto.NewVal().Set("_邮件_", cfg),
+	}
+	instance.Fn = map[string]dto.DicFunc{
+		"发送":     wrapObj(cfg, emailSend, "3"),
+		"发送HTML": wrapObj(cfg, emailSendHTML, "3"),
+	}
+	return instance
 }
 
 func doSendMail(cfg *EmailConfig, to string, subject string, body string, isHTML bool) error {
@@ -81,7 +93,7 @@ func writeSubject(msg *bytes.Buffer, subject string) {
 	msg.WriteString(subject)
 }
 
-// 邮件.发送 %a% 收件人 标题 文本
+// $a.发送 收件人 标题 文本
 func emailSend(d *dto.DicInputs) (any, error) {
 	cfg := getEmailConfig(d)
 	if cfg == nil {
@@ -93,7 +105,7 @@ func emailSend(d *dto.DicInputs) (any, error) {
 	return "true", nil
 }
 
-// 邮件.发送HTML %a% 收件人 标题 HTML文本
+// $a.发送HTML 收件人 标题 HTML文本
 func emailSendHTML(d *dto.DicInputs) (any, error) {
 	cfg := getEmailConfig(d)
 	if cfg == nil {

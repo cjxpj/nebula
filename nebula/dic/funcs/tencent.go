@@ -1,8 +1,8 @@
 package funcs
 
 import (
-	"fmt"
 	stdjson "encoding/json"
+	"fmt"
 
 	"github.com/cjxpj/nebula/dto"
 	"github.com/cjxpj/nebula/utils"
@@ -58,7 +58,18 @@ func tencentGetApi(d *dto.DicInputs) (any, error) {
 		Version:   d.Inputs.String(6),
 		Region:    d.Inputs.String(7),
 	}
-	return api, nil
+	return newTencentClass(api), nil
+}
+
+// newTencentClass 将腾讯云 API 包装为面对像 Class，方法闭包捕获同一实例。
+func newTencentClass(api *utils.TencentAPI) *dto.DicClass {
+	instance := &dto.DicClass{
+		LocalValue: dto.NewVal().Set("_腾讯_", api),
+	}
+	instance.Fn = map[string]dto.DicFunc{
+		"调用": wrapObj(api, tencentGetApiCall, "1"),
+	}
+	return instance
 }
 
 func tencentGetApiCall(d *dto.DicInputs) (any, error) {

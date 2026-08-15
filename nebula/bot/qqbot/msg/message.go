@@ -639,3 +639,23 @@ func (b *QQBot) RespondInteraction(event *InteractionEvent, code InteractionResp
 	}
 	return b.ReplyInteraction(event.ID, int(code))
 }
+
+// ============= 消息撤回 ============
+
+// RecallGroupMessage 撤回群消息（机器人发送的消息，2分钟内可撤回；机器人是群管理员时可撤回成员消息）
+func (b *QQBot) RecallGroupMessage(groupOpenID, messageID string) error {
+	if groupOpenID == "" || messageID == "" {
+		return fmt.Errorf("groupOpenID或messageID为空")
+	}
+	url := fmt.Sprintf("/v2/groups/%s/messages/%s", groupOpenID, messageID)
+	return b.Delete(url, nil)
+}
+
+// RecallPrivateMessage 撤回单聊消息（机器人发送的消息，2分钟内可撤回）
+func (b *QQBot) RecallPrivateMessage(openID, messageID string) error {
+	if openID == "" || messageID == "" {
+		return fmt.Errorf("openID或messageID为空")
+	}
+	url := fmt.Sprintf("/v2/users/%s/messages/%s", openID, messageID)
+	return b.Delete(url, nil)
+}

@@ -192,6 +192,16 @@ func loadConfig() {
 		}
 	}
 
+	// 专门监听终端触发的词库
+	file.SetPath("private/system/terminal.n")
+	if !file.FileExists() {
+		if data, err := appfiles.GetFile("dic/system/terminal.n"); err == nil {
+			file.WriteFileByte(data)
+		} else {
+			fmt.Println("embed err:", err)
+		}
+	}
+
 	// 恢复路径为 config.ini，防止后续 SaveIni 写入错误文件
 	file.SetPath(dto.CONFIG_PATH)
 

@@ -385,6 +385,32 @@ var ActiveFuncs = map[string]dto.DicFunc{
 			return "", nil
 		},
 	},
+	"撤回": {
+		L: "3",
+		Fn: func(d *dto.DicInputs) (any, error) {
+			bot := getBotByIndex(d.Inputs.Int(1))
+			if bot == nil {
+				return "", nil
+			}
+			if err := bot.API.RecallGroupMessage(d.Inputs.String(2), d.Inputs.String(3)); err != nil {
+				debugLog.Infof("[QQBot] 撤回消息失败: %v", err)
+			}
+			return "", nil
+		},
+	},
+	"撤回私聊": {
+		L: "3",
+		Fn: func(d *dto.DicInputs) (any, error) {
+			bot := getBotByIndex(d.Inputs.Int(1))
+			if bot == nil {
+				return "", nil
+			}
+			if err := bot.API.RecallPrivateMessage(d.Inputs.String(2), d.Inputs.String(3)); err != nil {
+				debugLog.Infof("[QQBot] 撤回私聊消息失败: %v", err)
+			}
+			return "", nil
+		},
+	},
 }
 
 // ========== ReplyFuncs：回复发送（依赖 PushContext，用于 Bot 消息处理） ==========
@@ -555,6 +581,57 @@ var ReplyFuncs = map[string]dto.DicFunc{
 			}
 			if err := ctx.Bot.API.ApproveJoinRequest(groupOpenID, memberOpenID, op, joinRequestID, rejectReason, false); err != nil {
 				debugLog.Infof("[QQBot] 入群审批失败: %v", err)
+			}
+			return "", nil
+		},
+	},
+	"撤回": {
+		L: "1|2",
+		Fn: func(d *dto.DicInputs) (any, error) {
+			ctx := GetPushContext(d)
+			if ctx == nil || ctx.Bot == nil || ctx.Bot.API == nil {
+				return "", nil
+			}
+			var groupOpenID, messageID string
+			if d.Inputs.Len() == 2 {
+				groupOpenID = d.Inputs.String(1)
+				messageID = d.Inputs.String(2)
+			} else {
+				groupOpenID = ctx.GroupOpenID
+				messageID = d.Inputs.String(1)
+			}
+			if groupOpenID == "" || messageID == "" {
+				return "", nil
+			}
+			if err := ctx.Bot.API.RecallGroupMessage(groupOpenID, messageID); err != nil {
+				debugLog.Infof("[QQBot] 撤回消息失败: %v", err)
+			}
+			return "", nil
+		},
+	},
+	"撤回私聊": {
+		L: "1|2",
+		Fn: func(d *dto.DicInputs) (any, error) {
+			ctx := GetPushContext(d)
+			if ctx == nil || ctx.Bot == nil || ctx.Bot.API == nil {
+				return "", nil
+			}
+			var userOpenID, messageID string
+			if d.Inputs.Len() == 2 {
+				userOpenID = d.Inputs.String(1)
+				messageID = d.Inputs.String(2)
+			} else {
+				userOpenID = ctx.UserOpenID
+				if userOpenID == "" {
+					userOpenID = ctx.PrivateUserID
+				}
+				messageID = d.Inputs.String(1)
+			}
+			if userOpenID == "" || messageID == "" {
+				return "", nil
+			}
+			if err := ctx.Bot.API.RecallPrivateMessage(userOpenID, messageID); err != nil {
+				debugLog.Infof("[QQBot] 撤回私聊消息失败: %v", err)
 			}
 			return "", nil
 		},

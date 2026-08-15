@@ -38,7 +38,7 @@ func NewDicVal() *DicVal {
 type Val struct {
 	objlock sync.Map
 	obj     sync.Map
-	// 整合包变量表：类名 -> 类变量，供 %类名.变量% 解析
+	// Class 变量表：类名 -> 类变量，供 %类名.变量% 解析
 	Class map[string]*Val `json:"-"`
 }
 
@@ -520,7 +520,7 @@ func (v *Val) Text(vv *Val, content any) any {
 			}
 		}
 
-		// 整合包变量：%类名.变量% / %变量.变量%（变量值为类名或实例）
+		// Class 变量：%类名.变量% / %变量.变量%（变量值为类名或实例）
 		if dot := strings.Index(val, "."); dot > 0 {
 			key := val[dot+1:]
 			className := val[:dot]

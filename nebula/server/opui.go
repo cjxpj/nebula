@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"mime"
 	"net"
 	"net/http"
 	"os"
@@ -456,6 +457,21 @@ func readServerLogs(limit, skip int) ([]map[string]string, bool) {
 // ClearServerLogs 清空 database/log 下的全部日志文件
 func ClearServerLogs() {
 	utils.NewFileQueue(serverLogDir()).DeleteFolder()
+}
+
+// runTerminalDic 运行专门监听终端触发的词库（private/system/terminal.n）。
+// 前端实时终端输入作为触发词运行该词库，输出写入进程 stdout（已被 init 重定向到日志管道），实时回显到终端。
+func runTerminalDic(input string) {
+	dic, err := dic_dto.RunDic("private/system/terminal.n")
+	if err != nil || dic == nil {
+		fmt.Printf("[终端] 终端触发词库不可用: %v\n", err)
+		return
+	}
+	defer dic.Close()
+
+	if res := dic_api.Api.DicRun(dic, input); res != "" {
+		fmt.Printf("%v\n", res)
+	}
 }
 
 // parseLogLevel 从日志行首的 [Level] 提取级别，仅识别已知级别，其余默认 Info
@@ -2020,6 +2036,12 @@ func loadDicDebugDefaults() map[string]any {
 	if v := sec.Key("默认词库").String(); v != "" {
 		def["path"] = v
 	}
+	if v := sec.Key("打开的标签").String(); v != "" {
+		var tabs []string
+		if err := json.Unmarshal([]byte(v), &tabs); err == nil {
+			def["tabs"] = tabs
+		}
+	}
 	if v := sec.Key("触发文本").String(); v != "" {
 		def["trigger"] = v
 	}
@@ -2059,38 +2081,6 @@ func loadDicDebugDefaults() map[string]any {
 	return def
 }
 
-// listDicFilesInDir 扫描应用目录下指定目录（如 private、private/bot/qq/dic）中的词库文件（.n），
-// 返回相对应用目录的路径
-func listDicFilesInDir(dir string) ([]string, error) {
-	appDir := utils.GetAppDir()
-	var files []string
-
-	root := filepath.Join(appDir, dir)
-	if info, err := os.Stat(root); err != nil || !info.IsDir() {
-		return files, nil
-	}
-	err := filepath.Walk(root, func(path string, info os.FileInfo, err error) error {
-		if err != nil {
-			return nil
-		}
-		if info.IsDir() {
-			return nil
-		}
-		if strings.HasSuffix(info.Name(), ".n") {
-			if rel, err := filepath.Rel(appDir, path); err == nil {
-				files = append(files, filepath.ToSlash(rel))
-			}
-		}
-		return nil
-	})
-	if err != nil {
-		return nil, err
-	}
-
-	sort.Strings(files)
-	return files, nil
-}
-
 // checkDicPath 校验词库调试路径：仅允许应用目录内相对路径的 .n 文件，
 // 拒绝绝对路径、包含 .. 的越权路径以及非词库文件
 func checkDicPath(path string) bool {
@@ -2127,10 +2117,10 @@ func checkFilePath(path string) bool {
 }
 
 func OpUI(w http.ResponseWriter, r *http.Request, getpath string) {
-	// OPUI WebSocket 统一通信（API 请求 + 事件推送），挂在访问路径本身（如 /nebula）
-	if getpath == "" || getpath == "/" {
-		// 仅处理 WebSocket 升级请求，忽略普通 HTTP 请求（如浏览器直接访问访问路径）
-		if !websocket.IsWebSocketUpgrade(r) {
+	// WebSocket 升级：统一通信（API 请求 + 事件推送），挂在访问路径本身（如 /nebula）
+	if websocket.IsWebSocketUpgrade(r) {
+		if getpath != "" && getpath != "/" {
+			http.NotFound(w, r)
 			return
 		}
 		conn, err := opuiNotifyUpgrader.Upgrade(w, r, nil)
@@ -2299,8 +2289,30 @@ func OpUI(w http.ResponseWriter, r *http.Request, getpath string) {
 		return
 	}
 
-	// OPUI 仅通过 WebSocket 通信，不再提供 HTTP API 口子
-	http.NotFound(w, r)
+	// HTTP：本地托管 OPUI 前端静态资源
+	if getpath == "" {
+		http.Redirect(w, r, dto.ServerConfig.OPUI.Addr+"/", http.StatusFound)
+		return
+	}
+	if getpath == "/" {
+		getpath = "/index.html"
+	}
+
+	fullPath := "dic/public/opui" + getpath
+
+	ext := filepath.Ext(fullPath)
+	if ct := mime.TypeByExtension(ext); ct != "" {
+		w.Header().Set("Content-Type", ct)
+	}
+
+	data, err := appfiles.GetFile(fullPath)
+	if err != nil {
+		http.NotFound(w, r)
+		return
+	}
+	if _, err := w.Write(data); err != nil {
+		utils.Error("服务器输出 Error: " + err.Error())
+	}
 }
 
 // opuiHandleApi 处理 OPUI API 请求（仅由 WebSocket 内部调用）
@@ -3561,46 +3573,52 @@ func opuiHandleApi(w http.ResponseWriter, r *http.Request) {
 		return
 
 	case "get_dic_list":
-		// 只在有输入关键字时才搜索；base 指定搜索目录（默认 private），只扫描该文件夹下的 .n 文件
+		// 词库打开：读取指定目录下的直接子项（文件夹 + .n 文件），逐层浏览，不递归扫描
 		var j struct {
-			Search string `json:"search"`
-			Base   string `json:"base"`
-			Limit  int    `json:"limit"`
+			Path string `json:"path"` // 当前目录，相对应用目录，空表示应用目录根
 		}
 		_ = json.Unmarshal(h.Data, &j)
-		kw := strings.ToLower(strings.TrimSpace(j.Search))
-		if kw == "" {
-			// 未输入关键字不返回列表
-			jsonResp, _ := json.Marshal(map[string]any{"files": []string{}})
-			w.Write(jsonResp)
-			return
-		}
-		base := strings.TrimSpace(j.Base)
-		if base == "" {
-			base = "private"
-		}
-		// 限定搜索目录只能位于 private/public 下，防止越权扫描
-		if base != "private" && base != "public" &&
-			!strings.HasPrefix(base, "private/") && !strings.HasPrefix(base, "public/") {
-			jsonResp, _ := json.Marshal(map[string]any{"files": []string{}})
-			w.Write(jsonResp)
-			return
-		}
-		files, err := listDicFilesInDir(base)
-		if err != nil {
-			http.Error(w, `{"status":"error","error":"`+err.Error()+`"}`, http.StatusInternalServerError)
-			return
-		}
-		var filtered []string
-		for _, f := range files {
-			if strings.Contains(strings.ToLower(f), kw) {
-				filtered = append(filtered, f)
+		dirPath := strings.TrimSpace(j.Path)
+		root := utils.GetAppDir()
+		if dirPath != "" {
+			if !checkFilePath(dirPath) {
+				jsonResp, _ := json.Marshal(map[string]any{"entries": []any{}})
+				w.Write(jsonResp)
+				return
 			}
+			root = filepath.Join(utils.GetAppDir(), filepath.FromSlash(dirPath))
 		}
-		if j.Limit > 0 && len(filtered) > j.Limit {
-			filtered = filtered[:j.Limit]
+		items, err := os.ReadDir(root)
+		if err != nil {
+			jsonResp, _ := json.Marshal(map[string]any{"entries": []any{}})
+			w.Write(jsonResp)
+			return
 		}
-		jsonResp, _ := json.Marshal(map[string]any{"files": filtered})
+		type dicEntry struct {
+			Name string `json:"name"`
+			Path string `json:"path"`
+			Dir  bool   `json:"dir"`
+		}
+		entries := make([]dicEntry, 0, len(items))
+		for _, it := range items {
+			name := it.Name()
+			if !it.IsDir() && !strings.HasSuffix(strings.ToLower(name), ".n") {
+				continue // 只显示文件夹与 .n 词库文件
+			}
+			entries = append(entries, dicEntry{
+				Name: name,
+				Path: filepath.ToSlash(filepath.Join(dirPath, name)),
+				Dir:  it.IsDir(),
+			})
+		}
+		// 文件夹在前，文件夹/文件各自按名称排序
+		sort.Slice(entries, func(i, j int) bool {
+			if entries[i].Dir != entries[j].Dir {
+				return entries[i].Dir
+			}
+			return strings.ToLower(entries[i].Name) < strings.ToLower(entries[j].Name)
+		})
+		jsonResp, _ := json.Marshal(map[string]any{"entries": entries})
 		w.Write(jsonResp)
 		return
 
@@ -3767,6 +3785,12 @@ func opuiHandleApi(w http.ResponseWriter, r *http.Request) {
 		w.Write(jsonResp)
 		return
 
+	case "get_dic_funcs":
+		// 返回全部已注册词库函数（实时读取注册表），供前端代码补全
+		jsonResp, _ := json.Marshal(map[string]any{"cmds": dic_funcs.ListFuncs()})
+		w.Write(jsonResp)
+		return
+
 	case "get_dic_config":
 		// 读取词库调试运行配置（system.ini 的 [词库调试] 节）
 		jsonResp, _ := json.Marshal(loadDicDebugDefaults())
@@ -3790,6 +3814,18 @@ func opuiHandleApi(w http.ResponseWriter, r *http.Request) {
 		sec := iniFile.Section("词库调试")
 		if v, ok := cfg["path"].(string); ok && v != "" {
 			sec.Key("默认词库").SetValue(v)
+		}
+		if tabs, ok := cfg["tabs"].([]any); ok {
+			var items []string
+			for _, it := range tabs {
+				if s, ok := it.(string); ok && s != "" {
+					items = append(items, s)
+				}
+			}
+			// 路径列表整体 JSON 编码存储，保持 ini 单行值
+			if b, err := json.Marshal(items); err == nil {
+				sec.Key("打开的标签").SetValue(string(b))
+			}
 		}
 		if v, ok := cfg["trigger"].(string); ok {
 			sec.Key("触发文本").SetValue(v)
@@ -3918,6 +3954,23 @@ func opuiHandleApi(w http.ResponseWriter, r *http.Request) {
 		ClearServerLogs()
 		jsonResp, _ := json.Marshal(map[string]any{"ok": true})
 		w.Write(jsonResp)
+		return
+
+	case "terminal_input":
+		var j struct {
+			Input string `json:"input"`
+		}
+		if err := json.Unmarshal(h.Data, &j); err != nil {
+			http.Error(w, `{"status":"error","error":"invalid json"}`, http.StatusBadRequest)
+			return
+		}
+		input := strings.TrimSpace(j.Input)
+		if input == "" {
+			http.Error(w, `{"status":"error","error":"输入不能为空"}`, http.StatusBadRequest)
+			return
+		}
+		go runTerminalDic(input)
+		w.Write([]byte(`{"status":"ok"}`))
 		return
 
 	case "get_sys_status":

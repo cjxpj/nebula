@@ -39,6 +39,10 @@ func ValTextTest(text string) (int8, string, string) {
 			}
 			break
 		}
+		// 自减操作符 -:（优先于 JSON 多键 -xxx>）
+		if c == '-' && i+1 < n && text[i+1] == ':' {
+			break
+		}
 		if c == '-' {
 			jsonHead = true
 			i++
@@ -75,7 +79,7 @@ func ValTextTest(text string) (int8, string, string) {
 	prefix := text[:i]
 
 	// 2️⃣ prefix 长度限制
-	if len(prefix) > 18 {
+	if len(prefix) > 24 {
 		return 0, "", ""
 	}
 

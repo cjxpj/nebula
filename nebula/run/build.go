@@ -293,8 +293,8 @@ func RunFors(jsonData []*dto.BuildDic, trigger string, runNum int) ([]string, st
 }
 
 // parseTriggerPrefix 解析触发词行首的 [] 前缀。
-// 返回触发类别（空串表示普通触发）、整合包类名（可为空）和去掉前缀后的触发词。
-// [F]/[L] 缩写自动归一为 [函数]/[内部]；[:类名] 后缀表示整合包，如 [函数:a]、[F:a]。
+// 返回触发类别（空串表示普通触发）、Class 类名（可为空）和去掉前缀后的触发词。
+// [F]/[L] 缩写自动归一为 [函数]/[内部]；[:类名] 后缀表示 Class，如 [函数:a]、[F:a]。
 func parseTriggerPrefix(line string) (category, class, rest string) {
 	if !strings.HasPrefix(line, "[") {
 		return "", "", line
@@ -327,7 +327,7 @@ func Web(dicPath string, lines []string) *dto.BuildValue {
 		zhushi   bool
 		dicText  []string
 		funcDict map[string][]*dto.BuildDic = make(map[string][]*dto.BuildDic)
-		// 整合包
+		// Class
 		classText map[string]*dto.DicClass = make(map[string]*dto.DicClass)
 		// 缩进
 		suojin bool
@@ -423,7 +423,7 @@ func Web(dicPath string, lines []string) *dto.BuildValue {
 					funcDict[k] = append(funcDict[k], v...)
 				}
 				maps.Copy(myFunc, z.MyFunc)
-				for key, value := range z.LocalClass {
+				for key, value := range z.Class {
 					if classText[key] == nil {
 						classText[key] = value
 					}
@@ -435,10 +435,10 @@ func Web(dicPath string, lines []string) *dto.BuildValue {
 	}
 
 	result := &dto.BuildValue{
-		Head:       dicText,
-		DicFuncs:   funcDict,
-		LocalClass: classText,
-		MyFunc:     myFunc,
+		Head:     dicText,
+		DicFuncs: funcDict,
+		Class:    classText,
+		MyFunc:   myFunc,
 	}
 	return result
 }
@@ -496,9 +496,10 @@ func BuildDic(dicPath, text string) *dto.BuildValue {
 		myFunc map[string]dto.DicFunc = make(map[string]dto.DicFunc)
 	)
 
-	if lines[0] != "" {
-		runhead = true
-	}
+	// 头部区域持续到首个正文行（非注释、非 #引入=、非空行）出现为止。
+	// 这样函数/触发词直接开头的文件（如被引入的函数文件）也能正确解析，
+	// 而不会被误判为头部文本。
+	runhead = true
 
 	for dic_i, line := range lines {
 		if line != "" {
@@ -601,7 +602,7 @@ func BuildDic(dicPath, text string) *dto.BuildValue {
 						chajianText[k] = append(chajianText[k], v...)
 					}
 					maps.Copy(myFunc, z.MyFunc)
-					for key, value := range z.LocalClass {
+					for key, value := range z.Class {
 						if classText[key] == nil {
 							classText[key] = value
 						}
@@ -611,12 +612,12 @@ func BuildDic(dicPath, text string) *dto.BuildValue {
 			}
 
 			if line == "" {
-				runhead = false
+				// 空行仅作为头部与正文之间的分隔，跳过；头部状态保持到首个正文行。
 				continue
 			}
-			runheadtext = append(runheadtext, line)
-			runheadLineNums = append(runheadLineNums, dic_i+1)
-			continue
+
+			// 首个正文行（非注释、非 #引入=、非空行）：结束头部解析，转入正文。
+			runhead = false
 		}
 
 		// 如果检测词条不等于空
@@ -743,7 +744,7 @@ func BuildDic(dicPath, text string) *dto.BuildValue {
 		HeadLineNums: runheadLineNums,
 		Dic:          dicText,
 		DicFuncs:     chajianText,
-		LocalClass:   classText,
+		Class:        classText,
 		MyFunc:       myFunc,
 	}
 

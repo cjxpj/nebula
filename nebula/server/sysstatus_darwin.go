@@ -10,5 +10,6 @@ func getSysStatus() (map[string]any, error) {
 		"disk":    []any{},
 		"host":    map[string]any{"hostname": "", "os": "darwin", "platform": "macOS", "uptime": uint64(0), "arch": ""},
 		"time":    int64(0),
+		"run_time": int64(0),
 	}, nil
 }

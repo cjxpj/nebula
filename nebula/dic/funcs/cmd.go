@@ -3,7 +3,6 @@
 package funcs
 
 import (
-	"bufio"
 	"bytes"
 	"errors"
 	"io"
@@ -44,21 +43,6 @@ func (c *CmdConfig) MarshalJSON() ([]byte, error) {
 	})
 }
 
-// 终端输入
-func runCommandInput(d *dto.DicInputs) (any, error) {
-	var inputText string
-	scanner := bufio.NewScanner(os.Stdin)
-	if scanner.Scan() {
-		inputText = scanner.Text()
-	}
-
-	if err := scanner.Err(); err != nil {
-		inputText = "error"
-	}
-
-	return inputText, nil
-}
-
 // 新建终端
 func runCommandNew(d *dto.DicInputs) (any, error) {
 	var cmd *exec.Cmd
@@ -80,12 +64,11 @@ func runCommandNew(d *dto.DicInputs) (any, error) {
 		return nil, err
 	}
 
-	cmdConfig := &CmdConfig{
+	return newCmdClass(&CmdConfig{
 		Cmd:     cmd,
 		Stdin:   stdin,
 		Decoder: "utf-8",
-	}
-	return cmdConfig, nil
+	}), nil
 }
 
 // 新建终端（Shell模式，跨平台自动选择 shell）
@@ -107,12 +90,11 @@ func runCommandShellNew(d *dto.DicInputs) (any, error) {
 		return nil, err
 	}
 
-	cmdConfig := &CmdConfig{
+	return newCmdClass(&CmdConfig{
 		Cmd:     cmd,
 		Stdin:   stdin,
 		Decoder: "utf-8",
-	}
-	return cmdConfig, nil
+	}), nil
 }
 
 // 终端解码器
@@ -316,4 +298,21 @@ func runCommandInputText(d *dto.DicInputs) (any, error) {
 		return "", err
 	}
 	return "", nil
+}
+
+// newCmdClass 将终端包装为面对像 Class，方法闭包捕获同一终端实例。
+func newCmdClass(cmd *CmdConfig) *dto.DicClass {
+	instance := &dto.DicClass{
+		LocalValue: dto.NewVal().Set("_终端_", cmd),
+	}
+	instance.Fn = map[string]dto.DicFunc{
+		"异步执行": wrapObj(cmd, runCommandAsync, "0"),
+		"执行目录": wrapObj(cmd, runCommandDir, "1"),
+		"执行":   wrapObj(cmd, runCommand, "0"),
+		"解码器":  wrapObj(cmd, runCommandDecoder, "1"),
+		"变量":   wrapObj(cmd, runCommandVar, "1"),
+		"断开":   wrapObj(cmd, runCommandClose, "0"),
+		"输入":   wrapObj(cmd, runCommandInputText, "1"),
+	}
+	return instance
 }

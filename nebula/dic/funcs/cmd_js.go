@@ -16,10 +16,6 @@ func restart(d *dto.DicInputs) (any, error) {
 	return "", errWasmUnsupported
 }
 
-func runCommandInput(d *dto.DicInputs) (any, error) {
-	return "", errWasmUnsupported
-}
-
 func runCommandNew(d *dto.DicInputs) (any, error) {
 	return nil, errWasmUnsupported
 }
