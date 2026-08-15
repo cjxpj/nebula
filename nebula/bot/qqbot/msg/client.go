@@ -14,7 +14,11 @@ func NewQQBot(appId, clientSecret string) *QQBot {
 }
 
 // EnsureToken 确保 token 有效（自动刷新）
+// 加锁保证多条消息并发处理时不会同时刷新 token
 func (b *QQBot) EnsureToken() error {
+	b.TokenMu.Lock()
+	defer b.TokenMu.Unlock()
+
 	// 尝试从字符串转换 ExpiresIn 为 int
 	var expiresIn int
 	if b.Key != nil {

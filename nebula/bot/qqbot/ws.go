@@ -230,6 +230,23 @@ func wsEventLoop(ctx context.Context, conn *websocket.Conn, bot *qqbot_msg.Route
 	// 收到 READY/RESUMED 后才允许发心跳（对齐 botpy：鉴权成功后才开启心跳）
 	readyCh := make(chan struct{})
 
+	// 消息处理队列：读循环只负责快速入队，由下方 worker 池并发消费。
+	// 词库执行/回复接口调用（最长 10s 超时）不再阻塞读循环，
+	// 上一条消息未处理完时下一条也能立即开始；PushContext 已按消息隔离，可安全并发。
+	msgCh := make(chan *qqbot_msg.Payload, 512)
+	for i := 0; i < 8; i++ {
+		go func() {
+			for {
+				select {
+				case <-loopCtx.Done():
+					return
+				case p := <-msgCh:
+					wsDispatch(bot, p.Type, p.Data, p.Id)
+				}
+			}
+		}()
+	}
+
 	go func() {
 		select {
 		case <-loopCtx.Done():
@@ -317,7 +334,18 @@ func wsEventLoop(ctx context.Context, conn *websocket.Conn, bot *qqbot_msg.Route
 					go triggerStartupCallback(bot)
 				}
 			} else {
-				wsDispatch(bot, payload.T, payload.D, payload.Id)
+				// 拷贝消息数据后入队，避免处理期间缓冲区被复用
+				select {
+				case msgCh <- &qqbot_msg.Payload{
+					Op:   0,
+					Id:   payload.Id,
+					Data: append([]byte(nil), payload.D...),
+					Type: payload.T,
+					Seq:  payload.S,
+				}:
+				default:
+					dbg(bot, "消息处理队列已满，丢弃事件: %s", payload.T)
+				}
 			}
 
 		case 7: // Reconnect

@@ -149,6 +149,9 @@ type pushElem struct {
 	Url        string `json:"Url"`
 	GolineMode string `json:"GolineMode"`
 	Debug      string `json:"Debug"`
+	System     string `json:"System"`
+	InstantPush string `json:"InstantPush"`
+	Json       string `json:"Json"`
 	Size       string `json:"Size"`
 	Height     string `json:"Height"`
 	Width      string `json:"Width"`
@@ -194,6 +197,12 @@ func dispatchPush(elems []pushElem, rawData json.RawMessage) {
 
 	// 从第一个元素里取元信息；从第二个元素里取 Text
 	meta := elems[0]
+
+	// 系统即时推送（System=System 且 InstantPush=InstantPush）：触发词库 [系统]推送 事件
+	if meta.System == "System" && meta.InstantPush == "InstantPush" {
+		triggerSystemPush(meta, rawData)
+		return
+	}
 
 	// 过滤系统消息（没有来源类型的是系统通知）
 	if meta.Group == "" && meta.Friend == "" && meta.Temp == "" {
@@ -416,6 +425,61 @@ skipGroupCheck:
 
 			// 清空上下文
 			clearPushContext()
+		}()
+	}
+}
+
+// triggerSystemPush 系统即时推送（System=System 且 InstantPush=InstantPush）时触发词库 [系统]推送 事件
+func triggerSystemPush(meta pushElem, rawData json.RawMessage) {
+	if dto.ServerConfig.SecludedBot == nil || dto.ServerConfig.SecludedBot.FilePath == "" {
+		return
+	}
+
+	// data 变量：优先返回推送 Json 字段内容，缺失时回退为完整原始数据
+	data := meta.Json
+	if data == "" {
+		data = string(rawData)
+	}
+
+	valData := dto.NewVal().
+		Set("data", data).
+		Set("robot", meta.Account).
+		Set("Robot", meta.Account).
+		Set("GolineMode", meta.GolineMode)
+
+	// 遍历 dic/*.n 词库
+	botDicPath := utils.NewFileQueue(dto.ServerConfig.SecludedBot.FilePath + "/dic")
+	botDicList, err := botDicPath.GetFileList()
+	if err != nil {
+		dbgLog("[secluded] get dic list for system push failed: %v", err)
+		return
+	}
+
+	for _, v := range botDicList {
+		if !strings.HasSuffix(v, ".n") {
+			continue
+		}
+		// 保存闭包变量，避免 goroutine 中引用过期
+		dicFile := v
+		msgValData := valData
+		go func() {
+			dicPath := dto.ServerConfig.SecludedBot.FilePath + "/dic/" + dicFile
+			fileData, err := utils.NewFileQueue(dicPath).ReadFromFile()
+			if err != nil {
+				return
+			}
+
+			dic := dic_dto.NewDic(dicPath, fileData).
+				SetGlobal_v(msgValData)
+
+			dic.AddFuncs(Funcs)
+
+			// 触发 [系统]推送
+			rMsg := dic_api.Api.DicRunEvent(dic, "系统", "推送")
+			rMsg = strings.ReplaceAll(rMsg, "\\r", "\n")
+			if rMsg != "" {
+				debugLog.Infof("[secluded] 系统推送: %v", rMsg)
+			}
 		}()
 	}
 }

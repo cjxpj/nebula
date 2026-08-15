@@ -2,6 +2,8 @@ package qqbot_msg
 
 import (
 	"encoding/json"
+	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -13,8 +15,10 @@ type QQBot struct {
 	ClientSecret string
 	Key          *AccessTokenResponse
 	TokenTime    time.Time
-	// 处理次数
-	Count int
+	// 处理次数（msg_seq 递增，原子操作，无需加锁）
+	Count atomic.Int64
+	// token 刷新互斥，防止并发同时刷新
+	TokenMu sync.Mutex
 	// 调试打印
 	Debug bool
 }

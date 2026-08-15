@@ -30,6 +30,11 @@ func ParseKeyboardJSON(jsonStr string) *Keyboard {
 	return &kb
 }
 
+// nextMsgSeq 返回递增的消息序号（原子操作，并发安全且无锁），用于 msg_seq 字段去重
+func (b *QQBot) nextMsgSeq() int {
+	return int(b.Count.Add(1))
+}
+
 // 回复子频道消息
 func (b *QQBot) ReplyChannelMessage(messageID, channelID, content string) (*MessageResponse, error) {
 	if channelID == "" || content == "" {
@@ -37,11 +42,10 @@ func (b *QQBot) ReplyChannelMessage(messageID, channelID, content string) (*Mess
 	}
 	url := fmt.Sprintf("/channels/%s/messages", channelID)
 
-	b.Count++
 	msg := MessageToSend{
 		Content: content,
 		MsgId:   messageID,
-		MsgSeq:  b.Count,
+		MsgSeq:  b.nextMsgSeq(),
 	}
 
 	var resp MessageResponse
@@ -77,13 +81,11 @@ func (b *QQBot) ReplyChannelVoiceMessage(messageID, channelID, voice string) (*M
 		return nil, err
 	}
 
-	b.Count++
-
 	msg := MessageToSend{
 		MsgType: 7,
 		Media:   media,
 		MsgId:   messageID,
-		MsgSeq:  b.Count,
+		MsgSeq:  b.nextMsgSeq(),
 	}
 
 	var resp MessageResponse
@@ -113,12 +115,10 @@ func (b *QQBot) ReplyChannelPrivateMessage(messageID, userID, img, content strin
 func (b *QQBot) ReplyPrivateMessage(messageID, userID, content string) (*MessageResponse, error) {
 	url := fmt.Sprintf("/dms/%s/messages", userID)
 
-	b.Count++
-
 	msg := MessageToSend{
 		Content: content,
 		MsgId:   messageID,
-		MsgSeq:  b.Count,
+		MsgSeq:  b.nextMsgSeq(),
 	}
 
 	var resp MessageResponse
@@ -191,13 +191,11 @@ func (b *QQBot) ReplyGroupVoiceMessage(messageID, groupOpenID, voice string, eve
 		return nil, err
 	}
 
-	b.Count++
-
 	msg := MessageToSend{
 		MsgType: 7,
 		Media:   media,
 		MsgId:   messageID,
-		MsgSeq:  b.Count,
+		MsgSeq:  b.nextMsgSeq(),
 		EventId: eventIDOf(eventIDs...),
 	}
 
@@ -221,13 +219,11 @@ func (b *QQBot) ReplyGroupVideoMessage(messageID, groupOpenID, video string, eve
 		return nil, err
 	}
 
-	b.Count++
-
 	msg := MessageToSend{
 		MsgType: 7,
 		Media:   media,
 		MsgId:   messageID,
-		MsgSeq:  b.Count,
+		MsgSeq:  b.nextMsgSeq(),
 		EventId: eventIDOf(eventIDs...),
 	}
 
@@ -250,13 +246,11 @@ func (b *QQBot) ReplyGroupMarkdownWithKeyboard(messageID, groupOpenID string, md
 	}
 	url := fmt.Sprintf("/v2/groups/%s/messages", groupOpenID)
 
-	b.Count++
-
 	msg := MessageToSend{
 		MsgType:  2,
 		Markdown: md,
 		MsgId:    messageID,
-		MsgSeq:   b.Count,
+		MsgSeq:   b.nextMsgSeq(),
 		Keyboard: kb,
 		EventId:  eventIDOf(eventIDs...),
 	}
@@ -280,15 +274,13 @@ func (b *QQBot) ReplyGroupAnyMarkdownWithKeyboard(messageID, groupOpenID, text s
 	}
 	url := fmt.Sprintf("/v2/groups/%s/messages", groupOpenID)
 
-	b.Count++
-
 	md := &Markdown{Content: text}
 
 	msg := MessageToSend{
 		MsgType:  2,
 		Markdown: md,
 		MsgId:    messageID,
-		MsgSeq:   b.Count,
+		MsgSeq:   b.nextMsgSeq(),
 		Keyboard: kb,
 		EventId:  eventIDOf(eventIDs...),
 	}
@@ -312,15 +304,13 @@ func (b *QQBot) ReplyPrivateAnyMarkdownWithKeyboard(messageID, openID, text stri
 	}
 	url := fmt.Sprintf("/v2/users/%s/messages", openID)
 
-	b.Count++
-
 	md := &Markdown{Content: text}
 
 	msg := MessageToSend{
 		MsgType:  2,
 		Markdown: md,
 		MsgId:    messageID,
-		MsgSeq:   b.Count,
+		MsgSeq:   b.nextMsgSeq(),
 		Keyboard: kb,
 	}
 
@@ -343,13 +333,11 @@ func (b *QQBot) ReplyPrivateMarkdownWithKeyboard(messageID, openID string, md *M
 	}
 	url := fmt.Sprintf("/v2/users/%s/messages", openID)
 
-	b.Count++
-
 	msg := MessageToSend{
 		MsgType:  2,
 		Markdown: md,
 		MsgId:    messageID,
-		MsgSeq:   b.Count,
+		MsgSeq:   b.nextMsgSeq(),
 		Keyboard: kb,
 	}
 
@@ -373,14 +361,12 @@ func (b *QQBot) ReplyGroupImgMessage(messageID, groupOpenID, img, content string
 		return nil, err
 	}
 
-	b.Count++
-
 	msg := MessageToSend{
 		MsgType: 7,
 		Media:   media,
 		Content: content,
 		MsgId:   messageID,
-		MsgSeq:  b.Count,
+		MsgSeq:  b.nextMsgSeq(),
 		EventId: eventIDOf(eventIDs...),
 	}
 
@@ -401,14 +387,12 @@ func (b *QQBot) ReplyGroupPrivateImgMessage(messageID, openID, img, content stri
 		return nil, err
 	}
 
-	b.Count++
-
 	msg := MessageToSend{
 		MsgType: 7,
 		Media:   media,
 		Content: content,
 		MsgId:   messageID,
-		MsgSeq:  b.Count,
+		MsgSeq:  b.nextMsgSeq(),
 	}
 
 	var resp MessageResponse
@@ -425,12 +409,10 @@ func (b *QQBot) ReplyGroupMessage(messageID, groupOpenID, content string, eventI
 	}
 	url := fmt.Sprintf("/v2/groups/%s/messages", groupOpenID)
 
-	b.Count++
-
 	msg := MessageToSend{
 		Content: content,
 		MsgId:   messageID,
-		MsgSeq:  b.Count,
+		MsgSeq:  b.nextMsgSeq(),
 		EventId: eventIDOf(eventIDs...),
 	}
 
@@ -448,12 +430,10 @@ func (b *QQBot) ReplyGroupPrivateMessage(messageID, openID, content string) (*Me
 	}
 	url := fmt.Sprintf("/v2/users/%s/messages", openID)
 
-	b.Count++
-
 	msg := MessageToSend{
 		Content: content,
 		MsgId:   messageID,
-		MsgSeq:  b.Count,
+		MsgSeq:  b.nextMsgSeq(),
 	}
 
 	var resp MessageResponse
@@ -476,13 +456,11 @@ func (b *QQBot) ReplyGroupPrivateVoiceMessage(messageID, openID, voice string) (
 		return nil, err
 	}
 
-	b.Count++
-
 	msg := MessageToSend{
 		MsgType: 7,
 		Media:   media,
 		MsgId:   messageID,
-		MsgSeq:  b.Count,
+		MsgSeq:  b.nextMsgSeq(),
 	}
 
 	var resp MessageResponse
@@ -505,13 +483,11 @@ func (b *QQBot) ReplyGroupPrivateVideoMessage(messageID, openID, video string) (
 		return nil, err
 	}
 
-	b.Count++
-
 	msg := MessageToSend{
 		MsgType: 7,
 		Media:   media,
 		MsgId:   messageID,
-		MsgSeq:  b.Count,
+		MsgSeq:  b.nextMsgSeq(),
 	}
 
 	var resp MessageResponse

@@ -11,6 +11,7 @@ import (
 
 	qqbot_msg "github.com/cjxpj/nebula/bot/qqbot/msg"
 	"github.com/cjxpj/nebula/debugLog"
+	dic_dto "github.com/cjxpj/nebula/dic/dto"
 	"github.com/cjxpj/nebula/dto"
 )
 
@@ -30,42 +31,35 @@ type PushContext struct {
 	InteractionCode int    // 按钮交互事件返回码，默认 0 成功
 }
 
-var (
-	pushMu      sync.RWMutex
-	currentPush *PushContext
-)
+// pushCtxKey 是 PushContext 存入词库全局变量（Val.G）的键名。
+// 存到词库实例而不是全局单例：多条消息可并发处理，互不串扰上下文。
+const pushCtxKey = "_qqbot_pushctx_"
 
-// SetPushContext 设置当前上下文
-func SetPushContext(ctx *PushContext) {
-	pushMu.Lock()
-	defer pushMu.Unlock()
-	currentPush = ctx
+// SetPushContext 将消息上下文挂到当前词库实例上，供 #引入=QQBot 的回复函数使用
+func SetPushContext(dic *dic_dto.Dic, ctx *PushContext) {
+	if dic == nil || dic.Val == nil || dic.Val.G == nil || ctx == nil {
+		return
+	}
+	dic.Val.G.Set(pushCtxKey, ctx)
 }
 
-// ClearPushContext 清除当前上下文
-func ClearPushContext() {
-	pushMu.Lock()
-	defer pushMu.Unlock()
-	currentPush = nil
-}
-
-// GetPushContext 获取当前上下文
-func GetPushContext() *PushContext {
-	pushMu.RLock()
-	defer pushMu.RUnlock()
-	return currentPush
+// GetPushContext 从当前执行的词库变量中获取上下文（嵌套运行共享同一 G，均可取到）
+func GetPushContext(d *dto.DicInputs) *PushContext {
+	if d == nil || d.V == nil || d.V.G == nil {
+		return nil
+	}
+	ctx, _ := d.V.G.Get(pushCtxKey).(*PushContext)
+	return ctx
 }
 
 // ConsumeEventID 原子读取并清除 eventID，确保每次 INTERACTION_CREATE 的 event_id 只被使用一次
-func ConsumeEventID() string {
-	pushMu.Lock()
-	defer pushMu.Unlock()
-	if currentPush == nil {
-		return ""
+func ConsumeEventID(d *dto.DicInputs) string {
+	if ctx := GetPushContext(d); ctx != nil {
+		eid := ctx.EventID
+		ctx.EventID = ""
+		return eid
 	}
-	eid := currentPush.EventID
-	currentPush.EventID = ""
-	return eid
+	return ""
 }
 
 // getBotByIndex 按排序后的账号列表取指定索引的 QQBot（index: 0=第一个, 1=第二个...），不存在返回 nil
@@ -399,7 +393,7 @@ var ReplyFuncs = map[string]dto.DicFunc{
 	"发送文本": {
 		L: "1|2",
 		Fn: func(d *dto.DicInputs) (any, error) {
-			ctx := GetPushContext()
+			ctx := GetPushContext(d)
 			if ctx == nil || ctx.Bot == nil || ctx.Bot.API == nil {
 				return "", fmt.Errorf("QQBot上下文未初始化")
 			}
@@ -410,14 +404,14 @@ var ReplyFuncs = map[string]dto.DicFunc{
 						if ctx.PrivateUserID != "" {
 							ctx.Bot.API.ReplyGroupPrivateMessage(ctx.MsgID, ctx.PrivateUserID, "\n"+rMsg)
 						} else {
-							ctx.Bot.API.ReplyGroupMessage(ctx.MsgID, ctx.GroupOpenID, "\n"+rMsg, ConsumeEventID())
+							ctx.Bot.API.ReplyGroupMessage(ctx.MsgID, ctx.GroupOpenID, "\n"+rMsg, ConsumeEventID(d))
 						}
 					}
 				} else {
 					if ctx.PrivateUserID != "" {
 						ctx.Bot.API.ReplyGroupPrivateImgMessage(ctx.MsgID, ctx.PrivateUserID, d.Inputs.String(2), rMsg)
 					} else {
-						ctx.Bot.API.ReplyGroupImgMessage(ctx.MsgID, ctx.GroupOpenID, d.Inputs.String(2), rMsg, ConsumeEventID())
+						ctx.Bot.API.ReplyGroupImgMessage(ctx.MsgID, ctx.GroupOpenID, d.Inputs.String(2), rMsg, ConsumeEventID(d))
 					}
 				}
 			}()
@@ -427,7 +421,7 @@ var ReplyFuncs = map[string]dto.DicFunc{
 	"发送MD": {
 		L: "1..",
 		Fn: func(d *dto.DicInputs) (any, error) {
-			ctx := GetPushContext()
+			ctx := GetPushContext(d)
 			if ctx == nil || ctx.Bot == nil || ctx.Bot.API == nil {
 				return "", fmt.Errorf("QQBot上下文未初始化")
 			}
@@ -438,7 +432,7 @@ var ReplyFuncs = map[string]dto.DicFunc{
 				if ctx.PrivateUserID != "" {
 					ctx.Bot.API.ReplyPrivateAnyMarkdownWithKeyboard(ctx.MsgID, ctx.PrivateUserID, d.Inputs.String(1), kb)
 				} else {
-					ctx.Bot.API.ReplyGroupAnyMarkdownWithKeyboard(ctx.MsgID, ctx.GroupOpenID, d.Inputs.String(1), kb, ConsumeEventID())
+					ctx.Bot.API.ReplyGroupAnyMarkdownWithKeyboard(ctx.MsgID, ctx.GroupOpenID, d.Inputs.String(1), kb, ConsumeEventID(d))
 				}
 				return "", nil
 			}
@@ -456,7 +450,7 @@ var ReplyFuncs = map[string]dto.DicFunc{
 				ctx.Bot.API.ReplyGroupMarkdownWithKeyboard(ctx.MsgID, ctx.GroupOpenID, &qqbot_msg.Markdown{
 					CustomTemplateId: d.Inputs.String(1),
 					Params:           params,
-				}, kb, ConsumeEventID())
+				}, kb, ConsumeEventID(d))
 			}
 			return "", nil
 		},
@@ -464,7 +458,7 @@ var ReplyFuncs = map[string]dto.DicFunc{
 	"发送视频": {
 		L: "1",
 		Fn: func(d *dto.DicInputs) (any, error) {
-			ctx := GetPushContext()
+			ctx := GetPushContext(d)
 			if ctx == nil || ctx.Bot == nil || ctx.Bot.API == nil {
 				return "", fmt.Errorf("QQBot上下文未初始化")
 			}
@@ -472,7 +466,7 @@ var ReplyFuncs = map[string]dto.DicFunc{
 				if ctx.PrivateUserID != "" {
 					ctx.Bot.API.ReplyGroupPrivateVideoMessage(ctx.MsgID, ctx.PrivateUserID, d.Inputs.String(1))
 				} else {
-					ctx.Bot.API.ReplyGroupVideoMessage(ctx.MsgID, ctx.GroupOpenID, d.Inputs.String(1), ConsumeEventID())
+					ctx.Bot.API.ReplyGroupVideoMessage(ctx.MsgID, ctx.GroupOpenID, d.Inputs.String(1), ConsumeEventID(d))
 				}
 			}()
 			return "", nil
@@ -481,7 +475,7 @@ var ReplyFuncs = map[string]dto.DicFunc{
 	"发送语音": {
 		L: "1",
 		Fn: func(d *dto.DicInputs) (any, error) {
-			ctx := GetPushContext()
+			ctx := GetPushContext(d)
 			if ctx == nil || ctx.Bot == nil || ctx.Bot.API == nil {
 				return "", fmt.Errorf("QQBot上下文未初始化")
 			}
@@ -489,7 +483,7 @@ var ReplyFuncs = map[string]dto.DicFunc{
 				if ctx.PrivateUserID != "" {
 					ctx.Bot.API.ReplyGroupPrivateVoiceMessage(ctx.MsgID, ctx.PrivateUserID, d.Inputs.String(1))
 				} else {
-					ctx.Bot.API.ReplyGroupVoiceMessage(ctx.MsgID, ctx.GroupOpenID, d.Inputs.String(1), ConsumeEventID())
+					ctx.Bot.API.ReplyGroupVoiceMessage(ctx.MsgID, ctx.GroupOpenID, d.Inputs.String(1), ConsumeEventID(d))
 				}
 			}()
 			return "", nil
@@ -498,7 +492,7 @@ var ReplyFuncs = map[string]dto.DicFunc{
 	"禁": {
 		L: "2|3",
 		Fn: func(d *dto.DicInputs) (any, error) {
-			ctx := GetPushContext()
+			ctx := GetPushContext(d)
 			if ctx == nil || ctx.Bot == nil || ctx.Bot.API == nil {
 				return "", nil
 			}
@@ -524,7 +518,7 @@ var ReplyFuncs = map[string]dto.DicFunc{
 	"获取群信息": {
 		L: "0|1",
 		Fn: func(d *dto.DicInputs) (any, error) {
-			ctx := GetPushContext()
+			ctx := GetPushContext(d)
 			if ctx == nil || ctx.Bot == nil || ctx.Bot.API == nil {
 				return "", nil
 			}
@@ -547,7 +541,7 @@ var ReplyFuncs = map[string]dto.DicFunc{
 	"入群审批": {
 		L: "3|4|5",
 		Fn: func(d *dto.DicInputs) (any, error) {
-			ctx := GetPushContext()
+			ctx := GetPushContext(d)
 			if ctx == nil || ctx.Bot == nil || ctx.Bot.API == nil {
 				return "", nil
 			}

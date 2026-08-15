@@ -1026,14 +1026,17 @@ func Entry(r *dic_dto.DicEntry, txt []string, funcV *dic_dto.DicFunc) error {
 		}
 
 		if textLen > 2 && text[:2] == "#:" {
+ 			// 提前捕获执行上下文，避免父级执行完毕 Close 清空引用后异步 goroutine 读到 nil 崩溃
+			val := funcV.Val
+			dic := funcV.Dic
 			go func() {
 				// 创建独立的执行上下文，避免主流程终止/STOP 时异步执行被掐断
 				independentFuncV := &dic_dto.DicFunc{
-					Val: funcV.Val,
+					Val: val,
 					Sys: &dto.LocalDicValue{},
-					Dic: funcV.Dic,
+					Dic: dic,
 				}
-				Runs(independentFuncV, utils.AnyToString(count.RunCountText(r.Val, text[2:])))
+				Runs(independentFuncV, utils.AnyToString(count.RunCountText(val, text[2:])))
 			}()
 			continue
 		}

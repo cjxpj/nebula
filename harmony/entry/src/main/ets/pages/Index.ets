@@ -1,8 +1,8 @@
 import { webview } from '@kit.ArkWeb';
 import { http } from '@kit.NetworkKit';
-import nebula from 'libentry.so';
 
 const HTTP_BASE: string = 'http://127.0.0.1:8080';
+const OPUI_URL: string = 'https://nebulaopui.cjxpj.com/';
 
 @Entry
 @Component
@@ -47,8 +47,7 @@ struct Index {
   }
 
   private loadOpui(): void {
-    const path: string = nebula.getOpuiUrl();
-    this.url = HTTP_BASE + (path && path.length > 0 ? path : '/');
+    this.url = OPUI_URL;
   }
 
   build() {

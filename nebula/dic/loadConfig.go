@@ -128,15 +128,8 @@ func loadConfig() {
 
 	opUi := httpData.Section("管理面板")
 	if ok, _ := opUi.Key("启用").Bool(); ok {
-		path := opUi.Key("访问路径").String()
-		if path == "nebula" {
-			fmt.Println("管理面板的密码忘记可以去配置文件看或者自己改，请不要泄漏导致服务器被攻击！")
-			path = fmt.Sprintf("%s/%s", path, utils.RandomString("大小字母", 12))
-			opUi.Key("访问路径").SetValue(path)
-			file.SaveIni(httpData)
-		}
 		dto.ServerConfig.OPUI = &dto.OPUI{
-			Addr:   "/" + path,
+			Addr:   "/" + opUi.Key("访问路径").String(),
 			Secret: opUi.Key("密钥").String(),
 			Cors:   opUi.Key("跨域").MustBool(false),
 		}

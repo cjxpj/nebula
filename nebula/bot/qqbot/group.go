@@ -294,17 +294,17 @@ func qqBOTGroupRun(payload *qqbot_msg.Payload, bot *qqbot_msg.RouterQQBot) {
 			continue
 		}
 
-		// 设置PushContext供 #引入=QQBot 函数使用
-		SetPushContext(&PushContext{
-			Bot:         bot,
-			MsgID:       m.ID,
-			GroupOpenID: m.GroupOpenID,
-		})
-
 		// 回复消息
 		dic := dic_dto.NewDic(dicPath, FileData).
 			SetGlobal_v(valData)
 		dic.Val.P.Set("_词库路径_", dicPath)
+
+		// 设置PushContext供 #引入=QQBot 函数使用
+		SetPushContext(dic, &PushContext{
+			Bot:         bot,
+			MsgID:       m.ID,
+			GroupOpenID: m.GroupOpenID,
+		})
 
 		dic.AddFuncs(ReplyFuncs)
 
@@ -558,17 +558,17 @@ func qqBOTGroupATRun(payload *qqbot_msg.Payload, bot *qqbot_msg.RouterQQBot) {
 			continue
 		}
 
-		// 设置PushContext供 #引入=QQBot 函数使用
-		SetPushContext(&PushContext{
-			Bot:         bot,
-			MsgID:       m.ID,
-			GroupOpenID: m.GroupOpenID,
-		})
-
 		// 回复消息
 		dic := dic_dto.NewDic(dicPath, FileData).
 			SetGlobal_v(valData)
 		dic.Val.P.Set("_词库路径_", dicPath)
+
+		// 设置PushContext供 #引入=QQBot 函数使用
+		SetPushContext(dic, &PushContext{
+			Bot:         bot,
+			MsgID:       m.ID,
+			GroupOpenID: m.GroupOpenID,
+		})
 
 		dic.AddFuncs(ReplyFuncs)
 
@@ -782,13 +782,20 @@ func qqBOTGroupEventRun(payload *qqbot_msg.Payload, bot *qqbot_msg.RouterQQBot) 
 			privateUserID = interactionEvent.UserOpenID
 		}
 	}
-	runGroupEventDic(bot, msgID, groupOpenID, eventID, valData, event, msg, privateUserID)
+	ctx := &PushContext{
+		Bot:           bot,
+		MsgID:         msgID,
+		EventID:       eventID,
+		GroupOpenID:   groupOpenID,
+		PrivateUserID: privateUserID,
+	}
+	runGroupEventDic(bot, ctx, valData, event, msg)
 
 	// RespondInteraction 必须在发送被动回复（带 event_id）之后调用
 	// 因为 PUT /interactions/{id} 会消耗 interaction，之后再发带 event_id 的消息会被拒绝
 	if interactionEvent != nil {
 		code := qqbot_msg.InteractionCodeSuccess
-		if ctx := GetPushContext(); ctx != nil {
+		if ctx != nil {
 			code = qqbot_msg.InteractionResponseCode(ctx.InteractionCode)
 		}
 		bot.API.RespondInteraction(interactionEvent, code)
@@ -950,7 +957,14 @@ func qqBOTFriendEventRun(payload *qqbot_msg.Payload, bot *qqbot_msg.RouterQQBot)
 
 	eventID := payload.Id
 	// 好友事件无群聊上下文，以私信形式回复给该用户
-	runGroupEventDic(bot, "", "", eventID, valData, "", msg, userOpenID)
+	ctx := &PushContext{
+		Bot:           bot,
+		MsgID:         "",
+		EventID:       eventID,
+		GroupOpenID:   "",
+		PrivateUserID: userOpenID,
+	}
+	runGroupEventDic(bot, ctx, valData, "", msg)
 }
 
 // parseFriendEvent 解析好友事件 payload，返回 valData、触发词、用户 OpenID
@@ -986,7 +1000,7 @@ func parseFriendEvent(payload *qqbot_msg.Payload, appId string) (*dto.Val, strin
 }
 
 // runGroupEventDic 遍历词库并执行群事件回复
-func runGroupEventDic(bot *qqbot_msg.RouterQQBot, msgID, groupOpenID, eventID string, valData *dto.Val, event string, msg string, privateUserID string) {
+func runGroupEventDic(bot *qqbot_msg.RouterQQBot, ctx *PushContext, valData *dto.Val, event string, msg string) {
 	botDicList, err := utils.NewFileQueue(filepath.Join(bot.FilePath, "dic")).GetFileList()
 	if err != nil {
 		return
@@ -1001,23 +1015,17 @@ func runGroupEventDic(bot *qqbot_msg.RouterQQBot, msgID, groupOpenID, eventID st
 			continue
 		}
 
-		SetPushContext(&PushContext{
-			Bot:           bot,
-			MsgID:         msgID,
-			EventID:       eventID,
-			GroupOpenID:   groupOpenID,
-			PrivateUserID: privateUserID,
-		})
-
 		dic := dic_dto.NewDic(filepath.Join(bot.FilePath, "dic", v), FileData).
 			SetGlobal_v(valData)
+		// 设置PushContext供 #引入=QQBot 函数使用
+		SetPushContext(dic, ctx)
 		dic.AddFuncs(ReplyFuncs)
 
 		dic.SetFunc("设置状态", dto.DicFunc{
 			L: "1",
 			Fn: func(d *dto.DicInputs) (any, error) {
 				code := d.Inputs.Int(1)
-				if ctx := GetPushContext(); ctx != nil {
+				if ctx := GetPushContext(d); ctx != nil {
 					ctx.InteractionCode = code
 				}
 				return "", nil
@@ -1037,30 +1045,30 @@ func runGroupEventDic(bot *qqbot_msg.RouterQQBot, msgID, groupOpenID, eventID st
 				if i == 1 {
 					strippedMsg = ""
 				}
-				if privateUserID != "" {
-					if _, mErr := bot.API.ReplyGroupPrivateImgMessage(msgID, privateUserID, img, strippedMsg); mErr != nil {
+				if ctx.PrivateUserID != "" {
+					if _, mErr := bot.API.ReplyGroupPrivateImgMessage(ctx.MsgID, ctx.PrivateUserID, img, strippedMsg); mErr != nil {
 						fmt.Println("QQBot私信回复图文失败", mErr)
 					}
 				} else {
-					if _, mErr := bot.API.ReplyGroupImgMessage(msgID, groupOpenID, img, strippedMsg, eventID); mErr != nil {
+					if _, mErr := bot.API.ReplyGroupImgMessage(ctx.MsgID, ctx.GroupOpenID, img, strippedMsg, ctx.EventID); mErr != nil {
 						fmt.Println("QQBot回复图文失败", mErr)
 					}
 				}
 				// event_id 只能使用一次，后续图片和词库不能再用
-				eventID = ""
+				ctx.EventID = ""
 			}
 		} else if rMsg != "" {
-			if privateUserID != "" {
-				if _, mErr := bot.API.ReplyGroupPrivateMessage(msgID, privateUserID, rMsg); mErr != nil {
+			if ctx.PrivateUserID != "" {
+				if _, mErr := bot.API.ReplyGroupPrivateMessage(ctx.MsgID, ctx.PrivateUserID, rMsg); mErr != nil {
 					debugLog.Infof("QQBot私信回复失败%v", mErr)
 				}
 			} else {
-				if _, mErr := bot.API.ReplyGroupMessage(msgID, groupOpenID, rMsg, eventID); mErr != nil {
+				if _, mErr := bot.API.ReplyGroupMessage(ctx.MsgID, ctx.GroupOpenID, rMsg, ctx.EventID); mErr != nil {
 					debugLog.Infof("QQBot回复失败%v", mErr)
 				}
 			}
 			// event_id 只能使用一次，后续词库不能再用
-			eventID = ""
+			ctx.EventID = ""
 		}
 	}
 }
@@ -1086,8 +1094,6 @@ func triggerStartupCallback(bot *qqbot_msg.RouterQQBot) {
 			continue
 		}
 
-		SetPushContext(&PushContext{Bot: bot})
-
 		valData := dto.NewVal().
 			Set("来源", "机器人上线").
 			Set("robot", appId).
@@ -1095,6 +1101,8 @@ func triggerStartupCallback(bot *qqbot_msg.RouterQQBot) {
 
 		dic := dic_dto.NewDic(filepath.Join(bot.FilePath, "dic", v), FileData).
 			SetGlobal_v(valData)
+		// 设置PushContext供 #引入=QQBot 函数使用
+		SetPushContext(dic, &PushContext{Bot: bot})
 		dic.AddFuncs(ReplyFuncs)
 
 		rMsg := dic_api.Api.DicRunEvent(dic, "系统", "启动")
@@ -1170,17 +1178,17 @@ func qqBOTGroupPrivateRun(payload *qqbot_msg.Payload, bot *qqbot_msg.RouterQQBot
 			continue
 		}
 
-		// 设置PushContext供 #引入=QQBot 函数使用
-		SetPushContext(&PushContext{
-			Bot:        bot,
-			MsgID:      m.ID,
-			UserOpenID: userID,
-		})
-
 		// 回复消息
 		dic := dic_dto.NewDic(dicPath, FileData).
 			SetGlobal_v(valData)
 		dic.Val.P.Set("_词库路径_", dicPath)
+
+		// 设置PushContext供 #引入=QQBot 函数使用
+		SetPushContext(dic, &PushContext{
+			Bot:        bot,
+			MsgID:      m.ID,
+			UserOpenID: userID,
+		})
 
 		dic.AddFuncs(ReplyFuncs)
 

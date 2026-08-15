@@ -43,17 +43,19 @@ import dalvik.system.DexClassLoader;
 import rikka.shizuku.Shizuku;
 
 /**
- * 主 Activity —— WebView 显示 Go HTTP 服务的管理面板
+ * 主 Activity —— WebView 显示 Nebula 线上面板
  *
  * 流程：
  *   1. 请求必需权限（管理所有文件 + 通知 + 电池优化）
  *   2. RunNebula() → 等待 HTTP
- *   3. startKeepAliveService() → getOpuiUrl() → WebView 加载
+ *   3. startKeepAliveService() → WebView 加载线上面板
  */
 public class MainActivity extends Activity {
 
     private static final String TAG = "MainActivity";
     private static final String HTTP_HOST = "http://127.0.0.1:8080";
+    // 手机端页面固定指向线上面板，不再加载局域网本地页面
+    private static final String OPUI_URL = "https://nebulaopui.cjxpj.com/";
     private static final int REQ_NOTIFICATION = 101;
 
     // 类加载时自动加载 .so，确保 JNI 方法可用
@@ -237,19 +239,8 @@ public class MainActivity extends Activity {
             registerDevice();
         });
 
-        // 4) 从 so 直接获取 opui 路径
-        String opuiUrl;
-        try {
-            opuiUrl = getOpuiUrl();
-            if (opuiUrl == null || opuiUrl.isEmpty()) {
-                opuiUrl = "/nebula"; // 回退默认值
-            }
-        } catch (Exception e) {
-            Log.e(TAG, "getOpuiUrl 异常", e);
-            opuiUrl = "/nebula";
-        }
-
-        String url = HTTP_HOST + opuiUrl;
+        // 4) 页面链接指向线上面板
+        String url = OPUI_URL;
         Log.i(TAG, "加载 opui: " + url);
 
         // 5) 加载到 WebView（先清除 loadData 历史，防止返回键变白）

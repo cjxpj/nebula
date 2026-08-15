@@ -9,7 +9,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"mime"
 	"net"
 	"net/http"
 	"os"
@@ -22,6 +21,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 
 	"github.com/cjxpj/nebula/appfiles"
 	"github.com/cjxpj/nebula/bot/secludedbot"
@@ -51,9 +51,10 @@ type HttpOpUiConfig_server struct {
 }
 
 type HttpOpUiWebSocketItem struct {
-	Addr string `json:"addr"`
-	Cors bool   `json:"cors"`
-	Open bool   `json:"open"`
+	Addr     string `json:"addr"`
+	Cors     bool   `json:"cors"`
+	Open     bool   `json:"open"`
+	Closable bool   `json:"closable"`
 }
 
 type HttpOpUiConfig_ngrok struct {
@@ -176,9 +177,13 @@ func formatDuration(d time.Duration) string {
 // ---------- OPUI WebSocket 通知广播 ----------
 
 type opuiClientInfo struct {
-	IP        string
-	Connected time.Time
+	IP           string
+	Connected    time.Time
+	SubServerLog bool        // 是否在查看实时终端页面（决定是否向其推送 server_log）
+	WriteMu      *sync.Mutex // 保护该连接 conn.WriteMessage 的并发写入（广播/心跳/响应共用）
 }
+
+const opuiWriteWait = 10 * time.Second
 
 var (
 	opuiNotifyUpgrader = websocket.Upgrader{
@@ -188,9 +193,9 @@ var (
 	opuiNotifyClientsMu sync.Mutex
 )
 
-func addOpuiNotifyClient(conn *websocket.Conn, ip string) {
+func addOpuiNotifyClient(conn *websocket.Conn, ip string, writeMu *sync.Mutex) {
 	opuiNotifyClientsMu.Lock()
-	opuiNotifyClients[conn] = &opuiClientInfo{IP: ip, Connected: time.Now()}
+	opuiNotifyClients[conn] = &opuiClientInfo{IP: ip, Connected: time.Now(), WriteMu: writeMu}
 	opuiNotifyClientsMu.Unlock()
 	broadcastOnlineUpdate()
 }
@@ -210,8 +215,13 @@ func broadcastOnlineUpdate() {
 func broadcastOpuiNotify(msg []byte) {
 	opuiNotifyClientsMu.Lock()
 	defer opuiNotifyClientsMu.Unlock()
-	for conn := range opuiNotifyClients {
-		if err := conn.WriteMessage(websocket.TextMessage, msg); err != nil {
+	for conn, info := range opuiNotifyClients {
+		info.WriteMu.Lock()
+		conn.SetWriteDeadline(time.Now().Add(opuiWriteWait))
+		err := conn.WriteMessage(websocket.TextMessage, msg)
+		conn.SetWriteDeadline(time.Time{}) // 写完立即清除，避免残留 deadline 阻断后续写入
+		info.WriteMu.Unlock()
+		if err != nil {
 			delete(opuiNotifyClients, conn)
 		}
 	}
@@ -224,7 +234,52 @@ func broadcastOpuiNotifyExcept(msg []byte, excludeIP string) {
 		if info.IP == excludeIP {
 			continue
 		}
-		if err := conn.WriteMessage(websocket.TextMessage, msg); err != nil {
+		info.WriteMu.Lock()
+		conn.SetWriteDeadline(time.Now().Add(opuiWriteWait))
+		err := conn.WriteMessage(websocket.TextMessage, msg)
+		conn.SetWriteDeadline(time.Time{})
+		info.WriteMu.Unlock()
+		if err != nil {
+			delete(opuiNotifyClients, conn)
+		}
+	}
+}
+
+// setServerLogSub 设置指定连接的实时终端订阅状态（客户端进入/离开终端页面时调用）
+func setServerLogSub(conn *websocket.Conn, sub bool) {
+	opuiNotifyClientsMu.Lock()
+	if info, ok := opuiNotifyClients[conn]; ok {
+		info.SubServerLog = sub
+	}
+	opuiNotifyClientsMu.Unlock()
+}
+
+// hasServerLogSubscriber 是否存在正在查看实时终端的客户端
+func hasServerLogSubscriber() bool {
+	opuiNotifyClientsMu.Lock()
+	defer opuiNotifyClientsMu.Unlock()
+	for _, info := range opuiNotifyClients {
+		if info.SubServerLog {
+			return true
+		}
+	}
+	return false
+}
+
+// broadcastServerLog 仅向订阅了实时终端的客户端推送日志
+func broadcastServerLog(msg []byte) {
+	opuiNotifyClientsMu.Lock()
+	defer opuiNotifyClientsMu.Unlock()
+	for conn, info := range opuiNotifyClients {
+		if !info.SubServerLog {
+			continue
+		}
+		info.WriteMu.Lock()
+		conn.SetWriteDeadline(time.Now().Add(opuiWriteWait))
+		err := conn.WriteMessage(websocket.TextMessage, msg)
+		conn.SetWriteDeadline(time.Time{})
+		info.WriteMu.Unlock()
+		if err != nil {
 			delete(opuiNotifyClients, conn)
 		}
 	}
@@ -245,10 +300,10 @@ func serverLogDir() string {
 	return p
 }
 
-// serverLogFq 返回当前小时对应的日志文件句柄（database/log/YYYYMMDD/HH.txt，按小时区分）
+// serverLogFq 返回当天对应的日志文件句柄（database/log/YYYYMMDD.txt，按天区分，不再建子目录）
 func serverLogFq() *utils.FileQueue {
 	now := time.Now()
-	return utils.NewFileQueue(filepath.Join(serverLogDir(), now.Format("20060102"), now.Format("15")+".txt"))
+	return utils.NewFileQueue(filepath.Join(serverLogDir(), now.Format("20060102")+".txt"))
 }
 
 // init 重定向标准输出，监听终端全部信息：写入日志文件并实时推送到 OPUI 面板
@@ -276,7 +331,7 @@ func init() {
 	}()
 }
 
-// processServerLogLine 处理一行终端输出：写入日志文件并广播到在线面板
+// processServerLogLine 处理一行终端输出：写入日志文件，仅当有客户端正在查看实时终端时才推送
 func processServerLogLine(raw string) {
 	line := strings.TrimRight(raw, "\r\n")
 	if line == "" {
@@ -287,11 +342,8 @@ func processServerLogLine(raw string) {
 	// 追加写入当前小时的日志文件，作为面板历史回放的持久化来源
 	serverLogFq().AppendToFile(line + "\n")
 
-	// 无在线面板时跳过序列化，避免不必要的开销
-	opuiNotifyClientsMu.Lock()
-	hasClient := len(opuiNotifyClients) > 0
-	opuiNotifyClientsMu.Unlock()
-	if !hasClient {
+	// 无客户端查看实时终端时跳过序列化与推送，避免无谓的网络开销
+	if !hasServerLogSubscriber() {
 		return
 	}
 	data, _ := json.Marshal(map[string]string{
@@ -299,10 +351,10 @@ func processServerLogLine(raw string) {
 		"level": level,
 		"line":  line,
 	})
-	broadcastOpuiNotify(data)
+	broadcastServerLog(data)
 }
 
-// listServerLogFiles 递归列出 database/log 下所有 .txt 日志文件，按路径升序（即时间升序）
+// listServerLogFiles 列出 database/log 下所有 .txt 日志文件，按路径升序（即时间升序）
 func listServerLogFiles() []string {
 	var files []string
 	filepath.Walk(serverLogDir(), func(path string, info os.FileInfo, err error) error {
@@ -2039,7 +2091,7 @@ func listDicFilesInDir(dir string) ([]string, error) {
 	return files, nil
 }
 
-// checkDicPath 校验词库调试路径：仅允许应用目录下 private/public 中的 .n 文件，
+// checkDicPath 校验词库调试路径：仅允许应用目录内相对路径的 .n 文件，
 // 拒绝绝对路径、包含 .. 的越权路径以及非词库文件
 func checkDicPath(path string) bool {
 	if path == "" || filepath.IsAbs(path) {
@@ -2055,22 +2107,29 @@ func checkDicPath(path string) bool {
 		return false
 	}
 	clean := filepath.ToSlash(filepath.Clean(path))
-	return strings.HasPrefix(clean, "private/") || strings.HasPrefix(clean, "public/")
+	return clean != "." && clean != ".." && !strings.HasPrefix(clean, "../")
+}
+
+// checkFilePath 校验文件管理路径：仅允许应用目录内的相对路径，
+// 拒绝绝对路径、包含 .. 的越权路径
+func checkFilePath(path string) bool {
+	if path == "" || filepath.IsAbs(path) {
+		return false
+	}
+	if strings.HasPrefix(path, "/") || strings.HasPrefix(path, "\\") {
+		return false
+	}
+	if strings.Contains(path, "..") {
+		return false
+	}
+	clean := filepath.ToSlash(filepath.Clean(path))
+	return clean != "." && clean != ".." && !strings.HasPrefix(clean, "../")
 }
 
 func OpUI(w http.ResponseWriter, r *http.Request, getpath string) {
-	if getpath == "" {
-		http.Redirect(w, r, dto.ServerConfig.OPUI.Addr+"/", http.StatusFound)
-		return
-	}
-
-	if getpath == "/" {
-		getpath = "/index.html"
-	}
-
-	// OPUI WebSocket 统一通信（API 请求 + 事件推送）
-	if getpath == "/ws" {
-		// 仅处理 WebSocket 升级请求，忽略普通 HTTP 请求（如浏览器直接访问 /ws）
+	// OPUI WebSocket 统一通信（API 请求 + 事件推送），挂在访问路径本身（如 /nebula）
+	if getpath == "" || getpath == "/" {
+		// 仅处理 WebSocket 升级请求，忽略普通 HTTP 请求（如浏览器直接访问访问路径）
 		if !websocket.IsWebSocketUpgrade(r) {
 			return
 		}
@@ -2084,13 +2143,16 @@ func OpUI(w http.ResponseWriter, r *http.Request, getpath string) {
 		const (
 			pongWait   = 60 * time.Second
 			pingPeriod = (pongWait * 9) / 10
-			writeWait  = 10 * time.Second
+			writeWait  = opuiWriteWait
 		)
 		conn.SetReadDeadline(time.Now().Add(pongWait))
 		conn.SetPongHandler(func(string) error {
 			conn.SetReadDeadline(time.Now().Add(pongWait))
 			return nil
 		})
+		// 保护该连接 conn.WriteMessage 的并发写入（心跳 ping、API 响应、广播共用；
+		// gorilla/websocket 同一连接禁止并发写，否则会 panic 或数据错乱）
+		var writeMu sync.Mutex
 		pingDone := make(chan struct{})
 		go func() {
 			ticker := time.NewTicker(pingPeriod)
@@ -2100,9 +2162,11 @@ func OpUI(w http.ResponseWriter, r *http.Request, getpath string) {
 				case <-pingDone:
 					return
 				case <-ticker.C:
+					writeMu.Lock()
 					conn.SetWriteDeadline(time.Now().Add(writeWait))
 					err := conn.WriteMessage(websocket.PingMessage, nil)
 					conn.SetWriteDeadline(time.Time{}) // 写完立即清除，否则残留的 deadline 过期后会阻断所有业务写入
+					writeMu.Unlock()
 					if err != nil {
 						return
 					}
@@ -2110,8 +2174,7 @@ func OpUI(w http.ResponseWriter, r *http.Request, getpath string) {
 			}
 		}()
 
-		addOpuiNotifyClient(conn, utils.GetClientIP(r))
-		var writeMu sync.Mutex // 保护 conn.WriteMessage 并发写入
+		addOpuiNotifyClient(conn, utils.GetClientIP(r), &writeMu)
 		// 限制并发处理数，防止 goroutine 爆炸 + OpUI 共享状态竞争
 		sem := make(chan struct{}, 10)
 		go func() {
@@ -2181,6 +2244,13 @@ func OpUI(w http.ResponseWriter, r *http.Request, getpath string) {
 					continue
 				}
 
+				// 实时终端订阅：客户端进入/离开实时终端页面时切换订阅状态，
+				// 后端据此决定是否向其推送 server_log，避免无关客户端也收到终端信息
+				if wsMsg.Type == "sub_server_log" || wsMsg.Type == "unsub_server_log" {
+					setServerLogSub(conn, wsMsg.Type == "sub_server_log")
+					continue
+				}
+
 				// 构造虚拟 HTTP 请求
 				fakeReq, _ := http.NewRequest("POST", "/", bytes.NewReader(msg))
 				fakeReq.Header.Set("Content-Type", "application/json")
@@ -2211,7 +2281,7 @@ func OpUI(w http.ResponseWriter, r *http.Request, getpath string) {
 					}()
 
 					cw := &wsResponseWriter{header: make(http.Header)}
-					OpUI(cw, req, "/api")
+					opuiHandleApi(cw, req)
 
 					respData := cw.buf.Bytes()
 					if len(respData) == 0 {
@@ -2229,204 +2299,208 @@ func OpUI(w http.ResponseWriter, r *http.Request, getpath string) {
 		return
 	}
 
-	if r.Method == http.MethodPost &&
-		strings.HasPrefix(r.Header.Get("Content-Type"), "application/json") {
-		var h *HttpOpUiData
-		if err := json.NewDecoder(r.Body).Decode(&h); err != nil {
-			http.Error(w, "invalid json", http.StatusBadRequest)
+	// OPUI 仅通过 WebSocket 通信，不再提供 HTTP API 口子
+	http.NotFound(w, r)
+}
+
+// opuiHandleApi 处理 OPUI API 请求（仅由 WebSocket 内部调用）
+func opuiHandleApi(w http.ResponseWriter, r *http.Request) {
+	var h *HttpOpUiData
+	if err := json.NewDecoder(r.Body).Decode(&h); err != nil {
+		http.Error(w, "invalid json", http.StatusBadRequest)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+
+	if !opuiCheckKey(r, h.Type) {
+		http.Error(w, `{"status":"error","error":"unauthorized"}`, http.StatusUnauthorized)
+		return
+	}
+
+	// 扩展部署相关接口仅支持 Windows 端，其他平台直接拒绝
+	switch h.Type {
+	case "install_php", "install_ffmpeg", "install_silk_v3", "install_napcat_bot", "install_python",
+		"get_install_status", "install_progress", "cancel_install", "uninstall":
+		if runtime.GOOS != "windows" {
+			jsonResp, _ := json.Marshal(map[string]string{"status": "error", "error": "扩展部署功能仅支持 Windows 端"})
+			w.Write(jsonResp)
 			return
 		}
+	}
 
-		w.Header().Set("Content-Type", "application/json; charset=utf-8")
-
-		if !opuiCheckKey(r, h.Type) {
-			http.Error(w, `{"status":"error","error":"unauthorized"}`, http.StatusUnauthorized)
-			return
+	switch h.Type {
+	case "get_server":
+		ff := utils.NewFileQueue(dto.CONFIG_SYSTEM_PATH)
+		f, err := ff.LoadIni()
+		if err != nil {
+			utils.ErrorStop("系统配置不存在")
 		}
-
-		// 扩展部署相关接口仅支持 Windows 端，其他平台直接拒绝
-		switch h.Type {
-		case "install_php", "install_ffmpeg", "install_silk_v3", "install_napcat_bot", "install_python",
-			"get_install_status", "install_progress", "cancel_install", "uninstall":
-			if runtime.GOOS != "windows" {
-				jsonResp, _ := json.Marshal(map[string]string{"status": "error", "error": "扩展部署功能仅支持 Windows 端"})
-				w.Write(jsonResp)
-				return
-			}
-		}
-
-		switch h.Type {
-		case "get_server":
-			ff := utils.NewFileQueue(dto.CONFIG_SYSTEM_PATH)
-			f, err := ff.LoadIni()
-			if err != nil {
-				utils.ErrorStop("系统配置不存在")
-			}
-			d := f.Section("HTTP")
-			var j HttpOpUiConfig_server
-			j.Server = d.Key("server").String()
-			j.CORS = d.Key("跨域").MustBool(false)
-			j.CORSOrigins = d.Key("跨域白名单").String()
-			j.TempCleanupInterval = d.Key("临时读写清理周期").MustInt(60)
-			j.TLS = d.Key("TLS").MustBool(false)
-			j.CertFile = d.Key("TLS证书文件").String()
-			j.KeyFile = d.Key("TLS密钥文件").String()
-			if r, err := json.Marshal(j); err != nil {
-				w.Write([]byte(`{"server":"","cors":false,"cors_origins":"","temp_cleanup_interval":60,"tls":false,"cert_file":"","key_file":""}`))
-			} else {
-				w.Write(r)
-			}
-			return
-
-		case "save_server":
-			var j HttpOpUiConfig_server
-			if err := json.Unmarshal(h.Data, &j); err != nil {
-				http.Error(w, `{"status":"error","error":"invalid json"}`, http.StatusBadRequest)
-				return
-			}
-			ff := utils.NewFileQueue(dto.CONFIG_SYSTEM_PATH)
-			f, err := ff.LoadIni()
-			if err != nil {
-				utils.ErrorStop("系统配置不存在")
-			}
-			d := f.Section("HTTP")
-			d.Key("server").SetValue(j.Server)
-			d.Key("跨域").SetValue(strconv.FormatBool(j.CORS))
-			d.Key("跨域白名单").SetValue(j.CORSOrigins)
-			d.Key("临时读写清理周期").SetValue(strconv.Itoa(j.TempCleanupInterval))
-			d.Key("TLS").SetValue(strconv.FormatBool(j.TLS))
-			d.Key("TLS证书文件").SetValue(j.CertFile)
-			d.Key("TLS密钥文件").SetValue(j.KeyFile)
-			if err := ff.SaveIni(f); err != nil {
-				utils.ErrorStop("系统配置保存失败")
-			}
-			dto.ServerConfig.Router.Cors = j.CORS
-			dto.ServerConfig.Router.CorsOrigins = j.CORSOrigins
-			dto.ServerConfig.Router.TempCleanupInterval = j.TempCleanupInterval
-			dto.ServerConfig.Router.TLS = j.TLS
-			dto.ServerConfig.Router.CertFile = j.CertFile
-			dto.ServerConfig.Router.KeyFile = j.KeyFile
-			// 处理配置请求
-			w.Write([]byte(`{"status":"ok"}`))
-			return
-
-		case "get_opui":
-			ff := utils.NewFileQueue(dto.CONFIG_SYSTEM_PATH)
-			f, err := ff.LoadIni()
-			if err != nil {
-				debugLog.Errorf("[OPUI] get_opui LoadIni failed: %v", err)
-				w.Write([]byte(`{"open":false,"path":"","secret":"","cors":false}`))
-				return
-			}
-			d := f.Section("管理面板")
-			var j HttpOpUiConfig_opui
-			j.Open = d.Key("启用").MustBool(false)
-			j.Path = d.Key("访问路径").String()
-			j.Secret = d.Key("密钥").String()
-			j.Cors = d.Key("跨域").MustBool(false)
-			r, err := json.Marshal(j)
-			if err != nil {
-				debugLog.Errorf("[OPUI] get_opui json.Marshal failed: %v", err)
-				w.Write([]byte(`{"open":false,"path":"","secret":""}`))
-				return
-			}
+		d := f.Section("HTTP")
+		var j HttpOpUiConfig_server
+		j.Server = d.Key("server").String()
+		j.CORS = d.Key("跨域").MustBool(false)
+		j.CORSOrigins = d.Key("跨域白名单").String()
+		j.TempCleanupInterval = d.Key("临时读写清理周期").MustInt(60)
+		j.TLS = d.Key("TLS").MustBool(false)
+		j.CertFile = d.Key("TLS证书文件").String()
+		j.KeyFile = d.Key("TLS密钥文件").String()
+		if r, err := json.Marshal(j); err != nil {
+			w.Write([]byte(`{"server":"","cors":false,"cors_origins":"","temp_cleanup_interval":60,"tls":false,"cert_file":"","key_file":""}`))
+		} else {
 			w.Write(r)
+		}
+		return
+
+	case "save_server":
+		var j HttpOpUiConfig_server
+		if err := json.Unmarshal(h.Data, &j); err != nil {
+			http.Error(w, `{"status":"error","error":"invalid json"}`, http.StatusBadRequest)
 			return
+		}
+		ff := utils.NewFileQueue(dto.CONFIG_SYSTEM_PATH)
+		f, err := ff.LoadIni()
+		if err != nil {
+			utils.ErrorStop("系统配置不存在")
+		}
+		d := f.Section("HTTP")
+		d.Key("server").SetValue(j.Server)
+		d.Key("跨域").SetValue(strconv.FormatBool(j.CORS))
+		d.Key("跨域白名单").SetValue(j.CORSOrigins)
+		d.Key("临时读写清理周期").SetValue(strconv.Itoa(j.TempCleanupInterval))
+		d.Key("TLS").SetValue(strconv.FormatBool(j.TLS))
+		d.Key("TLS证书文件").SetValue(j.CertFile)
+		d.Key("TLS密钥文件").SetValue(j.KeyFile)
+		if err := ff.SaveIni(f); err != nil {
+			utils.ErrorStop("系统配置保存失败")
+		}
+		dto.ServerConfig.Router.Cors = j.CORS
+		dto.ServerConfig.Router.CorsOrigins = j.CORSOrigins
+		dto.ServerConfig.Router.TempCleanupInterval = j.TempCleanupInterval
+		dto.ServerConfig.Router.TLS = j.TLS
+		dto.ServerConfig.Router.CertFile = j.CertFile
+		dto.ServerConfig.Router.KeyFile = j.KeyFile
+		// 处理配置请求
+		w.Write([]byte(`{"status":"ok"}`))
+		return
 
-		case "save_opui":
-			var j HttpOpUiConfig_opui
-			if err := json.Unmarshal(h.Data, &j); err != nil {
-				http.Error(w, `{"status":"error","error":"invalid json"}`, http.StatusBadRequest)
-				return
-			}
-			ff := utils.NewFileQueue(dto.CONFIG_SYSTEM_PATH)
-			f, err := ff.LoadIni()
-			if err != nil {
-				utils.ErrorStop("系统配置不存在")
-			}
-			d := f.Section("管理面板")
-			d.Key("启用").SetValue(strconv.FormatBool(j.Open))
-			d.Key("访问路径").SetValue(j.Path)
-			d.Key("密钥").SetValue(j.Secret)
-			d.Key("跨域").SetValue(strconv.FormatBool(j.Cors))
-			ff.SaveIni(f)
-
-			if j.Open {
-				dto.ServerConfig.OPUI = &dto.OPUI{
-					Addr:   "/" + j.Path,
-					Secret: j.Secret,
-					Cors:   j.Cors,
-				}
-			} else {
-				dto.ServerConfig.OPUI = nil
-			}
-			w.Write([]byte(`{"status":"ok"}`))
+	case "get_opui":
+		ff := utils.NewFileQueue(dto.CONFIG_SYSTEM_PATH)
+		f, err := ff.LoadIni()
+		if err != nil {
+			debugLog.Errorf("[OPUI] get_opui LoadIni failed: %v", err)
+			w.Write([]byte(`{"open":false,"path":"","secret":"","cors":false}`))
 			return
-
-		case "get_bg":
-			db, err := dic_funcs.GetGlobalDB()
-			if err != nil {
-				w.Write([]byte(`{"light":{"type":"","data":""},"dark":{"type":"","data":""}}`))
-				return
-			}
-			if e := dic_funcs.EnsureFsTable(db, "opui_bg"); e != nil {
-				w.Write([]byte(`{"light":{"type":"","data":""},"dark":{"type":"","data":""}}`))
-				return
-			}
-			var data string
-			err = db.QueryRow(`SELECT data FROM "opui_bg" WHERE key='bg'`).Scan(&data)
-			if err != nil {
-				w.Write([]byte(`{"light":{"type":"","data":""},"dark":{"type":"","data":""}}`))
-				return
-			}
-
-			bgData := HttpOpUiConfig_bg{}
-			// 新格式：{"light":{...},"dark":{...}}
-			if err := json.Unmarshal([]byte(data), &bgData); err != nil ||
-				(bgData.Light.Type == "" && bgData.Light.Data == "" && bgData.Light.Color == "" &&
-					bgData.Dark.Type == "" && bgData.Dark.Data == "" && bgData.Dark.Color == "") {
-				// 旧格式：{"type":..,"data":..} 或纯文本，迁移为亮暗共用同一背景
-				var old HttpOpUiConfig_bgItem
-				if e := json.Unmarshal([]byte(data), &old); e != nil {
-					// 纯文本旧格式，需同时读取 type 列
-					var bgType string
-					_ = db.QueryRow(`SELECT type FROM "opui_bg" WHERE key='bg'`).Scan(&bgType)
-					old = HttpOpUiConfig_bgItem{Type: bgType, Data: data}
-				}
-				bgData.Light = old
-				bgData.Dark = old
-			}
-			r, _ := json.Marshal(bgData)
-			w.Write(r)
+		}
+		d := f.Section("管理面板")
+		var j HttpOpUiConfig_opui
+		j.Open = d.Key("启用").MustBool(false)
+		j.Path = d.Key("访问路径").String()
+		j.Secret = d.Key("密钥").String()
+		j.Cors = d.Key("跨域").MustBool(false)
+		r, err := json.Marshal(j)
+		if err != nil {
+			debugLog.Errorf("[OPUI] get_opui json.Marshal failed: %v", err)
+			w.Write([]byte(`{"open":false,"path":"","secret":""}`))
 			return
+		}
+		w.Write(r)
+		return
 
-		case "save_bg":
-			var j HttpOpUiConfig_bg
-			if err := json.Unmarshal(h.Data, &j); err != nil {
-				http.Error(w, `{"status":"error","error":"invalid json"}`, http.StatusBadRequest)
-				return
+	case "save_opui":
+		var j HttpOpUiConfig_opui
+		if err := json.Unmarshal(h.Data, &j); err != nil {
+			http.Error(w, `{"status":"error","error":"invalid json"}`, http.StatusBadRequest)
+			return
+		}
+		ff := utils.NewFileQueue(dto.CONFIG_SYSTEM_PATH)
+		f, err := ff.LoadIni()
+		if err != nil {
+			utils.ErrorStop("系统配置不存在")
+		}
+		d := f.Section("管理面板")
+		d.Key("启用").SetValue(strconv.FormatBool(j.Open))
+		d.Key("访问路径").SetValue(j.Path)
+		d.Key("密钥").SetValue(j.Secret)
+		d.Key("跨域").SetValue(strconv.FormatBool(j.Cors))
+		ff.SaveIni(f)
+
+		if j.Open {
+			dto.ServerConfig.OPUI = &dto.OPUI{
+				Addr:   "/" + j.Path,
+				Secret: j.Secret,
+				Cors:   j.Cors,
 			}
-			db, err := dic_funcs.GetGlobalDB()
-			if err != nil {
-				http.Error(w, `{"status":"error","error":"db not ready"}`, http.StatusInternalServerError)
-				return
+		} else {
+			dto.ServerConfig.OPUI = nil
+		}
+		w.Write([]byte(`{"status":"ok"}`))
+		return
+
+	case "get_bg":
+		db, err := dic_funcs.GetGlobalDB()
+		if err != nil {
+			w.Write([]byte(`{"light":{"type":"","data":""},"dark":{"type":"","data":""}}`))
+			return
+		}
+		if e := dic_funcs.EnsureFsTable(db, "opui_bg"); e != nil {
+			w.Write([]byte(`{"light":{"type":"","data":""},"dark":{"type":"","data":""}}`))
+			return
+		}
+		var data string
+		err = db.QueryRow(`SELECT data FROM "opui_bg" WHERE key='bg'`).Scan(&data)
+		if err != nil {
+			w.Write([]byte(`{"light":{"type":"","data":""},"dark":{"type":"","data":""}}`))
+			return
+		}
+
+		bgData := HttpOpUiConfig_bg{}
+		// 新格式：{"light":{...},"dark":{...}}
+		if err := json.Unmarshal([]byte(data), &bgData); err != nil ||
+			(bgData.Light.Type == "" && bgData.Light.Data == "" && bgData.Light.Color == "" &&
+				bgData.Dark.Type == "" && bgData.Dark.Data == "" && bgData.Dark.Color == "") {
+			// 旧格式：{"type":..,"data":..} 或纯文本，迁移为亮暗共用同一背景
+			var old HttpOpUiConfig_bgItem
+			if e := json.Unmarshal([]byte(data), &old); e != nil {
+				// 纯文本旧格式，需同时读取 type 列
+				var bgType string
+				_ = db.QueryRow(`SELECT type FROM "opui_bg" WHERE key='bg'`).Scan(&bgType)
+				old = HttpOpUiConfig_bgItem{Type: bgType, Data: data}
 			}
-			if e := dic_funcs.EnsureFsTable(db, "opui_bg"); e != nil {
-				http.Error(w, `{"status":"error","error":"db init failed"}`, http.StatusInternalServerError)
-				return
-			}
-			bgJson, _ := json.Marshal(j)
-			now := time.Now().Unix()
-			// 尝试新表结构（无 type 列），失败则回退旧表结构
-			_, err = db.Exec(`
+			bgData.Light = old
+			bgData.Dark = old
+		}
+		r, _ := json.Marshal(bgData)
+		w.Write(r)
+		return
+
+	case "save_bg":
+		var j HttpOpUiConfig_bg
+		if err := json.Unmarshal(h.Data, &j); err != nil {
+			http.Error(w, `{"status":"error","error":"invalid json"}`, http.StatusBadRequest)
+			return
+		}
+		db, err := dic_funcs.GetGlobalDB()
+		if err != nil {
+			http.Error(w, `{"status":"error","error":"db not ready"}`, http.StatusInternalServerError)
+			return
+		}
+		if e := dic_funcs.EnsureFsTable(db, "opui_bg"); e != nil {
+			http.Error(w, `{"status":"error","error":"db init failed"}`, http.StatusInternalServerError)
+			return
+		}
+		bgJson, _ := json.Marshal(j)
+		now := time.Now().Unix()
+		// 尝试新表结构（无 type 列），失败则回退旧表结构
+		_, err = db.Exec(`
 				INSERT INTO "opui_bg" (key, data, updated_at)
 				VALUES ('bg', ?, ?)
 				ON CONFLICT(key) DO UPDATE SET
 					data = excluded.data,
 					updated_at = excluded.updated_at
 			`, string(bgJson), now)
-			if err != nil {
-				_, err = db.Exec(`
+		if err != nil {
+			_, err = db.Exec(`
 					INSERT INTO "opui_bg" (key, type, data, updated_at)
 					VALUES ('bg', ?, ?, ?)
 					ON CONFLICT(key) DO UPDATE SET
@@ -2434,1472 +2508,1584 @@ func OpUI(w http.ResponseWriter, r *http.Request, getpath string) {
 						data = excluded.data,
 						updated_at = excluded.updated_at
 				`, "", string(bgJson), now)
-			}
-			if err != nil {
-				http.Error(w, `{"status":"error","error":"save failed"}`, http.StatusInternalServerError)
-				return
-			}
-			w.Write([]byte(`{"status":"ok"}`))
-			return
-
-		case "check_opui_key":
-			var j struct {
-				Key string `json:"key"`
-			}
-			if len(h.Data) == 0 {
-				debugLog.Errorf("[OPUI] check_opui_key: h.Data is nil or empty")
-				w.Write([]byte(`{"valid":false}`))
-				return
-			}
-			if err := json.Unmarshal(h.Data, &j); err != nil {
-				debugLog.Errorf("[OPUI] check_opui_key: json.Unmarshal failed, data=%s, err=%v", string(h.Data), err)
-				w.Write([]byte(`{"valid":false}`))
-				return
-			}
-			ff := utils.NewFileQueue(dto.CONFIG_SYSTEM_PATH)
-			f, err := ff.LoadIni()
-			if err != nil {
-				w.Write([]byte(`{"valid":false}`))
-				return
-			}
-			d := f.Section("管理面板")
-			storedKey := d.Key("密钥").String()
-			clientIP := utils.GetClientIP(r)
-			if storedKey != "" && storedKey == j.Key {
-				addLoginEvent("admin_login", "OPUI 管理员登录成功", clientIP)
-				w.Write([]byte(`{"valid":true}`))
-			} else {
-				addLoginEvent("admin_login_fail", "OPUI 登录失败: 密钥错误", clientIP)
-				w.Write([]byte(`{"valid":false}`))
-			}
-			return
-
-		case "get_websocket":
-			list := dto.ServerConfig.WsListSnapshot()
-			items := make([]HttpOpUiWebSocketItem, 0, len(list))
-			for _, ws := range list {
-				items = append(items, HttpOpUiWebSocketItem{
-					Addr: ws.Addr,
-					Cors: ws.Cors,
-					Open: ws.Open,
-				})
-			}
-			r, _ := json.Marshal(map[string]any{"list": items})
-			w.Write(r)
-			return
-
-		case "close_websocket":
-			var j struct {
-				Addr string `json:"addr"`
-			}
-			if err := json.Unmarshal(h.Data, &j); err != nil {
-				http.Error(w, `{"status":"error","error":"invalid json"}`, http.StatusBadRequest)
-				return
-			}
-			if j.Addr == "" {
-				http.Error(w, `{"status":"error","error":"addr is empty"}`, http.StatusBadRequest)
-				return
-			}
-			dto.ServerConfig.RemoveWs(j.Addr)
-			w.Write([]byte(`{"status":"ok"}`))
-			return
-
-		case "get_ngrok":
-			ff := utils.NewFileQueue(dto.CONFIG_SYSTEM_PATH)
-			f, err := ff.LoadIni()
-			if err != nil {
-				utils.ErrorStop("系统配置不存在")
-			}
-			d := f.Section("Ngrok")
-			var j HttpOpUiConfig_ngrok
-			j.Open = d.Key("启用").MustBool(false)
-			j.Token = d.Key("密钥").String()
-			j.Domain = d.Key("访问链接").String()
-			r, _ := json.Marshal(j)
-			w.Write(r)
-			return
-
-		case "save_ngrok":
-			var j HttpOpUiConfig_ngrok
-			if err := json.Unmarshal(h.Data, &j); err != nil {
-				http.Error(w, `{"status":"error","error":"invalid json"}`, http.StatusBadRequest)
-				return
-			}
-			ff := utils.NewFileQueue(dto.CONFIG_SYSTEM_PATH)
-			f, err := ff.LoadIni()
-			if err != nil {
-				utils.ErrorStop("系统配置不存在")
-			}
-			d := f.Section("Ngrok")
-			d.Key("启用").SetValue(strconv.FormatBool(j.Open))
-			d.Key("密钥").SetValue(j.Token)
-			d.Key("访问链接").SetValue(j.Domain)
-			ff.SaveIni(f)
-			w.Write([]byte(`{"status":"ok"}`))
-			return
-
-		case "toggle_ngrok":
-			var j struct {
-				Open bool `json:"open"`
-			}
-			if err := json.Unmarshal(h.Data, &j); err != nil {
-				http.Error(w, `{"status":"error","error":"invalid json"}`, http.StatusBadRequest)
-				return
-			}
-			ff := utils.NewFileQueue(dto.CONFIG_SYSTEM_PATH)
-			f, err := ff.LoadIni()
-			if err != nil {
-				utils.ErrorStop("系统配置不存在")
-			}
-			d := f.Section("Ngrok")
-			d.Key("启用").SetValue(strconv.FormatBool(j.Open))
-			ff.SaveIni(f)
-
-			if j.Open {
-				token := d.Key("密钥").String()
-				domain := d.Key("访问链接").String()
-				dto.ServerConfig.Ngrok = &dto.NgrokConfig{
-					Addr:  domain,
-					Token: token,
-				}
-				url, err := StartNgrok(token, domain)
-				if err != nil {
-					w.Write([]byte(`{"status":"error","error":"` + err.Error() + `"}`))
-					return
-				}
-				w.Write([]byte(`{"status":"ok","url":"` + url + `"}`))
-			} else {
-				StopNgrok()
-				dto.ServerConfig.Ngrok = nil
-				w.Write([]byte(`{"status":"ok"}`))
-			}
-			return
-
-		case "get_frp":
-			ff := utils.NewFileQueue(dto.CONFIG_SYSTEM_PATH)
-			f, err := ff.LoadIni()
-			if err != nil {
-				utils.ErrorStop("系统配置不存在")
-			}
-			d := f.Section("FRP")
-			var j HttpOpUiConfig_frp
-			j.Open = d.Key("启用").MustBool(false)
-			j.ServerAddr = d.Key("服务端地址").String()
-			j.Token = d.Key("令牌").String()
-			j.Debug = d.Key("调试").MustBool(false)
-			r, _ := json.Marshal(j)
-			w.Write(r)
-			return
-
-		case "save_frp":
-			var j HttpOpUiConfig_frp
-			if err := json.Unmarshal(h.Data, &j); err != nil {
-				http.Error(w, `{"status":"error","error":"invalid json"}`, http.StatusBadRequest)
-				return
-			}
-			// 自动将 http/https 转换为 ws/wss
-			if after, ok := strings.CutPrefix(j.ServerAddr, "https://"); ok {
-				j.ServerAddr = "wss://" + after
-			} else if after, ok := strings.CutPrefix(j.ServerAddr, "http://"); ok {
-				j.ServerAddr = "ws://" + after
-			}
-			ff := utils.NewFileQueue(dto.CONFIG_SYSTEM_PATH)
-			f, err := ff.LoadIni()
-			if err != nil {
-				utils.ErrorStop("系统配置不存在")
-			}
-			d := f.Section("FRP")
-			d.Key("启用").SetValue(strconv.FormatBool(j.Open))
-			d.Key("服务端地址").SetValue(j.ServerAddr)
-			d.Key("令牌").SetValue(j.Token)
-			d.Key("调试").SetValue(strconv.FormatBool(j.Debug))
-			ff.SaveIni(f)
-
-			frpDebug = j.Debug
-
-			if j.Open {
-				// 开启：建立 WebSocket 连接
-				ConnectFrp(j.ServerAddr, j.Token)
-				w.Write([]byte(`{"status":"ok"}`))
-			} else {
-				// 关闭：断开连接
-				DisconnectFrp()
-				w.Write([]byte(`{"status":"ok"}`))
-			}
-			return
-
-		case "get_ftp":
-			ff := utils.NewFileQueue(dto.CONFIG_SYSTEM_PATH)
-			f, err := ff.LoadIni()
-			if err != nil {
-				utils.ErrorStop("系统配置不存在")
-			}
-			d := f.Section("FTP")
-			var j HttpOpUiConfig_ftp
-			j.Open = d.Key("启用").MustBool(false)
-			j.Port = d.Key("端口").MustInt(21)
-			j.Username = d.Key("用户名").String()
-			j.Password = d.Key("密码").String()
-			j.Debug = d.Key("调试").MustBool(false)
-			j.Tls = d.Key("TLS").MustBool(false)
-			j.PasvPortStart = d.Key("PASV端口起始").MustInt(32000)
-			j.PasvPortEnd = d.Key("PASV端口结束").MustInt(32005)
-			r, _ := json.Marshal(j)
-			w.Write(r)
-			return
-
-		case "save_ftp":
-			var j HttpOpUiConfig_ftp
-			if err := json.Unmarshal(h.Data, &j); err != nil {
-				http.Error(w, `{"status":"error","error":"invalid json"}`, http.StatusBadRequest)
-				return
-			}
-			// 校验数据端口范围
-			if j.PasvPortStart < 1 || j.PasvPortStart > 65535 || j.PasvPortEnd < 1 || j.PasvPortEnd > 65535 {
-				http.Error(w, `{"status":"error","error":"数据端口范围必须在 1-65535 之间"}`, http.StatusBadRequest)
-				return
-			}
-			if j.PasvPortStart > j.PasvPortEnd {
-				http.Error(w, `{"status":"error","error":"起始端口不能大于结束端口"}`, http.StatusBadRequest)
-				return
-			}
-			ff := utils.NewFileQueue(dto.CONFIG_SYSTEM_PATH)
-			f, err := ff.LoadIni()
-			if err != nil {
-				utils.ErrorStop("系统配置不存在")
-			}
-			d := f.Section("FTP")
-			d.Key("启用").SetValue(strconv.FormatBool(j.Open))
-			d.Key("端口").SetValue(strconv.Itoa(j.Port))
-			d.Key("用户名").SetValue(j.Username)
-			d.Key("密码").SetValue(j.Password)
-			d.Key("调试").SetValue(strconv.FormatBool(j.Debug))
-			d.Key("TLS").SetValue(strconv.FormatBool(j.Tls))
-			d.Key("PASV端口起始").SetValue(strconv.Itoa(j.PasvPortStart))
-			d.Key("PASV端口结束").SetValue(strconv.Itoa(j.PasvPortEnd))
-			ff.SaveIni(f)
-
-			if j.Open {
-				StartFtp(j.Port, j.Debug, j.Username, j.Password, j.Tls, j.PasvPortStart, j.PasvPortEnd)
-			} else {
-				StopFtp()
-			}
-
-			w.Write([]byte(`{"status":"ok"}`))
-			return
-
-		case "get_sftp":
-			ff := utils.NewFileQueue(dto.CONFIG_SYSTEM_PATH)
-			f, err := ff.LoadIni()
-			if err != nil {
-				utils.ErrorStop("系统配置不存在")
-			}
-			d := f.Section("SFTP")
-			var j HttpOpUiConfig_sftp
-			j.Open = d.Key("启用").MustBool(false)
-			j.Port = d.Key("端口").MustInt(22)
-			j.Username = d.Key("用户名").String()
-			j.Password = d.Key("密码").String()
-			j.Debug = d.Key("调试").MustBool(false)
-			r, _ := json.Marshal(j)
-			w.Write(r)
-			return
-
-		case "save_sftp":
-			var j HttpOpUiConfig_sftp
-			if err := json.Unmarshal(h.Data, &j); err != nil {
-				http.Error(w, `{"status":"error","error":"invalid json"}`, http.StatusBadRequest)
-				return
-			}
-			ff := utils.NewFileQueue(dto.CONFIG_SYSTEM_PATH)
-			f, err := ff.LoadIni()
-			if err != nil {
-				utils.ErrorStop("系统配置不存在")
-			}
-			d := f.Section("SFTP")
-			d.Key("启用").SetValue(strconv.FormatBool(j.Open))
-			d.Key("端口").SetValue(strconv.Itoa(j.Port))
-			d.Key("用户名").SetValue(j.Username)
-			d.Key("密码").SetValue(j.Password)
-			d.Key("调试").SetValue(strconv.FormatBool(j.Debug))
-			ff.SaveIni(f)
-
-			if j.Open {
-				StartSftp(j.Port, j.Debug, j.Username, j.Password)
-			} else {
-				StopSftp()
-			}
-
-			w.Write([]byte(`{"status":"ok"}`))
-			return
-
-		case "get_qq", "get_qq_list":
-			ff := utils.NewFileQueue(dto.CONFIG_PATH)
-			f, err := ff.LoadIni()
-			if err != nil {
-				utils.ErrorStop("系统配置不存在")
-			}
-			var list HttpOpUiConfig_qq_list
-			for _, sec := range f.Sections() {
-				secName := sec.Name()
-				if secName == "QQ" || (strings.HasPrefix(secName, "QQ") && len(secName) > 2) {
-					d := f.Section(secName)
-					var j HttpOpUiConfig_qq
-					j.Open = d.Key("启用").MustBool(false)
-					j.Dic = d.Key("词库").String()
-					j.Path = d.Key("访问路径").String()
-					j.Appid = d.Key("APPID").String()
-					j.Secret = d.Key("密钥").String()
-					j.AtCompat = d.Key("全量艾特兼容").MustBool(true)
-					j.FilterSlash = d.Key("过滤开头斜杠").MustBool(true)
-					j.Debug = d.Key("调试打印").MustBool(false)
-					j.Ws = d.Key("WebSocket").MustBool(false)
-					j.WsIntents = d.Key("监听码").MustInt(0)
-					j.Remark = d.Key("备注").String()
-					list.Instances = append(list.Instances, HttpOpUiConfig_qq_instance{
-						Section: secName,
-						Config:  j,
-					})
-				}
-			}
-			r, _ := json.Marshal(list)
-			w.Write(r)
-			return
-
-		case "save_qq":
-			var j HttpOpUiConfig_qq_instance
-			if err := json.Unmarshal(h.Data, &j); err != nil {
-				http.Error(w, `{"status":"error","error":"invalid json"}`, http.StatusBadRequest)
-				return
-			}
-			sectionName := j.Section
-			if sectionName == "" {
-				sectionName = "QQ"
-			}
-			ff := utils.NewFileQueue(dto.CONFIG_PATH)
-			f, err := ff.LoadIni()
-			if err != nil {
-				utils.ErrorStop("系统配置不存在")
-			}
-			// 备注唯一性检查
-			if j.Config.Remark != "" {
-				for _, sec := range f.Sections() {
-					secName := sec.Name()
-					if secName != sectionName && (secName == "QQ" || (strings.HasPrefix(secName, "QQ") && len(secName) > 2)) {
-						if f.Section(secName).Key("备注").String() == j.Config.Remark {
-							http.Error(w, `{"status":"error","error":"备注名已存在"}`, http.StatusConflict)
-							return
-						}
-					}
-				}
-			}
-			d := f.Section(sectionName)
-			d.Key("启用").SetValue(strconv.FormatBool(j.Config.Open))
-			d.Key("词库").SetValue(j.Config.Dic)
-			d.Key("访问路径").SetValue(j.Config.Path)
-			d.Key("APPID").SetValue(j.Config.Appid)
-			d.Key("密钥").SetValue(j.Config.Secret)
-			d.Key("全量艾特兼容").SetValue(strconv.FormatBool(j.Config.AtCompat))
-			d.Key("过滤开头斜杠").SetValue(strconv.FormatBool(j.Config.FilterSlash))
-			d.Key("调试打印").SetValue(strconv.FormatBool(j.Config.Debug))
-			d.Key("WebSocket").SetValue(strconv.FormatBool(j.Config.Ws))
-			d.Key("监听码").SetValue(strconv.Itoa(j.Config.WsIntents))
-			d.Key("备注").SetValue(j.Config.Remark)
-			dto.LoadConfig_qq(d, sectionName)
-			ff.SaveIni(f)
-			w.Write([]byte(`{"status":"ok"}`))
-			return
-
-		case "toggle_qq_debug":
-			var j struct {
-				Section string `json:"section"`
-				Debug   bool   `json:"debug"`
-			}
-			if err := json.Unmarshal(h.Data, &j); err != nil {
-				http.Error(w, `{"status":"error","error":"invalid json"}`, http.StatusBadRequest)
-				return
-			}
-			// 更新配置文件
-			ff := utils.NewFileQueue(dto.CONFIG_PATH)
-			f, err := ff.LoadIni()
-			if err != nil {
-				utils.ErrorStop("系统配置不存在")
-			}
-			d := f.Section(j.Section)
-			d.Key("调试打印").SetValue(strconv.FormatBool(j.Debug))
-			ff.SaveIni(f)
-			// 仅更新运行中 bot 的 Debug 标志，不重连
-			if dto.ServerConfig.QQBots != nil {
-				if bot := dto.ServerConfig.QQBots[j.Section]; bot != nil {
-					bot.Debug = j.Debug
-					if bot.API != nil {
-						bot.API.Debug = j.Debug
-					}
-				}
-			}
-			w.Write([]byte(`{"status":"ok"}`))
-			return
-
-		case "add_qq":
-			ff := utils.NewFileQueue(dto.CONFIG_PATH)
-			f, err := ff.LoadIni()
-			if err != nil {
-				utils.ErrorStop("系统配置不存在")
-			}
-			// 找到下一个可用的编号
-			maxNum := 0
-			for _, sec := range f.Sections() {
-				name := sec.Name()
-				if strings.HasPrefix(name, "QQ") {
-					if name == "QQ" {
-						if maxNum < 1 {
-							maxNum = 1
-						}
-					} else {
-						numStr := name[2:]
-						if num, err := strconv.Atoi(numStr); err == nil && num > maxNum {
-							maxNum = num
-						}
-					}
-				}
-			}
-			newNum := maxNum + 1
-			newSection := "QQ" + strconv.Itoa(newNum)
-			d := f.Section(newSection)
-			d.Key("启用").SetValue("false")
-			d.Key("词库").SetValue("private/bot/qq" + strconv.Itoa(newNum))
-			d.Key("访问路径").SetValue("qq-bot" + strconv.Itoa(newNum))
-			d.Key("APPID").SetValue("")
-			d.Key("密钥").SetValue("")
-			d.Key("全量艾特兼容").SetValue("true")
-			d.Key("过滤开头斜杠").SetValue("true")
-			d.Key("调试打印").SetValue("false")
-			d.Key("WebSocket").SetValue("true")
-			d.Key("监听码").SetValue("0")
-			d.Key("备注").SetValue("")
-			ff.SaveIni(f)
-			j := HttpOpUiConfig_qq_instance{
-				Section: newSection,
-				Config: HttpOpUiConfig_qq{
-					Open:        false,
-					Dic:         "private/bot/qq" + strconv.Itoa(newNum),
-					Path:        "qq-bot" + strconv.Itoa(newNum),
-					Appid:       "",
-					Secret:      "",
-					AtCompat:    true,
-					FilterSlash: true,
-					Debug:       false,
-					Ws:          true,
-					WsIntents:   0,
-					Remark:      "",
-				},
-			}
-			r, _ := json.Marshal(j)
-			w.Write(r)
-			return
-
-		case "del_qq":
-			var j struct {
-				Section string `json:"section"`
-			}
-			if err := json.Unmarshal(h.Data, &j); err != nil {
-				http.Error(w, `{"status":"error","error":"invalid json"}`, http.StatusBadRequest)
-				return
-			}
-			if j.Section == "" || j.Section == "QQ" {
-				http.Error(w, `{"status":"error","error":"cannot delete primary QQ instance"}`, http.StatusBadRequest)
-				return
-			}
-			ff := utils.NewFileQueue(dto.CONFIG_PATH)
-			f, err := ff.LoadIni()
-			if err != nil {
-				utils.ErrorStop("系统配置不存在")
-			}
-			f.DeleteSection(j.Section)
-			// 从运行中移除
-			if dto.ServerConfig.QQBots != nil {
-				delete(dto.ServerConfig.QQBots, j.Section)
-			}
-			ff.SaveIni(f)
-			w.Write([]byte(`{"status":"ok"}`))
-			return
-
-		case "get_napcat":
-			ff := utils.NewFileQueue(dto.CONFIG_PATH)
-			f, err := ff.LoadIni()
-			if err != nil {
-				utils.ErrorStop("系统配置不存在")
-			}
-			d := f.Section("NapCat")
-			var j HttpOpUiConfig_napcat
-			j.Open = d.Key("启用").MustBool(false)
-			j.Dic = d.Key("词库").String()
-			j.Path = d.Key("访问路径").String()
-			j.Secret = d.Key("密钥").String()
-			j.Api = d.Key("发送消息接口").String()
-			r, _ := json.Marshal(j)
-			w.Write(r)
-			return
-
-		case "save_napcat":
-			var j HttpOpUiConfig_napcat
-			if err := json.Unmarshal(h.Data, &j); err != nil {
-				http.Error(w, `{"status":"error","error":"invalid json"}`, http.StatusBadRequest)
-				return
-			}
-			ff := utils.NewFileQueue(dto.CONFIG_PATH)
-			f, err := ff.LoadIni()
-			if err != nil {
-				utils.ErrorStop("系统配置不存在")
-			}
-			d := f.Section("NapCat")
-			d.Key("启用").SetValue(strconv.FormatBool(j.Open))
-			d.Key("词库").SetValue(j.Dic)
-			d.Key("访问路径").SetValue(j.Path)
-			d.Key("密钥").SetValue(j.Secret)
-			d.Key("发送消息接口").SetValue(j.Api)
-			dto.LoadConfig_napcat(d)
-			ff.SaveIni(f)
-			w.Write([]byte(`{"status":"ok"}`))
-			return
-
-		case "get_yunhu":
-			ff := utils.NewFileQueue(dto.CONFIG_PATH)
-			f, err := ff.LoadIni()
-			if err != nil {
-				utils.ErrorStop("系统配置不存在")
-			}
-			d := f.Section("云湖")
-			var j HttpOpUiConfig_yunhu
-			j.Open = d.Key("启用").MustBool(false)
-			j.Dic = d.Key("词库").String()
-			j.Path = d.Key("访问路径").String()
-			j.Secret = d.Key("密钥").String()
-			r, _ := json.Marshal(j)
-			w.Write(r)
-			return
-
-		case "save_yunhu":
-			var j HttpOpUiConfig_yunhu
-			if err := json.Unmarshal(h.Data, &j); err != nil {
-				http.Error(w, `{"status":"error","error":"invalid json"}`, http.StatusBadRequest)
-				return
-			}
-			ff := utils.NewFileQueue(dto.CONFIG_PATH)
-			f, err := ff.LoadIni()
-			if err != nil {
-				utils.ErrorStop("系统配置不存在")
-			}
-			d := f.Section("云湖")
-			d.Key("启用").SetValue(strconv.FormatBool(j.Open))
-			d.Key("词库").SetValue(j.Dic)
-			d.Key("访问路径").SetValue(j.Path)
-			d.Key("密钥").SetValue(j.Secret)
-			dto.LoadConfig_yunhu(d)
-			ff.SaveIni(f)
-			w.Write([]byte(`{"status":"ok"}`))
-			return
-
-		case "get_feishu":
-			ff := utils.NewFileQueue(dto.CONFIG_PATH)
-			f, err := ff.LoadIni()
-			if err != nil {
-				utils.ErrorStop("系统配置不存在")
-			}
-			d := f.Section("飞书")
-			var j HttpOpUiConfig_feishu
-			j.Open = d.Key("启用").MustBool(false)
-			j.Dic = d.Key("词库").String()
-			j.Path = d.Key("访问路径").String()
-			j.Appid = d.Key("APPID").String()
-			j.Secret = d.Key("密钥").String()
-			r, _ := json.Marshal(j)
-			w.Write(r)
-			return
-
-		case "save_feishu":
-			var j HttpOpUiConfig_feishu
-			if err := json.Unmarshal(h.Data, &j); err != nil {
-				http.Error(w, `{"status":"error","error":"invalid json"}`, http.StatusBadRequest)
-				return
-			}
-			ff := utils.NewFileQueue(dto.CONFIG_PATH)
-			f, err := ff.LoadIni()
-			if err != nil {
-
-				utils.ErrorStop("系统配置不存在")
-			}
-			d := f.Section("飞书")
-			d.Key("启用").SetValue(strconv.FormatBool(j.Open))
-			d.Key("词库").SetValue(j.Dic)
-			d.Key("访问路径").SetValue(j.Path)
-			d.Key("APPID").SetValue(j.Appid)
-			d.Key("密钥").SetValue(j.Secret)
-			dto.LoadConfig_feishu(d)
-			ff.SaveIni(f)
-			w.Write([]byte(`{"status":"ok"}`))
-			return
-
-		case "get_secluded":
-			ff := utils.NewFileQueue(dto.CONFIG_PATH)
-			f, err := ff.LoadIni()
-			if err != nil {
-				utils.ErrorStop("系统配置不存在")
-			}
-			d := f.Section("Secluded")
-			var j HttpOpUiConfig_secluded
-			j.Open = d.Key("启用").MustBool(false)
-			j.Dic = d.Key("词库").String()
-			j.Address = d.Key("对接地址").String()
-			j.Token = d.Key("令牌").String()
-			j.Debug = d.Key("调试打印").MustBool(false)
-			r, _ := json.Marshal(j)
-			w.Write(r)
-			return
-
-		case "save_secluded":
-			var j HttpOpUiConfig_secluded
-			if err := json.Unmarshal(h.Data, &j); err != nil {
-				http.Error(w, `{"status":"error","error":"invalid json"}`, http.StatusBadRequest)
-				return
-			}
-			ff := utils.NewFileQueue(dto.CONFIG_PATH)
-			f, err := ff.LoadIni()
-			if err != nil {
-				utils.ErrorStop("系统配置不存在")
-			}
-			d := f.Section("Secluded")
-			d.Key("启用").SetValue(strconv.FormatBool(j.Open))
-			d.Key("词库").SetValue(j.Dic)
-			d.Key("对接地址").SetValue(j.Address)
-			d.Key("令牌").SetValue(j.Token)
-			d.Key("调试打印").SetValue(strconv.FormatBool(j.Debug))
-			dto.LoadConfig_secluded(d)
-			ff.SaveIni(f)
-			if j.Open {
-				if dto.ServerConfig.SecludedBot != nil && dto.ServerConfig.SecludedBot.Addr != "" {
-					secludedbot.Start(dto.ServerConfig.SecludedBot.Addr, dto.ServerConfig.SecludedBot.Token)
-				}
-			} else {
-				secludedbot.Stop()
-			}
-			w.Write([]byte(`{"status":"ok"}`))
-			return
-
-		case "encrypt_dic":
-			var j HttpOpUiConfig_EncryptDic
-			if err := json.Unmarshal(h.Data, &j); err != nil {
-				http.Error(w, `{"status":"error","error":"invalid json"}`, http.StatusBadRequest)
-				return
-			}
-			encodeDic, err := utils.Encrypt(j.Text, appfiles.Key)
-			if err != nil {
-				http.Error(w, `{"status":"error","error":"加密失败"}`, http.StatusBadRequest)
-				return
-			}
-			var rj struct {
-				Status string `json:"status"`
-				Text   string `json:"text"`
-			}
-			rj.Status = "ok"
-			rj.Text = encodeDic
-			r, _ := json.Marshal(rj)
-			w.Write(r)
-			return
-
-		case "install_php":
-			appDir := utils.GetAppDir()
-			destDir := filepath.Join(appDir, "private", "extensions", "php")
-			if utils.NewFileQueue(filepath.Join(destDir, "php.exe")).FileExists() {
-				resp := HttpOpUiInstallResponse{
-					Status: "ok",
-					Output: []string{"PHP 已安装"},
-				}
-				jsonResp, _ := json.Marshal(resp)
-				w.Write(jsonResp)
-				return
-			}
-			// 防止重复安装：检查是否已有同组件运行中的任务
-			if existingTask := findRunningTaskForComponent("php"); existingTask != nil {
-				jsonResp, _ := json.Marshal(map[string]string{"status": "ok", "task_id": existingTask.ID})
-				w.Write(jsonResp)
-				return
-			}
-			taskID := generateTaskID()
-			task := &InstallTask{
-				ID:        taskID,
-				Component: "php",
-				Status:    "running",
-				Progress:  0,
-			}
-			installTaskStore.Store(taskID, task)
-			go func() {
-				var output []string
-				progressFn := func(p float64) { task.setProgress(p) }
-				err := installPHP(destDir, &output, progressFn)
-				for _, line := range output {
-					task.addOutput(line)
-				}
-				if task.IsCancelled() {
-					task.addOutput("⚠ 安装已取消")
-					task.finish(nil)
-					return
-				}
-				task.finish(err)
-			}()
-			jsonResp, _ := json.Marshal(map[string]string{"status": "ok", "task_id": taskID})
-			w.Write(jsonResp)
-			return
-
-		case "install_ffmpeg":
-			appDir := utils.GetAppDir()
-			destDir := filepath.Join(appDir, "private", "extensions", "ffmpeg")
-			if utils.FindFfmpegExe(destDir) != "" {
-				resp := HttpOpUiInstallResponse{
-					Status: "ok",
-					Output: []string{"FFmpeg 已安装"},
-				}
-				jsonResp, _ := json.Marshal(resp)
-				w.Write(jsonResp)
-				return
-			}
-			// 防止重复安装
-			if existingTask := findRunningTaskForComponent("ffmpeg"); existingTask != nil {
-				jsonResp, _ := json.Marshal(map[string]string{"status": "ok", "task_id": existingTask.ID})
-				w.Write(jsonResp)
-				return
-			}
-			taskID := generateTaskID()
-			task := &InstallTask{
-				ID:        taskID,
-				Component: "ffmpeg",
-				Status:    "running",
-				Progress:  0,
-			}
-			installTaskStore.Store(taskID, task)
-			go func() {
-				var output []string
-				progressFn := func(p float64) { task.setProgress(p) }
-				err := installFFmpeg(destDir, &output, progressFn)
-				for _, line := range output {
-					task.addOutput(line)
-				}
-				if task.IsCancelled() {
-					task.addOutput("⚠ 安装已取消")
-					task.finish(nil)
-					return
-				}
-				task.finish(err)
-			}()
-			jsonResp, _ := json.Marshal(map[string]string{"status": "ok", "task_id": taskID})
-			w.Write(jsonResp)
-			return
-
-		case "install_silk_v3":
-			appDir := utils.GetAppDir()
-			destDir := filepath.Join(appDir, "private", "extensions")
-			if utils.NewFileQueue(filepath.Join(destDir, "silk_v3", "silk_v3_encoder.exe")).FileExists() {
-				resp := HttpOpUiInstallResponse{
-					Status: "ok",
-					Output: []string{"silk_v3 已安装"},
-				}
-				jsonResp, _ := json.Marshal(resp)
-				w.Write(jsonResp)
-				return
-			}
-			// 防止重复安装
-			if existingTask := findRunningTaskForComponent("silk_v3"); existingTask != nil {
-				jsonResp, _ := json.Marshal(map[string]string{"status": "ok", "task_id": existingTask.ID})
-				w.Write(jsonResp)
-				return
-			}
-			taskID := generateTaskID()
-			task := &InstallTask{
-				ID:        taskID,
-				Component: "silk_v3",
-				Status:    "running",
-				Progress:  0,
-			}
-			installTaskStore.Store(taskID, task)
-			go func() {
-				var output []string
-				progressFn := func(p float64) { task.setProgress(p) }
-				err := installSilkV3(destDir, &output, progressFn)
-				for _, line := range output {
-					task.addOutput(line)
-				}
-				if task.IsCancelled() {
-					task.addOutput("⚠ 安装已取消")
-					task.finish(nil)
-					return
-				}
-				task.finish(err)
-			}()
-			jsonResp, _ := json.Marshal(map[string]string{"status": "ok", "task_id": taskID})
-			w.Write(jsonResp)
-			return
-
-		case "install_napcat_bot":
-			var config HttpOpUiConfig_install
-			if err := json.Unmarshal(h.Data, &config); err != nil {
-				http.Error(w, `{"status":"error","error":"invalid json"}`, http.StatusBadRequest)
-				return
-			}
-			qq, ok := config.Params["qq"]
-			if !ok || qq == "" {
-				w.Write([]byte(`{"status":"error","error":"missing qq parameter"}`))
-				return
-			}
-			appDir := utils.GetAppDir()
-			destDir := filepath.Join(appDir, "private", "extensions", "NapCat.Shell")
-			if utils.NewFileQueue(filepath.Join(destDir, "launcher.bat")).FileExists() {
-				resp := HttpOpUiInstallResponse{
-					Status: "ok",
-					Output: []string{"napcat_bot 已安装"},
-				}
-				jsonResp, _ := json.Marshal(resp)
-				w.Write(jsonResp)
-				return
-			}
-			// 防止重复安装
-			if existingTask := findRunningTaskForComponent("napcat_bot"); existingTask != nil {
-				jsonResp, _ := json.Marshal(map[string]string{"status": "ok", "task_id": existingTask.ID})
-				w.Write(jsonResp)
-				return
-			}
-			taskID := generateTaskID()
-			task := &InstallTask{
-				ID:        taskID,
-				Component: "napcat_bot",
-				Status:    "running",
-				Progress:  0,
-			}
-			installTaskStore.Store(taskID, task)
-			go func() {
-				var output []string
-				progressFn := func(p float64) { task.setProgress(p) }
-				err := installNapCatBot(destDir, qq, &output, progressFn)
-				for _, line := range output {
-					task.addOutput(line)
-				}
-				if task.IsCancelled() {
-					task.addOutput("⚠ 安装已取消")
-					task.finish(nil)
-					return
-				}
-				task.finish(err)
-			}()
-			jsonResp, _ := json.Marshal(map[string]string{"status": "ok", "task_id": taskID})
-			w.Write(jsonResp)
-			return
-
-		case "install_python":
-			appDir := utils.GetAppDir()
-			destDir := filepath.Join(appDir, "private", "extensions", "python")
-			if utils.NewFileQueue(filepath.Join(destDir, "python.exe")).FileExists() {
-				resp := HttpOpUiInstallResponse{
-					Status: "ok",
-					Output: []string{"Python 已安装"},
-				}
-				jsonResp, _ := json.Marshal(resp)
-				w.Write(jsonResp)
-				return
-			}
-			// 防止重复安装
-			if existingTask := findRunningTaskForComponent("python"); existingTask != nil {
-				jsonResp, _ := json.Marshal(map[string]string{"status": "ok", "task_id": existingTask.ID})
-				w.Write(jsonResp)
-				return
-			}
-			taskID := generateTaskID()
-			task := &InstallTask{
-				ID:        taskID,
-				Component: "python",
-				Status:    "running",
-				Progress:  0,
-			}
-			installTaskStore.Store(taskID, task)
-			go func() {
-				var output []string
-				progressFn := func(p float64) { task.setProgress(p) }
-				err := installPython(destDir, &output, progressFn)
-				for _, line := range output {
-					task.addOutput(line)
-				}
-				if task.IsCancelled() {
-					task.addOutput("⚠ 安装已取消")
-					task.finish(nil)
-					return
-				}
-				task.finish(err)
-			}()
-			jsonResp, _ := json.Marshal(map[string]string{"status": "ok", "task_id": taskID})
-			w.Write(jsonResp)
-			return
-
-		case "get_install_status":
-			appDir := utils.GetAppDir()
-			extDir := filepath.Join(appDir, "private", "extensions")
-			allStatus := map[string]bool{
-				"php":        utils.NewFileQueue(filepath.Join(extDir, "php", "php.exe")).FileExists(),
-				"python":     utils.NewFileQueue(filepath.Join(extDir, "python", "python.exe")).FileExists(),
-				"napcat_bot": utils.NewFileQueue(filepath.Join(extDir, "NapCat.Shell", "launcher.bat")).FileExists(),
-				"ffmpeg":     utils.FindFfmpegExe(filepath.Join(extDir, "ffmpeg")) != "",
-				"silk_v3":    utils.NewFileQueue(filepath.Join(extDir, "silk_v3", "silk_v3_encoder.exe")).FileExists(),
-			}
-			jsonResp, _ := json.Marshal(allStatus)
-			w.Write(jsonResp)
-			return
-
-		case "install_progress":
-			var j HttpOpUiConfig_installStatus
-			if err := json.Unmarshal(h.Data, &j); err != nil {
-				http.Error(w, `{"status":"error","error":"invalid json"}`, http.StatusBadRequest)
-				return
-			}
-			if val, ok := installTaskStore.Load(j.TaskID); ok {
-				task, ok := val.(*InstallTask)
-				if !ok {
-					http.Error(w, `{"status":"error","error":"invalid task"}`, http.StatusInternalServerError)
-					return
-				}
-				status, output, errMsg, progress := task.snapshot()
-				resp := map[string]any{
-					"status":    status,
-					"component": task.Component,
-					"output":    output,
-					"error":     errMsg,
-					"progress":  progress,
-				}
-				jsonResp, _ := json.Marshal(resp)
-				w.Write(jsonResp)
-			} else {
-				w.Write([]byte(`{"status":"not_found","error":"task not found"}`))
-			}
-			return
-
-		case "install_cancel":
-			var j HttpOpUiConfig_installStatus
-			if err := json.Unmarshal(h.Data, &j); err != nil {
-				http.Error(w, `{"status":"error","error":"invalid json"}`, http.StatusBadRequest)
-				return
-			}
-			if val, ok := installTaskStore.Load(j.TaskID); ok {
-				task, ok := val.(*InstallTask)
-				if !ok {
-					http.Error(w, `{"status":"error","error":"invalid task"}`, http.StatusInternalServerError)
-					return
-				}
-				task.Cancel()
-				w.Write([]byte(`{"status":"ok"}`))
-			} else {
-				w.Write([]byte(`{"status":"not_found","error":"task not found"}`))
-			}
-			return
-
-		case "uninstall":
-			var config HttpOpUiConfig_install
-			if err := json.Unmarshal(h.Data, &config); err != nil {
-				http.Error(w, `{"status":"error","error":"invalid json"}`, http.StatusBadRequest)
-				return
-			}
-			appDir := utils.GetAppDir()
-			var rmDir string
-			switch config.Component {
-			case "php":
-				rmDir = filepath.Join(appDir, "private", "extensions", "php")
-			case "ffmpeg":
-				rmDir = filepath.Join(appDir, "private", "extensions", "ffmpeg")
-			case "silk_v3":
-				rmDir = filepath.Join(appDir, "private", "extensions", "silk_v3")
-			case "napcat_bot":
-				rmDir = filepath.Join(appDir, "private", "extensions", "NapCat.Shell")
-			case "python":
-				rmDir = filepath.Join(appDir, "private", "extensions", "python")
-			default:
-				http.Error(w, `{"status":"error","error":"unknown component"}`, http.StatusBadRequest)
-				return
-			}
-			if err := os.RemoveAll(rmDir); err != nil {
-				resp := HttpOpUiInstallResponse{Status: "error", Error: "卸载失败: " + err.Error()}
-				jsonResp, _ := json.Marshal(resp)
-				w.Write(jsonResp)
-				return
-			}
-			resp := HttpOpUiInstallResponse{Status: "ok", Output: []string{config.Component + " 已卸载"}}
-			jsonResp, _ := json.Marshal(resp)
-			w.Write(jsonResp)
-			return
-
-		case "get_dic_doc":
-			data, err := appfiles.GetFile("dic.md")
-			if err != nil {
-				http.Error(w, `{"status":"error","error":"embedded file not found"}`, http.StatusInternalServerError)
-				return
-			}
-			html := markdown.ToHTML(data, nil, nil)
-			resp := map[string]string{"content": string(html)}
-			jsonResp, _ := json.Marshal(resp)
-			w.Write(jsonResp)
-			return
-
-		case "get_autostart":
-			enabled, err := GetAutoStart()
-			if err != nil {
-				w.Write([]byte(`{"enabled":false}`))
-				return
-			}
-			jsonResp, _ := json.Marshal(map[string]bool{"enabled": enabled})
-			w.Write(jsonResp)
-			return
-
-		case "set_autostart":
-			if err := SetAutoStart(); err != nil {
-				jsonResp, _ := json.Marshal(map[string]string{"status": "error", "error": err.Error()})
-				w.Write(jsonResp)
-				return
-			}
-			w.Write([]byte(`{"status":"ok"}`))
-			return
-
-		case "cancel_autostart":
-			if err := CancelAutoStart(); err != nil {
-				jsonResp, _ := json.Marshal(map[string]string{"status": "error", "error": err.Error()})
-				w.Write(jsonResp)
-				return
-			}
-			w.Write([]byte(`{"status":"ok"}`))
-			return
-
-		case "get_dic_list":
-			// 只在有输入关键字时才搜索；base 指定搜索目录（默认 private），只扫描该文件夹下的 .n 文件
-			var j struct {
-				Search string `json:"search"`
-				Base   string `json:"base"`
-				Limit  int    `json:"limit"`
-			}
-			_ = json.Unmarshal(h.Data, &j)
-			kw := strings.ToLower(strings.TrimSpace(j.Search))
-			if kw == "" {
-				// 未输入关键字不返回列表
-				jsonResp, _ := json.Marshal(map[string]any{"files": []string{}})
-				w.Write(jsonResp)
-				return
-			}
-			base := strings.TrimSpace(j.Base)
-			if base == "" {
-				base = "private"
-			}
-			// 限定搜索目录只能位于 private/public 下，防止越权扫描
-			if base != "private" && base != "public" &&
-				!strings.HasPrefix(base, "private/") && !strings.HasPrefix(base, "public/") {
-				jsonResp, _ := json.Marshal(map[string]any{"files": []string{}})
-				w.Write(jsonResp)
-				return
-			}
-			files, err := listDicFilesInDir(base)
-			if err != nil {
-				http.Error(w, `{"status":"error","error":"`+err.Error()+`"}`, http.StatusInternalServerError)
-				return
-			}
-			var filtered []string
-			for _, f := range files {
-				if strings.Contains(strings.ToLower(f), kw) {
-					filtered = append(filtered, f)
-				}
-			}
-			if j.Limit > 0 && len(filtered) > j.Limit {
-				filtered = filtered[:j.Limit]
-			}
-			jsonResp, _ := json.Marshal(map[string]any{"files": filtered})
-			w.Write(jsonResp)
-			return
-
-		case "dic_get_content":
-			var j struct {
-				Path string `json:"path"`
-			}
-			if err := json.Unmarshal(h.Data, &j); err != nil {
-				http.Error(w, `{"status":"error","error":"invalid json"}`, http.StatusBadRequest)
-				return
-			}
-			if j.Path == "" {
-				http.Error(w, `{"status":"error","error":"词库路径不能为空"}`, http.StatusBadRequest)
-				return
-			}
-			if !checkDicPath(j.Path) {
-				http.Error(w, `{"status":"error","error":"词库路径不合法"}`, http.StatusBadRequest)
-				return
-			}
-			content, err := utils.NewFileQueue(j.Path).ReadFromFile()
-			if err != nil {
-				http.Error(w, `{"status":"error","error":"词库读取失败: `+err.Error()+`"}`, http.StatusBadRequest)
-				return
-			}
-			jsonResp, _ := json.Marshal(map[string]any{"content": content})
-			w.Write(jsonResp)
-			return
-
-		case "dic_save_content":
-			var j struct {
-				Path    string `json:"path"`
-				Content string `json:"content"`
-			}
-			if err := json.Unmarshal(h.Data, &j); err != nil {
-				http.Error(w, `{"status":"error","error":"invalid json"}`, http.StatusBadRequest)
-				return
-			}
-			if j.Path == "" {
-				http.Error(w, `{"status":"error","error":"词库路径不能为空"}`, http.StatusBadRequest)
-				return
-			}
-			if !checkDicPath(j.Path) {
-				http.Error(w, `{"status":"error","error":"词库路径不合法"}`, http.StatusBadRequest)
-				return
-			}
-			utils.NewFileQueue(j.Path).WriteToFile(j.Content)
-			jsonResp, _ := json.Marshal(map[string]any{"status": "ok"})
-			w.Write(jsonResp)
-			return
-
-		case "get_dic_config":
-			// 读取词库调试运行配置（system.ini 的 [词库调试] 节）
-			jsonResp, _ := json.Marshal(loadDicDebugDefaults())
-			w.Write(jsonResp)
-			return
-
-		case "save_dic_config":
-			// 保存词库调试运行配置到 system.ini 的 [词库调试] 节
-			var cfg map[string]any
-			if err := json.Unmarshal(h.Data, &cfg); err != nil {
-				http.Error(w, `{"status":"error","error":"invalid json"}`, http.StatusBadRequest)
-				return
-			}
-			file := utils.NewFile()
-			file.SetPath("private/system/system.ini")
-			iniFile, err := file.LoadIni()
-			if err != nil {
-				http.Error(w, `{"status":"error","error":"读取 system.ini 失败"}`, http.StatusInternalServerError)
-				return
-			}
-			sec := iniFile.Section("词库调试")
-			if v, ok := cfg["path"].(string); ok && v != "" {
-				sec.Key("默认词库").SetValue(v)
-			}
-			if v, ok := cfg["trigger"].(string); ok {
-				sec.Key("触发文本").SetValue(v)
-			}
-			if v, ok := cfg["timeout"].(float64); ok {
-				sec.Key("超时").SetValue(strconv.Itoa(int(v)))
-			}
-			if v, ok := cfg["historyMax"].(float64); ok && v > 0 {
-				sec.Key("历史记录数量").SetValue(strconv.Itoa(int(v)))
-			}
-			if v, ok := cfg["saveRun"].(bool); ok {
-				sec.Key("保存运行").SetValue(strconv.FormatBool(v))
-			}
-			if v, ok := cfg["autoSave"].(bool); ok {
-				sec.Key("实时保存").SetValue(strconv.FormatBool(v))
-			}
-			if g, ok := cfg["g"].([]any); ok {
-				var items []string
-				for _, it := range g {
-					if s, ok := it.(string); ok {
-						items = append(items, s)
-					}
-				}
-				// 值可含任意换行：整体 JSON 编码存储（ini 值保持单行，避免按行拆分时被截断）
-				if b, err := json.Marshal(items); err == nil {
-					sec.Key("全局变量").SetValue(string(b))
-				}
-			}
-			if err := file.SaveIni(iniFile); err != nil {
-				http.Error(w, `{"status":"error","error":"写入 system.ini 失败: `+err.Error()+`"}`, http.StatusInternalServerError)
-				return
-			}
-			jsonResp, _ := json.Marshal(map[string]any{"status": "ok"})
-			w.Write(jsonResp)
-			return
-
-		case "dic_debug_run":
-			var j struct {
-				Path    string            `json:"path"`
-				Trigger string            `json:"trigger"`
-				G       map[string]string `json:"g"`
-				// 超时（秒），0 表示不限时；超时后强行打断词库执行
-				Timeout int `json:"timeout"`
-			}
-			if err := json.Unmarshal(h.Data, &j); err != nil {
-				http.Error(w, `{"status":"error","error":"invalid json"}`, http.StatusBadRequest)
-				return
-			}
-			if j.Path == "" {
-				http.Error(w, `{"status":"error","error":"词库路径不能为空"}`, http.StatusBadRequest)
-				return
-			}
-			if !checkDicPath(j.Path) {
-				http.Error(w, `{"status":"error","error":"词库路径不合法"}`, http.StatusBadRequest)
-				return
-			}
-			dic, err := dic_dto.RunDic(j.Path)
-			if err != nil {
-				http.Error(w, `{"status":"error","error":"词库加载失败: `+err.Error()+`"}`, http.StatusBadRequest)
-				return
-			}
-			defer dic.Close()
-
-			// 注入词库路径，便于错误日志显示来源（顶层词库默认没有 _词库路径_）
-			dic.Val.P.Set("_词库路径_", j.Path)
-
-			// 注入全局变量
-			for k, v := range j.G {
-				dic.Val.G.Set(k, v)
-			}
-
-			var output string
-			var timedOut bool
-			if j.Timeout > 0 {
-				output, timedOut = dic_api.Api.DicRunTimeout(dic, j.Trigger, time.Duration(j.Timeout)*time.Second)
-			} else {
-				output = dic_api.Api.DicRun(dic, j.Trigger)
-			}
-
-			// 从输出中提取错误行号（格式：funcName(line:N)：error 或 JS错误(line:N)：error）
-			var errorLine int
-			if re := regexp.MustCompile(`\(line:(\d+)\)`); re != nil {
-				if m := re.FindStringSubmatch(output); len(m) >= 2 {
-					errorLine, _ = strconv.Atoi(m[1])
-				}
-			}
-
-			// 收集运行后的局部/全局变量（值 + 类型，类实例携带成员变量供前端折叠）
-			pVars := make(map[string]any)
-			for k, v := range dic.Val.P.GetAll() {
-				pVars[k] = varDebugItem(v)
-			}
-			gVars := make(map[string]any)
-			for k, v := range dic.Val.G.GetAll() {
-				gVars[k] = varDebugItem(v)
-			}
-
-			resp := map[string]any{
-				"output":   output,
-				"timedOut": timedOut,
-				"segments": parseOutputSegments(output),
-				"vars": map[string]any{
-					"P": pVars,
-					"G": gVars,
-				},
-			}
-			if errorLine > 0 {
-				resp["errorLine"] = errorLine
-			}
-			jsonResp, _ := json.Marshal(resp)
-			w.Write(jsonResp)
-			return
-
-		case "get_server_logs":
-			var j struct {
-				Limit int `json:"limit"`
-				Skip  int `json:"skip"`
-			}
-			_ = json.Unmarshal(h.Data, &j)
-			logs, hasMore := readServerLogs(j.Limit, j.Skip)
-			jsonResp, _ := json.Marshal(map[string]any{"logs": logs, "hasMore": hasMore})
-			w.Write(jsonResp)
-			return
-
-		case "clear_server_logs":
-			ClearServerLogs()
-			jsonResp, _ := json.Marshal(map[string]any{"ok": true})
-			w.Write(jsonResp)
-			return
-
-		case "get_sys_status":
-			data, err := getSysStatus()
-			if err != nil {
-				debugLog.Errorf("[OPUI] get_sys_status failed: %v", err)
-				http.Error(w, `{"status":"error","error":"collect failed"}`, http.StatusInternalServerError)
-				return
-			}
-			if r, err := json.Marshal(data); err == nil {
-				w.Write(r)
-			} else {
-				http.Error(w, `{"status":"error","error":"marshal failed"}`, http.StatusInternalServerError)
-			}
-			return
-
-		case "check_update":
-			jsonResp, _ := json.Marshal(checkUpdate())
-			w.Write(jsonResp)
-			return
-
-		case "online_update":
-			go func() {
-				time.Sleep(500 * time.Millisecond) // 等待响应发送完毕
-				if err := doOnlineUpdate(); err != nil {
-					fmt.Println("online_update failed:", err)
-				}
-			}()
-			w.Write([]byte(`{"status":"ok","msg":"正在下载更新，完成后将自动重启"}`))
-			return
-
-		case "security_info":
-			info := SecurityInfo{
-				ServerStart: serverStartTime.Format("2006-01-02 15:04:05"),
-				Uptime:      formatDuration(time.Since(serverStartTime)),
-			}
-
-			// 登录事件
-			loginEventsMu.Lock()
-			info.LoginEvents = make([]LoginEvent, len(loginEvents))
-			copy(info.LoginEvents, loginEvents)
-			loginEventsMu.Unlock()
-
-			// 在线列表 = OPUI 已连接用户
-			rawClients := GetOpuiOnlineClients()
-			info.OnlineList = make([]OnlineItem, 0, len(rawClients))
-			for _, c := range rawClients {
-				item := OnlineItem{}
-				if v, ok := c["name"].(string); ok {
-					item.Name = v
-				}
-				if v, ok := c["type"].(string); ok {
-					item.Type = v
-				}
-				if v, ok := c["online"].(bool); ok {
-					item.Online = v
-				}
-				if v, ok := c["detail"].(string); ok {
-					item.Detail = v
-				}
-				info.OnlineList = append(info.OnlineList, item)
-			}
-
-			if r, err := json.Marshal(info); err == nil {
-				w.Write(r)
-			} else {
-				http.Error(w, `{"status":"error","error":"marshal failed"}`, http.StatusInternalServerError)
-			}
-			return
-
-		case "ip_blacklist_list":
-			ipBlacklistMu.Lock()
-			list := make([]string, 0, len(ipBlacklist))
-			for ip := range ipBlacklist {
-				list = append(list, ip)
-			}
-			ipBlacklistMu.Unlock()
-			r, _ := json.Marshal(list)
-			w.Write(r)
-			return
-
-		case "ip_blacklist_add":
-			var j struct {
-				IP string `json:"ip"`
-			}
-			if err := json.Unmarshal(h.Data, &j); err != nil || j.IP == "" {
-				http.Error(w, `{"status":"error","error":"invalid ip"}`, http.StatusBadRequest)
-				return
-			}
-			ipBlacklistMu.Lock()
-			ipBlacklist[strings.TrimSpace(j.IP)] = true
-			ipBlacklistMu.Unlock()
-			saveIPBlacklist()
-			// 广播安全事件
-			notifyData, _ := json.Marshal(map[string]string{
-				"type":   "ip_blacklist",
-				"action": "add",
-				"ip":     j.IP,
-			})
-			broadcastOpuiNotify(notifyData)
-			w.Write([]byte(`{"status":"ok"}`))
-			return
-
-		case "ip_blacklist_remove":
-			var j struct {
-				IP string `json:"ip"`
-			}
-			if err := json.Unmarshal(h.Data, &j); err != nil || j.IP == "" {
-				http.Error(w, `{"status":"error","error":"invalid ip"}`, http.StatusBadRequest)
-				return
-			}
-			ipBlacklistMu.Lock()
-			delete(ipBlacklist, strings.TrimSpace(j.IP))
-			ipBlacklistMu.Unlock()
-			saveIPBlacklist()
-			notifyData, _ := json.Marshal(map[string]string{
-				"type":   "ip_blacklist",
-				"action": "remove",
-				"ip":     j.IP,
-			})
-			broadcastOpuiNotify(notifyData)
-			w.Write([]byte(`{"status":"ok"}`))
-			return
-
-		case "firewall_get_config":
-			ff := utils.NewFileQueue(dto.CONFIG_SYSTEM_PATH)
-			cf, err := ff.LoadIni()
-			if err != nil {
-				w.Write([]byte(`{"enabled":false,"dic_path":""}`))
-				return
-			}
-			fwSec := cf.Section("防火墙")
-			var enabled bool
-			var dicPath string
-			if fwSec != nil {
-				enabled = fwSec.Key("启用").MustBool(false)
-				dicPath = fwSec.Key("词库").String()
-			}
-			r, _ := json.Marshal(map[string]any{
-				"enabled":  enabled,
-				"dic_path": dicPath,
-			})
-			w.Write(r)
-			return
-
-		case "firewall_save_config":
-			var j struct {
-				Enabled bool   `json:"enabled"`
-				DicPath string `json:"dic_path"`
-			}
-			if err := json.Unmarshal(h.Data, &j); err != nil {
-				http.Error(w, `{"status":"error","error":"invalid json"}`, http.StatusBadRequest)
-				return
-			}
-			ff := utils.NewFileQueue(dto.CONFIG_SYSTEM_PATH)
-			cf, err := ff.LoadIni()
-			if err != nil {
-				http.Error(w, `{"status":"error","error":"config load failed"}`, http.StatusInternalServerError)
-				return
-			}
-			cf.Section("防火墙").Key("启用").SetValue(strconv.FormatBool(j.Enabled))
-			cf.Section("防火墙").Key("词库").SetValue(j.DicPath)
-			ff.SaveIni(cf)
-			w.Write([]byte(`{"status":"ok"}`))
-			return
-
-		default:
-			http.Error(w, `{"status":"error","error":"invalid type"}`, http.StatusBadRequest)
+		}
+		if err != nil {
+			http.Error(w, `{"status":"error","error":"save failed"}`, http.StatusInternalServerError)
 			return
 		}
-	}
-
-	fullPath := "dic/public/opui" + getpath
-
-	// ===== 设置 Content-Type（关键）=====
-	ext := filepath.Ext(fullPath)
-	if ct := mime.TypeByExtension(ext); ct != "" {
-		w.Header().Set("Content-Type", ct)
-	}
-
-	data, err := appfiles.GetFile(fullPath)
-	if err != nil {
-		http.NotFound(w, r)
+		w.Write([]byte(`{"status":"ok"}`))
 		return
-	}
 
-	if _, err := w.Write(data); err != nil {
-		utils.Error("服务器输出 Error: " + err.Error())
+	case "check_opui_key":
+		var j struct {
+			Key string `json:"key"`
+		}
+		if len(h.Data) == 0 {
+			debugLog.Errorf("[OPUI] check_opui_key: h.Data is nil or empty")
+			w.Write([]byte(`{"valid":false}`))
+			return
+		}
+		if err := json.Unmarshal(h.Data, &j); err != nil {
+			debugLog.Errorf("[OPUI] check_opui_key: json.Unmarshal failed, data=%s, err=%v", string(h.Data), err)
+			w.Write([]byte(`{"valid":false}`))
+			return
+		}
+		ff := utils.NewFileQueue(dto.CONFIG_SYSTEM_PATH)
+		f, err := ff.LoadIni()
+		if err != nil {
+			w.Write([]byte(`{"valid":false}`))
+			return
+		}
+		d := f.Section("管理面板")
+		storedKey := d.Key("密钥").String()
+		clientIP := utils.GetClientIP(r)
+		if storedKey == "" || storedKey == j.Key {
+			addLoginEvent("admin_login", "OPUI 管理员登录成功", clientIP)
+			w.Write([]byte(`{"valid":true}`))
+		} else {
+			addLoginEvent("admin_login_fail", "OPUI 登录失败: 密钥错误", clientIP)
+			w.Write([]byte(`{"valid":false}`))
+		}
+		return
+
+	case "get_websocket":
+		list := dto.ServerConfig.WsListSnapshot()
+		items := make([]HttpOpUiWebSocketItem, 0, len(list)+1)
+		for _, ws := range list {
+			items = append(items, HttpOpUiWebSocketItem{
+				Addr:     ws.Addr,
+				Cors:     ws.Cors,
+				Open:     ws.Open,
+				Closable: true,
+			})
+		}
+		// OPUI 本身也是一个 WebSocket 服务，纳入监听列表（但不可关闭，关闭等于关闭面板自身）
+		if opui := dto.ServerConfig.OPUI; opui != nil {
+			items = append(items, HttpOpUiWebSocketItem{
+				Addr:     opui.Addr,
+				Cors:     opui.Cors,
+				Open:     true,
+				Closable: false,
+			})
+		}
+		r, _ := json.Marshal(map[string]any{"list": items})
+		w.Write(r)
+		return
+
+	case "close_websocket":
+		var j struct {
+			Addr string `json:"addr"`
+		}
+		if err := json.Unmarshal(h.Data, &j); err != nil {
+			http.Error(w, `{"status":"error","error":"invalid json"}`, http.StatusBadRequest)
+			return
+		}
+		if j.Addr == "" {
+			http.Error(w, `{"status":"error","error":"addr is empty"}`, http.StatusBadRequest)
+			return
+		}
+		// OPUI 是管理面板自身的 WebSocket，不可通过面板关闭
+		if dto.ServerConfig.OPUI != nil && j.Addr == dto.ServerConfig.OPUI.Addr {
+			http.Error(w, `{"status":"error","error":"opui cannot be closed"}`, http.StatusBadRequest)
+			return
+		}
+		dto.ServerConfig.RemoveWs(j.Addr)
+		w.Write([]byte(`{"status":"ok"}`))
+		return
+
+	case "get_ngrok":
+		ff := utils.NewFileQueue(dto.CONFIG_SYSTEM_PATH)
+		f, err := ff.LoadIni()
+		if err != nil {
+			utils.ErrorStop("系统配置不存在")
+		}
+		d := f.Section("Ngrok")
+		var j HttpOpUiConfig_ngrok
+		j.Open = d.Key("启用").MustBool(false)
+		j.Token = d.Key("密钥").String()
+		j.Domain = d.Key("访问链接").String()
+		r, _ := json.Marshal(j)
+		w.Write(r)
+		return
+
+	case "save_ngrok":
+		var j HttpOpUiConfig_ngrok
+		if err := json.Unmarshal(h.Data, &j); err != nil {
+			http.Error(w, `{"status":"error","error":"invalid json"}`, http.StatusBadRequest)
+			return
+		}
+		ff := utils.NewFileQueue(dto.CONFIG_SYSTEM_PATH)
+		f, err := ff.LoadIni()
+		if err != nil {
+			utils.ErrorStop("系统配置不存在")
+		}
+		d := f.Section("Ngrok")
+		d.Key("启用").SetValue(strconv.FormatBool(j.Open))
+		d.Key("密钥").SetValue(j.Token)
+		d.Key("访问链接").SetValue(j.Domain)
+		ff.SaveIni(f)
+		w.Write([]byte(`{"status":"ok"}`))
+		return
+
+	case "toggle_ngrok":
+		var j struct {
+			Open bool `json:"open"`
+		}
+		if err := json.Unmarshal(h.Data, &j); err != nil {
+			http.Error(w, `{"status":"error","error":"invalid json"}`, http.StatusBadRequest)
+			return
+		}
+		ff := utils.NewFileQueue(dto.CONFIG_SYSTEM_PATH)
+		f, err := ff.LoadIni()
+		if err != nil {
+			utils.ErrorStop("系统配置不存在")
+		}
+		d := f.Section("Ngrok")
+		d.Key("启用").SetValue(strconv.FormatBool(j.Open))
+		ff.SaveIni(f)
+
+		if j.Open {
+			token := d.Key("密钥").String()
+			domain := d.Key("访问链接").String()
+			dto.ServerConfig.Ngrok = &dto.NgrokConfig{
+				Addr:  domain,
+				Token: token,
+			}
+			url, err := StartNgrok(token, domain)
+			if err != nil {
+				w.Write([]byte(`{"status":"error","error":"` + err.Error() + `"}`))
+				return
+			}
+			w.Write([]byte(`{"status":"ok","url":"` + url + `"}`))
+		} else {
+			StopNgrok()
+			dto.ServerConfig.Ngrok = nil
+			w.Write([]byte(`{"status":"ok"}`))
+		}
+		return
+
+	case "get_frp":
+		ff := utils.NewFileQueue(dto.CONFIG_SYSTEM_PATH)
+		f, err := ff.LoadIni()
+		if err != nil {
+			utils.ErrorStop("系统配置不存在")
+		}
+		d := f.Section("FRP")
+		var j HttpOpUiConfig_frp
+		j.Open = d.Key("启用").MustBool(false)
+		j.ServerAddr = d.Key("服务端地址").String()
+		j.Token = d.Key("令牌").String()
+		j.Debug = d.Key("调试").MustBool(false)
+		r, _ := json.Marshal(j)
+		w.Write(r)
+		return
+
+	case "save_frp":
+		var j HttpOpUiConfig_frp
+		if err := json.Unmarshal(h.Data, &j); err != nil {
+			http.Error(w, `{"status":"error","error":"invalid json"}`, http.StatusBadRequest)
+			return
+		}
+		// 自动将 http/https 转换为 ws/wss
+		if after, ok := strings.CutPrefix(j.ServerAddr, "https://"); ok {
+			j.ServerAddr = "wss://" + after
+		} else if after, ok := strings.CutPrefix(j.ServerAddr, "http://"); ok {
+			j.ServerAddr = "ws://" + after
+		}
+		ff := utils.NewFileQueue(dto.CONFIG_SYSTEM_PATH)
+		f, err := ff.LoadIni()
+		if err != nil {
+			utils.ErrorStop("系统配置不存在")
+		}
+		d := f.Section("FRP")
+		d.Key("启用").SetValue(strconv.FormatBool(j.Open))
+		d.Key("服务端地址").SetValue(j.ServerAddr)
+		d.Key("令牌").SetValue(j.Token)
+		d.Key("调试").SetValue(strconv.FormatBool(j.Debug))
+		ff.SaveIni(f)
+
+		frpDebug = j.Debug
+
+		if j.Open {
+			// 开启：建立 WebSocket 连接
+			ConnectFrp(j.ServerAddr, j.Token)
+			w.Write([]byte(`{"status":"ok"}`))
+		} else {
+			// 关闭：断开连接
+			DisconnectFrp()
+			w.Write([]byte(`{"status":"ok"}`))
+		}
+		return
+
+	case "get_ftp":
+		ff := utils.NewFileQueue(dto.CONFIG_SYSTEM_PATH)
+		f, err := ff.LoadIni()
+		if err != nil {
+			utils.ErrorStop("系统配置不存在")
+		}
+		d := f.Section("FTP")
+		var j HttpOpUiConfig_ftp
+		j.Open = d.Key("启用").MustBool(false)
+		j.Port = d.Key("端口").MustInt(21)
+		j.Username = d.Key("用户名").String()
+		j.Password = d.Key("密码").String()
+		j.Debug = d.Key("调试").MustBool(false)
+		j.Tls = d.Key("TLS").MustBool(false)
+		j.PasvPortStart = d.Key("PASV端口起始").MustInt(32000)
+		j.PasvPortEnd = d.Key("PASV端口结束").MustInt(32005)
+		r, _ := json.Marshal(j)
+		w.Write(r)
+		return
+
+	case "save_ftp":
+		var j HttpOpUiConfig_ftp
+		if err := json.Unmarshal(h.Data, &j); err != nil {
+			http.Error(w, `{"status":"error","error":"invalid json"}`, http.StatusBadRequest)
+			return
+		}
+		// 校验数据端口范围
+		if j.PasvPortStart < 1 || j.PasvPortStart > 65535 || j.PasvPortEnd < 1 || j.PasvPortEnd > 65535 {
+			http.Error(w, `{"status":"error","error":"数据端口范围必须在 1-65535 之间"}`, http.StatusBadRequest)
+			return
+		}
+		if j.PasvPortStart > j.PasvPortEnd {
+			http.Error(w, `{"status":"error","error":"起始端口不能大于结束端口"}`, http.StatusBadRequest)
+			return
+		}
+		ff := utils.NewFileQueue(dto.CONFIG_SYSTEM_PATH)
+		f, err := ff.LoadIni()
+		if err != nil {
+			utils.ErrorStop("系统配置不存在")
+		}
+		d := f.Section("FTP")
+		d.Key("启用").SetValue(strconv.FormatBool(j.Open))
+		d.Key("端口").SetValue(strconv.Itoa(j.Port))
+		d.Key("用户名").SetValue(j.Username)
+		d.Key("密码").SetValue(j.Password)
+		d.Key("调试").SetValue(strconv.FormatBool(j.Debug))
+		d.Key("TLS").SetValue(strconv.FormatBool(j.Tls))
+		d.Key("PASV端口起始").SetValue(strconv.Itoa(j.PasvPortStart))
+		d.Key("PASV端口结束").SetValue(strconv.Itoa(j.PasvPortEnd))
+		ff.SaveIni(f)
+
+		if j.Open {
+			StartFtp(j.Port, j.Debug, j.Username, j.Password, j.Tls, j.PasvPortStart, j.PasvPortEnd)
+		} else {
+			StopFtp()
+		}
+
+		w.Write([]byte(`{"status":"ok"}`))
+		return
+
+	case "get_sftp":
+		ff := utils.NewFileQueue(dto.CONFIG_SYSTEM_PATH)
+		f, err := ff.LoadIni()
+		if err != nil {
+			utils.ErrorStop("系统配置不存在")
+		}
+		d := f.Section("SFTP")
+		var j HttpOpUiConfig_sftp
+		j.Open = d.Key("启用").MustBool(false)
+		j.Port = d.Key("端口").MustInt(22)
+		j.Username = d.Key("用户名").String()
+		j.Password = d.Key("密码").String()
+		j.Debug = d.Key("调试").MustBool(false)
+		r, _ := json.Marshal(j)
+		w.Write(r)
+		return
+
+	case "save_sftp":
+		var j HttpOpUiConfig_sftp
+		if err := json.Unmarshal(h.Data, &j); err != nil {
+			http.Error(w, `{"status":"error","error":"invalid json"}`, http.StatusBadRequest)
+			return
+		}
+		ff := utils.NewFileQueue(dto.CONFIG_SYSTEM_PATH)
+		f, err := ff.LoadIni()
+		if err != nil {
+			utils.ErrorStop("系统配置不存在")
+		}
+		d := f.Section("SFTP")
+		d.Key("启用").SetValue(strconv.FormatBool(j.Open))
+		d.Key("端口").SetValue(strconv.Itoa(j.Port))
+		d.Key("用户名").SetValue(j.Username)
+		d.Key("密码").SetValue(j.Password)
+		d.Key("调试").SetValue(strconv.FormatBool(j.Debug))
+		ff.SaveIni(f)
+
+		if j.Open {
+			StartSftp(j.Port, j.Debug, j.Username, j.Password)
+		} else {
+			StopSftp()
+		}
+
+		w.Write([]byte(`{"status":"ok"}`))
+		return
+
+	case "get_qq", "get_qq_list":
+		ff := utils.NewFileQueue(dto.CONFIG_PATH)
+		f, err := ff.LoadIni()
+		if err != nil {
+			utils.ErrorStop("系统配置不存在")
+		}
+		var list HttpOpUiConfig_qq_list
+		for _, sec := range f.Sections() {
+			secName := sec.Name()
+			if secName == "QQ" || (strings.HasPrefix(secName, "QQ") && len(secName) > 2) {
+				d := f.Section(secName)
+				var j HttpOpUiConfig_qq
+				j.Open = d.Key("启用").MustBool(false)
+				j.Dic = d.Key("词库").String()
+				j.Path = d.Key("访问路径").String()
+				j.Appid = d.Key("APPID").String()
+				j.Secret = d.Key("密钥").String()
+				j.AtCompat = d.Key("全量艾特兼容").MustBool(true)
+				j.FilterSlash = d.Key("过滤开头斜杠").MustBool(true)
+				j.Debug = d.Key("调试打印").MustBool(false)
+				j.Ws = d.Key("WebSocket").MustBool(false)
+				j.WsIntents = d.Key("监听码").MustInt(0)
+				j.Remark = d.Key("备注").String()
+				list.Instances = append(list.Instances, HttpOpUiConfig_qq_instance{
+					Section: secName,
+					Config:  j,
+				})
+			}
+		}
+		r, _ := json.Marshal(list)
+		w.Write(r)
+		return
+
+	case "save_qq":
+		var j HttpOpUiConfig_qq_instance
+		if err := json.Unmarshal(h.Data, &j); err != nil {
+			http.Error(w, `{"status":"error","error":"invalid json"}`, http.StatusBadRequest)
+			return
+		}
+		sectionName := j.Section
+		if sectionName == "" {
+			sectionName = "QQ"
+		}
+		ff := utils.NewFileQueue(dto.CONFIG_PATH)
+		f, err := ff.LoadIni()
+		if err != nil {
+			utils.ErrorStop("系统配置不存在")
+		}
+		// 备注唯一性检查
+		if j.Config.Remark != "" {
+			for _, sec := range f.Sections() {
+				secName := sec.Name()
+				if secName != sectionName && (secName == "QQ" || (strings.HasPrefix(secName, "QQ") && len(secName) > 2)) {
+					if f.Section(secName).Key("备注").String() == j.Config.Remark {
+						http.Error(w, `{"status":"error","error":"备注名已存在"}`, http.StatusConflict)
+						return
+					}
+				}
+			}
+		}
+		d := f.Section(sectionName)
+		d.Key("启用").SetValue(strconv.FormatBool(j.Config.Open))
+		d.Key("词库").SetValue(j.Config.Dic)
+		d.Key("访问路径").SetValue(j.Config.Path)
+		d.Key("APPID").SetValue(j.Config.Appid)
+		d.Key("密钥").SetValue(j.Config.Secret)
+		d.Key("全量艾特兼容").SetValue(strconv.FormatBool(j.Config.AtCompat))
+		d.Key("过滤开头斜杠").SetValue(strconv.FormatBool(j.Config.FilterSlash))
+		d.Key("调试打印").SetValue(strconv.FormatBool(j.Config.Debug))
+		d.Key("WebSocket").SetValue(strconv.FormatBool(j.Config.Ws))
+		d.Key("监听码").SetValue(strconv.Itoa(j.Config.WsIntents))
+		d.Key("备注").SetValue(j.Config.Remark)
+		dto.LoadConfig_qq(d, sectionName)
+		ff.SaveIni(f)
+		w.Write([]byte(`{"status":"ok"}`))
+		return
+
+	case "toggle_qq_debug":
+		var j struct {
+			Section string `json:"section"`
+			Debug   bool   `json:"debug"`
+		}
+		if err := json.Unmarshal(h.Data, &j); err != nil {
+			http.Error(w, `{"status":"error","error":"invalid json"}`, http.StatusBadRequest)
+			return
+		}
+		// 更新配置文件
+		ff := utils.NewFileQueue(dto.CONFIG_PATH)
+		f, err := ff.LoadIni()
+		if err != nil {
+			utils.ErrorStop("系统配置不存在")
+		}
+		d := f.Section(j.Section)
+		d.Key("调试打印").SetValue(strconv.FormatBool(j.Debug))
+		ff.SaveIni(f)
+		// 仅更新运行中 bot 的 Debug 标志，不重连
+		if dto.ServerConfig.QQBots != nil {
+			if bot := dto.ServerConfig.QQBots[j.Section]; bot != nil {
+				bot.Debug = j.Debug
+				if bot.API != nil {
+					bot.API.Debug = j.Debug
+				}
+			}
+		}
+		w.Write([]byte(`{"status":"ok"}`))
+		return
+
+	case "add_qq":
+		ff := utils.NewFileQueue(dto.CONFIG_PATH)
+		f, err := ff.LoadIni()
+		if err != nil {
+			utils.ErrorStop("系统配置不存在")
+		}
+		// 找到下一个可用的编号
+		maxNum := 0
+		for _, sec := range f.Sections() {
+			name := sec.Name()
+			if strings.HasPrefix(name, "QQ") {
+				if name == "QQ" {
+					if maxNum < 1 {
+						maxNum = 1
+					}
+				} else {
+					numStr := name[2:]
+					if num, err := strconv.Atoi(numStr); err == nil && num > maxNum {
+						maxNum = num
+					}
+				}
+			}
+		}
+		newNum := maxNum + 1
+		newSection := "QQ" + strconv.Itoa(newNum)
+		d := f.Section(newSection)
+		d.Key("启用").SetValue("false")
+		d.Key("词库").SetValue("private/bot/qq" + strconv.Itoa(newNum))
+		d.Key("访问路径").SetValue("qq-bot" + strconv.Itoa(newNum))
+		d.Key("APPID").SetValue("")
+		d.Key("密钥").SetValue("")
+		d.Key("全量艾特兼容").SetValue("true")
+		d.Key("过滤开头斜杠").SetValue("true")
+		d.Key("调试打印").SetValue("false")
+		d.Key("WebSocket").SetValue("true")
+		d.Key("监听码").SetValue("0")
+		d.Key("备注").SetValue("")
+		ff.SaveIni(f)
+		j := HttpOpUiConfig_qq_instance{
+			Section: newSection,
+			Config: HttpOpUiConfig_qq{
+				Open:        false,
+				Dic:         "private/bot/qq" + strconv.Itoa(newNum),
+				Path:        "qq-bot" + strconv.Itoa(newNum),
+				Appid:       "",
+				Secret:      "",
+				AtCompat:    true,
+				FilterSlash: true,
+				Debug:       false,
+				Ws:          true,
+				WsIntents:   0,
+				Remark:      "",
+			},
+		}
+		r, _ := json.Marshal(j)
+		w.Write(r)
+		return
+
+	case "del_qq":
+		var j struct {
+			Section string `json:"section"`
+		}
+		if err := json.Unmarshal(h.Data, &j); err != nil {
+			http.Error(w, `{"status":"error","error":"invalid json"}`, http.StatusBadRequest)
+			return
+		}
+		if j.Section == "" || j.Section == "QQ" {
+			http.Error(w, `{"status":"error","error":"cannot delete primary QQ instance"}`, http.StatusBadRequest)
+			return
+		}
+		ff := utils.NewFileQueue(dto.CONFIG_PATH)
+		f, err := ff.LoadIni()
+		if err != nil {
+			utils.ErrorStop("系统配置不存在")
+		}
+		f.DeleteSection(j.Section)
+		// 从运行中移除
+		if dto.ServerConfig.QQBots != nil {
+			delete(dto.ServerConfig.QQBots, j.Section)
+		}
+		ff.SaveIni(f)
+		w.Write([]byte(`{"status":"ok"}`))
+		return
+
+	case "get_napcat":
+		ff := utils.NewFileQueue(dto.CONFIG_PATH)
+		f, err := ff.LoadIni()
+		if err != nil {
+			utils.ErrorStop("系统配置不存在")
+		}
+		d := f.Section("NapCat")
+		var j HttpOpUiConfig_napcat
+		j.Open = d.Key("启用").MustBool(false)
+		j.Dic = d.Key("词库").String()
+		j.Path = d.Key("访问路径").String()
+		j.Secret = d.Key("密钥").String()
+		j.Api = d.Key("发送消息接口").String()
+		r, _ := json.Marshal(j)
+		w.Write(r)
+		return
+
+	case "save_napcat":
+		var j HttpOpUiConfig_napcat
+		if err := json.Unmarshal(h.Data, &j); err != nil {
+			http.Error(w, `{"status":"error","error":"invalid json"}`, http.StatusBadRequest)
+			return
+		}
+		ff := utils.NewFileQueue(dto.CONFIG_PATH)
+		f, err := ff.LoadIni()
+		if err != nil {
+			utils.ErrorStop("系统配置不存在")
+		}
+		d := f.Section("NapCat")
+		d.Key("启用").SetValue(strconv.FormatBool(j.Open))
+		d.Key("词库").SetValue(j.Dic)
+		d.Key("访问路径").SetValue(j.Path)
+		d.Key("密钥").SetValue(j.Secret)
+		d.Key("发送消息接口").SetValue(j.Api)
+		dto.LoadConfig_napcat(d)
+		ff.SaveIni(f)
+		w.Write([]byte(`{"status":"ok"}`))
+		return
+
+	case "get_yunhu":
+		ff := utils.NewFileQueue(dto.CONFIG_PATH)
+		f, err := ff.LoadIni()
+		if err != nil {
+			utils.ErrorStop("系统配置不存在")
+		}
+		d := f.Section("云湖")
+		var j HttpOpUiConfig_yunhu
+		j.Open = d.Key("启用").MustBool(false)
+		j.Dic = d.Key("词库").String()
+		j.Path = d.Key("访问路径").String()
+		j.Secret = d.Key("密钥").String()
+		r, _ := json.Marshal(j)
+		w.Write(r)
+		return
+
+	case "save_yunhu":
+		var j HttpOpUiConfig_yunhu
+		if err := json.Unmarshal(h.Data, &j); err != nil {
+			http.Error(w, `{"status":"error","error":"invalid json"}`, http.StatusBadRequest)
+			return
+		}
+		ff := utils.NewFileQueue(dto.CONFIG_PATH)
+		f, err := ff.LoadIni()
+		if err != nil {
+			utils.ErrorStop("系统配置不存在")
+		}
+		d := f.Section("云湖")
+		d.Key("启用").SetValue(strconv.FormatBool(j.Open))
+		d.Key("词库").SetValue(j.Dic)
+		d.Key("访问路径").SetValue(j.Path)
+		d.Key("密钥").SetValue(j.Secret)
+		dto.LoadConfig_yunhu(d)
+		ff.SaveIni(f)
+		w.Write([]byte(`{"status":"ok"}`))
+		return
+
+	case "get_feishu":
+		ff := utils.NewFileQueue(dto.CONFIG_PATH)
+		f, err := ff.LoadIni()
+		if err != nil {
+			utils.ErrorStop("系统配置不存在")
+		}
+		d := f.Section("飞书")
+		var j HttpOpUiConfig_feishu
+		j.Open = d.Key("启用").MustBool(false)
+		j.Dic = d.Key("词库").String()
+		j.Path = d.Key("访问路径").String()
+		j.Appid = d.Key("APPID").String()
+		j.Secret = d.Key("密钥").String()
+		r, _ := json.Marshal(j)
+		w.Write(r)
+		return
+
+	case "save_feishu":
+		var j HttpOpUiConfig_feishu
+		if err := json.Unmarshal(h.Data, &j); err != nil {
+			http.Error(w, `{"status":"error","error":"invalid json"}`, http.StatusBadRequest)
+			return
+		}
+		ff := utils.NewFileQueue(dto.CONFIG_PATH)
+		f, err := ff.LoadIni()
+		if err != nil {
+
+			utils.ErrorStop("系统配置不存在")
+		}
+		d := f.Section("飞书")
+		d.Key("启用").SetValue(strconv.FormatBool(j.Open))
+		d.Key("词库").SetValue(j.Dic)
+		d.Key("访问路径").SetValue(j.Path)
+		d.Key("APPID").SetValue(j.Appid)
+		d.Key("密钥").SetValue(j.Secret)
+		dto.LoadConfig_feishu(d)
+		ff.SaveIni(f)
+		w.Write([]byte(`{"status":"ok"}`))
+		return
+
+	case "get_secluded":
+		ff := utils.NewFileQueue(dto.CONFIG_PATH)
+		f, err := ff.LoadIni()
+		if err != nil {
+			utils.ErrorStop("系统配置不存在")
+		}
+		d := f.Section("Secluded")
+		var j HttpOpUiConfig_secluded
+		j.Open = d.Key("启用").MustBool(false)
+		j.Dic = d.Key("词库").String()
+		j.Address = d.Key("对接地址").String()
+		j.Token = d.Key("令牌").String()
+		j.Debug = d.Key("调试打印").MustBool(false)
+		r, _ := json.Marshal(j)
+		w.Write(r)
+		return
+
+	case "save_secluded":
+		var j HttpOpUiConfig_secluded
+		if err := json.Unmarshal(h.Data, &j); err != nil {
+			http.Error(w, `{"status":"error","error":"invalid json"}`, http.StatusBadRequest)
+			return
+		}
+		ff := utils.NewFileQueue(dto.CONFIG_PATH)
+		f, err := ff.LoadIni()
+		if err != nil {
+			utils.ErrorStop("系统配置不存在")
+		}
+		d := f.Section("Secluded")
+		d.Key("启用").SetValue(strconv.FormatBool(j.Open))
+		d.Key("词库").SetValue(j.Dic)
+		d.Key("对接地址").SetValue(j.Address)
+		d.Key("令牌").SetValue(j.Token)
+		d.Key("调试打印").SetValue(strconv.FormatBool(j.Debug))
+		dto.LoadConfig_secluded(d)
+		ff.SaveIni(f)
+		if j.Open {
+			if dto.ServerConfig.SecludedBot != nil && dto.ServerConfig.SecludedBot.Addr != "" {
+				secludedbot.Start(dto.ServerConfig.SecludedBot.Addr, dto.ServerConfig.SecludedBot.Token)
+			}
+		} else {
+			secludedbot.Stop()
+		}
+		w.Write([]byte(`{"status":"ok"}`))
+		return
+
+	case "encrypt_dic":
+		var j HttpOpUiConfig_EncryptDic
+		if err := json.Unmarshal(h.Data, &j); err != nil {
+			http.Error(w, `{"status":"error","error":"invalid json"}`, http.StatusBadRequest)
+			return
+		}
+		encodeDic, err := utils.Encrypt(j.Text, appfiles.Key)
+		if err != nil {
+			http.Error(w, `{"status":"error","error":"加密失败"}`, http.StatusBadRequest)
+			return
+		}
+		var rj struct {
+			Status string `json:"status"`
+			Text   string `json:"text"`
+		}
+		rj.Status = "ok"
+		rj.Text = encodeDic
+		r, _ := json.Marshal(rj)
+		w.Write(r)
+		return
+
+	case "install_php":
+		appDir := utils.GetAppDir()
+		destDir := filepath.Join(appDir, "private", "extensions", "php")
+		if utils.NewFileQueue(filepath.Join(destDir, "php.exe")).FileExists() {
+			resp := HttpOpUiInstallResponse{
+				Status: "ok",
+				Output: []string{"PHP 已安装"},
+			}
+			jsonResp, _ := json.Marshal(resp)
+			w.Write(jsonResp)
+			return
+		}
+		// 防止重复安装：检查是否已有同组件运行中的任务
+		if existingTask := findRunningTaskForComponent("php"); existingTask != nil {
+			jsonResp, _ := json.Marshal(map[string]string{"status": "ok", "task_id": existingTask.ID})
+			w.Write(jsonResp)
+			return
+		}
+		taskID := generateTaskID()
+		task := &InstallTask{
+			ID:        taskID,
+			Component: "php",
+			Status:    "running",
+			Progress:  0,
+		}
+		installTaskStore.Store(taskID, task)
+		go func() {
+			var output []string
+			progressFn := func(p float64) { task.setProgress(p) }
+			err := installPHP(destDir, &output, progressFn)
+			for _, line := range output {
+				task.addOutput(line)
+			}
+			if task.IsCancelled() {
+				task.addOutput("⚠ 安装已取消")
+				task.finish(nil)
+				return
+			}
+			task.finish(err)
+		}()
+		jsonResp, _ := json.Marshal(map[string]string{"status": "ok", "task_id": taskID})
+		w.Write(jsonResp)
+		return
+
+	case "install_ffmpeg":
+		appDir := utils.GetAppDir()
+		destDir := filepath.Join(appDir, "private", "extensions", "ffmpeg")
+		if utils.FindFfmpegExe(destDir) != "" {
+			resp := HttpOpUiInstallResponse{
+				Status: "ok",
+				Output: []string{"FFmpeg 已安装"},
+			}
+			jsonResp, _ := json.Marshal(resp)
+			w.Write(jsonResp)
+			return
+		}
+		// 防止重复安装
+		if existingTask := findRunningTaskForComponent("ffmpeg"); existingTask != nil {
+			jsonResp, _ := json.Marshal(map[string]string{"status": "ok", "task_id": existingTask.ID})
+			w.Write(jsonResp)
+			return
+		}
+		taskID := generateTaskID()
+		task := &InstallTask{
+			ID:        taskID,
+			Component: "ffmpeg",
+			Status:    "running",
+			Progress:  0,
+		}
+		installTaskStore.Store(taskID, task)
+		go func() {
+			var output []string
+			progressFn := func(p float64) { task.setProgress(p) }
+			err := installFFmpeg(destDir, &output, progressFn)
+			for _, line := range output {
+				task.addOutput(line)
+			}
+			if task.IsCancelled() {
+				task.addOutput("⚠ 安装已取消")
+				task.finish(nil)
+				return
+			}
+			task.finish(err)
+		}()
+		jsonResp, _ := json.Marshal(map[string]string{"status": "ok", "task_id": taskID})
+		w.Write(jsonResp)
+		return
+
+	case "install_silk_v3":
+		appDir := utils.GetAppDir()
+		destDir := filepath.Join(appDir, "private", "extensions")
+		if utils.NewFileQueue(filepath.Join(destDir, "silk_v3", "silk_v3_encoder.exe")).FileExists() {
+			resp := HttpOpUiInstallResponse{
+				Status: "ok",
+				Output: []string{"silk_v3 已安装"},
+			}
+			jsonResp, _ := json.Marshal(resp)
+			w.Write(jsonResp)
+			return
+		}
+		// 防止重复安装
+		if existingTask := findRunningTaskForComponent("silk_v3"); existingTask != nil {
+			jsonResp, _ := json.Marshal(map[string]string{"status": "ok", "task_id": existingTask.ID})
+			w.Write(jsonResp)
+			return
+		}
+		taskID := generateTaskID()
+		task := &InstallTask{
+			ID:        taskID,
+			Component: "silk_v3",
+			Status:    "running",
+			Progress:  0,
+		}
+		installTaskStore.Store(taskID, task)
+		go func() {
+			var output []string
+			progressFn := func(p float64) { task.setProgress(p) }
+			err := installSilkV3(destDir, &output, progressFn)
+			for _, line := range output {
+				task.addOutput(line)
+			}
+			if task.IsCancelled() {
+				task.addOutput("⚠ 安装已取消")
+				task.finish(nil)
+				return
+			}
+			task.finish(err)
+		}()
+		jsonResp, _ := json.Marshal(map[string]string{"status": "ok", "task_id": taskID})
+		w.Write(jsonResp)
+		return
+
+	case "install_napcat_bot":
+		var config HttpOpUiConfig_install
+		if err := json.Unmarshal(h.Data, &config); err != nil {
+			http.Error(w, `{"status":"error","error":"invalid json"}`, http.StatusBadRequest)
+			return
+		}
+		qq, ok := config.Params["qq"]
+		if !ok || qq == "" {
+			w.Write([]byte(`{"status":"error","error":"missing qq parameter"}`))
+			return
+		}
+		appDir := utils.GetAppDir()
+		destDir := filepath.Join(appDir, "private", "extensions", "NapCat.Shell")
+		if utils.NewFileQueue(filepath.Join(destDir, "launcher.bat")).FileExists() {
+			resp := HttpOpUiInstallResponse{
+				Status: "ok",
+				Output: []string{"napcat_bot 已安装"},
+			}
+			jsonResp, _ := json.Marshal(resp)
+			w.Write(jsonResp)
+			return
+		}
+		// 防止重复安装
+		if existingTask := findRunningTaskForComponent("napcat_bot"); existingTask != nil {
+			jsonResp, _ := json.Marshal(map[string]string{"status": "ok", "task_id": existingTask.ID})
+			w.Write(jsonResp)
+			return
+		}
+		taskID := generateTaskID()
+		task := &InstallTask{
+			ID:        taskID,
+			Component: "napcat_bot",
+			Status:    "running",
+			Progress:  0,
+		}
+		installTaskStore.Store(taskID, task)
+		go func() {
+			var output []string
+			progressFn := func(p float64) { task.setProgress(p) }
+			err := installNapCatBot(destDir, qq, &output, progressFn)
+			for _, line := range output {
+				task.addOutput(line)
+			}
+			if task.IsCancelled() {
+				task.addOutput("⚠ 安装已取消")
+				task.finish(nil)
+				return
+			}
+			task.finish(err)
+		}()
+		jsonResp, _ := json.Marshal(map[string]string{"status": "ok", "task_id": taskID})
+		w.Write(jsonResp)
+		return
+
+	case "install_python":
+		appDir := utils.GetAppDir()
+		destDir := filepath.Join(appDir, "private", "extensions", "python")
+		if utils.NewFileQueue(filepath.Join(destDir, "python.exe")).FileExists() {
+			resp := HttpOpUiInstallResponse{
+				Status: "ok",
+				Output: []string{"Python 已安装"},
+			}
+			jsonResp, _ := json.Marshal(resp)
+			w.Write(jsonResp)
+			return
+		}
+		// 防止重复安装
+		if existingTask := findRunningTaskForComponent("python"); existingTask != nil {
+			jsonResp, _ := json.Marshal(map[string]string{"status": "ok", "task_id": existingTask.ID})
+			w.Write(jsonResp)
+			return
+		}
+		taskID := generateTaskID()
+		task := &InstallTask{
+			ID:        taskID,
+			Component: "python",
+			Status:    "running",
+			Progress:  0,
+		}
+		installTaskStore.Store(taskID, task)
+		go func() {
+			var output []string
+			progressFn := func(p float64) { task.setProgress(p) }
+			err := installPython(destDir, &output, progressFn)
+			for _, line := range output {
+				task.addOutput(line)
+			}
+			if task.IsCancelled() {
+				task.addOutput("⚠ 安装已取消")
+				task.finish(nil)
+				return
+			}
+			task.finish(err)
+		}()
+		jsonResp, _ := json.Marshal(map[string]string{"status": "ok", "task_id": taskID})
+		w.Write(jsonResp)
+		return
+
+	case "get_install_status":
+		appDir := utils.GetAppDir()
+		extDir := filepath.Join(appDir, "private", "extensions")
+		allStatus := map[string]bool{
+			"php":        utils.NewFileQueue(filepath.Join(extDir, "php", "php.exe")).FileExists(),
+			"python":     utils.NewFileQueue(filepath.Join(extDir, "python", "python.exe")).FileExists(),
+			"napcat_bot": utils.NewFileQueue(filepath.Join(extDir, "NapCat.Shell", "launcher.bat")).FileExists(),
+			"ffmpeg":     utils.FindFfmpegExe(filepath.Join(extDir, "ffmpeg")) != "",
+			"silk_v3":    utils.NewFileQueue(filepath.Join(extDir, "silk_v3", "silk_v3_encoder.exe")).FileExists(),
+		}
+		jsonResp, _ := json.Marshal(allStatus)
+		w.Write(jsonResp)
+		return
+
+	case "install_progress":
+		var j HttpOpUiConfig_installStatus
+		if err := json.Unmarshal(h.Data, &j); err != nil {
+			http.Error(w, `{"status":"error","error":"invalid json"}`, http.StatusBadRequest)
+			return
+		}
+		if val, ok := installTaskStore.Load(j.TaskID); ok {
+			task, ok := val.(*InstallTask)
+			if !ok {
+				http.Error(w, `{"status":"error","error":"invalid task"}`, http.StatusInternalServerError)
+				return
+			}
+			status, output, errMsg, progress := task.snapshot()
+			resp := map[string]any{
+				"status":    status,
+				"component": task.Component,
+				"output":    output,
+				"error":     errMsg,
+				"progress":  progress,
+			}
+			jsonResp, _ := json.Marshal(resp)
+			w.Write(jsonResp)
+		} else {
+			w.Write([]byte(`{"status":"not_found","error":"task not found"}`))
+		}
+		return
+
+	case "install_cancel":
+		var j HttpOpUiConfig_installStatus
+		if err := json.Unmarshal(h.Data, &j); err != nil {
+			http.Error(w, `{"status":"error","error":"invalid json"}`, http.StatusBadRequest)
+			return
+		}
+		if val, ok := installTaskStore.Load(j.TaskID); ok {
+			task, ok := val.(*InstallTask)
+			if !ok {
+				http.Error(w, `{"status":"error","error":"invalid task"}`, http.StatusInternalServerError)
+				return
+			}
+			task.Cancel()
+			w.Write([]byte(`{"status":"ok"}`))
+		} else {
+			w.Write([]byte(`{"status":"not_found","error":"task not found"}`))
+		}
+		return
+
+	case "uninstall":
+		var config HttpOpUiConfig_install
+		if err := json.Unmarshal(h.Data, &config); err != nil {
+			http.Error(w, `{"status":"error","error":"invalid json"}`, http.StatusBadRequest)
+			return
+		}
+		appDir := utils.GetAppDir()
+		var rmDir string
+		switch config.Component {
+		case "php":
+			rmDir = filepath.Join(appDir, "private", "extensions", "php")
+		case "ffmpeg":
+			rmDir = filepath.Join(appDir, "private", "extensions", "ffmpeg")
+		case "silk_v3":
+			rmDir = filepath.Join(appDir, "private", "extensions", "silk_v3")
+		case "napcat_bot":
+			rmDir = filepath.Join(appDir, "private", "extensions", "NapCat.Shell")
+		case "python":
+			rmDir = filepath.Join(appDir, "private", "extensions", "python")
+		default:
+			http.Error(w, `{"status":"error","error":"unknown component"}`, http.StatusBadRequest)
+			return
+		}
+		if err := os.RemoveAll(rmDir); err != nil {
+			resp := HttpOpUiInstallResponse{Status: "error", Error: "卸载失败: " + err.Error()}
+			jsonResp, _ := json.Marshal(resp)
+			w.Write(jsonResp)
+			return
+		}
+		resp := HttpOpUiInstallResponse{Status: "ok", Output: []string{config.Component + " 已卸载"}}
+		jsonResp, _ := json.Marshal(resp)
+		w.Write(jsonResp)
+		return
+
+	case "get_dic_doc":
+		data, err := appfiles.GetFile("dic.md")
+		if err != nil {
+			http.Error(w, `{"status":"error","error":"embedded file not found"}`, http.StatusInternalServerError)
+			return
+		}
+		html := markdown.ToHTML(data, nil, nil)
+		resp := map[string]string{"content": string(html)}
+		jsonResp, _ := json.Marshal(resp)
+		w.Write(jsonResp)
+		return
+
+	case "get_autostart":
+		enabled, err := GetAutoStart()
+		if err != nil {
+			w.Write([]byte(`{"enabled":false}`))
+			return
+		}
+		jsonResp, _ := json.Marshal(map[string]bool{"enabled": enabled})
+		w.Write(jsonResp)
+		return
+
+	case "set_autostart":
+		if err := SetAutoStart(); err != nil {
+			jsonResp, _ := json.Marshal(map[string]string{"status": "error", "error": err.Error()})
+			w.Write(jsonResp)
+			return
+		}
+		w.Write([]byte(`{"status":"ok"}`))
+		return
+
+	case "cancel_autostart":
+		if err := CancelAutoStart(); err != nil {
+			jsonResp, _ := json.Marshal(map[string]string{"status": "error", "error": err.Error()})
+			w.Write(jsonResp)
+			return
+		}
+		w.Write([]byte(`{"status":"ok"}`))
+		return
+
+	case "get_dic_list":
+		// 只在有输入关键字时才搜索；base 指定搜索目录（默认 private），只扫描该文件夹下的 .n 文件
+		var j struct {
+			Search string `json:"search"`
+			Base   string `json:"base"`
+			Limit  int    `json:"limit"`
+		}
+		_ = json.Unmarshal(h.Data, &j)
+		kw := strings.ToLower(strings.TrimSpace(j.Search))
+		if kw == "" {
+			// 未输入关键字不返回列表
+			jsonResp, _ := json.Marshal(map[string]any{"files": []string{}})
+			w.Write(jsonResp)
+			return
+		}
+		base := strings.TrimSpace(j.Base)
+		if base == "" {
+			base = "private"
+		}
+		// 限定搜索目录只能位于 private/public 下，防止越权扫描
+		if base != "private" && base != "public" &&
+			!strings.HasPrefix(base, "private/") && !strings.HasPrefix(base, "public/") {
+			jsonResp, _ := json.Marshal(map[string]any{"files": []string{}})
+			w.Write(jsonResp)
+			return
+		}
+		files, err := listDicFilesInDir(base)
+		if err != nil {
+			http.Error(w, `{"status":"error","error":"`+err.Error()+`"}`, http.StatusInternalServerError)
+			return
+		}
+		var filtered []string
+		for _, f := range files {
+			if strings.Contains(strings.ToLower(f), kw) {
+				filtered = append(filtered, f)
+			}
+		}
+		if j.Limit > 0 && len(filtered) > j.Limit {
+			filtered = filtered[:j.Limit]
+		}
+		jsonResp, _ := json.Marshal(map[string]any{"files": filtered})
+		w.Write(jsonResp)
+		return
+
+	case "dic_get_content":
+		var j struct {
+			Path string `json:"path"`
+		}
+		if err := json.Unmarshal(h.Data, &j); err != nil {
+			http.Error(w, `{"status":"error","error":"invalid json"}`, http.StatusBadRequest)
+			return
+		}
+		if j.Path == "" {
+			http.Error(w, `{"status":"error","error":"词库路径不能为空"}`, http.StatusBadRequest)
+			return
+		}
+		if !checkDicPath(j.Path) {
+			http.Error(w, `{"status":"error","error":"词库路径不合法"}`, http.StatusBadRequest)
+			return
+		}
+		content, err := utils.NewFileQueue(j.Path).ReadFromFile()
+		if err != nil {
+			http.Error(w, `{"status":"error","error":"词库读取失败: `+err.Error()+`"}`, http.StatusBadRequest)
+			return
+		}
+		jsonResp, _ := json.Marshal(map[string]any{"content": content})
+		w.Write(jsonResp)
+		return
+
+	case "dic_save_content":
+		var j struct {
+			Path    string `json:"path"`
+			Content string `json:"content"`
+		}
+		if err := json.Unmarshal(h.Data, &j); err != nil {
+			http.Error(w, `{"status":"error","error":"invalid json"}`, http.StatusBadRequest)
+			return
+		}
+		if j.Path == "" {
+			http.Error(w, `{"status":"error","error":"词库路径不能为空"}`, http.StatusBadRequest)
+			return
+		}
+		if !checkDicPath(j.Path) {
+			http.Error(w, `{"status":"error","error":"词库路径不合法"}`, http.StatusBadRequest)
+			return
+		}
+		utils.NewFileQueue(j.Path).WriteToFile(j.Content)
+		jsonResp, _ := json.Marshal(map[string]any{"status": "ok"})
+		w.Write(jsonResp)
+		return
+
+	case "file_list":
+		// 文件管理：列出指定目录（应用目录内）的直接子项（文件夹 + 文件），逐层浏览
+		var j struct {
+			Path string `json:"path"` // 当前目录，相对应用目录，空表示应用目录根
+		}
+		_ = json.Unmarshal(h.Data, &j)
+		dirPath := strings.TrimSpace(j.Path)
+		root := utils.GetAppDir()
+		if dirPath != "" {
+			if !checkFilePath(dirPath) {
+				http.Error(w, `{"status":"error","error":"目录路径不合法"}`, http.StatusBadRequest)
+				return
+			}
+			root = filepath.Join(utils.GetAppDir(), filepath.FromSlash(dirPath))
+		}
+		items, err := os.ReadDir(root)
+		if err != nil {
+			http.Error(w, `{"status":"error","error":"读取目录失败: `+err.Error()+`"}`, http.StatusBadRequest)
+			return
+		}
+		type fileEntry struct {
+			Name  string `json:"name"`
+			Path  string `json:"path"`
+			Dir   bool   `json:"dir"`
+			Size  int64  `json:"size"`
+			Mtime int64  `json:"mtime"`
+		}
+		entries := make([]fileEntry, 0, len(items))
+		for _, it := range items {
+			name := it.Name()
+			info, ierr := it.Info()
+			if ierr != nil {
+				continue
+			}
+			entries = append(entries, fileEntry{
+				Name:  name,
+				Path:  filepath.ToSlash(filepath.Join(dirPath, name)),
+				Dir:   it.IsDir(),
+				Size:  info.Size(),
+				Mtime: info.ModTime().Unix(),
+			})
+		}
+		// 文件夹在前，文件夹/文件各自按名称排序
+		sort.Slice(entries, func(i, j int) bool {
+			if entries[i].Dir != entries[j].Dir {
+				return entries[i].Dir
+			}
+			return strings.ToLower(entries[i].Name) < strings.ToLower(entries[j].Name)
+		})
+		jsonResp, _ := json.Marshal(map[string]any{
+			"entries": entries,
+			"root":    filepath.Base(utils.GetAppDir()), // 应用数据目录名，供前端面包屑根节点显示真实目录名
+		})
+		w.Write(jsonResp)
+		return
+
+	case "file_read":
+		// 读取应用目录下任意文件（.n 词库请使用 dic_get_content）
+		var j struct {
+			Path string `json:"path"`
+		}
+		if err := json.Unmarshal(h.Data, &j); err != nil {
+			http.Error(w, `{"status":"error","error":"invalid json"}`, http.StatusBadRequest)
+			return
+		}
+		if !checkFilePath(j.Path) {
+			http.Error(w, `{"status":"error","error":"文件路径不合法"}`, http.StatusBadRequest)
+			return
+		}
+		full := filepath.Join(utils.GetAppDir(), filepath.FromSlash(j.Path))
+		data, err := os.ReadFile(full)
+		if err != nil {
+			http.Error(w, `{"status":"error","error":"文件读取失败: `+err.Error()+`"}`, http.StatusBadRequest)
+			return
+		}
+		// 检测二进制：含 NUL 字节或非 UTF-8 文本，避免前端直接编辑损坏内容
+		binary := bytes.IndexByte(data, 0) >= 0 || !utf8.Valid(data)
+		resp := map[string]any{
+			"path":   j.Path,
+			"size":   int64(len(data)),
+			"binary": binary,
+		}
+		if !binary {
+			resp["content"] = string(data)
+		}
+		jsonResp, _ := json.Marshal(resp)
+		w.Write(jsonResp)
+		return
+
+	case "file_write":
+		// 写入应用目录下任意文件（.n 词库请使用 dic_save_content）
+		var j struct {
+			Path    string `json:"path"`
+			Content string `json:"content"`
+		}
+		if err := json.Unmarshal(h.Data, &j); err != nil {
+			http.Error(w, `{"status":"error","error":"invalid json"}`, http.StatusBadRequest)
+			return
+		}
+		if !checkFilePath(j.Path) {
+			http.Error(w, `{"status":"error","error":"文件路径不合法"}`, http.StatusBadRequest)
+			return
+		}
+		full := filepath.Join(utils.GetAppDir(), filepath.FromSlash(j.Path))
+		if err := os.MkdirAll(filepath.Dir(full), 0o755); err != nil {
+			http.Error(w, `{"status":"error","error":"创建目录失败: `+err.Error()+`"}`, http.StatusBadRequest)
+			return
+		}
+		if err := os.WriteFile(full, []byte(j.Content), 0o644); err != nil {
+			http.Error(w, `{"status":"error","error":"文件写入失败: `+err.Error()+`"}`, http.StatusBadRequest)
+			return
+		}
+		jsonResp, _ := json.Marshal(map[string]any{"status": "ok"})
+		w.Write(jsonResp)
+		return
+
+	case "get_dic_config":
+		// 读取词库调试运行配置（system.ini 的 [词库调试] 节）
+		jsonResp, _ := json.Marshal(loadDicDebugDefaults())
+		w.Write(jsonResp)
+		return
+
+	case "save_dic_config":
+		// 保存词库调试运行配置到 system.ini 的 [词库调试] 节
+		var cfg map[string]any
+		if err := json.Unmarshal(h.Data, &cfg); err != nil {
+			http.Error(w, `{"status":"error","error":"invalid json"}`, http.StatusBadRequest)
+			return
+		}
+		file := utils.NewFile()
+		file.SetPath("private/system/system.ini")
+		iniFile, err := file.LoadIni()
+		if err != nil {
+			http.Error(w, `{"status":"error","error":"读取 system.ini 失败"}`, http.StatusInternalServerError)
+			return
+		}
+		sec := iniFile.Section("词库调试")
+		if v, ok := cfg["path"].(string); ok && v != "" {
+			sec.Key("默认词库").SetValue(v)
+		}
+		if v, ok := cfg["trigger"].(string); ok {
+			sec.Key("触发文本").SetValue(v)
+		}
+		if v, ok := cfg["timeout"].(float64); ok {
+			sec.Key("超时").SetValue(strconv.Itoa(int(v)))
+		}
+		if v, ok := cfg["historyMax"].(float64); ok && v > 0 {
+			sec.Key("历史记录数量").SetValue(strconv.Itoa(int(v)))
+		}
+		if v, ok := cfg["saveRun"].(bool); ok {
+			sec.Key("保存运行").SetValue(strconv.FormatBool(v))
+		}
+		if v, ok := cfg["autoSave"].(bool); ok {
+			sec.Key("实时保存").SetValue(strconv.FormatBool(v))
+		}
+		if g, ok := cfg["g"].([]any); ok {
+			var items []string
+			for _, it := range g {
+				if s, ok := it.(string); ok {
+					items = append(items, s)
+				}
+			}
+			// 值可含任意换行：整体 JSON 编码存储（ini 值保持单行，避免按行拆分时被截断）
+			if b, err := json.Marshal(items); err == nil {
+				sec.Key("全局变量").SetValue(string(b))
+			}
+		}
+		if err := file.SaveIni(iniFile); err != nil {
+			http.Error(w, `{"status":"error","error":"写入 system.ini 失败: `+err.Error()+`"}`, http.StatusInternalServerError)
+			return
+		}
+		jsonResp, _ := json.Marshal(map[string]any{"status": "ok"})
+		w.Write(jsonResp)
+		return
+
+	case "dic_debug_run":
+		var j struct {
+			Path    string            `json:"path"`
+			Trigger string            `json:"trigger"`
+			G       map[string]string `json:"g"`
+			// 超时（秒），0 表示不限时；超时后强行打断词库执行
+			Timeout int `json:"timeout"`
+		}
+		if err := json.Unmarshal(h.Data, &j); err != nil {
+			http.Error(w, `{"status":"error","error":"invalid json"}`, http.StatusBadRequest)
+			return
+		}
+		if j.Path == "" {
+			http.Error(w, `{"status":"error","error":"词库路径不能为空"}`, http.StatusBadRequest)
+			return
+		}
+		if !checkDicPath(j.Path) {
+			http.Error(w, `{"status":"error","error":"词库路径不合法"}`, http.StatusBadRequest)
+			return
+		}
+		dic, err := dic_dto.RunDic(j.Path)
+		if err != nil {
+			http.Error(w, `{"status":"error","error":"词库加载失败: `+err.Error()+`"}`, http.StatusBadRequest)
+			return
+		}
+		defer dic.Close()
+
+		// 注入词库路径，便于错误日志显示来源（顶层词库默认没有 _词库路径_）
+		dic.Val.P.Set("_词库路径_", j.Path)
+
+		// 注入全局变量
+		for k, v := range j.G {
+			dic.Val.G.Set(k, v)
+		}
+
+		var output string
+		var timedOut bool
+		if j.Timeout > 0 {
+			output, timedOut = dic_api.Api.DicRunTimeout(dic, j.Trigger, time.Duration(j.Timeout)*time.Second)
+		} else {
+			output = dic_api.Api.DicRun(dic, j.Trigger)
+		}
+
+		// 从输出中提取错误行号（格式：funcName(line:N)：error 或 JS错误(line:N)：error）
+		var errorLine int
+		if re := regexp.MustCompile(`\(line:(\d+)\)`); re != nil {
+			if m := re.FindStringSubmatch(output); len(m) >= 2 {
+				errorLine, _ = strconv.Atoi(m[1])
+			}
+		}
+
+		// 收集运行后的局部/全局变量（值 + 类型，类实例携带成员变量供前端折叠）
+		pVars := make(map[string]any)
+		for k, v := range dic.Val.P.GetAll() {
+			pVars[k] = varDebugItem(v)
+		}
+		gVars := make(map[string]any)
+		for k, v := range dic.Val.G.GetAll() {
+			gVars[k] = varDebugItem(v)
+		}
+
+		resp := map[string]any{
+			"output":   output,
+			"timedOut": timedOut,
+			"segments": parseOutputSegments(output),
+			"vars": map[string]any{
+				"P": pVars,
+				"G": gVars,
+			},
+		}
+		if errorLine > 0 {
+			resp["errorLine"] = errorLine
+		}
+		jsonResp, _ := json.Marshal(resp)
+		w.Write(jsonResp)
+		return
+
+	case "get_server_logs":
+		var j struct {
+			Limit int `json:"limit"`
+			Skip  int `json:"skip"`
+		}
+		_ = json.Unmarshal(h.Data, &j)
+		logs, hasMore := readServerLogs(j.Limit, j.Skip)
+		jsonResp, _ := json.Marshal(map[string]any{"logs": logs, "hasMore": hasMore})
+		w.Write(jsonResp)
+		return
+
+	case "clear_server_logs":
+		ClearServerLogs()
+		jsonResp, _ := json.Marshal(map[string]any{"ok": true})
+		w.Write(jsonResp)
+		return
+
+	case "get_sys_status":
+		data, err := getSysStatus()
+		if err != nil {
+			debugLog.Errorf("[OPUI] get_sys_status failed: %v", err)
+			http.Error(w, `{"status":"error","error":"collect failed"}`, http.StatusInternalServerError)
+			return
+		}
+		if r, err := json.Marshal(data); err == nil {
+			w.Write(r)
+		} else {
+			http.Error(w, `{"status":"error","error":"marshal failed"}`, http.StatusInternalServerError)
+		}
+		return
+
+	case "check_update":
+		jsonResp, _ := json.Marshal(checkUpdate())
+		w.Write(jsonResp)
+		return
+
+	case "online_update":
+		go func() {
+			time.Sleep(500 * time.Millisecond) // 等待响应发送完毕
+			if err := doOnlineUpdate(); err != nil {
+				fmt.Println("online_update failed:", err)
+			}
+		}()
+		w.Write([]byte(`{"status":"ok","msg":"正在下载更新，完成后将自动重启"}`))
+		return
+
+	case "security_info":
+		info := SecurityInfo{
+			ServerStart: serverStartTime.Format("2006-01-02 15:04:05"),
+			Uptime:      formatDuration(time.Since(serverStartTime)),
+		}
+
+		// 登录事件
+		loginEventsMu.Lock()
+		info.LoginEvents = make([]LoginEvent, len(loginEvents))
+		copy(info.LoginEvents, loginEvents)
+		loginEventsMu.Unlock()
+
+		// 在线列表 = OPUI 已连接用户
+		rawClients := GetOpuiOnlineClients()
+		info.OnlineList = make([]OnlineItem, 0, len(rawClients))
+		for _, c := range rawClients {
+			item := OnlineItem{}
+			if v, ok := c["name"].(string); ok {
+				item.Name = v
+			}
+			if v, ok := c["type"].(string); ok {
+				item.Type = v
+			}
+			if v, ok := c["online"].(bool); ok {
+				item.Online = v
+			}
+			if v, ok := c["detail"].(string); ok {
+				item.Detail = v
+			}
+			info.OnlineList = append(info.OnlineList, item)
+		}
+
+		if r, err := json.Marshal(info); err == nil {
+			w.Write(r)
+		} else {
+			http.Error(w, `{"status":"error","error":"marshal failed"}`, http.StatusInternalServerError)
+		}
+		return
+
+	case "ip_blacklist_list":
+		ipBlacklistMu.Lock()
+		list := make([]string, 0, len(ipBlacklist))
+		for ip := range ipBlacklist {
+			list = append(list, ip)
+		}
+		ipBlacklistMu.Unlock()
+		r, _ := json.Marshal(list)
+		w.Write(r)
+		return
+
+	case "ip_blacklist_add":
+		var j struct {
+			IP string `json:"ip"`
+		}
+		if err := json.Unmarshal(h.Data, &j); err != nil || j.IP == "" {
+			http.Error(w, `{"status":"error","error":"invalid ip"}`, http.StatusBadRequest)
+			return
+		}
+		ipBlacklistMu.Lock()
+		ipBlacklist[strings.TrimSpace(j.IP)] = true
+		ipBlacklistMu.Unlock()
+		saveIPBlacklist()
+		// 广播安全事件
+		notifyData, _ := json.Marshal(map[string]string{
+			"type":   "ip_blacklist",
+			"action": "add",
+			"ip":     j.IP,
+		})
+		broadcastOpuiNotify(notifyData)
+		w.Write([]byte(`{"status":"ok"}`))
+		return
+
+	case "ip_blacklist_remove":
+		var j struct {
+			IP string `json:"ip"`
+		}
+		if err := json.Unmarshal(h.Data, &j); err != nil || j.IP == "" {
+			http.Error(w, `{"status":"error","error":"invalid ip"}`, http.StatusBadRequest)
+			return
+		}
+		ipBlacklistMu.Lock()
+		delete(ipBlacklist, strings.TrimSpace(j.IP))
+		ipBlacklistMu.Unlock()
+		saveIPBlacklist()
+		notifyData, _ := json.Marshal(map[string]string{
+			"type":   "ip_blacklist",
+			"action": "remove",
+			"ip":     j.IP,
+		})
+		broadcastOpuiNotify(notifyData)
+		w.Write([]byte(`{"status":"ok"}`))
+		return
+
+	case "firewall_get_config":
+		ff := utils.NewFileQueue(dto.CONFIG_SYSTEM_PATH)
+		cf, err := ff.LoadIni()
+		if err != nil {
+			w.Write([]byte(`{"enabled":false,"dic_path":""}`))
+			return
+		}
+		fwSec := cf.Section("防火墙")
+		var enabled bool
+		var dicPath string
+		if fwSec != nil {
+			enabled = fwSec.Key("启用").MustBool(false)
+			dicPath = fwSec.Key("词库").String()
+		}
+		r, _ := json.Marshal(map[string]any{
+			"enabled":  enabled,
+			"dic_path": dicPath,
+		})
+		w.Write(r)
+		return
+
+	case "firewall_save_config":
+		var j struct {
+			Enabled bool   `json:"enabled"`
+			DicPath string `json:"dic_path"`
+		}
+		if err := json.Unmarshal(h.Data, &j); err != nil {
+			http.Error(w, `{"status":"error","error":"invalid json"}`, http.StatusBadRequest)
+			return
+		}
+		ff := utils.NewFileQueue(dto.CONFIG_SYSTEM_PATH)
+		cf, err := ff.LoadIni()
+		if err != nil {
+			http.Error(w, `{"status":"error","error":"config load failed"}`, http.StatusInternalServerError)
+			return
+		}
+		cf.Section("防火墙").Key("启用").SetValue(strconv.FormatBool(j.Enabled))
+		cf.Section("防火墙").Key("词库").SetValue(j.DicPath)
+		ff.SaveIni(cf)
+		w.Write([]byte(`{"status":"ok"}`))
+		return
+
+	default:
+		http.Error(w, `{"status":"error","error":"invalid type"}`, http.StatusBadRequest)
+		return
 	}
 }

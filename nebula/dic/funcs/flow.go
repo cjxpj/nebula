@@ -29,6 +29,8 @@ func stopProgram(d *dto.DicInputs) (any, error) {
 	if d.Output != nil {
 		fmt.Print(d.Output.Get())
 	}
+	// 结束程序：打印输出后直接退出整个进程（wasm 环境下无操作）
+	exitProcess()
 	return "", errors.New("stop")
 }
 
