@@ -1100,6 +1100,40 @@ func (fq *FileQueue) WriteFileByte(data []byte) {
 	}
 }
 
+// escapeFileKeyValue 转义键值中的换行、回车和反斜杠，保证值只占一行
+func escapeFileKeyValue(s string) string {
+	s = strings.ReplaceAll(s, "\\", "\\\\")
+	s = strings.ReplaceAll(s, "\r", "\\r")
+	s = strings.ReplaceAll(s, "\n", "\\n")
+	return s
+}
+
+// unescapeFileKeyValue 反转义 escapeFileKeyValue 的结果
+func unescapeFileKeyValue(s string) string {
+	var b strings.Builder
+	b.Grow(len(s))
+	for i := 0; i < len(s); i++ {
+		if s[i] != '\\' || i+1 >= len(s) {
+			b.WriteByte(s[i])
+			continue
+		}
+		switch s[i+1] {
+		case 'n':
+			b.WriteByte('\n')
+			i++
+		case 'r':
+			b.WriteByte('\r')
+			i++
+		case '\\':
+			b.WriteByte('\\')
+			i++
+		default:
+			b.WriteByte(s[i])
+		}
+	}
+	return b.String()
+}
+
 // ReadFileKeyList 从文件中读取所有键值对并返回一个 []map[string]string
 func (fq *FileQueue) ReadFileKeyList() ([]map[string]string, error) {
 	data, err := fq.ReadFromFile()
@@ -1125,7 +1159,7 @@ func (fq *FileQueue) ReadFileKeyList() ([]map[string]string, error) {
 		if len(parts) == 2 {
 			entry := map[string]string{
 				"key":  parts[0],
-				"data": parts[1],
+				"data": unescapeFileKeyValue(parts[1]),
 			}
 			result = append(result, entry)
 		}
@@ -1155,7 +1189,7 @@ func (fq *FileQueue) ReadFileKey(key string) (string, error) {
 		}
 		parts := strings.SplitN(line, "=", 2)
 		if len(parts) == 2 && parts[0] == key {
-			return parts[1], nil
+			return unescapeFileKeyValue(parts[1]), nil
 		}
 	}
 
@@ -1181,13 +1215,13 @@ func (fq *FileQueue) WriteFileKey(key, value string) error {
 	for i, line := range lines {
 		parts := strings.SplitN(line, "=", 2)
 		if len(parts) == 2 && parts[0] == key {
-			lines[i] = fmt.Sprintf("%s=%s", key, value)
+			lines[i] = fmt.Sprintf("%s=%s", key, escapeFileKeyValue(value))
 			found = true
 			break
 		}
 	}
 	if !found {
-		lines = append(lines, fmt.Sprintf("%s=%s", key, value))
+		lines = append(lines, fmt.Sprintf("%s=%s", key, escapeFileKeyValue(value)))
 	}
 
 	// 将第一行更新为当前时间
