@@ -86,10 +86,26 @@ func (r *DicEntry) Set_v(v *dto.Val) *DicEntry {
 	return r
 }
 
-// 清空词库函数（保留内部/特殊，仅清空函数类）
+// 清空词库函数（保留内部/特殊，仅清空函数类）。
+// 复制一份 DicFuncs 并替换为独立 BuildValue，避免修改父级共享数据。
 func (r *DicEntry) ClearDicFuncs() *DicEntry {
-	if r.Dic.DicFuncs != nil {
-		delete(r.Dic.DicFuncs, "函数")
+	if r.Dic == nil || r.Dic.DicFuncs == nil {
+		return r
+	}
+	funcs := make(map[string][]*dto.BuildDic, len(r.Dic.DicFuncs))
+	for k, v := range r.Dic.DicFuncs {
+		if k != "函数" {
+			funcs[k] = v
+		}
+	}
+	r.Dic = &dto.BuildValue{
+		Head:         r.Dic.Head,
+		HeadLineNums: r.Dic.HeadLineNums,
+		Dic:          r.Dic.Dic,
+		DicFuncs:     funcs,
+		Class:        r.Dic.Class,
+		MyFunc:       r.Dic.MyFunc,
+		BotImports:   r.Dic.BotImports,
 	}
 	return r
 }

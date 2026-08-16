@@ -70,6 +70,15 @@ func (m *dicImpl) DicRunLine(r *dic_dto.DicEntry, txt []string) string {
 	return r.Output.Get()
 }
 
+// closeChildDic 清理循环/遍历/判断块子执行上下文。
+// 这些块通过 SetV/SetDic_v 继承了父级的 Val 与 Dic，若调用 Close() 会一并回收
+// 共享的父级变量与函数表，导致块结束后 $函数$ 无法解析、变量丢失。
+func closeChildDic(runDic *dic_dto.DicEntry) {
+	runDic.Output.Clear()
+	runDic.Val = nil
+	runDic.Sys_v = nil
+}
+
 // handleLoopControl 统一处理循环控制状态（停止、跳转）检查。
 // 返回 shouldBreak（跳出当前循环）和 shouldReturn（直接返回 nil）。
 // loopType: "ForEach" 或 "For"
@@ -77,31 +86,31 @@ func handleLoopControl(r, runDic *dic_dto.DicEntry, loopType string) (shouldBrea
 	switch loopType {
 	case "ForEach":
 		if runDic.Sys_v.Stop.Load() {
-			runDic.Close()
+			closeChildDic(runDic)
 			r.Sys_v.Stop.Store(true)
 			return true, false
 		}
 		if !runDic.Sys_v.ForEach.IsFor && runDic.Sys_v.Stop.Load() {
-			runDic.Close()
+			closeChildDic(runDic)
 			return false, true
 		}
 		if runDic.Sys_v.ForEach.Jump {
-			runDic.Close()
+			closeChildDic(runDic)
 			r.Sys_v.ForEach.Jump = false
 			return true, false
 		}
 	case "For":
 		if !runDic.Sys_v.For.IsFor && runDic.Sys_v.Stop.Load() {
-			runDic.Close()
+			closeChildDic(runDic)
 			return false, true
 		}
 		if runDic.Sys_v.For.Jump {
-			runDic.Close()
+			closeChildDic(runDic)
 			r.Sys_v.For.Jump = false
 			return true, false
 		}
 		if runDic.Sys_v.Stop.Load() {
-			runDic.Close()
+			closeChildDic(runDic)
 			r.Sys_v.Stop.Store(true)
 			return false, true
 		}
@@ -648,28 +657,28 @@ func Entry(r *dic_dto.DicEntry, txt []string, funcV *dic_dto.DicFunc) error {
 
 						if r.Sys_v.For.IsFor && RunDic.Sys_v.For.IsFor && RunDic.Sys_v.For.Jump {
 							r.Sys_v.For.Jump = true
-							RunDic.Close()
+							closeChildDic(RunDic)
 							return nil
 						}
 
 						if r.Sys_v.ForEach.IsFor && RunDic.Sys_v.ForEach.IsFor && RunDic.Sys_v.ForEach.Jump {
 							r.Sys_v.ForEach.Jump = true
-							RunDic.Close()
+							closeChildDic(RunDic)
 							return nil
 						}
 
 						if !r.Sys_v.IfFunc.IsIf && RunDic.Sys_v.Stop.Load() {
-							RunDic.Close()
+							closeChildDic(RunDic)
 							return nil
 						}
 
 						if RunDic.Sys_v.IfFunc.Jump {
-							RunDic.Close()
+							closeChildDic(RunDic)
 							r.Sys_v.IfFunc.Jump = false
 							break
 						}
 						if RunDic.Sys_v.Stop.Load() {
-							RunDic.Close()
+							closeChildDic(RunDic)
 							r.Sys_v.Stop.Store(true)
 							return nil
 						}

@@ -3,6 +3,7 @@ package funcs
 import (
 	"path/filepath"
 	"strconv"
+	"strings"
 
 	"github.com/cjxpj/nebula/dto"
 	"github.com/cjxpj/nebula/utils"
@@ -94,12 +95,18 @@ func readStringFileLinesCount(d *dto.DicInputs) (any, error) {
 
 func writeKeyStringFile(d *dto.DicInputs) (any, error) {
 	path := "database/" + d.Inputs.String(1)
+	if strings.EqualFold(filepath.Ext(path), ".json") {
+		return writeJsonKeyFile(d, path)
+	}
 	utils.NewFileQueue(path).WriteFileKey(d.Inputs.String(2), d.Inputs.String(3))
 	return "", nil
 }
 
 func readKeyStringFile(d *dto.DicInputs) (any, error) {
 	path := "database/" + d.Inputs.String(1)
+	if strings.EqualFold(filepath.Ext(path), ".json") {
+		return readJsonKeyFile(d, path)
+	}
 	file := utils.NewFileQueue(path)
 	if d.Inputs.LenOk(1) {
 		data, err := file.ReadFileKeyList()
@@ -118,6 +125,87 @@ func readKeyStringFile(d *dto.DicInputs) (any, error) {
 		return d.Inputs.String(3), nil
 	}
 	return data, nil
+}
+
+// splitJsonPath 将 . 分隔的键路径拆分为路径段，过滤空段
+func splitJsonPath(key string) []string {
+	parts := strings.Split(key, ".")
+	path := make([]string, 0, len(parts))
+	for _, p := range parts {
+		if p != "" {
+			path = append(path, p)
+		}
+	}
+	return path
+}
+
+// writeJsonKeyFile 写入 JSON 键值文件，键以 . 分隔多层路径，值作为字符串写入
+func writeJsonKeyFile(d *dto.DicInputs, path string) (any, error) {
+	file := utils.NewFileQueue(path)
+
+	// 读取现有 JSON，不存在或解析失败时初始化为空对象
+	var obj any = map[string]any{}
+	if data, err := file.ReadFile(); err == nil && strings.TrimSpace(data) != "" {
+		if err := json.Unmarshal([]byte(data), &obj); err != nil {
+			obj = map[string]any{}
+		}
+	}
+
+	keys := splitJsonPath(d.Inputs.String(2))
+	obj = JsonSetValue(obj, keys, d.Inputs.String(3), true)
+
+	b, err := json.Marshal(obj)
+	if err != nil {
+		return nil, err
+	}
+	file.WriteToFile(string(b))
+	return "", nil
+}
+
+// readJsonKeyFile 读取 JSON 键值文件，键以 . 分隔多层路径
+func readJsonKeyFile(d *dto.DicInputs, path string) (any, error) {
+	file := utils.NewFileQueue(path)
+
+	// 无 key（仅文件路径）：返回整个 JSON 内容
+	if d.Inputs.LenOk(1) {
+		data, err := file.ReadFile()
+		if err != nil {
+			return "", nil
+		}
+		return data, nil
+	}
+
+	data, err := file.ReadFile()
+	if err != nil {
+		return d.Inputs.String(3), nil
+	}
+
+	var obj any
+	if err := json.Unmarshal([]byte(data), &obj); err != nil {
+		return d.Inputs.String(3), nil
+	}
+
+	cur := obj
+	for _, k := range splitJsonPath(d.Inputs.String(2)) {
+		switch v := cur.(type) {
+		case map[string]any:
+			if val, ok := v[k]; ok {
+				cur = val
+			} else {
+				return d.Inputs.String(3), nil
+			}
+		case []any:
+			idx, err := strconv.Atoi(k)
+			if err != nil || idx < 0 || idx >= len(v) {
+				return d.Inputs.String(3), nil
+			}
+			cur = v[idx]
+		default:
+			return d.Inputs.String(3), nil
+		}
+	}
+
+	return utils.AnyToString(cur), nil
 }
 
 // 文件夹列表

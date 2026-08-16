@@ -153,21 +153,6 @@ func NewDicInputsWithOutput(dic *BuildValue, v *DicVal, i *utils.DicInputs, outp
 	}
 }
 
-// 克隆
-func (v *BuildValue) Clone() *BuildValue {
-	funcs := make(map[string][]*BuildDic, len(v.DicFuncs))
-	for k, val := range v.DicFuncs {
-		funcs[k] = val
-	}
-	return &BuildValue{
-		Head:     v.Head,
-		Dic:      v.Dic,
-		DicFuncs: funcs,
-		Class:    v.Class,
-		MyFunc:   v.MyFunc,
-	}
-}
-
 // MergeFuncs 合并运行时注入函数（按类别追加），用于 FuncText 继承。
 func (v *BuildValue) MergeFuncs(fn map[string][]*BuildDic) {
 	if len(fn) == 0 {

@@ -215,7 +215,7 @@ func Funcs(d *dic_dto.DicFunc, dic_i *utils.DicInputs) (any, error) {
 				CloseTrigger().
 				SetGlobal_v(d.Val.G).
 				Set_v(funcv).
-				SetDic_v(d.Dic.Clone()).
+				SetDic_v(d.Dic).
 				WithRecursionDepth(d.RecursionDepth)
 			RunDic.ClearDicFuncs()
 
@@ -336,7 +336,7 @@ func newClassInstance(d *dic_dto.DicFunc, dic_i *utils.DicInputs) (any, error) {
 			CloseTrigger().
 			SetGlobal_v(d.Val.G).
 			Set_v(funcv).
-			SetDic_v(d.Dic.Clone()).
+			SetDic_v(d.Dic).
 			WithRecursionDepth(d.RecursionDepth)
 		RunDic.ClearDicFuncs()
 		d.Output.Add(dic_api.Api.DicRunLine(RunDic, str))
@@ -392,7 +392,7 @@ func runClassMethod(d *dic_dto.DicFunc, classData *dto.DicClass, methodArgs []st
 		CloseTrigger().
 		SetGlobal_v(d.Val.G).
 		Set_v(funcv).
-		SetDic_v(d.Dic.Clone()).
+		SetDic_v(d.Dic).
 		WithRecursionDepth(d.RecursionDepth)
 	RunDic.ClearDicFuncs()
 	return dic_api.Api.DicRunLine(RunDic, str), true
