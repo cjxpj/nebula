@@ -3922,20 +3922,88 @@ func opuiHandleApi(w http.ResponseWriter, r *http.Request) {
 		for k, v := range dic.Val.G.GetAll() {
 			gVars[k] = varDebugItem(v)
 		}
+		gvVars := make(map[string]any)
+		for k, v := range dto.GV.GetAll() {
+			// 系统内部线程变量（_ 前缀）不纳入监控，避免与用户线程变量混淆
+			if strings.HasPrefix(k, "_") {
+				continue
+			}
+			gvVars[k] = varDebugItem(v)
+		}
 
 		resp := map[string]any{
 			"output":   output,
 			"timedOut": timedOut,
 			"segments": parseOutputSegments(output),
 			"vars": map[string]any{
-				"P": pVars,
-				"G": gVars,
+				"P":  pVars,
+				"G":  gVars,
+				"GV": gvVars,
 			},
 		}
 		if errorLine > 0 {
 			resp["errorLine"] = errorLine
 		}
 		jsonResp, _ := json.Marshal(resp)
+		w.Write(jsonResp)
+		return
+
+	case "get_thread_vars":
+		all := dto.GV.GetAll()
+		keys := make([]string, 0, len(all))
+		for k := range all {
+			if strings.HasPrefix(k, "_") {
+				continue
+			}
+			keys = append(keys, k)
+		}
+		sort.Strings(keys)
+		items := make([]map[string]any, 0, len(keys))
+		for _, k := range keys {
+			item := varDebugItem(all[k])
+			item["key"] = k
+			items = append(items, item)
+		}
+		r, _ := json.Marshal(map[string]any{"list": items})
+		w.Write(r)
+		return
+
+	case "set_thread_var":
+		var j struct {
+			Key   string `json:"key"`
+			Value string `json:"value"`
+		}
+		if err := json.Unmarshal(h.Data, &j); err != nil {
+			http.Error(w, `{"status":"error","error":"invalid json"}`, http.StatusBadRequest)
+			return
+		}
+		if j.Key == "" {
+			http.Error(w, `{"status":"error","error":"线程变量键不能为空"}`, http.StatusBadRequest)
+			return
+		}
+		dto.SetThreadVar(j.Key, j.Value)
+		w.Write([]byte(`{"status":"ok"}`))
+		return
+
+	case "del_thread_var":
+		var j struct {
+			Key string `json:"key"`
+		}
+		if err := json.Unmarshal(h.Data, &j); err != nil {
+			http.Error(w, `{"status":"error","error":"invalid json"}`, http.StatusBadRequest)
+			return
+		}
+		if j.Key == "" {
+			http.Error(w, `{"status":"error","error":"线程变量键不能为空"}`, http.StatusBadRequest)
+			return
+		}
+		dto.DeleteThreadVar(j.Key)
+		w.Write([]byte(`{"status":"ok"}`))
+		return
+
+	case "dic_thread_vars_clear":
+		dto.ClearThreadVars()
+		jsonResp, _ := json.Marshal(map[string]any{"ok": true})
 		w.Write(jsonResp)
 		return
 

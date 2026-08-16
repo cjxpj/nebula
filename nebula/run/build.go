@@ -496,10 +496,15 @@ func BuildDic(dicPath, text string) *dto.BuildValue {
 		myFunc map[string]dto.DicFunc = make(map[string]dto.DicFunc)
 	)
 
-	// 头部区域持续到首个正文行（非注释、非 #引入=、非空行）出现为止。
-	// 这样函数/触发词直接开头的文件（如被引入的函数文件）也能正确解析，
-	// 而不会被误判为头部文本。
-	runhead = true
+	// 头部区域：文件开头到第一个空行之间为头部（#引入= 与初始化语句），
+	// 空行之后为正文；无空行分隔时文件直接按正文解析（如被引入的 [函数] 文件）。
+	runhead = false
+	for i, l := range lines {
+		if strings.TrimSpace(l) == "" {
+			runhead = i > 0
+			break
+		}
+	}
 
 	for dic_i, line := range lines {
 		if line != "" {
@@ -612,12 +617,12 @@ func BuildDic(dicPath, text string) *dto.BuildValue {
 			}
 
 			if line == "" {
-				// 空行仅作为头部与正文之间的分隔，跳过；头部状态保持到首个正文行。
+				runhead = false
 				continue
 			}
-
-			// 首个正文行（非注释、非 #引入=、非空行）：结束头部解析，转入正文。
-			runhead = false
+			runheadtext = append(runheadtext, line)
+			runheadLineNums = append(runheadLineNums, dic_i+1)
+			continue
 		}
 
 		// 如果检测词条不等于空

@@ -59,6 +59,32 @@ func (v *Val) Close() {
 // 线程变量
 var GV *Val = NewVal()
 
+// ClearThreadVars 清空线程变量，保留系统内部变量（键名以 _ 开头）
+func ClearThreadVars() {
+	GV.obj.Range(func(key, _ any) bool {
+		if k, ok := key.(string); ok && !strings.HasPrefix(k, "_") {
+			GV.obj.Delete(key)
+		}
+		return true
+	})
+}
+
+// SetThreadVar 设置线程变量（键名以 _ 开头为系统内部变量，不允许修改）
+func SetThreadVar(key, val string) {
+	if strings.HasPrefix(key, "_") {
+		return
+	}
+	GV.Set(key, val)
+}
+
+// DeleteThreadVar 删除指定线程变量（键名以 _ 开头为系统内部变量，不允许删除）
+func DeleteThreadVar(key string) {
+	if strings.HasPrefix(key, "_") {
+		return
+	}
+	GV.obj.Delete(key)
+}
+
 // NewVal 初始化 Val 对象
 func NewVal() *Val {
 	return &Val{}
