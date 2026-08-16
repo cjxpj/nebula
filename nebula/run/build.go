@@ -305,8 +305,8 @@ func parseTriggerPrefix(line string) (category, class, rest string) {
 	}
 	tag := line[1:end]
 	rest = line[end+1:]
-	if i := strings.Index(tag, ":"); i >= 0 {
-		category, class = tag[:i], tag[i+1:]
+	if before, after, ok := strings.Cut(tag, ":"); ok {
+		category, class = before, after
 	} else {
 		category = tag
 	}
