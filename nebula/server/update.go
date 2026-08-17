@@ -1,6 +1,7 @@
 package dic_server
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -11,6 +12,7 @@ import (
 	"runtime"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/cjxpj/nebula/appfiles"
@@ -61,7 +63,8 @@ func fetchReleaseWithPlatformBinary(client *http.Client, url string) (tag, htmlU
 		return
 	}
 	notes = body
-	downURL, _ = pickBinaryForPlatform(assets)
+	var downOK bool
+	downURL, downOK = pickBinaryForPlatform(assets)
 
 	// Gitee 接口不返回 html_url，按源补下载页地址
 	if htmlURL == "" {
@@ -71,7 +74,7 @@ func fetchReleaseWithPlatformBinary(client *http.Client, url string) (tag, htmlU
 			htmlURL = "https://github.com/cjxpj/nebula/releases"
 		}
 	}
-	ok = true
+	ok = downOK
 	return
 }
 
@@ -130,27 +133,194 @@ func init() {
 	}
 }
 
-// progressWriter 下载进度写入器，每 10% 回调一次移动端通知栏进度
-type progressWriter struct {
+// UpdateProgress 在线更新下载进度（返回给前端 / 通过 WS 推送）
+type UpdateProgress struct {
+	Status     string `json:"status"`     // idle / downloading / paused / completed / failed / installing
+	Total      int64  `json:"total"`      // 文件总大小，0 表示未知
+	Downloaded int64  `json:"downloaded"` // 已下载字节数
+	Percent    int    `json:"percent"`    // 0-100
+	Error      string `json:"error"`      // 失败原因
+}
+
+// updateManager 在线更新下载状态（单例，支持暂停/续传/断线重连）
+type updateManager struct {
+	mu      sync.Mutex
+	status  string
+	downURL string
+	tag     string
 	total   int64
-	written int64
-	lastPct int
+	done    int64
+	errMsg  string
+	tmpFile string
+	exePath string
+	cancel  context.CancelFunc
+	running bool
 }
 
-func (w *progressWriter) Write(p []byte) (int, error) {
-	n := len(p)
-	w.written += int64(n)
-	pct := int(w.written * 100 / w.total)
-	if pct != w.lastPct && pct%10 == 0 {
-		w.lastPct = pct
-		mobile.UpdateDownloadProgressFunc(w.written, w.total)
+var upd = &updateManager{status: "idle"}
+
+// getUpdateStatus 返回当前下载状态快照
+func getUpdateStatus() UpdateProgress {
+	upd.mu.Lock()
+	defer upd.mu.Unlock()
+	p := UpdateProgress{
+		Status:     upd.status,
+		Total:      upd.total,
+		Downloaded: upd.done,
+		Error:      upd.errMsg,
 	}
-	return n, nil
+	if upd.total > 0 {
+		p.Percent = int(upd.done * 100 / upd.total)
+	}
+	if p.Percent < 0 {
+		p.Percent = 0
+	}
+	if p.Percent > 100 {
+		p.Percent = 100
+	}
+	return p
 }
 
-// doOnlineUpdate 下载最新版本并自动重启
-func doOnlineUpdate() error {
-	// 1. 获取最新 release：优先 Gitee（国内快），失败回退 GitHub
+// broadcastUpdateProgress 通过 WS 推送下载进度给所有已连接的 OPUI 前端
+func broadcastUpdateProgress(p UpdateProgress) {
+	data, _ := json.Marshal(struct {
+		Type string `json:"type"`
+		UpdateProgress
+	}{"update_progress", p})
+	broadcastOpuiNotify(data)
+}
+
+// startOnlineUpdate 启动/继续在线更新下载（幂等：下载中则忽略，暂停则继续）
+func startOnlineUpdate() {
+	upd.mu.Lock()
+	if upd.running {
+		upd.mu.Unlock()
+		return
+	}
+	if upd.status == "completed" || upd.status == "installing" {
+		upd.mu.Unlock()
+		return
+	}
+	upd.running = true
+	ctx, cancel := context.WithCancel(context.Background())
+	upd.cancel = cancel
+	upd.mu.Unlock()
+
+	go func() {
+		defer func() {
+			upd.mu.Lock()
+			upd.running = false
+			upd.mu.Unlock()
+		}()
+		runUpdateDownload(ctx)
+	}()
+}
+
+// pauseOnlineUpdate 暂停下载（保留已下载的部分文件，可继续）
+func pauseOnlineUpdate() {
+	upd.mu.Lock()
+	if upd.status == "downloading" || upd.status == "preparing" {
+		upd.status = "paused"
+	}
+	cancel := upd.cancel
+	upd.mu.Unlock()
+	if cancel != nil {
+		cancel()
+	}
+	broadcastUpdateProgress(getUpdateStatus())
+}
+
+// runUpdateDownload 下载主流程：解析目标 → 循环下载（断线自动重连续传）→ 安装/替换重启
+func runUpdateDownload(ctx context.Context) {
+	// 1. 首次确定下载目标（release、临时文件、exe 路径），暂停续传时复用已有目标
+	upd.mu.Lock()
+	downURL, tmpFile, exePath := upd.downURL, upd.tmpFile, upd.exePath
+	upd.mu.Unlock()
+
+	if downURL == "" || tmpFile == "" {
+		if err := prepareUpdateTargets(); err != nil {
+			upd.mu.Lock()
+			upd.status = "failed"
+			upd.errMsg = err.Error()
+			upd.mu.Unlock()
+			broadcastUpdateProgress(getUpdateStatus())
+			return
+		}
+		upd.mu.Lock()
+		downURL, tmpFile, exePath = upd.downURL, upd.tmpFile, upd.exePath
+		upd.mu.Unlock()
+	}
+
+	// 2. 下载循环：网络中断时保留已下载部分，退避后自动重连续传
+	for {
+		if ctx.Err() != nil {
+			setUpdatePaused()
+			return
+		}
+		err := downloadToFile(ctx, downURL, tmpFile)
+		if err == nil {
+			break
+		}
+		if ctx.Err() != nil {
+			setUpdatePaused()
+			return
+		}
+		upd.mu.Lock()
+		upd.status = "downloading"
+		upd.errMsg = err.Error()
+		upd.mu.Unlock()
+		broadcastUpdateProgress(getUpdateStatus())
+
+		// 退避等待，期间可被暂停中断
+		select {
+		case <-ctx.Done():
+			setUpdatePaused()
+			return
+		case <-time.After(3 * time.Second):
+		}
+	}
+
+	// 3. 下载完成
+	upd.mu.Lock()
+	upd.status = "completed"
+	if upd.total > 0 {
+		upd.done = upd.total
+	}
+	upd.mu.Unlock()
+	broadcastUpdateProgress(getUpdateStatus())
+
+	// 4. 安装（Android）/ 替换重启（桌面端）
+	if runtime.GOOS == "android" && mobile.InstallApkFunc != nil {
+		upd.mu.Lock()
+		upd.status = "installing"
+		upd.mu.Unlock()
+		broadcastUpdateProgress(getUpdateStatus())
+		if err := mobile.InstallApkFunc(tmpFile); err != nil {
+			upd.mu.Lock()
+			upd.status = "failed"
+			upd.errMsg = err.Error()
+			upd.mu.Unlock()
+			broadcastUpdateProgress(getUpdateStatus())
+		}
+		return
+	}
+	upd.mu.Lock()
+	upd.status = "installing"
+	upd.mu.Unlock()
+	broadcastUpdateProgress(getUpdateStatus())
+	_ = replaceAndRestart(exePath, tmpFile)
+}
+
+func setUpdatePaused() {
+	upd.mu.Lock()
+	upd.status = "paused"
+	upd.errMsg = ""
+	upd.mu.Unlock()
+	broadcastUpdateProgress(getUpdateStatus())
+}
+
+// prepareUpdateTargets 解析最新版本与当前平台下载直链，确定临时文件与 exe 路径
+func prepareUpdateTargets() error {
 	client := &http.Client{Timeout: 30 * time.Second}
 	tag, downURL, ok := fetchPlatformBinary(client, "https://gitee.com/api/v5/repos/cjxpj/nebula/releases/latest")
 	if !ok {
@@ -159,16 +329,12 @@ func doOnlineUpdate() error {
 	if !ok {
 		return fmt.Errorf("无法获取最新版本或未找到当前平台的二进制文件")
 	}
-
-	// 2. 比较版本，确认有更新
 	latest := strings.TrimPrefix(tag, "v")
 	if compareVersions(latest, appfiles.Version) <= 0 {
 		return fmt.Errorf("当前已是最新版本 (%s)", appfiles.Version)
 	}
 
-	// 3. 确定下载路径（Android 直接放 NebulaData，桌面端放 exe 同级 NebulaData）
-	var tmpFile string
-	var exePath string
+	var tmpFile, exePath string
 	if runtime.GOOS == "android" {
 		tmpFile = filepath.Join(utils.GetAppDir(), "nebula_update.apk")
 	} else {
@@ -183,56 +349,129 @@ func doOnlineUpdate() error {
 		}
 		tmpFile = filepath.Join(filepath.Dir(exePath), utils.GetAppDir(), filepath.Base(exePath)+".new")
 	}
+	// 首次下载清掉可能残留的旧文件，保证从零开始（后续暂停/续传/断线重连不再经过此处）
+	_ = os.Remove(tmpFile)
 
-	// 使用带超时的 client 下载，避免无限挂起
-	dlClient := &http.Client{Timeout: 10 * time.Minute}
-	req, err := http.NewRequest("GET", downURL, nil)
+	upd.mu.Lock()
+	upd.tag = tag
+	upd.downURL = downURL
+	upd.tmpFile = tmpFile
+	upd.exePath = exePath
+	upd.status = "downloading"
+	upd.mu.Unlock()
+	return nil
+}
+
+// downloadToFile 单次下载：从已下载的偏移量断点续传（支持 HTTP Range），
+// 写入期间持续更新进度；ctx 取消时返回 ctx.Err() 表示用户暂停。
+func downloadToFile(ctx context.Context, downURL, tmpFile string) error {
+	// 读取已下载大小作为续传偏移
+	var offset int64
+	if fi, err := os.Stat(tmpFile); err == nil {
+		offset = fi.Size()
+	}
+
+	out, err := os.OpenFile(tmpFile, os.O_CREATE|os.O_WRONLY, 0644)
+	if err != nil {
+		return fmt.Errorf("打开临时文件失败: %v", err)
+	}
+	defer out.Close()
+
+	req, err := http.NewRequestWithContext(ctx, "GET", downURL, nil)
 	if err != nil {
 		return fmt.Errorf("创建下载请求失败: %v", err)
 	}
 	req.Header.Set("User-Agent", "Nebula-Client/1.0")
-	resp, err := dlClient.Do(req)
+	if offset > 0 {
+		req.Header.Set("Range", fmt.Sprintf("bytes=%d-", offset))
+	}
+
+	client := &http.Client{Timeout: 10 * time.Minute}
+	resp, err := client.Do(req)
 	if err != nil {
 		return fmt.Errorf("下载失败: %v", err)
 	}
 	defer resp.Body.Close()
 
-	if resp.StatusCode != http.StatusOK {
+	// 206 续传 / 200 全量（服务器不支持断点时从头开始）
+	if resp.StatusCode == http.StatusPartialContent {
+		if _, err := out.Seek(offset, io.SeekStart); err != nil {
+			return fmt.Errorf("定位续传位置失败: %v", err)
+		}
+	} else if resp.StatusCode == http.StatusOK {
+		if err := out.Truncate(0); err != nil {
+			return fmt.Errorf("重置临时文件失败: %v", err)
+		}
+		if _, err := out.Seek(0, io.SeekStart); err != nil {
+			return err
+		}
+		offset = 0
+	} else {
 		return fmt.Errorf("下载失败，HTTP 状态码: %d", resp.StatusCode)
 	}
 
-	out, err := os.Create(tmpFile)
-	if err != nil {
-		return fmt.Errorf("创建临时文件失败: %v", err)
+	total := int64(0)
+	if resp.ContentLength > 0 {
+		total = offset + resp.ContentLength
 	}
-	defer out.Close()
 
-	total := resp.ContentLength
-	var writer io.Writer = out
+	upd.mu.Lock()
+	upd.status = "downloading"
+	upd.total = total
+	upd.done = offset
+	upd.errMsg = ""
+	upd.mu.Unlock()
+	broadcastUpdateProgress(getUpdateStatus())
 
-	// 手机端：通知栏显示下载进度
-	if total > 0 && mobile.UpdateDownloadProgressFunc != nil {
-		pr := &progressWriter{
-			total:   total,
-			written: 0,
-			lastPct: -1,
+	buf := make([]byte, 64*1024)
+	lastMobilePct := -1
+	lastFrontPct := -1
+	for {
+		if ctx.Err() != nil {
+			return ctx.Err()
 		}
-		writer = io.MultiWriter(out, pr)
+		n, readErr := resp.Body.Read(buf)
+		if n > 0 {
+			if _, err := out.Write(buf[:n]); err != nil {
+				return fmt.Errorf("写入文件失败: %v", err)
+			}
+			upd.mu.Lock()
+			upd.done += int64(n)
+			done, totalNow := upd.done, upd.total
+			upd.mu.Unlock()
+
+			pct := -1
+			if totalNow > 0 {
+				pct = int(done * 100 / totalNow)
+			}
+
+			// 移动端通知栏：每 10% 回调一次
+			if totalNow > 0 && mobile.UpdateDownloadProgressFunc != nil && pct != lastMobilePct && pct%10 == 0 {
+				lastMobilePct = pct
+				_ = mobile.UpdateDownloadProgressFunc(done, totalNow)
+			}
+			// 前端进度：每 1% 推送一次
+			if pct != lastFrontPct {
+				lastFrontPct = pct
+				broadcastUpdateProgress(getUpdateStatus())
+			}
+		}
+		if readErr == io.EOF {
+			break
+		}
+		if readErr != nil {
+			return fmt.Errorf("读取下载内容失败: %v", readErr)
+		}
 	}
 
-	_, err = io.Copy(writer, resp.Body)
-	if err != nil {
-		os.Remove(tmpFile)
-		return fmt.Errorf("写入文件失败: %v", err)
+	// 完整性校验
+	upd.mu.Lock()
+	done, totalNow := upd.done, upd.total
+	upd.mu.Unlock()
+	if totalNow > 0 && done < totalNow {
+		return fmt.Errorf("下载不完整 (%d/%d)", done, totalNow)
 	}
-	out.Close()
-	resp.Body.Close()
-
-	// 5. 手机端弹出安装，桌面端替换重启
-	if runtime.GOOS == "android" && mobile.InstallApkFunc != nil {
-		return mobile.InstallApkFunc(tmpFile)
-	}
-	return replaceAndRestart(exePath, tmpFile)
+	return nil
 }
 
 // fetchPlatformBinary 请求 release 接口，返回 tag / 当前平台对应的二进制下载地址

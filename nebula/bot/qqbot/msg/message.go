@@ -350,6 +350,11 @@ func (b *QQBot) ReplyPrivateMarkdownWithKeyboard(messageID, openID string, md *M
 
 // 回复群聊图文
 func (b *QQBot) ReplyGroupImgMessage(messageID, groupOpenID, img, content string, eventIDs ...string) (*MessageResponse, error) {
+	return b.ReplyGroupImgMessageWithRef(messageID, groupOpenID, img, content, "", eventIDs...)
+}
+
+// ReplyGroupImgMessageWithRef 回复群聊图文，refID 非空时以 message_reference 引用回复
+func (b *QQBot) ReplyGroupImgMessageWithRef(messageID, groupOpenID, img, content, refID string, eventIDs ...string) (*MessageResponse, error) {
 	if groupOpenID == "" || img == "" {
 		return nil, fmt.Errorf("groupOpenID或图片内容为空")
 	}
@@ -368,6 +373,9 @@ func (b *QQBot) ReplyGroupImgMessage(messageID, groupOpenID, img, content string
 		MsgId:   messageID,
 		MsgSeq:  b.nextMsgSeq(),
 		EventId: eventIDOf(eventIDs...),
+	}
+	if refID != "" {
+		msg.MessageReference = &MessageReference{MessageID: refID}
 	}
 
 	var resp MessageResponse
@@ -404,6 +412,11 @@ func (b *QQBot) ReplyGroupPrivateImgMessage(messageID, openID, img, content stri
 
 // 回复群聊
 func (b *QQBot) ReplyGroupMessage(messageID, groupOpenID, content string, eventIDs ...string) (*MessageResponse, error) {
+	return b.ReplyGroupMessageWithRef(messageID, groupOpenID, content, "", eventIDs...)
+}
+
+// ReplyGroupMessageWithRef 回复群聊，refID 非空时以 message_reference 引用回复
+func (b *QQBot) ReplyGroupMessageWithRef(messageID, groupOpenID, content, refID string, eventIDs ...string) (*MessageResponse, error) {
 	if groupOpenID == "" || content == "" {
 		return nil, fmt.Errorf("groupOpenID或消息内容为空")
 	}
@@ -414,6 +427,9 @@ func (b *QQBot) ReplyGroupMessage(messageID, groupOpenID, content string, eventI
 		MsgId:   messageID,
 		MsgSeq:  b.nextMsgSeq(),
 		EventId: eventIDOf(eventIDs...),
+	}
+	if refID != "" {
+		msg.MessageReference = &MessageReference{MessageID: refID}
 	}
 
 	var resp MessageResponse

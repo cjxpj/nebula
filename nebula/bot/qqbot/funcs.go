@@ -413,7 +413,7 @@ var ActiveFuncs = map[string]dto.DicFunc{
 	},
 }
 
-// ========== ReplyFuncs：回复发送（依赖 PushContext，用于 Bot 消息处理） ==========
+// ========== ReplyFuncs：Bot 消息处理时自动注入（回复发送 + 菜单/面板操作，无需 #引入=） ==========
 var ReplyFuncs = map[string]dto.DicFunc{
 
 	"发送文本": {
@@ -634,6 +634,146 @@ var ReplyFuncs = map[string]dto.DicFunc{
 				debugLog.Infof("[QQBot] 撤回私聊消息失败: %v", err)
 			}
 			return "", nil
+		},
+	},
+	"获取菜单": {
+		L: "0",
+		Fn: func(d *dto.DicInputs) (any, error) {
+			ctx := GetPushContext(d)
+			if ctx == nil || ctx.Bot == nil || ctx.Bot.API == nil {
+				return "", nil
+			}
+			resp, err := ctx.Bot.API.GetMenu()
+			if err != nil {
+				return "获取失败: " + err.Error(), nil
+			}
+			data, _ := json.Marshal(resp)
+			return string(data), nil
+		},
+	},
+	"设置菜单": {
+		L: "1",
+		Fn: func(d *dto.DicInputs) (any, error) {
+			ctx := GetPushContext(d)
+			if ctx == nil || ctx.Bot == nil || ctx.Bot.API == nil {
+				return "", nil
+			}
+			menu, err := qqbot_msg.ParseMenuJSON(d.Inputs.String(1))
+			if err != nil {
+				return "菜单JSON解析失败: " + err.Error(), nil
+			}
+			resp, err := ctx.Bot.API.SetMenu(menu)
+			if err != nil {
+				return "设置失败: " + err.Error(), nil
+			}
+			data, _ := json.Marshal(resp)
+			return string(data), nil
+		},
+	},
+	"面板列表": {
+		L: "1|2|3",
+		Fn: func(d *dto.DicInputs) (any, error) {
+			ctx := GetPushContext(d)
+			if ctx == nil || ctx.Bot == nil || ctx.Bot.API == nil {
+				return "", nil
+			}
+			resp, err := ctx.Bot.API.GetPanels(d.Inputs.String(1), d.Inputs.String(2), d.Inputs.Int(3))
+			if err != nil {
+				return "获取失败: " + err.Error(), nil
+			}
+			data, _ := json.Marshal(resp)
+			return string(data), nil
+		},
+	},
+	"创建面板": {
+		L: "1",
+		Fn: func(d *dto.DicInputs) (any, error) {
+			ctx := GetPushContext(d)
+			if ctx == nil || ctx.Bot == nil || ctx.Bot.API == nil {
+				return "", nil
+			}
+			var req qqbot_msg.CreatePanelRequest
+			if err := json.Unmarshal([]byte(d.Inputs.String(1)), &req); err != nil {
+				return "面板JSON解析失败: " + err.Error(), nil
+			}
+			resp, err := ctx.Bot.API.CreatePanel(&req)
+			if err != nil {
+				return "创建失败: " + err.Error(), nil
+			}
+			data, _ := json.Marshal(resp)
+			return string(data), nil
+		},
+	},
+	"面板详情": {
+		L: "1",
+		Fn: func(d *dto.DicInputs) (any, error) {
+			ctx := GetPushContext(d)
+			if ctx == nil || ctx.Bot == nil || ctx.Bot.API == nil {
+				return "", nil
+			}
+			resp, err := ctx.Bot.API.GetPanel(d.Inputs.String(1))
+			if err != nil {
+				return "获取失败: " + err.Error(), nil
+			}
+			data, _ := json.Marshal(resp)
+			return string(data), nil
+		},
+	},
+	"修改面板": {
+		L: "2",
+		Fn: func(d *dto.DicInputs) (any, error) {
+			ctx := GetPushContext(d)
+			if ctx == nil || ctx.Bot == nil || ctx.Bot.API == nil {
+				return "", nil
+			}
+			panel, err := qqbot_msg.ParsePanelJSON(d.Inputs.String(2))
+			if err != nil {
+				return "面板JSON解析失败: " + err.Error(), nil
+			}
+			resp, err := ctx.Bot.API.UpdatePanel(d.Inputs.String(1), &qqbot_msg.UpdatePanelRequest{Panel: panel})
+			if err != nil {
+				return "修改失败: " + err.Error(), nil
+			}
+			data, _ := json.Marshal(resp)
+			return string(data), nil
+		},
+	},
+	"删除面板": {
+		L: "1",
+		Fn: func(d *dto.DicInputs) (any, error) {
+			ctx := GetPushContext(d)
+			if ctx == nil || ctx.Bot == nil || ctx.Bot.API == nil {
+				return "", nil
+			}
+			if err := ctx.Bot.API.DeletePanel(d.Inputs.String(1)); err != nil {
+				return "删除失败: " + err.Error(), nil
+			}
+			return "删除成功", nil
+		},
+	},
+	"面板关联": {
+		L: "3",
+		Fn: func(d *dto.DicInputs) (any, error) {
+			ctx := GetPushContext(d)
+			if ctx == nil || ctx.Bot == nil || ctx.Bot.API == nil {
+				return "", nil
+			}
+			op := d.Inputs.String(2)
+			switch op {
+			case "添加", "增加":
+				op = "add"
+			case "删除", "移除":
+				op = "del"
+			}
+			var req qqbot_msg.UpdatePanelTargetRequest
+			if err := json.Unmarshal([]byte(d.Inputs.String(3)), &req); err != nil {
+				return "关联JSON解析失败: " + err.Error(), nil
+			}
+			req.Op = op
+			if err := ctx.Bot.API.UpdatePanelTarget(d.Inputs.String(1), &req); err != nil {
+				return "操作失败: " + err.Error(), nil
+			}
+			return "操作成功", nil
 		},
 	},
 }

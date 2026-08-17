@@ -66,6 +66,11 @@ func Setup() {
 		f{Name: "重启", L: "0", Fn: restart},
 		f{Name: "GC回收", L: "0", Fn: gcCollect},
 
+		// ========== 定时任务 ==========
+		f{Name: "添加定时任务", L: "1|2|3|4", Fn: addScheduledTaskFunc},
+		f{Name: "删除定时任务", L: "1", Fn: delScheduledTaskFunc},
+		f{Name: "定时任务列表", L: "0", Fn: listScheduledTaskFunc},
+
 		// ========== 文件操作 ==========
 		f{Name: "读", L: "1|2|3", Fn: readKeyStringFile},
 		f{Name: "写", L: "2|3", Fn: writeKeyStringFile},
@@ -148,6 +153,7 @@ func Setup() {
 		// ========== 终端 ==========
 		f{Name: "创建终端", L: "1..", Fn: runCommandNew},
 		f{Name: "创建Shell终端", L: "1..", Fn: runCommandShellNew},
+		f{Name: "MC终端颜色", L: "1", Fn: mcTerminalColor},
 
 		// ========== 数据库 ==========
 		f{Name: "新建mysql", L: "3", Fn: mysqlNew},
@@ -172,6 +178,7 @@ func Setup() {
 		f{Name: "JSON删", L: "2", Fn: jsonDelete},
 		f{Name: "JSON存在", L: "2", Fn: jsonIsKey},
 		f{Name: "JSON长度", L: "1", Fn: jsonLen},
+		f{Name: "JSON全部键", L: "1", Fn: jsonKeys},
 		f{Name: "JSON美化", L: "1|2", Fn: jsonPrettyPrint},
 		f{Name: "JSON重名解析", L: "2", Fn: jsonQueryByName},
 		f{Name: "JSON查找文本", L: "2", Fn: jsonFindText},

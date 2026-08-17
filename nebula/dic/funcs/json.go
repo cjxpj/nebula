@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"errors"
 	"regexp"
+	"sort"
 	stdjson "encoding/json"
 	"strconv"
 	"strings"
@@ -774,26 +775,33 @@ func jsonIsKey(d *dto.DicInputs) (any, error) {
 	if raw == "" {
 		return "false", nil
 	}
-	var obj map[string]any
+	var obj any
 	if err := json.Unmarshal([]byte(raw), &obj); err != nil {
 		return "false", nil
 	}
 	keys := strings.Split(d.Inputs.String(2), ".")
 	curr := obj
 	for i, key := range keys {
-		if i == len(keys)-1 {
-			if _, ok := curr[key]; ok {
-				return "true", nil
-			}
-			return "false", nil
-		}
-		if next, ok := curr[key]; ok {
-			if m, ok := next.(map[string]any); ok {
-				curr = m
-			} else {
+		switch v := curr.(type) {
+		case map[string]any:
+			next, ok := v[key]
+			if !ok {
 				return "false", nil
 			}
-		} else {
+			if i == len(keys)-1 {
+				return "true", nil
+			}
+			curr = next
+		case []any:
+			idx, err := strconv.Atoi(key)
+			if err != nil || idx < 0 || idx >= len(v) {
+				return "false", nil
+			}
+			if i == len(keys)-1 {
+				return "true", nil
+			}
+			curr = v[idx]
+		default:
 			return "false", nil
 		}
 	}
@@ -816,6 +824,33 @@ func jsonLen(d *dto.DicInputs) (any, error) {
 		return strconv.Itoa(len(v)), nil
 	}
 	return "0", nil
+}
+
+func jsonKeys(d *dto.DicInputs) (any, error) {
+	raw := d.Inputs.String(1)
+	if raw == "" {
+		return "[]", nil
+	}
+	var obj any
+	if err := json.Unmarshal([]byte(raw), &obj); err != nil {
+		return "", errors.New("不是json格式")
+	}
+	switch v := obj.(type) {
+	case map[string]any:
+		keys := make([]string, 0, len(v))
+		for k := range v {
+			keys = append(keys, k)
+		}
+		sort.Strings(keys)
+		return utils.AnyToString(keys), nil
+	case []any:
+		keys := make([]int, len(v))
+		for i := range v {
+			keys[i] = i
+		}
+		return utils.AnyToString(keys), nil
+	}
+	return "[]", nil
 }
 
 func jsonPrettyPrint(d *dto.DicInputs) (any, error) {

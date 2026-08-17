@@ -12,6 +12,7 @@ import (
 
 	"github.com/cjxpj/nebula/appfiles"
 	"github.com/cjxpj/nebula/bot/secludedbot"
+	"github.com/cjxpj/nebula/debugLog"
 	dic_api "github.com/cjxpj/nebula/dic/api"
 	dic_dto "github.com/cjxpj/nebula/dic/dto"
 	"github.com/cjxpj/nebula/dto"
@@ -21,8 +22,8 @@ import (
 
 func Start() string {
 
-	// 启动时清空历史日志文件
-	dic_server.ClearServerLogs()
+	// 启动时清理超过保留天数的旧日志文件
+	dic_server.ClearOldServerLogs()
 
 	file := utils.NewFile()
 
@@ -59,7 +60,7 @@ func Start() string {
 			dicRes = dic_api.Api.DicRun(infoDic, t.Trigger)
 		}
 		if dicRes != "" {
-			fmt.Printf("%v\n", dicRes)
+			fmt.Printf("%v\n", debugLog.EscapeControlChars(dicRes))
 			startupResult = dicRes
 		}
 	}

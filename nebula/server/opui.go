@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"crypto/md5"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
@@ -457,6 +458,20 @@ func readServerLogs(limit, skip int) ([]map[string]string, bool) {
 // ClearServerLogs 清空 database/log 下的全部日志文件
 func ClearServerLogs() {
 	utils.NewFileQueue(serverLogDir()).DeleteFolder()
+}
+
+// serverLogKeepDays 启动时保留的日志天数，超过该天数的旧日志文件会被清理
+const serverLogKeepDays = 7
+
+// ClearOldServerLogs 清理 database/log 下超过保留天数的旧日志文件（按 YYYYMMDD.txt 文件名判断日期）
+func ClearOldServerLogs() {
+	cutoff := time.Now().AddDate(0, 0, -serverLogKeepDays)
+	for _, path := range listServerLogFiles() {
+		name := strings.TrimSuffix(filepath.Base(path), filepath.Ext(path))
+		if t, err := time.Parse("20060102", name); err == nil && t.Before(cutoff) {
+			_ = os.Remove(path)
+		}
+	}
 }
 
 // runTerminalDic 运行专门监听终端触发的词库（private/system/terminal.n）。
@@ -2114,6 +2129,45 @@ func checkFilePath(path string) bool {
 	}
 	clean := filepath.ToSlash(filepath.Clean(path))
 	return clean != "." && clean != ".." && !strings.HasPrefix(clean, "../")
+}
+
+// copyPath 递归复制文件或目录，目标路径不存在时创建并保留原权限
+func copyPath(src, dst string) error {
+	info, err := os.Stat(src)
+	if err != nil {
+		return err
+	}
+	if !info.IsDir() {
+		return copyFile(src, dst, info.Mode().Perm())
+	}
+	if err := os.MkdirAll(dst, info.Mode().Perm()); err != nil {
+		return err
+	}
+	entries, err := os.ReadDir(src)
+	if err != nil {
+		return err
+	}
+	for _, e := range entries {
+		if err := copyPath(filepath.Join(src, e.Name()), filepath.Join(dst, e.Name())); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// copyFile 复制单个文件并保留权限
+func copyFile(src, dst string, perm os.FileMode) error {
+	data, err := os.ReadFile(src)
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(dst, data, perm)
+}
+
+// uploadTmpDir 返回分块上传的临时目录（按目标路径取 md5 避免冲突）
+func uploadTmpDir(path string) string {
+	sum := md5.Sum([]byte(path))
+	return filepath.Join(os.TempDir(), "nebula_upload_"+fmt.Sprintf("%x", sum[:]))
 }
 
 func OpUI(w http.ResponseWriter, r *http.Request, getpath string) {
@@ -3785,9 +3839,433 @@ func opuiHandleApi(w http.ResponseWriter, r *http.Request) {
 		w.Write(jsonResp)
 		return
 
+	case "file_create":
+		// 文件管理：在指定目录下创建新文件（可选初始内容，默认空文件）
+		var j struct {
+			Path    string `json:"path"`
+			Content string `json:"content"`
+		}
+		if err := json.Unmarshal(h.Data, &j); err != nil {
+			http.Error(w, `{"status":"error","error":"invalid json"}`, http.StatusBadRequest)
+			return
+		}
+		if !checkFilePath(j.Path) {
+			http.Error(w, `{"status":"error","error":"文件路径不合法"}`, http.StatusBadRequest)
+			return
+		}
+		full := filepath.Join(utils.GetAppDir(), filepath.FromSlash(j.Path))
+		if _, err := os.Stat(full); err == nil {
+			http.Error(w, `{"status":"error","error":"文件已存在"}`, http.StatusBadRequest)
+			return
+		}
+		if err := os.MkdirAll(filepath.Dir(full), 0o755); err != nil {
+			http.Error(w, `{"status":"error","error":"创建目录失败: `+err.Error()+`"}`, http.StatusBadRequest)
+			return
+		}
+		if err := os.WriteFile(full, []byte(j.Content), 0o644); err != nil {
+			http.Error(w, `{"status":"error","error":"文件创建失败: `+err.Error()+`"}`, http.StatusBadRequest)
+			return
+		}
+		jsonResp, _ := json.Marshal(map[string]any{"status": "ok"})
+		w.Write(jsonResp)
+		return
+
+	case "file_delete":
+		// 文件管理：删除指定文件或目录（递归删除）
+		var j struct {
+			Path string `json:"path"`
+		}
+		if err := json.Unmarshal(h.Data, &j); err != nil {
+			http.Error(w, `{"status":"error","error":"invalid json"}`, http.StatusBadRequest)
+			return
+		}
+		if !checkFilePath(j.Path) {
+			http.Error(w, `{"status":"error","error":"文件路径不合法"}`, http.StatusBadRequest)
+			return
+		}
+		full := filepath.Join(utils.GetAppDir(), filepath.FromSlash(j.Path))
+		if err := os.RemoveAll(full); err != nil {
+			http.Error(w, `{"status":"error","error":"删除失败: `+err.Error()+`"}`, http.StatusBadRequest)
+			return
+		}
+		jsonResp, _ := json.Marshal(map[string]any{"status": "ok"})
+		w.Write(jsonResp)
+		return
+
+	case "file_upload":
+		// 文件管理：上传文件（内容为 base64 编码），同名文件覆盖
+		var j struct {
+			Path string `json:"path"`
+			Data string `json:"data"` // base64 编码的文件内容
+		}
+		if err := json.Unmarshal(h.Data, &j); err != nil {
+			http.Error(w, `{"status":"error","error":"invalid json"}`, http.StatusBadRequest)
+			return
+		}
+		if !checkFilePath(j.Path) {
+			http.Error(w, `{"status":"error","error":"文件路径不合法"}`, http.StatusBadRequest)
+			return
+		}
+		raw, err := base64.StdEncoding.DecodeString(j.Data)
+		if err != nil {
+			http.Error(w, `{"status":"error","error":"文件内容解码失败: `+err.Error()+`"}`, http.StatusBadRequest)
+			return
+		}
+		full := filepath.Join(utils.GetAppDir(), filepath.FromSlash(j.Path))
+		if err := os.MkdirAll(filepath.Dir(full), 0o755); err != nil {
+			http.Error(w, `{"status":"error","error":"创建目录失败: `+err.Error()+`"}`, http.StatusBadRequest)
+			return
+		}
+		if err := os.WriteFile(full, raw, 0o644); err != nil {
+			http.Error(w, `{"status":"error","error":"文件写入失败: `+err.Error()+`"}`, http.StatusBadRequest)
+			return
+		}
+		jsonResp, _ := json.Marshal(map[string]any{"status": "ok"})
+		w.Write(jsonResp)
+		return
+
+	case "file_upload_status":
+		// 文件管理：查询分块上传进度（已上传的分块序号）
+		var j struct {
+			Path string `json:"path"`
+		}
+		if err := json.Unmarshal(h.Data, &j); err != nil {
+			http.Error(w, `{"status":"error","error":"invalid json"}`, http.StatusBadRequest)
+			return
+		}
+		if !checkFilePath(j.Path) {
+			http.Error(w, `{"status":"error","error":"文件路径不合法"}`, http.StatusBadRequest)
+			return
+		}
+		chunks := []int{}
+		if items, err := os.ReadDir(uploadTmpDir(j.Path)); err == nil {
+			for _, e := range items {
+				name := e.Name()
+				if !strings.HasPrefix(name, "chunk_") {
+					continue
+				}
+				idx, err := strconv.Atoi(strings.TrimPrefix(name, "chunk_"))
+				if err == nil {
+					chunks = append(chunks, idx)
+				}
+			}
+		}
+		sort.Ints(chunks)
+		jsonResp, _ := json.Marshal(map[string]any{"chunks": chunks})
+		w.Write(jsonResp)
+		return
+
+	case "file_upload_chunk":
+		// 文件管理：上传单个分块（base64）
+		var j struct {
+			Path  string `json:"path"`
+			Index int    `json:"index"`
+			Total int    `json:"total"`
+			Data  string `json:"data"`
+		}
+		if err := json.Unmarshal(h.Data, &j); err != nil {
+			http.Error(w, `{"status":"error","error":"invalid json"}`, http.StatusBadRequest)
+			return
+		}
+		if !checkFilePath(j.Path) {
+			http.Error(w, `{"status":"error","error":"文件路径不合法"}`, http.StatusBadRequest)
+			return
+		}
+		if j.Index < 0 || j.Total <= 0 || j.Index >= j.Total {
+			http.Error(w, `{"status":"error","error":"分块参数不合法"}`, http.StatusBadRequest)
+			return
+		}
+		raw, err := base64.StdEncoding.DecodeString(j.Data)
+		if err != nil {
+			http.Error(w, `{"status":"error","error":"分块内容解码失败: `+err.Error()+`"}`, http.StatusBadRequest)
+			return
+		}
+		tmpDir := uploadTmpDir(j.Path)
+		if err := os.MkdirAll(tmpDir, 0o755); err != nil {
+			http.Error(w, `{"status":"error","error":"创建临时目录失败: `+err.Error()+`"}`, http.StatusBadRequest)
+			return
+		}
+		chunkFile := filepath.Join(tmpDir, fmt.Sprintf("chunk_%d", j.Index))
+		if err := os.WriteFile(chunkFile, raw, 0o644); err != nil {
+			http.Error(w, `{"status":"error","error":"分块写入失败: `+err.Error()+`"}`, http.StatusBadRequest)
+			return
+		}
+		jsonResp, _ := json.Marshal(map[string]any{"status": "ok"})
+		w.Write(jsonResp)
+		return
+
+	case "file_upload_merge":
+		// 文件管理：合并所有分块为最终文件
+		var j struct {
+			Path  string `json:"path"`
+			Total int    `json:"total"`
+		}
+		if err := json.Unmarshal(h.Data, &j); err != nil {
+			http.Error(w, `{"status":"error","error":"invalid json"}`, http.StatusBadRequest)
+			return
+		}
+		if !checkFilePath(j.Path) {
+			http.Error(w, `{"status":"error","error":"文件路径不合法"}`, http.StatusBadRequest)
+			return
+		}
+		if j.Total <= 0 {
+			http.Error(w, `{"status":"error","error":"分块总数不合法"}`, http.StatusBadRequest)
+			return
+		}
+		tmpDir := uploadTmpDir(j.Path)
+		full := filepath.Join(utils.GetAppDir(), filepath.FromSlash(j.Path))
+		if err := os.MkdirAll(filepath.Dir(full), 0o755); err != nil {
+			http.Error(w, `{"status":"error","error":"创建目录失败: `+err.Error()+`"}`, http.StatusBadRequest)
+			return
+		}
+		out, err := os.Create(full)
+		if err != nil {
+			http.Error(w, `{"status":"error","error":"创建目标文件失败: `+err.Error()+`"}`, http.StatusBadRequest)
+			return
+		}
+		var mergeErr error
+		for i := 0; i < j.Total; i++ {
+			chunkFile := filepath.Join(tmpDir, fmt.Sprintf("chunk_%d", i))
+			data, err := os.ReadFile(chunkFile)
+			if err != nil {
+				mergeErr = fmt.Errorf("分块 %d 缺失或读取失败: %v", i, err)
+				break
+			}
+			if _, err := out.Write(data); err != nil {
+				mergeErr = fmt.Errorf("写入目标文件失败: %v", err)
+				break
+			}
+		}
+		out.Close()
+		if mergeErr != nil {
+			_ = os.Remove(full)
+			http.Error(w, `{"status":"error","error":"`+mergeErr.Error()+`"}`, http.StatusBadRequest)
+			return
+		}
+		_ = os.RemoveAll(tmpDir) // 清理临时分块
+		jsonResp, _ := json.Marshal(map[string]any{"status": "ok"})
+		w.Write(jsonResp)
+		return
+
+	case "file_mkdir":
+		// 文件管理：新建文件夹
+		var j struct {
+			Path string `json:"path"`
+		}
+		if err := json.Unmarshal(h.Data, &j); err != nil {
+			http.Error(w, `{"status":"error","error":"invalid json"}`, http.StatusBadRequest)
+			return
+		}
+		if !checkFilePath(j.Path) {
+			http.Error(w, `{"status":"error","error":"路径不合法"}`, http.StatusBadRequest)
+			return
+		}
+		full := filepath.Join(utils.GetAppDir(), filepath.FromSlash(j.Path))
+		if _, err := os.Stat(full); err == nil {
+			http.Error(w, `{"status":"error","error":"已存在同名项"}`, http.StatusBadRequest)
+			return
+		}
+		if err := os.MkdirAll(full, 0o755); err != nil {
+			http.Error(w, `{"status":"error","error":"创建文件夹失败: `+err.Error()+`"}`, http.StatusBadRequest)
+			return
+		}
+		jsonResp, _ := json.Marshal(map[string]any{"status": "ok"})
+		w.Write(jsonResp)
+		return
+
+	case "file_rename":
+		// 文件管理：重命名文件/目录
+		var j struct {
+			Path    string `json:"path"`
+			NewName string `json:"newName"`
+		}
+		if err := json.Unmarshal(h.Data, &j); err != nil {
+			http.Error(w, `{"status":"error","error":"invalid json"}`, http.StatusBadRequest)
+			return
+		}
+		if !checkFilePath(j.Path) {
+			http.Error(w, `{"status":"error","error":"路径不合法"}`, http.StatusBadRequest)
+			return
+		}
+		newName := strings.TrimSpace(j.NewName)
+		if newName == "" {
+			http.Error(w, `{"status":"error","error":"名称不能为空"}`, http.StatusBadRequest)
+			return
+		}
+		if newName == "." || newName == ".." || strings.ContainsAny(newName, `/\`) {
+			http.Error(w, `{"status":"error","error":"名称不合法"}`, http.StatusBadRequest)
+			return
+		}
+		oldFull := filepath.Join(utils.GetAppDir(), filepath.FromSlash(j.Path))
+		if _, err := os.Stat(oldFull); err != nil {
+			http.Error(w, `{"status":"error","error":"原文件不存在"}`, http.StatusBadRequest)
+			return
+		}
+		newFull := filepath.Join(filepath.Dir(oldFull), newName)
+		if _, err := os.Stat(newFull); err == nil {
+			http.Error(w, `{"status":"error","error":"已存在同名项"}`, http.StatusBadRequest)
+			return
+		}
+		if err := os.Rename(oldFull, newFull); err != nil {
+			http.Error(w, `{"status":"error","error":"重命名失败: `+err.Error()+`"}`, http.StatusBadRequest)
+			return
+		}
+		jsonResp, _ := json.Marshal(map[string]any{"status": "ok"})
+		w.Write(jsonResp)
+		return
+
+	case "file_copy":
+		// 文件管理：复制多个文件/目录到目标目录
+		var j struct {
+			Paths  []string `json:"paths"`
+			Target string   `json:"target"`
+		}
+		if err := json.Unmarshal(h.Data, &j); err != nil {
+			http.Error(w, `{"status":"error","error":"invalid json"}`, http.StatusBadRequest)
+			return
+		}
+		if len(j.Paths) == 0 {
+			http.Error(w, `{"status":"error","error":"未选择文件"}`, http.StatusBadRequest)
+			return
+		}
+		for _, p := range j.Paths {
+			if !checkFilePath(p) {
+				http.Error(w, `{"status":"error","error":"源路径不合法"}`, http.StatusBadRequest)
+				return
+			}
+		}
+		if j.Target != "" && !checkFilePath(j.Target) {
+			http.Error(w, `{"status":"error","error":"目标路径不合法"}`, http.StatusBadRequest)
+			return
+		}
+		appDir := utils.GetAppDir()
+		targetDir := filepath.Join(appDir, filepath.FromSlash(j.Target))
+		if err := os.MkdirAll(targetDir, 0o755); err != nil {
+			http.Error(w, `{"status":"error","error":"创建目标目录失败: `+err.Error()+`"}`, http.StatusBadRequest)
+			return
+		}
+		for _, p := range j.Paths {
+			src := filepath.Join(appDir, filepath.FromSlash(p))
+			base := filepath.Base(src)
+			dst := filepath.Join(targetDir, base)
+			if _, err := os.Stat(dst); err == nil {
+				http.Error(w, `{"status":"error","error":"目标已存在同名项: `+base+`"}`, http.StatusBadRequest)
+				return
+			}
+			if err := copyPath(src, dst); err != nil {
+				http.Error(w, `{"status":"error","error":"复制失败: `+err.Error()+`"}`, http.StatusBadRequest)
+				return
+			}
+		}
+		jsonResp, _ := json.Marshal(map[string]any{"status": "ok"})
+		w.Write(jsonResp)
+		return
+
+	case "file_move":
+		// 文件管理：移动（剪切）多个文件/目录到目标目录
+		var j struct {
+			Paths  []string `json:"paths"`
+			Target string   `json:"target"`
+		}
+		if err := json.Unmarshal(h.Data, &j); err != nil {
+			http.Error(w, `{"status":"error","error":"invalid json"}`, http.StatusBadRequest)
+			return
+		}
+		if len(j.Paths) == 0 {
+			http.Error(w, `{"status":"error","error":"未选择文件"}`, http.StatusBadRequest)
+			return
+		}
+		for _, p := range j.Paths {
+			if !checkFilePath(p) {
+				http.Error(w, `{"status":"error","error":"源路径不合法"}`, http.StatusBadRequest)
+				return
+			}
+		}
+		if j.Target != "" && !checkFilePath(j.Target) {
+			http.Error(w, `{"status":"error","error":"目标路径不合法"}`, http.StatusBadRequest)
+			return
+		}
+		appDir := utils.GetAppDir()
+		targetDir := filepath.Join(appDir, filepath.FromSlash(j.Target))
+		if err := os.MkdirAll(targetDir, 0o755); err != nil {
+			http.Error(w, `{"status":"error","error":"创建目标目录失败: `+err.Error()+`"}`, http.StatusBadRequest)
+			return
+		}
+		for _, p := range j.Paths {
+			src := filepath.Join(appDir, filepath.FromSlash(p))
+			base := filepath.Base(src)
+			dst := filepath.Join(targetDir, base)
+			if filepath.Clean(src) == filepath.Clean(dst) {
+				continue // 源就在目标目录，无需移动
+			}
+			if _, err := os.Stat(dst); err == nil {
+				http.Error(w, `{"status":"error","error":"目标已存在同名项: `+base+`"}`, http.StatusBadRequest)
+				return
+			}
+			if err := os.Rename(src, dst); err != nil {
+				http.Error(w, `{"status":"error","error":"移动失败: `+err.Error()+`"}`, http.StatusBadRequest)
+				return
+			}
+		}
+		jsonResp, _ := json.Marshal(map[string]any{"status": "ok"})
+		w.Write(jsonResp)
+		return
+
 	case "get_dic_funcs":
 		// 返回全部已注册词库函数（实时读取注册表），供前端代码补全
 		jsonResp, _ := json.Marshal(map[string]any{"cmds": dic_funcs.ListFuncs()})
+		w.Write(jsonResp)
+		return
+
+	case "get_dic_tasks":
+		// 返回全部定时任务
+		jsonResp, _ := json.Marshal(map[string]any{"list": dic_funcs.ListScheduledTasks()})
+		w.Write(jsonResp)
+		return
+
+	case "add_dic_task":
+		var j struct {
+			DicPath  string `json:"dic_path"`
+			Trigger  string `json:"trigger"`
+			Interval string `json:"interval"`
+			Once     bool   `json:"once"`
+		}
+		if err := json.Unmarshal(h.Data, &j); err != nil {
+			http.Error(w, `{"status":"error","error":"invalid json"}`, http.StatusBadRequest)
+			return
+		}
+		// 词库路径留空时使用 system.ini 中 [词库调试] 默认词库
+		if j.DicPath == "" {
+			if p, ok := loadDicDebugDefaults()["path"].(string); ok {
+				j.DicPath = p
+			}
+		}
+		if !checkDicPath(j.DicPath) {
+			http.Error(w, `{"status":"error","error":"词库路径不合法"}`, http.StatusBadRequest)
+			return
+		}
+		id, err := dic_funcs.AddScheduledTask(j.DicPath, j.Trigger, j.Interval, j.Once)
+		if err != nil {
+			http.Error(w, `{"status":"error","error":"`+err.Error()+`"}`, http.StatusBadRequest)
+			return
+		}
+		jsonResp, _ := json.Marshal(map[string]any{"status": "ok", "id": id})
+		w.Write(jsonResp)
+		return
+
+	case "del_dic_task":
+		var j struct {
+			ID string `json:"id"`
+		}
+		if err := json.Unmarshal(h.Data, &j); err != nil {
+			http.Error(w, `{"status":"error","error":"invalid json"}`, http.StatusBadRequest)
+			return
+		}
+		if err := dic_funcs.DelScheduledTask(j.ID); err != nil {
+			http.Error(w, `{"status":"error","error":"`+err.Error()+`"}`, http.StatusBadRequest)
+			return
+		}
+		jsonResp, _ := json.Marshal(map[string]any{"status": "ok"})
 		w.Write(jsonResp)
 		return
 
@@ -4061,13 +4539,27 @@ func opuiHandleApi(w http.ResponseWriter, r *http.Request) {
 		return
 
 	case "online_update":
-		go func() {
-			time.Sleep(500 * time.Millisecond) // 等待响应发送完毕
-			if err := doOnlineUpdate(); err != nil {
-				fmt.Println("online_update failed:", err)
-			}
-		}()
-		w.Write([]byte(`{"status":"ok","msg":"正在下载更新，完成后将自动重启"}`))
+		// 启动/继续在线更新下载（幂等：下载中则忽略，暂停则继续）
+		go startOnlineUpdate()
+		resp, _ := json.Marshal(map[string]any{"status": "ok", "msg": "开始下载更新", "data": getUpdateStatus()})
+		w.Write(resp)
+		return
+
+	case "pause_update":
+		pauseOnlineUpdate()
+		resp, _ := json.Marshal(map[string]any{"status": "ok", "data": getUpdateStatus()})
+		w.Write(resp)
+		return
+
+	case "resume_update":
+		go startOnlineUpdate()
+		resp, _ := json.Marshal(map[string]any{"status": "ok", "data": getUpdateStatus()})
+		w.Write(resp)
+		return
+
+	case "get_update_status":
+		resp, _ := json.Marshal(getUpdateStatus())
+		w.Write(resp)
 		return
 
 	case "security_info":

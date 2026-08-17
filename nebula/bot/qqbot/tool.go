@@ -11,31 +11,32 @@ import (
 
 // 移除艾特消息开头的 @xxx
 func RemoveLeadingMentionOnce(s string) string {
-	re := regexp.MustCompile(`^<@!\d+>\s*`)
-	loc := re.FindStringIndex(s)
-	if loc == nil {
-		return s // 没找到，原样返回
+	if !strings.HasPrefix(s, "<@!") {
+		return s
 	}
-	return s[:loc[0]] + s[loc[1]:] // 替换掉匹配的那一段
+	end := strings.IndexByte(s, '>')
+	if end <= 3 {
+		return s
+	}
+	for i := 3; i < end; i++ {
+		if s[i] < '0' || s[i] > '9' {
+			return s
+		}
+	}
+	return strings.TrimLeft(s[end+1:], " \t\n\f\r")
 }
 
 // 移除开头指定@账号
 func RemoveLeadingMention(s string, qq int) string {
-	// 检测带空格
-	if after, ok := strings.CutPrefix(s, fmt.Sprintf("<@!%d> ", qq)); ok {
-		return after // 移除开头
-	}
-	// 检测开头
-	if after, ok := strings.CutPrefix(s, fmt.Sprintf("<@!%d>", qq)); ok {
-		return after // 移除开头
-	}
-	return s
+	s = strings.TrimPrefix(s, fmt.Sprintf("<@!%d> ", qq))
+	return strings.TrimPrefix(s, fmt.Sprintf("<@!%d>", qq))
 }
+
+var reATHex = regexp.MustCompile(`<@([0-9A-Fa-f]+)>`)
 
 // 艾特消息格式转换（十六进制ID格式）
 func ConvertATMessageToMD(s string) string {
-	re := regexp.MustCompile(`<@([0-9A-Fa-f]+)>`)
-	return re.ReplaceAllString(s, "@$1")
+	return reATHex.ReplaceAllString(s, "@$1")
 }
 
 var atMentionRe = regexp.MustCompile(`<@([^>]+)>`)
@@ -67,17 +68,25 @@ func ConvertATMessageWithMentions(s string, mentions []qqbot_msg.Mention) (strin
 
 // 移除开头一个空格
 func RemoveLeadingSpace(s string) string {
-	if strings.HasPrefix(s, " ") {
-		return s[1:]
-	}
-	return s
+	return strings.TrimPrefix(s, " ")
 }
-
-var reLeadingAt = regexp.MustCompile(`^(@\S+\s*)+`)
 
 // RemoveLeadingAtMentions 移除消息开头的 @用户名 前缀，用于全量消息艾特兼容
 func RemoveLeadingAtMentions(s string) string {
-	return reLeadingAt.ReplaceAllString(s, "")
+	const ws = " \t\n\f\r"
+	for {
+		if !strings.HasPrefix(s, "@") {
+			return s
+		}
+		if len(s) < 2 || strings.IndexByte(ws, s[1]) >= 0 {
+			return s
+		}
+		i := strings.IndexAny(s, ws)
+		if i < 0 {
+			return ""
+		}
+		s = strings.TrimLeft(s[i:], ws)
+	}
 }
 
 // RemoveLeadingSlash 移除消息开头的 / 或 空格+ /，用于过滤斜杠指令前缀
@@ -86,35 +95,65 @@ func RemoveLeadingSlash(s string) string {
 	return strings.TrimPrefix(s, "/")
 }
 
-// 去掉所有 ±img=...± 段，并返回净化后文本 + 提取到的 img 值列表
-func stripImgTags(s string) (string, []string) {
-	re := regexp.MustCompile(`±img=(.+?)±`)
-	var imgs []string
+const (
+	tagAtMsg = "±atMsg="
+	tagImg   = "±img="
+	tagSep   = "±"
+)
 
-	dst := re.ReplaceAllStringFunc(s, func(raw string) string {
-		m := re.FindStringSubmatch(raw)
-		if len(m) < 2 {
-			return ""
+// stripReplyTags 解析回复文本中的 ±atMsg=消息id± 与 ±img=...± 标记，
+// 返回净化后文本、图片列表、引用回复的消息ID（atMsgID 为空表示回复当前消息）
+func stripReplyTags(s string) (string, []string, string) {
+	var atMsgID string
+	for {
+		i := strings.Index(s, tagAtMsg)
+		if i < 0 {
+			break
 		}
+		j := strings.Index(s[i+len(tagAtMsg):], tagSep)
+		if j < 0 {
+			break
+		}
+		if atMsgID == "" {
+			atMsgID = s[i+len(tagAtMsg) : i+len(tagAtMsg)+j]
+		}
+		s = s[:i] + s[i+len(tagAtMsg)+j+len(tagSep):]
+	}
 
-		src := m[1]
+	var imgs []string
+	for {
+		i := strings.Index(s, tagImg)
+		if i < 0 {
+			break
+		}
+		j := strings.Index(s[i+len(tagImg):], tagSep)
+		if j < 0 {
+			break
+		}
+		src := s[i+len(tagImg) : i+len(tagImg)+j]
+		s = s[:i] + s[i+len(tagImg)+j+len(tagSep):]
 
 		var data string
 		var err error
-
-		// 判断是否为 http / https
 		if strings.HasPrefix(src, "http://") || strings.HasPrefix(src, "https://") {
 			data, err = utils.Get(src)
 		} else {
 			data, err = utils.NewFileQueue(src).ReadFile()
 		}
-
 		if err == nil {
 			imgs = append(imgs, data)
 		}
+	}
 
-		return ""
-	})
+	return s, imgs, atMsgID
+}
 
-	return dst, imgs
+// refIdxOf 从群消息场景的 ext 中提取引用索引（形如 "msg_idx=REFIDX_xxx"），无则返回空串
+func refIdxOf(scene qqbot_msg.GroupMessageScene) string {
+	for _, ext := range scene.Ext {
+		if strings.HasPrefix(ext, "msg_idx=") {
+			return strings.TrimPrefix(ext, "msg_idx=")
+		}
+	}
+	return ""
 }

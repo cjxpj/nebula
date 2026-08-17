@@ -385,7 +385,7 @@ func (v *Val) Text(vv *Val, content any) any {
 		}
 
 		if strings.HasPrefix(val, "@") {
-			list := strings.Split(val[1:], "->")
+			list := strings.Split(val[1:], ".")
 			if len(list) > 1 {
 				// 先取第一个变量
 				value, _ := v.GetVal(vv, list[0])

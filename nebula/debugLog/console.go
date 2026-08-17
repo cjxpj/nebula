@@ -64,7 +64,17 @@ func output(level string, v ...any) {
 	funcName := strings.TrimPrefix(filepath.Ext(runtime.FuncForPC(pc).Name()), ".")
 
 	date := time.Now().Format("2006-01-02 15:04:05")
-	msg := fmt.Sprint(v...)
+	msg := EscapeControlChars(fmt.Sprint(v...))
 
 	fmt.Printf("[%s] %s %s:%d:%s %s\n", level, date, file, line, funcName, msg)
+}
+
+// EscapeControlChars 将消息中的控制字符转义为可见文本，保证日志单行输出。
+// 先转义反斜杠，再转义换行等控制字符，避免原本就是 "\n" 字面量被二次混淆。
+func EscapeControlChars(s string) string {
+	s = strings.ReplaceAll(s, `\`, `\\`)
+	s = strings.ReplaceAll(s, "\r", `\r`)
+	s = strings.ReplaceAll(s, "\n", `\n`)
+	s = strings.ReplaceAll(s, "\t", `\t`)
+	return s
 }

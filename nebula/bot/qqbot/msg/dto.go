@@ -118,7 +118,8 @@ type GroupAuthor struct {
 
 // 群消息场景
 type GroupMessageScene struct {
-	Source string `json:"source"`
+	Source string   `json:"source"`
+	Ext    []string `json:"ext"`
 }
 
 // 附件
@@ -191,6 +192,13 @@ type MessageToSend struct {
 	Markdown *Markdown `json:"markdown,omitempty"`
 	// 消息按钮，仅 markdown 消息支持
 	Keyboard *Keyboard `json:"keyboard,omitempty"`
+	// 引用回复，填写后以引用形式展示，关联上下文
+	MessageReference *MessageReference `json:"message_reference,omitempty"`
+}
+
+// MessageReference 引用回复
+type MessageReference struct {
+	MessageID string `json:"message_id"`
 }
 
 // Markdown
@@ -477,4 +485,126 @@ type FriendDelEvent struct {
 // FriendAuthor 好友事件中的 author 字段
 type FriendAuthor struct {
 	UnionOpenID string `json:"union_openid"` // 机器人 UnionOpenID
+}
+
+// ============= 自定义菜单 (Menu) ============
+
+// Menu 自定义菜单配置，仅 C2C（单聊）场景生效
+type Menu struct {
+	Items []*MenuItem `json:"items"` // 菜单项列表，最多 10 个，按列表顺序从左到右展示
+}
+
+// MenuItem 单个菜单项
+type MenuItem struct {
+	Name         string         `json:"name"`                     // 按钮名称，最多 10 个字符，一个中文汉字算 2 个字符
+	Type         string         `json:"type"`                     // 按钮类型：switch / send_message / link / menu
+	SubMenuItems []*SubMenuItem `json:"sub_menu_items,omitempty"` // 子菜单列表，仅 type=menu 时有效，最多 5 个
+	SendMessage  string         `json:"send_message,omitempty"`   // 发送内容，仅 type=send_message 时有效
+	Link         string         `json:"link,omitempty"`           // 跳转链接，仅 type=link 时有效，须 https:// 开头
+	Switch       *Switch        `json:"switch,omitempty"`         // 开关配置，仅 type=switch 时有效
+}
+
+// SubMenuItem 子菜单项
+type SubMenuItem struct {
+	Name        string `json:"name"`                   // 按钮名称，最多 14 个字符
+	Type        string `json:"type"`                   // 按钮类型：send_message / link（不支持 menu）
+	SendMessage string `json:"send_message,omitempty"` // 发送内容，仅 type=send_message 时有效
+	Link        string `json:"link,omitempty"`         // 跳转链接，仅 type=link 时有效
+}
+
+// Switch 开关配置
+type Switch struct {
+	SwitchID string `json:"switch_id"` // 开关唯一标识，切换后消息 ext 中携带 switch_id=1
+	Default  bool   `json:"default"`   // 初始状态：true 默认打开，false 默认关闭
+}
+
+// MenuResponse 菜单查询/修改响应
+type MenuResponse struct {
+	Version int   `json:"version"`        // 当前菜单版本号
+	Menu    *Menu `json:"menu,omitempty"` // 当前生效的菜单配置，未设置时为空
+}
+
+// SetMenuRequest 修改菜单请求
+type SetMenuRequest struct {
+	Menu *Menu `json:"menu"` // 菜单配置，覆盖原有完整配置
+}
+
+// ============= 指令面板 (Panel) ============
+
+// Panel 指令面板配置内容
+type Panel struct {
+	Items   []*PanelItem `json:"items,omitempty"`  // 面板元素列表，最多 20 个
+	Remark  string       `json:"remark,omitempty"` // 面板备注，最多 255 字符，不对用户展示
+	Version int          `json:"version,omitempty"`
+}
+
+// PanelItem 面板元素
+type PanelItem struct {
+	Name      string `json:"name,omitempty"`       // 元素名称，最多 14 字符；type=command 时点击填入输入框
+	Desc      string `json:"desc,omitempty"`       // 元素描述，最多 30 字符
+	Type      string `json:"type,omitempty"`       // 元素类型：command（指令）/ link（链接跳转）
+	OnlyAdmin bool   `json:"only_admin,omitempty"` // 是否仅管理员可操作
+	Link      string `json:"link,omitempty"`       // 跳转链接，仅 type=link 时有效
+}
+
+// PanelRecord 面板列表记录
+type PanelRecord struct {
+	PanelID    string `json:"panel_id"`    // 面板 ID
+	Scope      string `json:"scope"`       // 生效场景：c2c / group / channel / dm
+	TargetType string `json:"target_type"` // 作用范围：all / specific
+	Panel      *Panel `json:"panel"`       // 面板配置内容
+	CreatedAt  string `json:"created_at"`  // 创建时间
+	UpdatedAt  string `json:"updated_at"`  // 更新时间
+	Version    int    `json:"version"`     // 版本号
+}
+
+// PanelListResponse 面板列表响应
+type PanelListResponse struct {
+	Records    []*PanelRecord `json:"records"`     // 面板记录列表，按设置时间倒序
+	NextCursor string         `json:"next_cursor"` // 下一页游标，空串表示已到末页
+	IsEnd      bool           `json:"is_end"`      // 是否已到最后一页
+}
+
+// PanelDetailResponse 面板详情响应
+type PanelDetailResponse struct {
+	PanelID      string   `json:"panel_id"`                // 面板 ID
+	Scope        string   `json:"scope"`                   // 生效场景
+	TargetType   string   `json:"target_type"`             // 作用范围
+	Panel        *Panel   `json:"panel"`                   // 面板配置内容
+	CreatedAt    string   `json:"created_at"`              // 创建时间
+	UpdatedAt    string   `json:"updated_at"`              // 更新时间
+	Version      int      `json:"version"`                 // 版本号
+	UserOpenIDs  []string `json:"user_openids,omitempty"`  // 关联用户 openid，仅 c2c 且 specific 时返回
+	GroupOpenIDs []string `json:"group_openids,omitempty"` // 关联群 openid，仅 group 且 specific 时返回
+}
+
+// CreatePanelRequest 创建面板请求
+type CreatePanelRequest struct {
+	Scope        string   `json:"scope"`                   // 生效场景（必填）：c2c / group / channel / dm
+	TargetType   string   `json:"target_type,omitempty"`   // 作用范围：all / specific（channel/dm 仅 all）
+	UserOpenIDs  []string `json:"user_openids,omitempty"`  // 用户 openid 列表，仅 c2c 且 specific 有效
+	GroupOpenIDs []string `json:"group_openids,omitempty"` // 群 openid 列表，仅 group 且 specific 有效
+	Panel        *Panel   `json:"panel"`                   // 面板配置内容（必填）
+}
+
+// CreatePanelResponse 创建面板响应
+type CreatePanelResponse struct {
+	PanelID string `json:"panel_id"` // 新创建的面板 ID
+}
+
+// UpdatePanelRequest 修改面板请求
+type UpdatePanelRequest struct {
+	Panel *Panel `json:"panel"` // 面板配置内容，覆盖原有元素列表和备注
+}
+
+// UpdatePanelResponse 修改面板响应
+type UpdatePanelResponse struct {
+	Version int `json:"version"` // 修改后的面板版本号
+}
+
+// UpdatePanelTargetRequest 修改面板关联对象请求
+type UpdatePanelTargetRequest struct {
+	Op           string   `json:"op"`                      // 操作类型：add / del
+	UserOpenIDs  []string `json:"user_openids,omitempty"`  // 用户 openid 列表，仅 c2c 有效
+	GroupOpenIDs []string `json:"group_openids,omitempty"` // 群 openid 列表，仅 group 有效
 }

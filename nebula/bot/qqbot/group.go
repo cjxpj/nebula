@@ -273,7 +273,8 @@ func qqBOTGroupRun(payload *qqbot_msg.Payload, bot *qqbot_msg.RouterQQBot) {
 		Set("Robot", appId).
 		Set("头像", "http://q.qlogo.cn/qqapp/"+appId+"/"+userID+"/640").
 		Set("MsgId", m.ID).
-		Set("MessageID", m.ID)
+		Set("MessageID", m.ID).
+		Set("RefIdx", refIdxOf(m.MessageScene))
 
 	for i, id := range atIDs {
 		valData.Set(fmt.Sprintf("AT%d", i), id)
@@ -346,12 +347,13 @@ func qqBOTGroupRun(payload *qqbot_msg.Payload, bot *qqbot_msg.RouterQQBot) {
 					rMsg = strings.ReplaceAll(rMsg, "\\r", "\n")
 
 					// fmt.Println("QQBot回复:", rMsg)
-					if strippedMsg, imgs := stripImgTags(rMsg); len(imgs) != 0 {
+					strippedMsg, imgs, refID := stripReplyTags(rMsg)
+					if len(imgs) != 0 {
 						for i, img := range imgs {
 							if i == 1 {
 								strippedMsg = ""
 							}
-							_, mErr := bot.API.ReplyGroupImgMessage(m.ID, m.GroupOpenID, img, strippedMsg)
+							_, mErr := bot.API.ReplyGroupImgMessageWithRef(m.ID, m.GroupOpenID, img, strippedMsg, refID)
 							if mErr != nil {
 								debugLog.Infof("QQBot回复图文失败%v", mErr)
 							}
@@ -359,8 +361,8 @@ func qqBOTGroupRun(payload *qqbot_msg.Payload, bot *qqbot_msg.RouterQQBot) {
 						return
 					}
 
-					if rMsg != "" {
-						_, mErr := bot.API.ReplyGroupMessage(m.ID, m.GroupOpenID, rMsg)
+					if strippedMsg != "" {
+						_, mErr := bot.API.ReplyGroupMessageWithRef(m.ID, m.GroupOpenID, strippedMsg, refID)
 						if mErr != nil {
 							fmt.Println("QQBot回复失败", mErr)
 						}
@@ -456,18 +458,19 @@ func qqBOTGroupRun(payload *qqbot_msg.Payload, bot *qqbot_msg.RouterQQBot) {
 
 		// fmt.Println("QQBot回复:", rMsg)
 
-		if strippedMsg, imgs := stripImgTags(rMsg); len(imgs) != 0 {
+		strippedMsg, imgs, refID := stripReplyTags(rMsg)
+		if len(imgs) != 0 {
 			for i, img := range imgs {
 				if i == 1 {
 					strippedMsg = ""
 				}
-				_, mErr := bot.API.ReplyGroupImgMessage(m.ID, m.GroupOpenID, img, strippedMsg)
+				_, mErr := bot.API.ReplyGroupImgMessageWithRef(m.ID, m.GroupOpenID, img, strippedMsg, refID)
 				if mErr != nil {
 					fmt.Println("QQBot回复图文失败", mErr)
 				}
 			}
-		} else if rMsg != "" {
-			_, mErr := bot.API.ReplyGroupMessage(m.ID, m.GroupOpenID, rMsg)
+		} else if strippedMsg != "" {
+			_, mErr := bot.API.ReplyGroupMessageWithRef(m.ID, m.GroupOpenID, strippedMsg, refID)
 			if mErr != nil {
 				debugLog.Infof("QQBot回复失败%v", mErr)
 			}
@@ -549,7 +552,8 @@ func qqBOTGroupATRun(payload *qqbot_msg.Payload, bot *qqbot_msg.RouterQQBot) {
 		Set("Robot", appId).
 		Set("头像", "http://q.qlogo.cn/qqapp/"+appId+"/"+userID+"/640").
 		Set("MsgId", m.ID).
-		Set("MessageID", m.ID)
+		Set("MessageID", m.ID).
+		Set("RefIdx", refIdxOf(m.MessageScene))
 
 	// 词库
 	for _, v := range botDicList {
@@ -591,7 +595,8 @@ func qqBOTGroupATRun(payload *qqbot_msg.Payload, bot *qqbot_msg.RouterQQBot) {
 					rMsg = strings.ReplaceAll(rMsg, "\\r", "\n")
 
 					// fmt.Println("QQBot回复:", rMsg)
-					if strippedMsg, imgs := stripImgTags(rMsg); len(imgs) != 0 {
+					strippedMsg, imgs, refID := stripReplyTags(rMsg)
+					if len(imgs) != 0 {
 						if strippedMsg != "" {
 							strippedMsg = "\n" + strippedMsg
 						}
@@ -599,7 +604,7 @@ func qqBOTGroupATRun(payload *qqbot_msg.Payload, bot *qqbot_msg.RouterQQBot) {
 							if i == 1 {
 								strippedMsg = ""
 							}
-							_, mErr := bot.API.ReplyGroupImgMessage(m.ID, m.GroupOpenID, img, strippedMsg)
+							_, mErr := bot.API.ReplyGroupImgMessageWithRef(m.ID, m.GroupOpenID, img, strippedMsg, refID)
 							if mErr != nil {
 								debugLog.Infof("QQBot回复图文失败%v", mErr)
 							}
@@ -607,10 +612,10 @@ func qqBOTGroupATRun(payload *qqbot_msg.Payload, bot *qqbot_msg.RouterQQBot) {
 						return
 					}
 
-					if rMsg != "" {
+					if strippedMsg != "" {
 						// 开头附带\n
-						rMsg = "\n" + rMsg
-						_, mErr := bot.API.ReplyGroupMessage(m.ID, m.GroupOpenID, rMsg)
+						strippedMsg = "\n" + strippedMsg
+						_, mErr := bot.API.ReplyGroupMessageWithRef(m.ID, m.GroupOpenID, strippedMsg, refID)
 						if mErr != nil {
 							fmt.Println("QQBot回复失败", mErr)
 						}
@@ -709,7 +714,8 @@ func qqBOTGroupATRun(payload *qqbot_msg.Payload, bot *qqbot_msg.RouterQQBot) {
 
 		// fmt.Println("QQBot回复:", rMsg)
 
-		if strippedMsg, imgs := stripImgTags(rMsg); len(imgs) != 0 {
+		strippedMsg, imgs, refID := stripReplyTags(rMsg)
+		if len(imgs) != 0 {
 			if strippedMsg != "" {
 				strippedMsg = "\n" + strippedMsg
 			}
@@ -717,15 +723,15 @@ func qqBOTGroupATRun(payload *qqbot_msg.Payload, bot *qqbot_msg.RouterQQBot) {
 				if i == 1 {
 					strippedMsg = ""
 				}
-				_, mErr := bot.API.ReplyGroupImgMessage(m.ID, m.GroupOpenID, img, strippedMsg)
+				_, mErr := bot.API.ReplyGroupImgMessageWithRef(m.ID, m.GroupOpenID, img, strippedMsg, refID)
 				if mErr != nil {
 					fmt.Println("QQBot回复图文失败", mErr)
 				}
 			}
-		} else if rMsg != "" {
+		} else if strippedMsg != "" {
 			// 开头附带\n
-			rMsg = "\n" + rMsg
-			_, mErr := bot.API.ReplyGroupMessage(m.ID, m.GroupOpenID, rMsg)
+			strippedMsg = "\n" + strippedMsg
+			_, mErr := bot.API.ReplyGroupMessageWithRef(m.ID, m.GroupOpenID, strippedMsg, refID)
 			if mErr != nil {
 				debugLog.Infof("QQBot回复失败%v", mErr)
 			}
@@ -1042,7 +1048,8 @@ func runGroupEventDic(bot *qqbot_msg.RouterQQBot, ctx *PushContext, valData *dto
 		}
 		rMsg = strings.ReplaceAll(rMsg, "\\r", "\n")
 
-		if strippedMsg, imgs := stripImgTags(rMsg); len(imgs) != 0 {
+		strippedMsg, imgs, refID := stripReplyTags(rMsg)
+		if len(imgs) != 0 {
 			for i, img := range imgs {
 				if i == 1 {
 					strippedMsg = ""
@@ -1052,20 +1059,20 @@ func runGroupEventDic(bot *qqbot_msg.RouterQQBot, ctx *PushContext, valData *dto
 						fmt.Println("QQBot私信回复图文失败", mErr)
 					}
 				} else {
-					if _, mErr := bot.API.ReplyGroupImgMessage(ctx.MsgID, ctx.GroupOpenID, img, strippedMsg, ctx.EventID); mErr != nil {
+					if _, mErr := bot.API.ReplyGroupImgMessageWithRef(ctx.MsgID, ctx.GroupOpenID, img, strippedMsg, refID, ctx.EventID); mErr != nil {
 						fmt.Println("QQBot回复图文失败", mErr)
 					}
 				}
 				// event_id 只能使用一次，后续图片和词库不能再用
 				ctx.EventID = ""
 			}
-		} else if rMsg != "" {
+		} else if strippedMsg != "" {
 			if ctx.PrivateUserID != "" {
-				if _, mErr := bot.API.ReplyGroupPrivateMessage(ctx.MsgID, ctx.PrivateUserID, rMsg); mErr != nil {
+				if _, mErr := bot.API.ReplyGroupPrivateMessage(ctx.MsgID, ctx.PrivateUserID, strippedMsg); mErr != nil {
 					debugLog.Infof("QQBot私信回复失败%v", mErr)
 				}
 			} else {
-				if _, mErr := bot.API.ReplyGroupMessage(ctx.MsgID, ctx.GroupOpenID, rMsg, ctx.EventID); mErr != nil {
+				if _, mErr := bot.API.ReplyGroupMessageWithRef(ctx.MsgID, ctx.GroupOpenID, strippedMsg, refID, ctx.EventID); mErr != nil {
 					debugLog.Infof("QQBot回复失败%v", mErr)
 				}
 			}
@@ -1206,18 +1213,23 @@ func qqBOTGroupPrivateRun(payload *qqbot_msg.Payload, bot *qqbot_msg.RouterQQBot
 					rMsg := dic_api.Api.DicRunPrivateVal(dic, d.Inputs.StringAfter(2), qqVal)
 					rMsg = strings.ReplaceAll(rMsg, "\\r", "\n")
 
-					if strippedMsg, imgs := stripImgTags(rMsg); len(imgs) != 0 {
+					strippedMsg, imgs, atMsgID := stripReplyTags(rMsg)
+					replyID := m.ID
+					if atMsgID != "" {
+						replyID = atMsgID
+					}
+					if len(imgs) != 0 {
 						for i, img := range imgs {
 							if i == 1 {
 								strippedMsg = ""
 							}
-							bot.API.ReplyGroupPrivateImgMessage(m.ID, userID, img, strippedMsg)
+							bot.API.ReplyGroupPrivateImgMessage(replyID, userID, img, strippedMsg)
 						}
 						return
 					}
 
-					if rMsg != "" {
-						bot.API.ReplyGroupPrivateMessage(m.ID, userID, rMsg)
+					if strippedMsg != "" {
+						bot.API.ReplyGroupPrivateMessage(replyID, userID, strippedMsg)
 					}
 				}()
 				return "", nil
@@ -1299,15 +1311,20 @@ func qqBOTGroupPrivateRun(payload *qqbot_msg.Payload, bot *qqbot_msg.RouterQQBot
 		rMsg = strings.ReplaceAll(rMsg, "\\r", "\n")
 
 		// fmt.Println("QQBot回复:", rMsg)
-		if strippedMsg, imgs := stripImgTags(rMsg); len(imgs) != 0 {
+		strippedMsg, imgs, atMsgID := stripReplyTags(rMsg)
+		replyID := m.ID
+		if atMsgID != "" {
+			replyID = atMsgID
+		}
+		if len(imgs) != 0 {
 			for i, img := range imgs {
 				if i == 1 {
 					strippedMsg = ""
 				}
-				bot.API.ReplyGroupPrivateImgMessage(m.ID, userID, img, strippedMsg)
+				bot.API.ReplyGroupPrivateImgMessage(replyID, userID, img, strippedMsg)
 			}
-		} else if rMsg != "" {
-			bot.API.ReplyGroupPrivateMessage(m.ID, userID, rMsg)
+		} else if strippedMsg != "" {
+			bot.API.ReplyGroupPrivateMessage(replyID, userID, strippedMsg)
 		}
 	}
 }
