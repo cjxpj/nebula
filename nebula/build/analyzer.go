@@ -79,7 +79,7 @@ func ValTextTest(text string) (int8, string, string) {
 	prefix := text[:i]
 
 	// 2️⃣ prefix 长度限制
-	if len(prefix) > 24 {
+	if len(prefix) > 32 {
 		return 0, "", ""
 	}
 

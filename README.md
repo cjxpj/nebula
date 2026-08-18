@@ -179,7 +179,7 @@ $发送文本 <文本> <图片数据>$
 
 # Markdown 消息（支持自定义按钮）
 $发送MD <Markdown内容> <键盘JSON(可选)>$
-$发送MD <模板ID> <键1> <值1>... <键盘JSON(可选)>$
+$发送MD <模板ID> <键1> <值1>...$
 
 # 消息按钮示例（指令按钮，点击自动填入 /确认）
 $发送MD # 菜单 {"rows":[{"buttons":[{"id":"1","render_data":{"label":"确认","visited_label":"已确认","style":1},"action":{"type":2,"permission":{"type":2},"data":"/确认","enter":true,"unsupport_tips":"请升级"}}]}]}

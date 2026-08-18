@@ -32,6 +32,14 @@ func popMDKeyboard(d *dto.DicInputs) (int, *qqbot_msg.Keyboard) {
 	if l == 0 {
 		return 0, nil
 	}
+	// 参数2为 JSON 键盘（{"rows":[...]} 或 {"id":"..."}）时自动解析
+	if l >= 2 {
+		if s2 := d.Inputs.String(2); strings.HasPrefix(strings.TrimSpace(s2), "{") {
+			if kb := qqbot_msg.ParseKeyboardJSON(s2); kb != nil {
+				return 1, kb
+			}
+		}
+	}
 	// "按钮"仅在参数2位置（简单文本模式）作为按钮分隔符；
 	// 其后解析不出按钮定义时按普通参数处理
 	if l >= 2 && d.Inputs.String(2) == "按钮" {
@@ -47,8 +55,9 @@ func popMDKeyboard(d *dto.DicInputs) (int, *qqbot_msg.Keyboard) {
 }
 
 // parseTextButtons 从参数 start..l 解析文本按钮定义
-// 格式: label;key=val;key=val...  尾部 \r 表示该按钮后换行
-// 支持 key: type(0/1/2)、data、enter(true/false)
+// 格式: [样式数字]label[|data]  尾部 \r 表示该按钮后换行
+// 开头 [数字] 设置样式（如 [0]~[3]），默认 0
+// data 以 http 开头自动为链接(type=0)，以 # 开头自动为回调(type=1)，否则为指令(type=2)
 func parseTextButtons(d *dto.DicInputs, start, l int) *qqbot_msg.Keyboard {
 	var rows []*qqbot_msg.KeyboardRow
 	var curButtons []*qqbot_msg.Button
@@ -57,9 +66,18 @@ func parseTextButtons(d *dto.DicInputs, start, l int) *qqbot_msg.Keyboard {
 		if s == "" {
 			continue
 		}
-		// 用 ; 分割参数
-		parts := strings.Split(s, ";")
-		label := strings.TrimSpace(parts[0])
+		s = strings.TrimSpace(s)
+		// 开头 [数字] 设置样式（如 [1]确认 → 样式1）
+		style := 0
+		if strings.HasPrefix(s, "[") {
+			if end := strings.Index(s, "]"); end > 1 {
+				if v, err := strconv.Atoi(s[1:end]); err == nil {
+					style = v
+					s = strings.TrimSpace(s[end+1:])
+				}
+			}
+		}
+		label := strings.TrimSpace(s)
 		if label == "" {
 			continue
 		}
@@ -72,8 +90,6 @@ func parseTextButtons(d *dto.DicInputs, start, l int) *qqbot_msg.Keyboard {
 		// 默认值
 		btnType := 2
 		btnData := label
-		var btnEnter bool
-		hasType := false
 		hasData := false
 		// | 拆分：标签|数据，label 的 # 前缀移到 btnData 上由后续统一处理
 		if before, after, ok := strings.Cut(label, "|"); ok {
@@ -89,34 +105,11 @@ func parseTextButtons(d *dto.DicInputs, start, l int) *qqbot_msg.Keyboard {
 		if len([]rune(label)) > 10 {
 			label = string([]rune(label)[:10])
 		}
-		// 解析 key=value
-		for _, part := range parts[1:] {
-			k, v, ok := strings.Cut(part, "=")
-			if !ok {
-				continue
-			}
-			k = strings.TrimSpace(k)
-			v = strings.TrimSpace(v)
-			switch k {
-			case "type":
-				if t, err := strconv.Atoi(v); err == nil {
-					btnType = t
-					hasType = true
-				}
-			case "data":
-				btnData = v
-				hasData = true
-			case "enter":
-				btnEnter = v == "true" || v == "1"
-			}
-		}
-		// 未显式指定 type 时，根据 data 前缀自动判断类型
-		if !hasType {
-			if strings.HasPrefix(btnData, "http://") || strings.HasPrefix(btnData, "https://") {
-				btnType = 0 // 链接
-			} else if strings.HasPrefix(btnData, "#") {
-				btnType = 1 // 回调
-			}
+		// 根据 data 前缀自动判断类型
+		if strings.HasPrefix(btnData, "http://") || strings.HasPrefix(btnData, "https://") {
+			btnType = 0 // 链接
+		} else if strings.HasPrefix(btnData, "#") {
+			btnType = 1 // 回调
 		}
 		// 根据类型清理 data 和 label
 		if btnType == 1 && strings.HasPrefix(btnData, "#") {
@@ -143,12 +136,9 @@ func parseTextButtons(d *dto.DicInputs, start, l int) *qqbot_msg.Keyboard {
 			Permission: &qqbot_msg.ButtonPermission{Type: 2},
 			Data:       btnData,
 		}
-		if btnEnter {
-			action.Enter = true
-		}
 		curButtons = append(curButtons, &qqbot_msg.Button{
 			ID:         fmt.Sprintf("btn_%d", i-1),
-			RenderData: &qqbot_msg.ButtonRenderData{Label: label},
+			RenderData: &qqbot_msg.ButtonRenderData{Label: label, Style: style},
 			Action:     action,
 		})
 		if newRow {
@@ -273,8 +263,9 @@ func qqBOTGroupRun(payload *qqbot_msg.Payload, bot *qqbot_msg.RouterQQBot) {
 		Set("Robot", appId).
 		Set("头像", "http://q.qlogo.cn/qqapp/"+appId+"/"+userID+"/640").
 		Set("MsgId", m.ID).
-		Set("MessageID", m.ID).
-		Set("RefIdx", refIdxOf(m.MessageScene))
+		Set("消息ID", m.ID).
+		Set("RefMsgId", refIdxOf(m.MessageScene)).
+		Set("回复消息ID", refIdxOf(m.MessageScene))
 
 	for i, id := range atIDs {
 		valData.Set(fmt.Sprintf("AT%d", i), id)
@@ -552,8 +543,9 @@ func qqBOTGroupATRun(payload *qqbot_msg.Payload, bot *qqbot_msg.RouterQQBot) {
 		Set("Robot", appId).
 		Set("头像", "http://q.qlogo.cn/qqapp/"+appId+"/"+userID+"/640").
 		Set("MsgId", m.ID).
-		Set("MessageID", m.ID).
-		Set("RefIdx", refIdxOf(m.MessageScene))
+		Set("消息ID", m.ID).
+		Set("RefMsgId", refIdxOf(m.MessageScene)).
+		Set("回复消息ID", refIdxOf(m.MessageScene))
 
 	// 词库
 	for _, v := range botDicList {
@@ -1176,7 +1168,7 @@ func qqBOTGroupPrivateRun(payload *qqbot_msg.Payload, bot *qqbot_msg.RouterQQBot
 		Set("Robot", appId).
 		Set("头像", "http://q.qlogo.cn/qqapp/"+appId+"/"+userID+"/640").
 		Set("MsgId", m.ID).
-		Set("MessageID", m.ID)
+		Set("消息ID", m.ID)
 
 	// 词库
 	for _, v := range botDicList {

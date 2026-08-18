@@ -322,8 +322,8 @@ func init() {
 		for {
 			raw, readErr := reader.ReadString('\n')
 			if len(raw) > 0 {
-				// 回显到真实终端，保证开发调试时仍能看到输出
-				_, _ = originalStdout.WriteString(raw)
+				// 回显到真实终端：还原 debugLog 转义的控制字符，让多行内容正常换行显示
+				_, _ = originalStdout.WriteString(debugLog.UnescapeControlChars(raw))
 				processServerLogLine(raw)
 			}
 			if readErr != nil {
@@ -455,9 +455,9 @@ func readServerLogs(limit, skip int) ([]map[string]string, bool) {
 	return logs, start > 0
 }
 
-// ClearServerLogs 清空 database/log 下的全部日志文件
+// ClearServerLogs 清空当前（当天）日志文件，不影响历史日期的日志文件
 func ClearServerLogs() {
-	utils.NewFileQueue(serverLogDir()).DeleteFolder()
+	serverLogFq().DeleteFile()
 }
 
 // serverLogKeepDays 启动时保留的日志天数，超过该天数的旧日志文件会被清理

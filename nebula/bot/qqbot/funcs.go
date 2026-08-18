@@ -379,7 +379,7 @@ var ActiveFuncs = map[string]dto.DicFunc{
 			op := d.Inputs.String(4)
 			joinRequestID := d.Inputs.String(5)
 			rejectReason := d.Inputs.String(6)
-			if err := bot.API.ApproveJoinRequest(groupOpenID, memberOpenID, op, joinRequestID, rejectReason, false); err != nil {
+			if err := bot.API.ApproveJoinRequest(groupOpenID, memberOpenID, op, joinRequestID, rejectReason); err != nil {
 				debugLog.Infof("[QQBot] 入群审批失败: %v", err)
 			}
 			return "", nil
@@ -579,7 +579,7 @@ var ReplyFuncs = map[string]dto.DicFunc{
 			if groupOpenID == "" {
 				return "", nil
 			}
-			if err := ctx.Bot.API.ApproveJoinRequest(groupOpenID, memberOpenID, op, joinRequestID, rejectReason, false); err != nil {
+			if err := ctx.Bot.API.ApproveJoinRequest(groupOpenID, memberOpenID, op, joinRequestID, rejectReason); err != nil {
 				debugLog.Infof("[QQBot] 入群审批失败: %v", err)
 			}
 			return "", nil

@@ -3,6 +3,7 @@ package debugLog
 import (
 	"fmt"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"strings"
 	"time"
@@ -77,4 +78,25 @@ func EscapeControlChars(s string) string {
 	s = strings.ReplaceAll(s, "\n", `\n`)
 	s = strings.ReplaceAll(s, "\t", `\t`)
 	return s
+}
+
+// unescapeControlCharsRe 匹配被 EscapeControlChars 转义出的可见序列：\n、\r、\t、\\
+var unescapeControlCharsRe = regexp.MustCompile(`\\(\\|n|r|t)`)
+
+// UnescapeControlChars 还原 EscapeControlChars 转义的控制字符（\n、\r、\t、\\）。
+// 用于在真实终端回显时恢复多行等原始显示效果，与前端 unescapeControlChars 保持一致。
+func UnescapeControlChars(s string) string {
+	return unescapeControlCharsRe.ReplaceAllStringFunc(s, func(m string) string {
+		switch m {
+		case `\\`:
+			return `\`
+		case `\n`:
+			return "\n"
+		case `\r`:
+			return "\r"
+		case `\t`:
+			return "\t"
+		}
+		return m
+	})
 }

@@ -509,6 +509,10 @@ func RunCountText(v *dto.DicVal, content any) any {
 		if !ok {
 			return "[" + val + "]"
 		}
+		// 无计算逻辑（不含运算符）时原样返回，如 [1] 返回 [1] 而非 1
+		if !strings.ContainsAny(raw, "+-*/^<>()") {
+			return "[" + raw + "]"
+		}
 		res, err := Count(raw)
 		if err != nil {
 			switch err.Error() {
