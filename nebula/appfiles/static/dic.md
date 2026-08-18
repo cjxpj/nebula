@@ -2794,18 +2794,19 @@ $搜索账号 <关键词>$     // 模糊搜索 remark/名称/appid，返回匹�
 **主动发送（通过 `#引入=@QQBot` 注入，无需消息上下文，URL 访问也可用）**
 
 ```
-$群单发 <账号> <群OpenID> <文本>$
-$群单发图 <账号> <群OpenID> <图片数据> <文本>$
-$群单发MD <账号> <群OpenID> <Markdown内容> <键盘JSON(可选)>$
-$群单发语音 <账号> <群OpenID> <语音数据>$
-$群单发视频 <账号> <群OpenID> <视频数据>$
-$私聊 <账号> <用户OpenID> <文本>$
-$私聊图 <账号> <用户OpenID> <图片数据> <文本>$
-$禁 <账号> <群OpenID> <成员OpenID> <禁言秒数>$      // 0 表示解禁
-$群信息 <账号> <群OpenID>$                          // 返回群信息 JSON
-$入群审批 <账号> <群OpenID> <成员OpenID> <op> <申请ID(可选)> <拒绝理由(可选)>$  // op: 同意 / 拒绝 / 拉黑拒绝
-$撤回 <账号> <群OpenID> <消息ID>$                    // 撤回群消息（机器人消息 2 分钟内）
-$撤回私聊 <账号> <用户OpenID> <消息ID>$              // 撤回单聊消息（机器人消息 2 分钟内）
+$群单发 <appid> <群OpenID> <文本>$
+$群单发图 <appid> <群OpenID> <图片数据> <文本>$
+$群单发MD <appid> <群OpenID> <Markdown内容> <键盘JSON(可选)>$
+$群单发语音 <appid> <群OpenID> <语音数据>$
+$群单发视频 <appid> <群OpenID> <视频数据>$
+$私聊 <appid> <用户OpenID> <文本>$
+$私聊图 <appid> <用户OpenID> <图片数据> <文本>$
+$私聊MD <appid> <用户OpenID> <Markdown内容> <键盘JSON(可选)>$
+$禁 <appid> <群OpenID> <成员OpenID> <禁言秒数>$      // 0 表示解禁
+$群信息 <appid> <群OpenID>$                          // 返回群信息 JSON
+$入群审批 <appid> <群OpenID> <成员OpenID> <op> <申请ID(可选)> <拒绝理由(可选)>$  // op: 同意 / 拒绝 / 拉黑拒绝
+$撤回 <appid> <群OpenID> <消息ID>$                    // 撤回群消息（机器人消息 2 分钟内）
+$撤回私聊 <appid> <用户OpenID> <消息ID>$              // 撤回单聊消息（机器人消息 2 分钟内）
 ```
 
 

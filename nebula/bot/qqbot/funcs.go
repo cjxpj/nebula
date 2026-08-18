@@ -80,6 +80,19 @@ func getBotByIndex(index int) *qqbot_msg.RouterQQBot {
 	return dto.ServerConfig.QQBots[keys[index]]
 }
 
+// getBotByAppId 按 APPID 查找已启用的 QQBot，不存在返回 nil
+func getBotByAppId(appId string) *qqbot_msg.RouterQQBot {
+	if appId == "" {
+		return nil
+	}
+	for _, bot := range dto.ServerConfig.QQBots {
+		if bot != nil && bot.Open && bot.API != nil && bot.API.AppId == appId {
+			return bot
+		}
+	}
+	return nil
+}
+
 // formatMDPair 格式化 MD 模板键值对，绕过渲染限制
 func formatMDPair(key, val string) *qqbot_msg.MarkdownParams {
 	val = strings.ReplaceAll(val, "\n", "\r")
@@ -234,7 +247,7 @@ var ActiveFuncs = map[string]dto.DicFunc{
 	"群单发": {
 		L: "3",
 		Fn: func(d *dto.DicInputs) (any, error) {
-			bot := getBotByIndex(d.Inputs.Int(1))
+			bot := getBotByAppId(d.Inputs.String(1))
 			if bot == nil {
 				return "QQBot未启用或未配置", nil
 			}
@@ -253,7 +266,7 @@ var ActiveFuncs = map[string]dto.DicFunc{
 	"群单发图": {
 		L: "4",
 		Fn: func(d *dto.DicInputs) (any, error) {
-			bot := getBotByIndex(d.Inputs.Int(1))
+			bot := getBotByAppId(d.Inputs.String(1))
 			if bot == nil {
 				return "QQBot未启用或未配置", nil
 			}
@@ -266,7 +279,7 @@ var ActiveFuncs = map[string]dto.DicFunc{
 	"群单发MD": {
 		L: "3|4",
 		Fn: func(d *dto.DicInputs) (any, error) {
-			bot := getBotByIndex(d.Inputs.Int(1))
+			bot := getBotByAppId(d.Inputs.String(1))
 			if bot == nil {
 				return "QQBot未启用或未配置", nil
 			}
@@ -280,7 +293,7 @@ var ActiveFuncs = map[string]dto.DicFunc{
 	"群单发语音": {
 		L: "3",
 		Fn: func(d *dto.DicInputs) (any, error) {
-			bot := getBotByIndex(d.Inputs.Int(1))
+			bot := getBotByAppId(d.Inputs.String(1))
 			if bot == nil {
 				return "QQBot未启用或未配置", nil
 			}
@@ -293,7 +306,7 @@ var ActiveFuncs = map[string]dto.DicFunc{
 	"群单发视频": {
 		L: "3",
 		Fn: func(d *dto.DicInputs) (any, error) {
-			bot := getBotByIndex(d.Inputs.Int(1))
+			bot := getBotByAppId(d.Inputs.String(1))
 			if bot == nil {
 				return "QQBot未启用或未配置", nil
 			}
@@ -306,7 +319,7 @@ var ActiveFuncs = map[string]dto.DicFunc{
 	"私聊": {
 		L: "3",
 		Fn: func(d *dto.DicInputs) (any, error) {
-			bot := getBotByIndex(d.Inputs.Int(1))
+			bot := getBotByAppId(d.Inputs.String(1))
 			if bot == nil {
 				return "QQBot未启用或未配置", nil
 			}
@@ -324,7 +337,7 @@ var ActiveFuncs = map[string]dto.DicFunc{
 	"私聊图": {
 		L: "4",
 		Fn: func(d *dto.DicInputs) (any, error) {
-			bot := getBotByIndex(d.Inputs.Int(1))
+			bot := getBotByAppId(d.Inputs.String(1))
 			if bot == nil {
 				return "QQBot未启用或未配置", nil
 			}
@@ -334,10 +347,24 @@ var ActiveFuncs = map[string]dto.DicFunc{
 			return "发送成功", nil
 		},
 	},
+	"私聊MD": {
+		L: "3|4",
+		Fn: func(d *dto.DicInputs) (any, error) {
+			bot := getBotByAppId(d.Inputs.String(1))
+			if bot == nil {
+				return "QQBot未启用或未配置", nil
+			}
+			kb := qqbot_msg.ParseKeyboardJSON(d.Inputs.String(4))
+			if _, err := bot.API.ReplyPrivateAnyMarkdownWithKeyboard("", d.Inputs.String(2), d.Inputs.String(3), kb); err != nil {
+				return "发送失败: " + err.Error(), nil
+			}
+			return "发送成功", nil
+		},
+	},
 	"禁": {
 		L: "4",
 		Fn: func(d *dto.DicInputs) (any, error) {
-			bot := getBotByIndex(d.Inputs.Int(1))
+			bot := getBotByAppId(d.Inputs.String(1))
 			if bot == nil {
 				return "", nil
 			}
@@ -353,7 +380,7 @@ var ActiveFuncs = map[string]dto.DicFunc{
 	"群信息": {
 		L: "2",
 		Fn: func(d *dto.DicInputs) (any, error) {
-			bot := getBotByIndex(d.Inputs.Int(1))
+			bot := getBotByAppId(d.Inputs.String(1))
 			if bot == nil {
 				return "", nil
 			}
@@ -370,7 +397,7 @@ var ActiveFuncs = map[string]dto.DicFunc{
 	"入群审批": {
 		L: "4|5|6",
 		Fn: func(d *dto.DicInputs) (any, error) {
-			bot := getBotByIndex(d.Inputs.Int(1))
+			bot := getBotByAppId(d.Inputs.String(1))
 			if bot == nil {
 				return "", nil
 			}
@@ -388,7 +415,7 @@ var ActiveFuncs = map[string]dto.DicFunc{
 	"撤回": {
 		L: "3",
 		Fn: func(d *dto.DicInputs) (any, error) {
-			bot := getBotByIndex(d.Inputs.Int(1))
+			bot := getBotByAppId(d.Inputs.String(1))
 			if bot == nil {
 				return "", nil
 			}
@@ -401,7 +428,7 @@ var ActiveFuncs = map[string]dto.DicFunc{
 	"撤回私聊": {
 		L: "3",
 		Fn: func(d *dto.DicInputs) (any, error) {
-			bot := getBotByIndex(d.Inputs.Int(1))
+			bot := getBotByAppId(d.Inputs.String(1))
 			if bot == nil {
 				return "", nil
 			}

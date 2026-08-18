@@ -3694,6 +3694,10 @@ func opuiHandleApi(w http.ResponseWriter, r *http.Request) {
 		}
 		content, err := utils.NewFileQueue(j.Path).ReadFromFile()
 		if err != nil {
+			if os.IsNotExist(err) {
+				w.Write([]byte(`{"status":"not_found","error":"词库文件不存在"}`))
+				return
+			}
 			http.Error(w, `{"status":"error","error":"词库读取失败: `+err.Error()+`"}`, http.StatusBadRequest)
 			return
 		}
