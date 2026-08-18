@@ -330,7 +330,11 @@ func parseTriggerPrefix(line string) (category, class, param, rest string) {
 // 返回变量名（可为空）、导入目标以及是否为引入行。
 func parseImportLine(line string) (varName, target string, ok bool) {
 	if strings.HasPrefix(line, "#引入=") {
-		return "", strings.TrimSpace(line[len("#引入="):]), true
+		target = strings.TrimSpace(line[len("#引入="):])
+		if target == "" {
+			return "", "", false
+		}
+		return "", target, true
 	}
 	if idx := strings.Index(line, ":#引入="); idx > 0 {
 		name := strings.TrimSpace(line[:idx])
@@ -440,7 +444,7 @@ func loadImport(dicPath, path, fHeaderName string, funcMap map[string][]*dto.Bui
 			FileData = str
 		}
 
-		z := buildDic(dicPath, FileData, stack)
+		z := buildDic(filePath, FileData, stack)
 		stack.pop(filePath)
 
 		if fHeaderName != "" {
