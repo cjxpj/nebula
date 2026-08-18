@@ -4447,6 +4447,10 @@ func opuiHandleApi(w http.ResponseWriter, r *http.Request) {
 		if errorLine > 0 {
 			resp["errorLine"] = errorLine
 		}
+		// 编译警告（如循环引入），前端以黄色警告展示
+		if len(dic.Data.Warnings) > 0 {
+			resp["warnings"] = dic.Data.Warnings
+		}
 		jsonResp, _ := json.Marshal(resp)
 		w.Write(jsonResp)
 		return

@@ -257,70 +257,223 @@ func RunFor(jsonData []*dto.BuildDic, trigger string, runNum int) ([]string, str
 	return nil, "", 0, nil
 }
 
-// 遍历触发词文本
-func RunFors(jsonData []*dto.BuildDic, trigger string, runNum int) ([]string, string, int, *regexp.Regexp, string) {
-	jsonDataLen := len(jsonData)
-
-	if runNum > jsonDataLen {
-		return nil, "", 0, nil, ""
-	}
-
-	// 遍历每个条目并输出
-	for i := runNum; i < jsonDataLen; i++ {
-		item := jsonData[i]
-		text := item.Text
-
-		// 使用动态编译的正则表达式
+// RunFunc 匹配 [函数] 词条：函数名精确匹配 + 参数数量校验（不使用正则）。
+// 未声明参数规则时默认 0 个参数。返回函数正文、函数名、变量传出列表（-> 后缀）、
+// 参数规则（命中名称但数量不符时非空）以及是否命中。
+func RunFunc(jsonData []*dto.BuildDic, callName string, paramCount int) (text []string, name string, tparts string, errRule string, ok bool) {
+	for _, item := range jsonData {
 		t := item.Trigger
 		resF := ""
-
-		tindex := strings.LastIndex(t, "->")
-		if tindex != -1 {
-			resF = t[tindex+2:]
-			t = t[:tindex]
+		if i := strings.LastIndex(t, "->"); i != -1 {
+			resF, t = t[i+2:], t[:i]
 		}
 
-		regex := compileTriggerRegex(t)
-		if regex == nil {
+		rule := item.ParamRule
+		if rule == "" {
+			rule = "0"
+		}
+
+		if callName != t {
 			continue
 		}
-		if regex.MatchString(trigger) {
-			return text, t, i, regex, resF
+		if utils.MatchLenRule(paramCount, rule) {
+			return item.Text, t, resF, "", true
 		}
+		// 命中函数名但参数数量不符，返回规则供上层报错
+		return nil, t, resF, rule, false
 	}
-
-	return nil, "", 0, nil, ""
+	return nil, "", "", "", false
 }
 
 // parseTriggerPrefix 解析触发词行首的 [] 前缀。
-// 返回触发类别（空串表示普通触发）、Class 类名（可为空）和去掉前缀后的触发词。
-// [F]/[L] 缩写自动归一为 [函数]/[内部]；[:类名] 后缀表示 Class，如 [函数:a]、[F:a]。
-func parseTriggerPrefix(line string) (category, class, rest string) {
+// 返回触发类别（空串表示普通触发）、Class 类名（可为空）、参数数量规则（可为空）和去掉前缀后的触发词。
+// [F]/[L] 缩写自动归一为 [函数]/[内部]；[:类名] 后缀表示 Class，如 [函数:a]、[F:a]；
+// [|规则] 后缀表示参数数量校验，如 [函数|1|2]、[函数|1..]（仅对「函数」类别生效）。
+func parseTriggerPrefix(line string) (category, class, param, rest string) {
 	if !strings.HasPrefix(line, "[") {
-		return "", "", line
+		return "", "", "", line
 	}
 	end := strings.Index(line, "]")
 	if end <= 1 {
-		return "", "", line
+		return "", "", "", line
 	}
 	tag := line[1:end]
 	rest = line[end+1:]
+
+	// 参数数量规则：首个 | 之后的内容
+	if before, after, ok := strings.Cut(tag, "|"); ok {
+		tag = before
+		param = after
+	}
+
+	// Class 类名后缀
 	if before, after, ok := strings.Cut(tag, ":"); ok {
 		category, class = before, after
 	} else {
 		category = tag
 	}
+
 	switch category {
 	case "F", "f":
 		category = "函数"
 	case "L", "l":
 		category = "内部"
 	}
-	return category, class, rest
+	return category, class, param, rest
+}
+
+// parseImportLine 解析 #引入= 行，支持两种形式：
+//
+//	#引入=目标        → varName 为空
+//	变量:#引入=目标    → 返回变量名与目标（导入全部函数并返回实例包）
+//
+// 返回变量名（可为空）、导入目标以及是否为引入行。
+func parseImportLine(line string) (varName, target string, ok bool) {
+	if strings.HasPrefix(line, "#引入=") {
+		return "", strings.TrimSpace(line[len("#引入="):]), true
+	}
+	if idx := strings.Index(line, ":#引入="); idx > 0 {
+		name := strings.TrimSpace(line[:idx])
+		target := strings.TrimSpace(line[idx+len(":#引入="):])
+		if name != "" && target != "" {
+			return name, target, true
+		}
+	}
+	return "", "", false
+}
+
+// importStack 记录当前 #引入= 递归加载链上的文件路径，用于检测循环引入。
+// 加载为单 goroutine 递归，无需加锁。
+type importStack struct {
+	files    map[string]bool
+	warnings []dto.BuildWarning // 收集编译警告（如循环引入），供前端调试面板展示
+}
+
+// newImportStack 创建空的引入链。
+func newImportStack() *importStack {
+	return &importStack{files: make(map[string]bool)}
+}
+
+// push 将文件压入引入链；若该文件已在链上则返回 false（循环引入）。
+func (s *importStack) push(path string) bool {
+	if s.files[path] {
+		return false
+	}
+	s.files[path] = true
+	return true
+}
+
+// pop 将文件从引入链弹出。
+func (s *importStack) pop(path string) {
+	delete(s.files, path)
+}
+
+// addWarning 追加一条编译警告。
+func (s *importStack) addWarning(line int, text string) {
+	s.warnings = append(s.warnings, dto.BuildWarning{Line: line, Text: text})
+}
+
+// injectBotFuncs 处理 @xxx 的编译期 bot 函数注入，命中返回注入的函数表（未命中返回 nil）。
+func injectBotFuncs(path string, myFunc map[string]dto.DicFunc) map[string]dto.DicFunc {
+	reg, ok := dto.BotFuncsRegistry[strings.TrimPrefix(path, "@")]
+	if !ok {
+		return nil
+	}
+	maps.Copy(myFunc, reg)
+	return reg
+}
+
+// importPackage 加载一个 #引入= 目标（bot 注入或本地文件/目录），返回其包与是否目录。
+func importPackage(dicPath, path, fHeaderName string, funcMap map[string][]*dto.BuildDic, classMap map[string]*dto.DicClass, myFunc map[string]dto.DicFunc, stack *importStack, lineNum int) (isDir bool, pkg *dto.DicClass) {
+	if botFuncs := injectBotFuncs(path, myFunc); botFuncs != nil {
+		pkg = dto.NewDicClass()
+		maps.Copy(pkg.Fn, botFuncs)
+		return false, pkg
+	}
+	return loadImport(dicPath, path, fHeaderName, funcMap, classMap, myFunc, stack, lineNum)
+}
+
+// loadImport 加载 #引入= 目标（本地文件或目录），将函数/类/自定义函数合并到目标，
+// 并返回本次导入的全部函数组成的「包」（供变量:#引入= 的赋予值形式使用）。
+// fHeaderName 非空时给「函数」触发词加前缀。isDir 表示目标是否为目录（目录形式不返回实例）。
+func loadImport(dicPath, path, fHeaderName string, funcMap map[string][]*dto.BuildDic, classMap map[string]*dto.DicClass, myFunc map[string]dto.DicFunc, stack *importStack, lineNum int) (isDir bool, pkg *dto.DicClass) {
+	dirName, isDir := strings.CutSuffix(path, "/*")
+	pkg = dto.NewDicClass()
+
+	var filesToLoad []string
+	if isDir {
+		dirPath := "private/" + dirName
+		fileLoad := utils.NewFileQueue(dirPath)
+		if !fileLoad.DirExists() {
+			debugLog.Infof("加载目录不存在：%v", dirPath)
+			return isDir, pkg
+		}
+		filesToLoad2, err := fileLoad.GetFileList()
+		if err != nil {
+			return isDir, pkg
+		}
+		for i, v := range filesToLoad2 {
+			filesToLoad2[i] = dirPath + "/" + v
+		}
+		filesToLoad = append(filesToLoad, filesToLoad2...)
+	} else {
+		if !strings.HasSuffix(path, ".n") {
+			path += ".n"
+		}
+		filesToLoad = append(filesToLoad, "private/"+path)
+	}
+
+	for _, filePath := range filesToLoad {
+		if !stack.push(filePath) {
+			stack.addWarning(lineNum, "循环引入："+filePath+" 已在引入链中，跳过加载（由 "+dicPath+" 引入）")
+			continue
+		}
+		file := utils.NewFile()
+		file.SetPath(filePath)
+
+		FileData, err := file.ReadFromFile()
+		if err != nil {
+			stack.pop(filePath)
+			continue
+		}
+		if str, err := utils.Decrypt(utils.RemoveComments(FileData), appfiles.Key); err == nil {
+			FileData = str
+		}
+
+		z := buildDic(dicPath, FileData, stack)
+		stack.pop(filePath)
+
+		if fHeaderName != "" {
+			for _, value := range z.DicFuncs["函数"] {
+				value.Trigger = fHeaderName + "." + value.Trigger
+			}
+		}
+		for k, v := range z.DicFuncs {
+			funcMap[k] = append(funcMap[k], v...)
+			pkg.DicFuncs[k] = append(pkg.DicFuncs[k], v...)
+		}
+		maps.Copy(myFunc, z.MyFunc)
+		maps.Copy(pkg.Fn, z.MyFunc)
+		for key, value := range z.Class {
+			if classMap[key] == nil {
+				classMap[key] = value
+			}
+			for k, v := range value.DicFuncs {
+				pkg.DicFuncs[k] = append(pkg.DicFuncs[k], v...)
+			}
+			maps.Copy(pkg.Fn, value.Fn)
+		}
+	}
+	return isDir, pkg
 }
 
 // 运行网页词库
 func Web(dicPath string, lines []string) *dto.BuildValue {
+	return web(dicPath, lines, newImportStack())
+}
+
+// web 为 Web 的内部实现，携带引入链用于检测循环引入。
+func web(dicPath string, lines []string, stack *importStack) *dto.BuildValue {
 
 	var (
 		// 多行注释
@@ -334,7 +487,7 @@ func Web(dicPath string, lines []string) *dto.BuildValue {
 		// 自定义函数（含bot注入）
 		myFunc map[string]dto.DicFunc = make(map[string]dto.DicFunc)
 	)
-	for _, line := range lines {
+	for i, line := range lines {
 		if line != "" {
 			if !suojin {
 				line = strings.TrimLeft(line, " \t")
@@ -364,70 +517,12 @@ func Web(dicPath string, lines []string) *dto.BuildValue {
 			continue
 		}
 
-		if lineLen > 8 && line[:8] == "#引入=" {
-			path := strings.TrimSpace(line[8:])
-
-			// @NapCat / @QQBot 编译期注入函数，不进入词行
-			switch path {
-			case "@NapCat":
-				maps.Copy(myFunc, dto.BotFuncsRegistry["NapCat"])
-				continue
-			case "@QQBot":
-				maps.Copy(myFunc, dto.BotFuncsRegistry["QQBot"])
-				continue
-			}
-
-			var filesToLoad []string
-
-			// 判断是目录还是文件（Web）
-			if dirName, ok := strings.CutSuffix(path, "/*"); ok {
-				dirPath := "private/" + dirName
-				fileLoad := utils.NewFileQueue(dirPath)
-				if !fileLoad.DirExists() {
-					debugLog.Infof("加载目录不存在：%v", dirPath)
-					continue
-				}
-				filesToLoad2, err := fileLoad.GetFileList()
-				if err != nil {
-					continue
-				}
-				for i, v := range filesToLoad2 {
-					filesToLoad2[i] = dirPath + "/" + v
-				}
-				filesToLoad = append(filesToLoad, filesToLoad2...)
-			} else {
-				if !strings.HasSuffix(path, ".n") {
-					path += ".n"
-				}
-				filesToLoad = append(filesToLoad, "private/"+path)
-			}
-
-			// 依次加载文件
-			for _, filePath := range filesToLoad {
-				// fmt.Println("加载文件：", filePath)
-
-				file := utils.NewFile()
-				file.SetPath(filePath)
-
-				FileData, err := file.ReadFromFile()
-				if err != nil {
-					continue
-				}
-
-				if str, err := utils.Decrypt(utils.RemoveComments(FileData), appfiles.Key); err == nil {
-					FileData = str
-				}
-
-				z := BuildDic(dicPath, FileData)
-				for k, v := range z.DicFuncs {
-					funcDict[k] = append(funcDict[k], v...)
-				}
-				maps.Copy(myFunc, z.MyFunc)
-				for key, value := range z.Class {
-					if classText[key] == nil {
-						classText[key] = value
-					}
-				}
+		if varName, path, ok := parseImportLine(line); ok {
+			isDir, pkg := importPackage(dicPath, path, "", funcDict, classText, myFunc, stack, i+1)
+			// 赋予值形式：变量:#引入=目标 → 导入全部函数组成包并返回实例
+			if varName != "" && !isDir {
+				classText[varName] = pkg
+				dicText = append(dicText, varName+":$new "+varName+"$")
 			}
 			continue
 		}
@@ -439,11 +534,17 @@ func Web(dicPath string, lines []string) *dto.BuildValue {
 		DicFuncs: funcDict,
 		Class:    classText,
 		MyFunc:   myFunc,
+		Warnings: stack.warnings,
 	}
 	return result
 }
 
 func BuildDic(dicPath, text string) *dto.BuildValue {
+	return buildDic(dicPath, text, newImportStack())
+}
+
+// buildDic 为 BuildDic 的内部实现，携带引入链用于检测循环引入。
+func buildDic(dicPath, text string, stack *importStack) *dto.BuildValue {
 	// 词条总数据
 	// 现在可以安全地使用\n作为分隔符
 	lines := strings.Split(text, "\n")
@@ -491,6 +592,8 @@ func BuildDic(dicPath, text string) *dto.BuildValue {
 		suojin bool // 缩进
 
 		fHeaderName string // 函数头部名称
+
+		fParamRule string // 当前函数触发的参数数量规则（[函数|规则]）
 
 		// 自定义函数（含bot注入）
 		myFunc map[string]dto.DicFunc = make(map[string]dto.DicFunc)
@@ -542,76 +645,13 @@ func BuildDic(dicPath, text string) *dto.BuildValue {
 		}
 
 		if runhead {
-			if lineLen > 8 && line[:8] == "#引入=" {
-				path := strings.TrimSpace(line[8:])
-
-				// @NapCat / @QQBot 编译期注入函数，不进入词行
-				switch path {
-				case "@NapCat":
-					maps.Copy(myFunc, dto.BotFuncsRegistry["NapCat"])
-					continue
-				case "@QQBot":
-					maps.Copy(myFunc, dto.BotFuncsRegistry["QQBot"])
-					continue
-				}
-
-				var filesToLoad []string
-
-				// 判断是目录还是文件（BuildDic）
-				if dirName, ok := strings.CutSuffix(path, "/*"); ok {
-					dirPath := "private/" + dirName
-					fileLoad := utils.NewFileQueue(dirPath)
-					if !fileLoad.DirExists() {
-						debugLog.Infof("加载目录不存在：%v", dirPath)
-						continue
-					}
-					filesToLoad2, err := fileLoad.GetFileList()
-					if err != nil {
-						continue
-					}
-					for i, v := range filesToLoad2 {
-						filesToLoad2[i] = dirPath + "/" + v
-					}
-					filesToLoad = append(filesToLoad, filesToLoad2...)
-				} else {
-					if !strings.HasSuffix(path, ".n") {
-						path += ".n"
-					}
-					filesToLoad = append(filesToLoad, "private/"+path)
-				}
-
-				// 依次加载文件（只从本地，不支持Gitee等远程）
-				for _, filePath := range filesToLoad {
-					// fmt.Println("加载文件：", filePath)
-
-					file := utils.NewFile()
-					file.SetPath(filePath)
-
-					FileData, err := file.ReadFromFile()
-					if err != nil {
-						continue
-					}
-
-					if str, err := utils.Decrypt(utils.RemoveComments(FileData), appfiles.Key); err == nil {
-						FileData = str
-					}
-
-					z := BuildDic(dicPath, FileData)
-					if fHeaderName != "" {
-						for _, value := range z.DicFuncs["函数"] {
-							value.Trigger = fHeaderName + "." + value.Trigger
-						}
-					}
-
-					for k, v := range z.DicFuncs {
-						chajianText[k] = append(chajianText[k], v...)
-					}
-					maps.Copy(myFunc, z.MyFunc)
-					for key, value := range z.Class {
-						if classText[key] == nil {
-							classText[key] = value
-						}
-					}
+			if varName, path, ok := parseImportLine(line); ok {
+				isDir, pkg := importPackage(dicPath, path, fHeaderName, chajianText, classText, myFunc, stack, dic_i+1)
+				// 赋予值形式：变量:#引入=目标 → 导入全部函数组成包并返回实例
+				if varName != "" && !isDir {
+					classText[varName] = pkg
+					runheadtext = append(runheadtext, varName+":$new "+varName+"$")
+					runheadLineNums = append(runheadLineNums, dic_i+1)
 				}
 				continue
 			}
@@ -655,11 +695,12 @@ func BuildDic(dicPath, text string) *dto.BuildValue {
 				// 判断触发为空就执行记录
 				dicTrigger = line
 
-				switch category, class, rest := parseTriggerPrefix(line); category {
+				switch category, class, param, rest := parseTriggerPrefix(line); category {
 				case "函数":
 					chajian = true
 					classN = class
 					buildCategory = "函数"
+					fParamRule = param
 					if fHeaderName != "" {
 						dicTrigger = fHeaderName + rest
 					} else {
@@ -698,9 +739,10 @@ func BuildDic(dicPath, text string) *dto.BuildValue {
 
 			if line == "" || dic_i == lines_num {
 				json := &dto.BuildDic{
-					Trigger:  dicTrigger,
-					Text:     dicTexts,
-					LineNums: dicTextLineNums,
+					Trigger:   dicTrigger,
+					Text:      dicTexts,
+					LineNums:  dicTextLineNums,
+					ParamRule: fParamRule,
 				}
 				if neibu {
 					neibu = false
@@ -738,6 +780,7 @@ func BuildDic(dicPath, text string) *dto.BuildValue {
 				dicTrigger = ""
 				classN = ""
 				buildCategory = ""
+				fParamRule = ""
 				dicTexts = nil
 				dicTextLineNums = nil
 			}
@@ -751,6 +794,7 @@ func BuildDic(dicPath, text string) *dto.BuildValue {
 		DicFuncs:     chajianText,
 		Class:        classText,
 		MyFunc:       myFunc,
+		Warnings:     stack.warnings,
 	}
 
 	// 打印普通json

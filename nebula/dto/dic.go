@@ -97,6 +97,8 @@ type BuildDic struct {
 	Trigger  string   `json:"trigger"`
 	Text     []string `json:"text"`
 	LineNums []int    `json:"-"` // 每行文本对应的原始文件行号（1-based），用于调试定位
+	// ParamRule 参数数量规则，如 "1|2"、"1.."；仅在 [函数|规则] 声明时非空，空串表示不校验（沿用正则匹配）。
+	ParamRule string `json:"paramRule,omitempty"`
 }
 
 type DicClass struct {
@@ -114,6 +116,12 @@ func NewDicClass() *DicClass {
 	}
 }
 
+// BuildWarning 编译警告（如循环引入），携带行号供前端定位。
+type BuildWarning struct {
+	Line int    `json:"line"` // 触发警告的行号（1-based）
+	Text string `json:"text"` // 警告文本
+}
+
 type BuildValue struct {
 	Head         []string               `json:"头部"`
 	HeadLineNums []int                  `json:"-"` // 头部每行对应的原始文件行号（1-based）
@@ -122,6 +130,7 @@ type BuildValue struct {
 	Class        map[string]*DicClass   `json:"class"`
 	MyFunc       map[string]DicFunc     `json:"自定义函数"`
 	BotImports   []string               `json:"bot引入"`
+	Warnings     []BuildWarning         `json:"警告,omitempty"` // 编译警告（如循环引入），供前端调试面板展示
 }
 
 // 词库参数数据

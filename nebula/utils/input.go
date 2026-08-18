@@ -47,6 +47,12 @@ func (i *DicInputs) LenOk(rules ...any) bool {
 	return false
 }
 
+// MatchLenRule 判断参数长度 l 是否满足规则 rule（与 DicInputs.LenOk 规则一致）。
+// 支持：精确数字 "3"、区间 "..5" / "5.."、组合 "1|2|3.."。
+func MatchLenRule(l int, rule string) bool {
+	return matchOne(l, rule)
+}
+
 // matchOne 处理单条规则，支持:
 //   - 精确数字 "3"
 //   - 区间 "..5", "5.."

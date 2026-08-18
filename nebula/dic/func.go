@@ -196,7 +196,7 @@ func Funcs(d *dic_dto.DicFunc, dic_i *utils.DicInputs) (any, error) {
 	} else {
 		text := strings.Join(dic_i.StringList(), " ")
 		// 局部函数
-		if str, Tstr, _, regex, tparts := run.RunFors(d.Dic.DicFuncs["函数"], text, 0); regex != nil {
+		if str, Tstr, tparts, errRule, ok := run.RunFunc(d.Dic.DicFuncs["函数"], dic_i.String(0), dic_i.Len()); ok {
 			funcv := dto.NewVal()
 			give, ok := d.Val.P.Get("_继承_").(string)
 			if ok && give != "" {
@@ -228,6 +228,8 @@ func Funcs(d *dic_dto.DicFunc, dic_i *utils.DicInputs) (any, error) {
 				}
 			}
 			return resRunDic, nil
+		} else if errRule != "" {
+			return "", paramCountError(d, dic_i.String(0), errRule, dic_i.Len())
 		}
 	}
 
@@ -326,7 +328,7 @@ func newClassInstance(d *dic_dto.DicFunc, dic_i *utils.DicInputs) (any, error) {
 	}
 
 	// 执行构造函数 [函数:类名]new
-	if str, Tstr, _, regex := run.RunFor(classData.DicFuncs["函数"], "new", 0); regex != nil {
+	if str, Tstr, _, _, ok := run.RunFunc(classData.DicFuncs["函数"], "new", 0); ok {
 		funcv := dto.NewVal().
 			Set("触发", Tstr).
 			Set("触发词", "new").
@@ -349,6 +351,25 @@ func newClassInstance(d *dic_dto.DicFunc, dic_i *utils.DicInputs) (any, error) {
 // 优先匹配 Class.Fn 自定义函数，再回退到 BuildDic 函数。
 // 返回执行结果与是否命中方法。
 func runClassMethod(d *dic_dto.DicFunc, classData *dto.DicClass, methodArgs []string) (any, bool) {
+	// 内置回调：$变量.回调 名称$ 触发类内 [内部]名称
+	if methodArgs[0] == "回调" {
+		trigger := strings.Join(methodArgs[1:], " ")
+		str, Tstr, _, _ := run.RunFor(classData.DicFuncs["内部"], trigger, 0)
+		funcv := dto.NewVal().
+			Set("触发", Tstr).
+			Set("触发词", trigger).
+			Set("Class", classData)
+		dto.ValRunTrigger(strings.Join(methodArgs, " "), Tstr, d.Val.NewDicVal(funcv), d.Val)
+		RunDic := dic_dto.NewRunDicEntry().
+			CloseTrigger().
+			SetGlobal_v(d.Val.G).
+			Set_v(funcv).
+			SetDic_v(d.Dic).
+			WithRecursionDepth(d.RecursionDepth)
+		RunDic.ClearDicFuncs()
+		return dic_api.Api.DicRunLine(RunDic, str), true
+	}
+
 	// 自定义函数优先
 	if fn, ok := classData.Fn[methodArgs[0]]; ok {
 		inputs := utils.NewDicInputs()
@@ -379,8 +400,12 @@ func runClassMethod(d *dic_dto.DicFunc, classData *dto.DicClass, methodArgs []st
 	}
 
 	TStr := strings.Join(methodArgs, " ")
-	str, Tstr, _, regex := run.RunFor(classData.DicFuncs["函数"], TStr, 0)
-	if regex == nil {
+	str, Tstr, _, errRule, ok := run.RunFunc(classData.DicFuncs["函数"], methodArgs[0], len(methodArgs)-1)
+	if !ok {
+		if errRule != "" {
+			paramCountError(d, methodArgs[0], errRule, len(methodArgs)-1)
+			return "", true
+		}
 		return nil, false
 	}
 	funcv := dto.NewVal()
