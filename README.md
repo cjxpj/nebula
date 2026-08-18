@@ -1,8 +1,8 @@
-# Nebula - 面向 Web 服务的脚本语言与运行时系统
+<h1 align="center">nebula</h1>
 
 <div align="center">
 
-![版本](https://img.shields.io/badge/%E7%89%88%E6%9C%AC-16.18.5-blue)
+![版本](https://img.shields.io/badge/%E7%89%88%E6%9C%AC-17.3.0-blue)
 ![平台](https://img.shields.io/badge/%E5%B9%B3%E5%8F%B0-Windows%20%7C%20Linux%20%7C%20macOS-green)
 ![语言](https://img.shields.io/badge/%E8%AF%AD%E8%A8%80-Go%20%7C%20Nebula%20Script-orange)
 ![许可证](https://img.shields.io/badge/%E8%AE%B8%E5%8F%AF%E8%AF%81-MIT-yellow)
@@ -51,6 +51,8 @@
 |------|----------|------|
 | **Windows** | 单个客户端 (`nebulaApp.exe`) | 独立可执行文件，无需 Docker |
 | **Linux/macOS** | Docker 容器化部署 | 使用 Docker Compose 一键部署 |
+| **Android** | 原生 App（Gradle + WebView） | Go 核心 `.so` 通过 JNI 集成 |
+| **HarmonyOS** | 原生 App（ArkTS + C++ NAPI） | Go 核心 `.so` 通过 NAPI 集成 |
 
 ### Windows 平台（独立客户端）
 
@@ -84,9 +86,6 @@
    
    # 取消开机自启
    .\nebula\app\win\nebulaApp.exe -noautostart
-   
-   # 运行指定词库文件
-   .\nebula\app\win\nebulaApp.exe run <文件路径> <触发词>
    ```
 
 ### Linux/macOS 平台（Docker 部署）
@@ -120,21 +119,6 @@
    
    # 停止服务
    ./deploy.sh down
-   ```
-
-3. **Windows PowerShell 脚本**
-   ```powershell
-   # 以管理员身份运行 PowerShell
-   .\deploy.ps1 help
-   .\deploy.ps1 build
-   .\deploy.ps1 up
-   ```
-
-4. **批处理脚本（Windows）**
-   ```bash
-   # 双击 deploy.bat 或命令行运行
-   deploy.bat
-   # 按菜单选项操作
    ```
 
 ## 📁 项目结构
@@ -262,19 +246,10 @@ no
 ```
 
 ### 数据库操作
-
-#### SQLite
 ```nebula
-# 连接数据库
-连接:$sqlite.打开 <文件> <默认值>$
-
-# 读写操作
-$sqlite.写 <连接> <表单> <键> <值>$
-$sqlite.读 <连接> <表单> <键>$
-
-# 快捷操作
-$读.sqlite <文件> <键> <值>$
-$写.sqlite <文件> <键> <值>$
+连接:$打开sqlite <文件|:内存:> <默认值>$
+$读sqlite <文件> <键> <默认值>$
+$写sqlite <文件> <键> <值>$
 ```
 
 
@@ -370,24 +345,6 @@ CGO_ENABLED=0 GOOS=linux go build -tags linux -ldflags="-s -w" -o nebula-app
 1. 在 `nebula/dic/funcs/` 下添加功能模块
 2. 实现函数逻辑并注册
 3. 在 `dic/funcs.go` 中导入和注册
-
-## 📡 API 文档
-
-### HTTP API
-- `GET /` - 欢迎页面
-- `GET /nebula` - 管理面板
-- `POST /api` - 通用 API 接口
-- `GET /public/*` - 公开词库访问
-
-### WebSocket
-- `GET /ws` - WebSocket 连接端点
-- 消息格式：JSON
-
-### 机器人 Webhook
-- `POST /qq-bot` - QQ 机器人回调
-- `POST /napcat` - NapCat 机器人回调
-- `POST /feishu-bot` - 飞书机器人回调
-- `POST /yunhu-bot` - 云湖机器人回调
 
 ## ❓ 常见问题
 

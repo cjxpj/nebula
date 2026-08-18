@@ -79,6 +79,7 @@ func Setup() {
 		f{Name: "读文件_随机一行", L: "1|2", Fn: readStringFileRandomLine},
 		f{Name: "读文件_行数", L: "1|2", Fn: readStringFileLinesCount},
 		f{Name: "读文件行", L: "1|2|3|4", Fn: readStringFileLines},
+		f{Name: "读文件MD5", L: "1", Fn: readFileMd5},
 		f{Name: "文件后缀", L: "1", Fn: fileSuffix},
 		f{Name: "存在文件", L: "1", Fn: fileExist},
 		f{Name: "存在文件夹", L: "1", Fn: dirExist},
@@ -133,6 +134,11 @@ func Setup() {
 		f{Name: "AES_GCM解密", L: "2", Fn: aesGCMDecrypt},
 		f{Name: "AES_CTR加密", L: "3", Fn: aesCTREncrypt},
 		f{Name: "AES_CTR解密", L: "3", Fn: aesCTRDecrypt},
+
+		// ========== RSA ==========
+		f{Name: "RSA生成密钥", L: "0|1", Fn: rsaGenerateKey},
+		f{Name: "RSA加密", L: "2", Fn: rsaEncrypt},
+		f{Name: "RSA解密", L: "2", Fn: rsaDecrypt},
 
 		// ========== Ed25519 ==========
 		f{Name: "Ed25519种子大小", L: "0", Fn: ed25519_SeedSize},
@@ -202,8 +208,11 @@ func Setup() {
 		// ========== 其他 ==========
 		f{Name: "读配置", L: "2|3", Fn: readConfig},
 		f{Name: "写配置", L: "2|3", Fn: writeConfig},
+		f{Name: "设置跨域", L: "1|2", Fn: setServerCors},
 		f{Name: "GIF拆帧", L: "1", Fn: getGif},
 		f{Name: "图片相似度", L: "2", Fn: imageSimilarity},
+		f{Name: "图片最多颜色", L: "1", Fn: imageMostColor},
+		f{Name: "图片平均颜色", L: "1", Fn: imageAvgColor},
 		f{Name: "排序", L: "2|3", Fn: doSort},
 		f{Name: "范围", L: "2", Fn: doRange},
 		f{Name: "ZIP压缩", L: "2", Fn: zipCompress},

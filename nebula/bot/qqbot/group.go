@@ -514,8 +514,12 @@ func qqBOTGroupATRun(payload *qqbot_msg.Payload, bot *qqbot_msg.RouterQQBot) {
 	// 新建副本消息
 	msg := m.Content
 
-	// 去除开头第一个空格
-	msg = RemoveLeadingSpace(msg)
+	// 去除开头空格并过滤斜杠前缀（与全量消息一致，适配 @机器人 后可能带上的空格/斜杠）
+	if bot.FilterSlash {
+		msg = RemoveLeadingSlash(msg)
+	} else {
+		msg = RemoveLeadingSpace(msg)
+	}
 
 	appId := ""
 	if bot.API != nil {

@@ -3,6 +3,7 @@ package funcs
 import (
 	"fmt"
 	"path/filepath"
+	"strconv"
 	"strings"
 
 	"github.com/cjxpj/nebula/dto"
@@ -242,4 +243,38 @@ func configFileExists(path string) bool {
 func isYamlFile(path string) bool {
 	ext := strings.ToLower(filepath.Ext(path))
 	return ext == ".yaml" || ext == ".yml"
+}
+
+// 设置跨域 词库函数：$设置跨域 开关 [白名单]$
+// 热开关全局 HTTP 服务器的跨域：立即更新内存配置并持久化到 system.ini，无需重启。
+// 开关：true/false；白名单可省略，省略时保持原值。
+func setServerCors(d *dto.DicInputs) (any, error) {
+	if d.Inputs.Len() < 1 {
+		return nil, fmt.Errorf("参数不足：$设置跨域 开关 [白名单]$")
+	}
+	if dto.ServerConfig.Router == nil {
+		return nil, fmt.Errorf("设置跨域：HTTP 服务器配置尚未初始化")
+	}
+
+	cors := d.Inputs.Bool(1)
+	dto.ServerConfig.Router.Cors = cors
+
+	// 持久化，避免重启后丢失
+	file := utils.NewFile()
+	file.SetPath(dto.CONFIG_SYSTEM_PATH)
+	iniFile, err := file.LoadIni()
+	if err != nil {
+		return nil, fmt.Errorf("设置跨域：读取系统配置失败: %v", err)
+	}
+	sec := iniFile.Section("HTTP")
+	sec.Key("跨域").SetValue(strconv.FormatBool(cors))
+	if d.Inputs.LenOk(2) {
+		origin := d.Inputs.String(2)
+		dto.ServerConfig.Router.CorsOrigins = origin
+		sec.Key("跨域白名单").SetValue(origin)
+	}
+	if err := file.SaveIni(iniFile); err != nil {
+		return nil, fmt.Errorf("设置跨域：保存系统配置失败: %v", err)
+	}
+	return nil, nil
 }

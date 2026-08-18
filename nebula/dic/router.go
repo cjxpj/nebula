@@ -166,7 +166,7 @@ func dicWebRouter(w http.ResponseWriter, r *http.Request) {
 				return "参数错误1", nil
 			}}).
 		// GET处理
-		SetFunc("G", dto.DicFunc{
+		SetFunc("GET", dto.DicFunc{
 			L: "1|2",
 			Fn: func(d *dto.DicInputs) (any, error) {
 				if r, ok := d.Inputs.Get(1).(string); ok {
@@ -180,7 +180,7 @@ func dicWebRouter(w http.ResponseWriter, r *http.Request) {
 				return "", nil
 			}}).
 		// POST处理
-		SetFunc("P", dto.DicFunc{
+		SetFunc("POST", dto.DicFunc{
 			L: "1|2",
 			Fn: func(d *dto.DicInputs) (any, error) {
 				key, ok := d.Inputs.Get(1).(string)

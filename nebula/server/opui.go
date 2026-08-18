@@ -4218,8 +4218,33 @@ func opuiHandleApi(w http.ResponseWriter, r *http.Request) {
 		return
 
 	case "get_dic_tasks":
-		// 返回全部定时任务
-		jsonResp, _ := json.Marshal(map[string]any{"list": dic_funcs.ListScheduledTasks()})
+		// 返回定时任务（分页），避免任务过多时一次性返回全部
+		var j struct {
+			Limit int `json:"limit"`
+			Skip  int `json:"skip"`
+		}
+		_ = json.Unmarshal(h.Data, &j)
+		if j.Limit <= 0 {
+			j.Limit = 50
+		}
+		if j.Skip < 0 {
+			j.Skip = 0
+		}
+		all := dic_funcs.ListScheduledTasks()
+		total := len(all)
+		start := j.Skip
+		if start > total {
+			start = total
+		}
+		end := j.Skip + j.Limit
+		if end > total {
+			end = total
+		}
+		jsonResp, _ := json.Marshal(map[string]any{
+			"list":    all[start:end],
+			"total":   total,
+			"hasMore": end < total,
+		})
 		w.Write(jsonResp)
 		return
 
@@ -4427,6 +4452,18 @@ func opuiHandleApi(w http.ResponseWriter, r *http.Request) {
 		return
 
 	case "get_thread_vars":
+		// 返回线程变量（分页），只在请求区间内做类型识别/展开，避免变量过多时全量解析拖慢响应
+		var j struct {
+			Limit int `json:"limit"`
+			Skip  int `json:"skip"`
+		}
+		_ = json.Unmarshal(h.Data, &j)
+		if j.Limit <= 0 {
+			j.Limit = 50
+		}
+		if j.Skip < 0 {
+			j.Skip = 0
+		}
 		all := dto.GV.GetAll()
 		keys := make([]string, 0, len(all))
 		for k := range all {
@@ -4436,13 +4473,26 @@ func opuiHandleApi(w http.ResponseWriter, r *http.Request) {
 			keys = append(keys, k)
 		}
 		sort.Strings(keys)
-		items := make([]map[string]any, 0, len(keys))
-		for _, k := range keys {
+		total := len(keys)
+		start := j.Skip
+		if start > total {
+			start = total
+		}
+		end := j.Skip + j.Limit
+		if end > total {
+			end = total
+		}
+		items := make([]map[string]any, 0, end-start)
+		for _, k := range keys[start:end] {
 			item := varDebugItem(all[k])
 			item["key"] = k
 			items = append(items, item)
 		}
-		r, _ := json.Marshal(map[string]any{"list": items})
+		r, _ := json.Marshal(map[string]any{
+			"list":    items,
+			"total":   total,
+			"hasMore": end < total,
+		})
 		w.Write(r)
 		return
 
