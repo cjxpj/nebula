@@ -18,28 +18,30 @@ import (
 
 // ScheduledTaskInfo 定时任务的对外信息（供函数列表与前端展示）
 type ScheduledTaskInfo struct {
-	ID       string `json:"id"`
-	DicPath  string `json:"dic_path"`
-	Trigger  string `json:"trigger"`
-	Interval string `json:"interval"`
-	Once     bool   `json:"once"`
+	ID         string `json:"id"`
+	DicPath    string `json:"dic_path"`
+	Trigger    string `json:"trigger"`
+	Interval   string `json:"interval"`
+	Once       bool   `json:"once"`
+	RunAtStart bool   `json:"run_at_start"`
 }
 
 // ScheduledTask 定时任务运行时状态
 type ScheduledTask struct {
-	ID       string
-	DicPath  string
-	Trigger  string
-	Interval string
-	Once     bool
-	cancel   chan struct{}
+	ID         string
+	DicPath    string
+	Trigger    string
+	Interval   string
+	Once       bool
+	RunAtStart bool
+	cancel     chan struct{}
 }
 
 // scheduledTasks 进程内定时任务存储（重启后清空）
 var scheduledTasks sync.Map // map[string]*ScheduledTask
 
-// AddScheduledTask 添加定时任务并启动调度，返回唯一编号；once 为 true 时仅执行一次
-func AddScheduledTask(dicPath, trigger, interval string, once bool) (string, error) {
+// AddScheduledTask 添加定时任务并启动调度，返回唯一编号；once 为 true 时仅执行一次，runAtStart 为 true 时启动立即触发一次
+func AddScheduledTask(dicPath, trigger, interval string, once, runAtStart bool) (string, error) {
 	dicPath = strings.TrimSpace(dicPath)
 	if dicPath == "" {
 		return "", errors.New("定时任务：词库路径不能为空")
@@ -57,12 +59,13 @@ func AddScheduledTask(dicPath, trigger, interval string, once bool) (string, err
 
 	id := fmt.Sprintf("%d", time.Now().UnixNano())
 	task := &ScheduledTask{
-		ID:       id,
-		DicPath:  dicPath,
-		Trigger:  trigger,
-		Interval: interval,
-		Once:     once,
-		cancel:   make(chan struct{}),
+		ID:         id,
+		DicPath:    dicPath,
+		Trigger:    trigger,
+		Interval:   interval,
+		Once:       once,
+		RunAtStart: runAtStart,
+		cancel:     make(chan struct{}),
 	}
 	scheduledTasks.Store(id, task)
 	go task.run()
@@ -93,11 +96,12 @@ func ListScheduledTasks() []ScheduledTaskInfo {
 			return true
 		}
 		list = append(list, ScheduledTaskInfo{
-			ID:       task.ID,
-			DicPath:  task.DicPath,
-			Trigger:  task.Trigger,
-			Interval: task.Interval,
-			Once:     task.Once,
+			ID:         task.ID,
+			DicPath:    task.DicPath,
+			Trigger:    task.Trigger,
+			Interval:   task.Interval,
+			Once:       task.Once,
+			RunAtStart: task.RunAtStart,
 		})
 		return true
 	})
@@ -105,8 +109,16 @@ func ListScheduledTasks() []ScheduledTaskInfo {
 	return list
 }
 
-// run 定时调度循环：每次等待间隔后执行指定词库的触发词，直到被取消或（一次性任务）执行完毕
+// run 定时调度循环：启动时可选立即触发一次，之后每次等待间隔后执行指定词库的触发词，直到被取消或（一次性任务）执行完毕
 func (t *ScheduledTask) run() {
+	if t.RunAtStart {
+		t.execute()
+		if t.Once {
+			// 一次性任务执行完后自动移除自身
+			scheduledTasks.Delete(t.ID)
+			return
+		}
+	}
 	for {
 		d, err := parseInterval(t.Interval)
 		if err != nil {
@@ -174,7 +186,7 @@ func parseInterval(s string) (time.Duration, error) {
 	}
 }
 
-// $添加定时任务(时间, 触发词, 词库路径, 一次性)$
+// $添加定时任务(时间, 触发词, 词库路径, 一次性, 启动触发一次)$
 func addScheduledTaskFunc(d *dto.DicInputs) (any, error) {
 	interval := d.Inputs.String(1)
 	trigger := d.Inputs.StringDefault(2, "Main")
@@ -186,7 +198,8 @@ func addScheduledTaskFunc(d *dto.DicInputs) (any, error) {
 		}
 	}
 	once := d.Inputs.Bool(4)
-	return AddScheduledTask(dicPath, trigger, interval, once)
+	runAtStart := d.Inputs.Bool(5)
+	return AddScheduledTask(dicPath, trigger, interval, once, runAtStart)
 }
 
 // $删除定时任务(编号)$

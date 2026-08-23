@@ -6,7 +6,9 @@ import (
 	"fmt"
 	"math/big"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"runtime"
 
 	"github.com/cjxpj/nebula/utils"
 )
@@ -23,7 +25,7 @@ func installPHP(destDir string, output *[]string, progressFn func(float64)) erro
 	if output != nil {
 		*output = append(*output, "正在分段下载 PHP ...")
 	}
-	if err := zipPath.DownloadWithMirrors(urls, 8, true, progressFn); err != nil {
+	if err := zipPath.DownloadWithMirrors(urls, 0, true, progressFn); err != nil { // 0 = 自动线程数
 		return fmt.Errorf("下载失败: %w", err)
 	}
 
@@ -55,7 +57,7 @@ func installFFmpeg(destDir string, output *[]string, progressFn func(float64)) e
 	if output != nil {
 		*output = append(*output, "正在分段下载 FFmpeg ...")
 	}
-	if err := zipPath.DownloadWithMirrors(urls, 8, true, progressFn); err != nil {
+	if err := zipPath.DownloadWithMirrors(urls, 0, true, progressFn); err != nil { // 0 = 自动线程数
 		return fmt.Errorf("下载失败: %w", err)
 	}
 
@@ -87,7 +89,7 @@ func installSilkV3(destDir string, output *[]string, progressFn func(float64)) e
 	if output != nil {
 		*output = append(*output, "正在分段下载 silk_v3 ...")
 	}
-	if err := zipPath.DownloadWithMirrors(urls, 4, true, progressFn); err != nil {
+	if err := zipPath.DownloadWithMirrors(urls, 0, true, progressFn); err != nil { // 0 = 自动线程数
 		return fmt.Errorf("下载失败: %w", err)
 	}
 
@@ -119,7 +121,7 @@ func installNapCatBot(destDir string, qq string, output *[]string, progressFn fu
 	if output != nil {
 		*output = append(*output, "正在分段下载 NapCat ...")
 	}
-	if err := zipPath.DownloadWithMirrors(urls, 8, true, progressFn); err != nil {
+	if err := zipPath.DownloadWithMirrors(urls, 0, true, progressFn); err != nil { // 0 = 自动线程数
 		return fmt.Errorf("下载失败: %w", err)
 	}
 
@@ -132,7 +134,7 @@ func installNapCatBot(destDir string, qq string, output *[]string, progressFn fu
 	}
 
 	if output != nil {
-		*output = append(*output, "✅ NapCat 安装成功，路径："+utils.NewFileQueue(destDir).FileName)
+		*output = append(*output, "✅ NapCat 安装成功，路径："+destDir)
 	}
 
 	if err := initNapCatBotConfig(destDir, qq, output); err != nil {
@@ -154,7 +156,7 @@ func installPython(destDir string, output *[]string, progressFn func(float64)) e
 	if output != nil {
 		*output = append(*output, "正在分段下载 Python ...")
 	}
-	if err := zipPath.DownloadWithMirrors(urls, 8, true, progressFn); err != nil {
+	if err := zipPath.DownloadWithMirrors(urls, 0, true, progressFn); err != nil { // 0 = 自动线程数
 		return fmt.Errorf("下载失败: %w", err)
 	}
 
@@ -259,11 +261,16 @@ func initNapCatBotConfig(destDir string, qq string, output *[]string) error {
 		*output = append(*output, "正在写入配置文件 ...")
 	}
 
-	destPath := utils.NewFileQueue(filepath.Join(destDir, "config", fmt.Sprintf("onebot11_%s.json", qq)))
+	destPath := filepath.Join(destDir, "config", fmt.Sprintf("onebot11_%s.json", qq))
 	if output != nil {
-		*output = append(*output, "配置文件路径："+destPath.FileName)
+		*output = append(*output, "配置文件路径："+destPath)
 	}
-	destPath.WriteFileByte(outConfig)
+	if err := os.MkdirAll(filepath.Dir(destPath), 0755); err != nil {
+		return fmt.Errorf("创建配置目录失败: %w", err)
+	}
+	if err := os.WriteFile(destPath, outConfig, 0644); err != nil {
+		return fmt.Errorf("写入配置文件失败: %w", err)
+	}
 
 	if output != nil {
 		*output = append(*output, "✅ 配置文件写入成功")
@@ -273,6 +280,25 @@ func initNapCatBotConfig(destDir string, qq string, output *[]string) error {
 		*output = append(*output, "✅ 填写完配置后关掉此窗口，重新运行程序即可")
 	}
 	return nil
+}
+
+// fileExists 直接按给定完整路径判断文件是否存在（路径已含应用目录，避免 NewFileQueue 二次拼接）。
+func fileExists(path string) bool {
+	info, err := os.Stat(path)
+	return err == nil && !info.IsDir()
+}
+
+// isPythonInstalled 判断 Python 是否可用。
+// Windows 检测内置 python.exe；其他平台优先检测内置 python3，否则检测系统 python3。
+func isPythonInstalled(destDir string) bool {
+	if runtime.GOOS == "windows" {
+		return fileExists(filepath.Join(destDir, "python.exe"))
+	}
+	if fileExists(filepath.Join(destDir, "python3")) {
+		return true
+	}
+	_, err := exec.LookPath("python3")
+	return err == nil
 }
 
 const letterBytes = "23456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz@]{}"

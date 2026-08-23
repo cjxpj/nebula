@@ -216,3 +216,24 @@ func TestFuncAfterLoopBlock(t *testing.T) {
 		})
 	}
 }
+
+// TestNestedLoopTerminate 回归测试：遍历框内嵌套循环框时，循环体内执行 >终止遍历 应能跳出当前遍历。
+func TestNestedLoopTerminate(t *testing.T) {
+	chdirToAppWin()
+
+	const dicText = `
+Main
+遍历>i,ii=["a","b","c"]
+循环>x=2
+%i%
+>终止遍历
+<循环
+<遍历
+结束
+`
+	D := dic_dto.NewDic("t.n", dicText)
+	got := dic_api.Api.DicRun(D, "Main")
+	if got != "0结束" {
+		t.Errorf("嵌套循环内 >终止遍历 未生效，期望 0结束，实际 %q", got)
+	}
+}

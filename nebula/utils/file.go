@@ -3,6 +3,7 @@ package utils
 import (
 	"archive/zip"
 	"bufio"
+	"context"
 	"crypto/rand"
 	"database/sql"
 	"encoding/base64"
@@ -299,8 +300,148 @@ func (fq *FileQueue) Download(url string) bool {
 	return true
 }
 
-// 下载文件
+// DownloadWithDynamicThreads 分段多线程下载（无取消能力，供普通调用方使用）。
+// maxThreads > 0 时使用指定线程数；maxThreads = 0 时按文件大小自适应（2~8）。
 func (fq *FileQueue) DownloadWithDynamicThreads(url string, maxThreads int, showProgress bool, progressFn func(percent float64)) error {
+	var onProgress func(percent float64, downloaded, total int64)
+	if progressFn != nil {
+		onProgress = func(percent float64, downloaded, total int64) {
+			progressFn(percent)
+		}
+	}
+	return fq.downloadWithDynamicThreads(context.Background(), url, maxThreads, showProgress, onProgress)
+}
+
+// DownloadWithDynamicThreadsCtx 分段多线程下载，支持 ctx 取消（暂停）与 .part.N 断点续传。
+// maxThreads > 0 时使用指定线程数；maxThreads = 0 时按文件大小自适应（2~8）。
+// onProgress 每变化 1% 及完成时回调一次（percent 0-100，downloaded/total 为字节数）。
+func (fq *FileQueue) DownloadWithDynamicThreadsCtx(ctx context.Context, url string, maxThreads int, showProgress bool, onProgress func(percent float64, downloaded, total int64)) error {
+	return fq.downloadWithDynamicThreads(ctx, url, maxThreads, showProgress, onProgress)
+}
+
+// autoDownloadThreads 根据文件大小自适应计算下载并发线程数（2~8）。
+// 小文件多线程的连接建立开销大于收益，用少量线程；大文件用更多线程提升吞吐。
+func autoDownloadThreads(length int64) int {
+	mb := length / (1024 * 1024)
+	switch {
+	case mb <= 8:
+		return 2
+	case mb <= 32:
+		return 4
+	case mb <= 128:
+		return 6
+	default:
+		return 8
+	}
+}
+
+// 下载任务状态
+const (
+	dlStatusRunning int32 = iota // 0 下载中
+	dlStatusDone                 // 1 完成
+	dlStatusFailed               // 2 失败
+)
+
+// DownloadTask 异步下载任务，实时记录下载进度/速度/状态，供调用方查询。
+type DownloadTask struct {
+	downloaded int64 // 已下载字节数
+	total      int64 // 文件总字节数
+	status     int32 // 下载状态
+
+	mu     sync.Mutex
+	errMsg string    // 失败原因
+	lastDL int64     // 上次查询速度时的已下载字节数
+	lastAt time.Time // 上次查询速度的时间
+}
+
+// Progress 返回下载进度百分比（0-100）。
+func (t *DownloadTask) Progress() float64 {
+	d := atomic.LoadInt64(&t.downloaded)
+	total := atomic.LoadInt64(&t.total)
+	if total <= 0 {
+		return 0
+	}
+	p := float64(d) * 100 / float64(total)
+	if p > 100 {
+		p = 100
+	}
+	return p
+}
+
+// Downloaded 返回已下载字节数。
+func (t *DownloadTask) Downloaded() int64 {
+	return atomic.LoadInt64(&t.downloaded)
+}
+
+// Total 返回文件总字节数。
+func (t *DownloadTask) Total() int64 {
+	return atomic.LoadInt64(&t.total)
+}
+
+// Speed 返回最近一次查询间隔内的平均下载速度（MB/s）。
+func (t *DownloadTask) Speed() float64 {
+	now := time.Now()
+	d := atomic.LoadInt64(&t.downloaded)
+	t.mu.Lock()
+	last := t.lastDL
+	lastAt := t.lastAt
+	t.lastDL = d
+	t.lastAt = now
+	t.mu.Unlock()
+	dt := now.Sub(lastAt).Seconds()
+	if dt <= 0 || d < last {
+		return 0
+	}
+	return float64(d-last) / dt / 1048576
+}
+
+// Status 返回下载状态："下载中"、"完成"、"失败"。
+func (t *DownloadTask) Status() string {
+	switch atomic.LoadInt32(&t.status) {
+	case dlStatusDone:
+		return "完成"
+	case dlStatusFailed:
+		return "失败"
+	default:
+		return "下载中"
+	}
+}
+
+// Error 返回失败原因，未失败时返回空字符串。
+func (t *DownloadTask) Error() string {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return t.errMsg
+}
+
+// DownloadAsync 异步分段多线程下载，立即返回 *DownloadTask，可实时查询进度/速度/状态。
+func (fq *FileQueue) DownloadAsync(url string, maxThreads int, showProgress bool) *DownloadTask {
+	task := &DownloadTask{lastAt: time.Now()}
+	go func() {
+		err := fq.DownloadWithDynamicThreadsCtx(context.Background(), url, maxThreads, showProgress, func(_ float64, downloaded, total int64) {
+			atomic.StoreInt64(&task.downloaded, downloaded)
+			atomic.StoreInt64(&task.total, total)
+		})
+		if err != nil {
+			atomic.StoreInt32(&task.status, dlStatusFailed)
+			task.mu.Lock()
+			task.errMsg = err.Error()
+			task.mu.Unlock()
+			return
+		}
+		atomic.StoreInt32(&task.status, dlStatusDone)
+		atomic.StoreInt64(&task.downloaded, atomic.LoadInt64(&task.total))
+	}()
+	return task
+}
+
+// downloadWithDynamicThreads 分段多线程下载核心实现。
+// maxThreads <= 0 时在拿到文件大小后按大小自适应计算线程数（2~8）。
+func (fq *FileQueue) downloadWithDynamicThreads(ctx context.Context, url string, maxThreads int, showProgress bool, onProgress func(percent float64, downloaded, total int64)) error {
+	autoThreads := maxThreads <= 0
+	if autoThreads {
+		maxThreads = 8 // 先按上限预分配连接池，拿到文件大小后再按需下调
+	}
 	// ------------------------  可调常量区 ------------------------
 	const (
 		chunkSize     = 4 * 1024 * 1024 // 4 MB
@@ -333,7 +474,7 @@ func (fq *FileQueue) DownloadWithDynamicThreads(url string, maxThreads int, show
 			}).DialContext,
 		},
 	}
-	req, err := http.NewRequest("HEAD", url, nil)
+	req, err := http.NewRequestWithContext(ctx, "HEAD", url, nil)
 	if err != nil {
 		return err
 	}
@@ -349,6 +490,9 @@ func (fq *FileQueue) DownloadWithDynamicThreads(url string, maxThreads int, show
 	length := resp.ContentLength
 	if length <= 0 {
 		return errors.New("无法获取 Content-Length")
+	}
+	if autoThreads {
+		maxThreads = autoDownloadThreads(length)
 	}
 	acceptRanges := strings.EqualFold(resp.Header.Get("Accept-Ranges"), "bytes")
 	if !acceptRanges {
@@ -383,16 +527,17 @@ func (fq *FileQueue) DownloadWithDynamicThreads(url string, maxThreads int, show
 	}
 	tmpFiles := make([]string, chunks)
 
-	// 4. 进度条
+	// 4. 进度回调/进度条
 	var downloaded int64
 	var mu sync.Mutex
 	startT := time.Now()
 	stopBar := make(chan struct{})
-	showProgressBar := showProgress || progressFn != nil
+	showProgressBar := showProgress || onProgress != nil
 	if showProgressBar {
 		go func() {
 			tick := time.NewTicker(100 * time.Millisecond)
 			defer tick.Stop()
+			lastPct := -1
 			for {
 				select {
 				case <-tick.C:
@@ -401,15 +546,18 @@ func (fq *FileQueue) DownloadWithDynamicThreads(url string, maxThreads int, show
 					if percent > 100 {
 						percent = 100
 					}
-					if progressFn != nil {
-						progressFn(percent)
+					if onProgress != nil {
+						if pct := int(percent); pct != lastPct {
+							lastPct = pct
+							onProgress(percent, d, length)
+						}
 					} else {
 						speed := float64(d) / 1048576 / time.Since(startT).Seconds()
 						eta := time.Duration(float64(length-d)/1048576/speed) * time.Second
 						fmt.Printf("\r[%.1f%%] %.2f MB/s  eta %v ", percent, speed, eta.Round(time.Second))
 					}
 				case <-stopBar:
-					if progressFn == nil {
+					if onProgress == nil {
 						debugLog.Infof("[100.0%%] %.2f MB/s  total %s \n",
 							float64(length)/1048576/time.Since(startT).Seconds(),
 							time.Since(startT).Round(time.Millisecond))
@@ -420,7 +568,7 @@ func (fq *FileQueue) DownloadWithDynamicThreads(url string, maxThreads int, show
 		}()
 	}
 
-	// 5. 并发下载
+	// 5. 并发下载（支持 .part.N 断点续传与 ctx 取消）
 	var wg sync.WaitGroup
 	var firstErr error
 	sem := make(chan struct{}, maxThreads)
@@ -429,17 +577,31 @@ func (fq *FileQueue) DownloadWithDynamicThreads(url string, maxThreads int, show
 		go func() {
 			defer wg.Done()
 			for tk := range tasks {
+				if ctx.Err() != nil {
+					continue
+				}
 				mu.Lock()
 				hasErr := firstErr != nil
 				mu.Unlock()
 				if hasErr {
 					continue
 				}
+
+				tmp := fmt.Sprintf("%s.part.%d", fq.FileName, tk.idx)
+				// 断点续传：该分块已完整下载则跳过，只累加进度
+				if fi, err := os.Stat(tmp); err == nil && fi.Size() == tk.end-tk.start+1 {
+					tmpFiles[tk.idx] = tmp
+					atomic.AddInt64(&downloaded, fi.Size())
+					continue
+				}
+
 				sem <- struct{}{}
 				for attempt := range maxRetries {
+					if ctx.Err() != nil {
+						break
+					}
 					if err := func() error {
-						tmp := fmt.Sprintf("%s.part.%d", fq.FileName, tk.idx)
-						req, _ := http.NewRequest("GET", url, nil)
+						req, _ := http.NewRequestWithContext(ctx, "GET", url, nil)
 						req.Header.Set("User-Agent", userAgent)
 						if maxThreads > 1 {
 							req.Header.Set("Range", fmt.Sprintf("bytes=%d-%d", tk.start, tk.end))
@@ -464,6 +626,9 @@ func (fq *FileQueue) DownloadWithDynamicThreads(url string, maxThreads int, show
 
 						buf := make([]byte, 256*1024)
 						for {
+							if ctx.Err() != nil {
+								return ctx.Err()
+							}
 							n, err := resp.Body.Read(buf)
 							if n > 0 {
 								f.Write(buf[:n])
@@ -480,12 +645,18 @@ func (fq *FileQueue) DownloadWithDynamicThreads(url string, maxThreads int, show
 						return nil
 					}(); err == nil {
 						break
-					} else if attempt == maxRetries-1 {
-						mu.Lock()
-						if firstErr == nil {
-							firstErr = err
+					} else {
+						_ = os.Remove(tmp) // 清理不完整分块，避免续传时误判为完整
+						if ctx.Err() != nil {
+							break
 						}
-						mu.Unlock()
+						if attempt == maxRetries-1 {
+							mu.Lock()
+							if firstErr == nil {
+								firstErr = err
+							}
+							mu.Unlock()
+						}
 					}
 				}
 				<-sem
@@ -496,6 +667,9 @@ func (fq *FileQueue) DownloadWithDynamicThreads(url string, maxThreads int, show
 	close(stopBar)
 	if firstErr != nil {
 		return firstErr
+	}
+	if ctx.Err() != nil {
+		return ctx.Err()
 	}
 
 	// 6. 零拷贝合并
@@ -515,6 +689,10 @@ func (fq *FileQueue) DownloadWithDynamicThreads(url string, maxThreads int, show
 		if err != nil {
 			return err
 		}
+	}
+	// 完成时回调一次 100%，确保调用方拿到最终进度
+	if onProgress != nil {
+		onProgress(100, length, length)
 	}
 	return nil
 }

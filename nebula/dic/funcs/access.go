@@ -17,28 +17,93 @@ import (
 	"github.com/cjxpj/nebula/utils"
 )
 
-// 下载文件
+// 下载文件（异步，返回任务对象，可用「进度/速度/已下载/总大小/状态/错误」方法查询）
 func downloadFile(d *dto.DicInputs) (any, error) {
-	if d.Inputs.LenOk(2) {
-		file := utils.NewFileQueue(d.Inputs.String(2))
-		if file.Download(d.Inputs.String(1)) {
-			return "true", nil
-		}
-		return "false", nil
+	if !d.Inputs.LenOk(2) {
+		return "", errors.New("参数数量错误")
 	}
-	if d.Inputs.LenOk(3, 4) {
-		file := utils.NewFileQueue(d.Inputs.String(2))
-		printOpen := false
-		if d.Inputs.String(4) == "true" {
-			printOpen = true
-		}
-		if err := file.DownloadWithDynamicThreads(d.Inputs.String(1), d.Inputs.Int(3), printOpen, nil); err != nil {
-			return "false", err
-		}
-		return "true", nil
+	url := d.Inputs.String(1)
+	savePath := d.Inputs.String(2)
+	threads := 0 // 默认 0：按文件大小自适应（2~8）
+	printOpen := false
+	if d.Inputs.LenOk(3) {
+		threads = d.Inputs.Int(3)
+	}
+	if d.Inputs.LenOk(4) && d.Inputs.String(4) == "true" {
+		printOpen = true
+	}
+	task := utils.NewFileQueue(savePath).DownloadAsync(url, threads, printOpen)
+	return newDownloadTaskClass(task), nil
+}
 
+// 下载任务：进度
+func downloadTaskProgress(d *dto.DicInputs) (any, error) {
+	task, ok := d.Inputs.Get(1).(*utils.DownloadTask)
+	if !ok {
+		return "", errors.New("传入参数错误")
 	}
-	return "", errors.New("参数数量错误")
+	return task.Progress(), nil
+}
+
+// 下载任务：速度
+func downloadTaskSpeed(d *dto.DicInputs) (any, error) {
+	task, ok := d.Inputs.Get(1).(*utils.DownloadTask)
+	if !ok {
+		return "", errors.New("传入参数错误")
+	}
+	return task.Speed(), nil
+}
+
+// 下载任务：已下载字节
+func downloadTaskDownloaded(d *dto.DicInputs) (any, error) {
+	task, ok := d.Inputs.Get(1).(*utils.DownloadTask)
+	if !ok {
+		return "", errors.New("传入参数错误")
+	}
+	return task.Downloaded(), nil
+}
+
+// 下载任务：总大小
+func downloadTaskTotal(d *dto.DicInputs) (any, error) {
+	task, ok := d.Inputs.Get(1).(*utils.DownloadTask)
+	if !ok {
+		return "", errors.New("传入参数错误")
+	}
+	return task.Total(), nil
+}
+
+// 下载任务：状态
+func downloadTaskStatus(d *dto.DicInputs) (any, error) {
+	task, ok := d.Inputs.Get(1).(*utils.DownloadTask)
+	if !ok {
+		return "", errors.New("传入参数错误")
+	}
+	return task.Status(), nil
+}
+
+// 下载任务：错误信息
+func downloadTaskError(d *dto.DicInputs) (any, error) {
+	task, ok := d.Inputs.Get(1).(*utils.DownloadTask)
+	if !ok {
+		return "", errors.New("传入参数错误")
+	}
+	return task.Error(), nil
+}
+
+// newDownloadTaskClass 将异步下载任务包装为面对像 Class，方法闭包捕获同一任务实例。
+func newDownloadTaskClass(task *utils.DownloadTask) *dto.DicClass {
+	instance := &dto.DicClass{
+		LocalValue: dto.NewVal().Set("_下载_", task),
+	}
+	instance.Fn = map[string]dto.DicFunc{
+		"进度":  wrapObj(task, downloadTaskProgress, "0"),
+		"速度":  wrapObj(task, downloadTaskSpeed, "0"),
+		"已下载": wrapObj(task, downloadTaskDownloaded, "0"),
+		"总大小": wrapObj(task, downloadTaskTotal, "0"),
+		"状态":  wrapObj(task, downloadTaskStatus, "0"),
+		"错误":  wrapObj(task, downloadTaskError, "0"),
+	}
+	return instance
 }
 
 func accessGet(d *dto.DicInputs) (any, error) {

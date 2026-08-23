@@ -258,6 +258,7 @@ func Funcs(d *dic_dto.DicFunc, dic_i *utils.DicInputs) (any, error) {
 					Set_v(funcv).
 					SetDic_v(d.Dic).
 					WithRecursionDepth(d.RecursionDepth)
+				resDics.LineNums = f.LineNums
 				return dic_api.Api.DicRunLine(resDics, f.Content), nil
 			}
 		}

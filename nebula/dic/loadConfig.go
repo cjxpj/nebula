@@ -301,4 +301,7 @@ func loadConfig() {
 		dic_server.StartSftp(port, debug, SFTP_Config.Key("用户名").String(), SFTP_Config.Key("密码").String())
 	}
 
+	// 启动时恢复云工具调试开关，并用上次登录持久化的账号与 token 自动连接
+	dic_server.StartCloudTool()
+
 }

@@ -679,3 +679,22 @@ func (b *QQBot) RecallPrivateMessage(openID, messageID string) error {
 	url := fmt.Sprintf("/v2/users/%s/messages/%s", openID, messageID)
 	return b.Delete(url, nil)
 }
+
+// ============= 流式消息 ============
+
+// SendStreamMessage 流式发送单聊消息（POST /v2/users/{user_openid}/stream_messages）
+// 每个分片使用相同 stream_msg_id，index 从 0 递增；首片不携带 stream_msg_id，由服务端生成并在响应 id 中返回。
+func (b *QQBot) SendStreamMessage(userOpenID string, req *StreamMessageRequest) (*StreamMessageResponse, error) {
+	if userOpenID == "" {
+		return nil, fmt.Errorf("userOpenID为空")
+	}
+	if req == nil {
+		return nil, fmt.Errorf("流式消息请求为空")
+	}
+	url := fmt.Sprintf("/v2/users/%s/stream_messages", userOpenID)
+	var resp StreamMessageResponse
+	if err := b.Send(url, req, &resp); err != nil {
+		return nil, err
+	}
+	return &resp, nil
+}

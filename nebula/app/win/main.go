@@ -33,41 +33,35 @@ func init() {
 	}
 }
 
+// detectExtExec 检测扩展目录下的可执行文件，存在则返回其绝对路径，否则返回系统命令名。
+func detectExtExec(relPath, fallback string) string {
+	if utils.NewFileQueue(relPath).FileExists() {
+		return filepath.Join(utils.GetAppDir(), filepath.FromSlash(relPath))
+	}
+	return fallback
+}
+
 func main() {
 	// fmt.Println("Nebula 启动中...")
 
-	// 初始化执行环境
-	dto.GV.Set("_PythonPath_", "python")
-
-	// 检测文件是否存在ffmpeg.exe
-	ffmpegPath := utils.FindFfmpegExe(filepath.Join(utils.GetAppDir(), "private", "extensions", "ffmpeg"))
-	if ffmpegPath != "" {
+	// 检测扩展目录中的可执行文件，优先使用内置扩展，否则回退到系统命令名
+	dto.GV.Set("_Ffmpeg_", "ffmpeg")
+	if ffmpegPath := utils.FindFfmpegExe(filepath.Join(utils.GetAppDir(), "private", "extensions", "ffmpeg")); ffmpegPath != "" {
 		dto.GV.Set("_Ffmpeg_", ffmpegPath)
-	} else {
-		dto.GV.Set("_Ffmpeg_", "ffmpeg")
 	}
 
-	// 检测文件是否存在silk_v3.exe
 	if utils.NewFileQueue("private/extensions/silk_v3").DirExists() {
 		dto.GV.Set("_SilkPath_", filepath.Join(utils.GetAppDir(), "private", "extensions", "silk_v3"))
 	}
 
-	// 检测文件是否存在php.exe
-	if utils.NewFileQueue("private/extensions/php/php.exe").FileExists() {
-		dto.GV.Set("_PhpPath_", filepath.Join(utils.GetAppDir(), "private", "extensions", "php", "php.exe"))
-	} else {
-		dto.GV.Set("_PhpPath_", "php")
-	}
-
-	// 检测文件是否存在python.exe
-	if utils.NewFileQueue("private/extensions/python/python.exe").FileExists() {
-		dto.GV.Set("_PythonPath_", filepath.Join(utils.GetAppDir(), "private", "extensions", "python", "python.exe"))
-	}
+	dto.GV.Set("_PhpPath_", detectExtExec("private/extensions/php/php.exe", "php"))
+	dto.GV.Set("_PythonPath_", detectExtExec("private/extensions/python/python.exe", "python"))
 
 	// 用主上下文控制整个进程生命周期
 	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	defer ShutdownPhp() // 确保退出时同步 kill PHP 进程
+	defer ShutdownPhp()    // 确保退出时同步 kill PHP 进程
+	defer ShutdownPython() // 确保退出时同步 kill Python 进程
+	defer cancel()         // 最后注册最先执行：先取消上下文，再关闭 PHP/Python
 
 	// 监听系统信号，退出时取消 ctx
 	sigCh := make(chan os.Signal, 1)
@@ -101,53 +95,53 @@ func main() {
 		// 获取绝对路径
 		absPath, err := filepath.Abs(fq.FileName)
 		if err != nil {
-			return false, nil
+			return false, fmt.Errorf("获取绝对路径失败: %v", err)
 		}
 
 		// 使用 Windows Shell API 将文件/文件夹移动到回收站
 		if err := trash.Throw(absPath); err != nil {
-			return false, nil
+			return false, fmt.Errorf("移动到回收站失败: %v", err)
 		}
 
 		return true, nil
 	})
 
 	funcs.Register("PHP", "1|2|3", func(d *dto.DicInputs) (any, error) {
-
 		phpCode := d.Inputs.String(1)
 
-		// 如果有传入 *http.Request 作为第二个参数
+		// 可选参数：*http.Request（第2个）与 http.ResponseWriter（第3个）
+		var req *http.Request
 		if r, ok := d.Inputs.Get(2).(*http.Request); ok {
-			getData, postData, fileData, cleanup, err := parseRequestToMap(r)
-			if cleanup != nil {
-				defer cleanup()
-			}
-			if err != nil {
-				return "请求解析失败: " + err.Error(), nil
-			}
-			var result string
-			if w, ok := d.Inputs.Get(3).(http.ResponseWriter); ok {
-				result, err = runTempPHP(ctx, phpCode, &getData, &postData, &fileData, w)
-				if err != nil {
-					return "执行失败: " + err.Error(), nil
-				}
-			} else {
-				result, err = runTempPHP(ctx, phpCode, &getData, &postData, &fileData, nil)
-				if err != nil {
-					return "执行失败: " + err.Error(), nil
-				}
-			}
-			return result, nil
+			req = r
+		}
+		var w http.ResponseWriter
+		if rw, ok := d.Inputs.Get(3).(http.ResponseWriter); ok {
+			w = rw
 		}
 
 		// 无请求，直接执行
-		result, err := runTempPHP(ctx, phpCode, nil, nil, nil, nil)
-		return result, err
+		if req == nil {
+			return runTempPHP(ctx, phpCode, nil, nil, nil, nil)
+		}
+
+		getData, postData, fileData, cleanup, err := parseRequestToMap(req)
+		if cleanup != nil {
+			defer cleanup()
+		}
+		if err != nil {
+			return "请求解析失败: " + err.Error(), nil
+		}
+
+		result, err := runTempPHP(ctx, phpCode, &getData, &postData, &fileData, w)
+		if err != nil {
+			return "执行失败: " + err.Error(), nil
+		}
+		return result, nil
 	})
 
-	// 注入自义定函数
-	funcs.Register("Python", "1", func(d *dto.DicInputs) (any, error) {
-		output, err := runPythonCode(d.Inputs.String(1))
+	// 注入自定义函数
+	funcs.Register("Python", "1|2", func(d *dto.DicInputs) (any, error) {
+		output, err := runPythonCode(d, d.Inputs.String(1), d.Inputs.Bool(2))
 		return output, err
 	})
 

@@ -278,3 +278,12 @@ func setServerCors(d *dto.DicInputs) (any, error) {
 	}
 	return nil, nil
 }
+
+// 云工具状态 词库函数：$云工具状态$
+// 返回 "true" 或 "false"，表示当前后端是否已连接云工具。
+func cloudToolStatus(d *dto.DicInputs) (any, error) {
+	if dto.CloudToolConnected != nil && dto.CloudToolConnected() {
+		return "true", nil
+	}
+	return "false", nil
+}

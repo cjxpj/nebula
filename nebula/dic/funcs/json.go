@@ -871,3 +871,60 @@ func jsonPrettyPrint(d *dto.DicInputs) (any, error) {
 	}
 	return buf.String(), nil
 }
+
+// jsonSplit 将数组按 N 个元素一组拆分，或将对象按 N 个键值对一组拆分，返回子元素数组
+func jsonSplit(d *dto.DicInputs) (any, error) {
+	if !d.Inputs.LenOk(2) {
+		return "", errors.New("参数错误")
+	}
+	raw := d.Inputs.String(1)
+	if raw == "" {
+		return "", errors.New("不是json格式")
+	}
+	n, err := strconv.Atoi(d.Inputs.String(2))
+	if err != nil || n <= 0 {
+		return "", errors.New("拆分数量必须为正整数")
+	}
+
+	var obj any
+	if err := json.Unmarshal([]byte(raw), &obj); err != nil {
+		return "", errors.New("不是json格式")
+	}
+
+	result := make([]any, 0)
+	switch v := obj.(type) {
+	case []any:
+		for i := 0; i < len(v); i += n {
+			end := i + n
+			if end > len(v) {
+				end = len(v)
+			}
+			result = append(result, v[i:end])
+		}
+	case map[string]any:
+		keys := make([]string, 0, len(v))
+		for k := range v {
+			keys = append(keys, k)
+		}
+		sort.Strings(keys)
+		for i := 0; i < len(keys); i += n {
+			end := i + n
+			if end > len(keys) {
+				end = len(keys)
+			}
+			chunk := make(map[string]any, end-i)
+			for _, k := range keys[i:end] {
+				chunk[k] = v[k]
+			}
+			result = append(result, chunk)
+		}
+	default:
+		return "", errors.New("JSON拆分仅支持对象或数组")
+	}
+
+	b, err := json.Marshal(result)
+	if err != nil {
+		return "", err
+	}
+	return string(b), nil
+}

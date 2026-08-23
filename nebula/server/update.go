@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"io"
 	"net/http"
 	"os"
 	"os/exec"
@@ -251,13 +250,25 @@ func runUpdateDownload(ctx context.Context) {
 		upd.mu.Unlock()
 	}
 
-	// 2. 下载循环：网络中断时保留已下载部分，退避后自动重连续传
+	// 2. 下载循环：复用分段多线程下载器，网络中断时保留已下载分块，退避后自动重连续传
+	const updateThreads = 0 // 0 表示按系统资源自动计算线程数
 	for {
 		if ctx.Err() != nil {
 			setUpdatePaused()
 			return
 		}
-		err := downloadToFile(ctx, downURL, tmpFile)
+		err := utils.NewFileQueue(tmpFile).DownloadWithDynamicThreadsCtx(ctx, downURL, updateThreads, false, func(percent float64, downloaded, total int64) {
+			upd.mu.Lock()
+			upd.status = "downloading"
+			upd.total = total
+			upd.done = downloaded
+			upd.mu.Unlock()
+			// 移动端通知栏进度（桌面端该回调为 nil）
+			if total > 0 && mobile.UpdateDownloadProgressFunc != nil {
+				_ = mobile.UpdateDownloadProgressFunc(downloaded, total)
+			}
+			broadcastUpdateProgress(getUpdateStatus())
+		})
 		if err == nil {
 			break
 		}
@@ -349,8 +360,13 @@ func prepareUpdateTargets() error {
 		}
 		tmpFile = filepath.Join(filepath.Dir(exePath), utils.GetAppDir(), filepath.Base(exePath)+".new")
 	}
-	// 首次下载清掉可能残留的旧文件，保证从零开始（后续暂停/续传/断线重连不再经过此处）
+	// 首次下载清掉可能残留的旧文件（含分段临时分块），保证从零开始（后续暂停/续传/断线重连不再经过此处）
 	_ = os.Remove(tmpFile)
+	if parts, _ := filepath.Glob(tmpFile + ".part.*"); len(parts) > 0 {
+		for _, p := range parts {
+			_ = os.Remove(p)
+		}
+	}
 
 	upd.mu.Lock()
 	upd.tag = tag
@@ -359,118 +375,6 @@ func prepareUpdateTargets() error {
 	upd.exePath = exePath
 	upd.status = "downloading"
 	upd.mu.Unlock()
-	return nil
-}
-
-// downloadToFile 单次下载：从已下载的偏移量断点续传（支持 HTTP Range），
-// 写入期间持续更新进度；ctx 取消时返回 ctx.Err() 表示用户暂停。
-func downloadToFile(ctx context.Context, downURL, tmpFile string) error {
-	// 读取已下载大小作为续传偏移
-	var offset int64
-	if fi, err := os.Stat(tmpFile); err == nil {
-		offset = fi.Size()
-	}
-
-	out, err := os.OpenFile(tmpFile, os.O_CREATE|os.O_WRONLY, 0644)
-	if err != nil {
-		return fmt.Errorf("打开临时文件失败: %v", err)
-	}
-	defer out.Close()
-
-	req, err := http.NewRequestWithContext(ctx, "GET", downURL, nil)
-	if err != nil {
-		return fmt.Errorf("创建下载请求失败: %v", err)
-	}
-	req.Header.Set("User-Agent", "Nebula-Client/1.0")
-	if offset > 0 {
-		req.Header.Set("Range", fmt.Sprintf("bytes=%d-", offset))
-	}
-
-	client := &http.Client{Timeout: 10 * time.Minute}
-	resp, err := client.Do(req)
-	if err != nil {
-		return fmt.Errorf("下载失败: %v", err)
-	}
-	defer resp.Body.Close()
-
-	// 206 续传 / 200 全量（服务器不支持断点时从头开始）
-	if resp.StatusCode == http.StatusPartialContent {
-		if _, err := out.Seek(offset, io.SeekStart); err != nil {
-			return fmt.Errorf("定位续传位置失败: %v", err)
-		}
-	} else if resp.StatusCode == http.StatusOK {
-		if err := out.Truncate(0); err != nil {
-			return fmt.Errorf("重置临时文件失败: %v", err)
-		}
-		if _, err := out.Seek(0, io.SeekStart); err != nil {
-			return err
-		}
-		offset = 0
-	} else {
-		return fmt.Errorf("下载失败，HTTP 状态码: %d", resp.StatusCode)
-	}
-
-	total := int64(0)
-	if resp.ContentLength > 0 {
-		total = offset + resp.ContentLength
-	}
-
-	upd.mu.Lock()
-	upd.status = "downloading"
-	upd.total = total
-	upd.done = offset
-	upd.errMsg = ""
-	upd.mu.Unlock()
-	broadcastUpdateProgress(getUpdateStatus())
-
-	buf := make([]byte, 64*1024)
-	lastMobilePct := -1
-	lastFrontPct := -1
-	for {
-		if ctx.Err() != nil {
-			return ctx.Err()
-		}
-		n, readErr := resp.Body.Read(buf)
-		if n > 0 {
-			if _, err := out.Write(buf[:n]); err != nil {
-				return fmt.Errorf("写入文件失败: %v", err)
-			}
-			upd.mu.Lock()
-			upd.done += int64(n)
-			done, totalNow := upd.done, upd.total
-			upd.mu.Unlock()
-
-			pct := -1
-			if totalNow > 0 {
-				pct = int(done * 100 / totalNow)
-			}
-
-			// 移动端通知栏：每 10% 回调一次
-			if totalNow > 0 && mobile.UpdateDownloadProgressFunc != nil && pct != lastMobilePct && pct%10 == 0 {
-				lastMobilePct = pct
-				_ = mobile.UpdateDownloadProgressFunc(done, totalNow)
-			}
-			// 前端进度：每 1% 推送一次
-			if pct != lastFrontPct {
-				lastFrontPct = pct
-				broadcastUpdateProgress(getUpdateStatus())
-			}
-		}
-		if readErr == io.EOF {
-			break
-		}
-		if readErr != nil {
-			return fmt.Errorf("读取下载内容失败: %v", readErr)
-		}
-	}
-
-	// 完整性校验
-	upd.mu.Lock()
-	done, totalNow := upd.done, upd.total
-	upd.mu.Unlock()
-	if totalNow > 0 && done < totalNow {
-		return fmt.Errorf("下载不完整 (%d/%d)", done, totalNow)
-	}
 	return nil
 }
 

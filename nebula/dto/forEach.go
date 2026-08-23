@@ -9,4 +9,5 @@ func (s *LocalDicValueForEach) Close() {
 	s.Num = 0
 	s.VlaueName = ""
 	s.Content = nil
+	s.LineNums = nil
 }

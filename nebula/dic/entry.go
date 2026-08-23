@@ -90,8 +90,10 @@ func handleLoopControl(r, runDic *dic_dto.DicEntry, loopType string) (shouldBrea
 			r.Sys_v.Stop.Store(true)
 			return true, false
 		}
-		if !runDic.Sys_v.ForEach.IsFor && runDic.Sys_v.Stop.Load() {
+		// 遍历框嵌套在循环框内：遍历体内执行 >终止循环 时，向上传递并跳出当前循环。
+		if runDic.Sys_v.For.IsFor && runDic.Sys_v.For.Jump {
 			closeChildDic(runDic)
+			r.Sys_v.For.Jump = true
 			return false, true
 		}
 		if runDic.Sys_v.ForEach.Jump {
@@ -102,6 +104,12 @@ func handleLoopControl(r, runDic *dic_dto.DicEntry, loopType string) (shouldBrea
 	case "For":
 		if !runDic.Sys_v.For.IsFor && runDic.Sys_v.Stop.Load() {
 			closeChildDic(runDic)
+			return false, true
+		}
+		// 循环框嵌套在遍历框内：循环体内执行 >终止遍历 时，向上传递并跳出当前遍历。
+		if runDic.Sys_v.ForEach.IsFor && runDic.Sys_v.ForEach.Jump {
+			closeChildDic(runDic)
+			r.Sys_v.ForEach.Jump = true
 			return false, true
 		}
 		if runDic.Sys_v.For.Jump {
@@ -402,6 +410,7 @@ func Entry(r *dic_dto.DicEntry, txt []string, funcV *dic_dto.DicFunc) error {
 		if r.Sys_v.Func.Success {
 			forNum := r.Sys_v.Func.Num
 			content := r.Sys_v.Func.Content
+			lineNums := r.Sys_v.Func.LineNums
 			funcTrigger := r.Sys_v.Func.Trigger
 			if textLen > 7 && text[:7] == "函数>" {
 				forNum++
@@ -420,17 +429,20 @@ func Entry(r *dic_dto.DicEntry, txt []string, funcV *dic_dto.DicFunc) error {
 							Set_v(funcv).
 							SetDic_v(r.Dic).
 							WithRecursionDepth(r.RecursionDepth)
+						RunDic.LineNums = lineNums
 						resRunDic := dic_api.Api.DicRunLine(RunDic, content)
 						r.Output.Add(resRunDic)
 					} else {
 						// 插入函数框
 						r.Val.P.Set(r.Sys_v.Func.VlaueName, &dto.FuncBox{
-							Trigger: funcTrigger,
-							Content: content,
+							Trigger:  funcTrigger,
+							Content:  content,
+							LineNums: lineNums,
 						})
 					}
 
 					r.Sys_v.Func.Content = []string{}
+					r.Sys_v.Func.LineNums = nil
 					r.Sys_v.Func.Success = false
 					continue
 				}
@@ -438,13 +450,16 @@ func Entry(r *dic_dto.DicEntry, txt []string, funcV *dic_dto.DicFunc) error {
 				r.Sys_v.Func.Num = forNum
 			}
 			content = append(content, text)
+			lineNums = append(lineNums, funcV.CurLine)
 			r.Sys_v.Func.Content = content
+			r.Sys_v.Func.LineNums = lineNums
 			continue
 		}
 
 		if r.Sys_v.ForEach.Success {
 			forNum := r.Sys_v.ForEach.Num
 			content := r.Sys_v.ForEach.Content
+			lineNums := r.Sys_v.ForEach.LineNums
 			if textLen >= 7 && text[:7] == "遍历>" {
 				forNum++
 				r.Sys_v.ForEach.Num = forNum
@@ -457,7 +472,12 @@ func Entry(r *dic_dto.DicEntry, txt []string, funcV *dic_dto.DicFunc) error {
 						SetDic_v(r.Dic).
 						SetRunForEach().
 						WithRecursionDepth(r.RecursionDepth)
+					// 遍历框嵌套在循环框内时，继承外层循环上下文，使遍历体内可执行 >终止循环。
+					if r.Sys_v.For.IsFor {
+						RunDic.SetRunFor()
+					}
 					RunDic.Trigger = false
+					RunDic.LineNums = lineNums
 					startIdx := strings.IndexByte(valName, ',')
 					endIdx := startIdx + 1
 					v1 := "_"
@@ -524,13 +544,16 @@ func Entry(r *dic_dto.DicEntry, txt []string, funcV *dic_dto.DicFunc) error {
 				r.Sys_v.ForEach.Num = forNum
 			}
 			content = append(content, text)
+			lineNums = append(lineNums, funcV.CurLine)
 			r.Sys_v.ForEach.Content = content
+			r.Sys_v.ForEach.LineNums = lineNums
 			continue
 		}
 
 		if r.Sys_v.For.Success {
 			forNum := r.Sys_v.For.Num
 			content := r.Sys_v.For.Content
+			lineNums := r.Sys_v.For.LineNums
 			if textLen >= 7 && text[:7] == "循环>" {
 				forNum++
 				r.Sys_v.For.Num = forNum
@@ -543,7 +566,12 @@ func Entry(r *dic_dto.DicEntry, txt []string, funcV *dic_dto.DicFunc) error {
 						SetDic_v(r.Dic).
 						SetRunFor().
 						WithRecursionDepth(r.RecursionDepth)
+					// 循环框嵌套在遍历框内时，继承外层遍历上下文，使循环体内可执行 >终止遍历。
+					if r.Sys_v.ForEach.IsFor {
+						RunDic.SetRunForEach()
+					}
 					RunDic.Trigger = false
+					RunDic.LineNums = lineNums
 
 					if r.Sys_v.ForGetRun() == nil {
 						i := 0
@@ -594,6 +622,7 @@ func Entry(r *dic_dto.DicEntry, txt []string, funcV *dic_dto.DicFunc) error {
 					r.Sys_v.For.Num = 0
 					r.Sys_v.For.Run = 0
 					r.Sys_v.For.Content = []string{}
+					r.Sys_v.For.LineNums = nil
 					r.Sys_v.For.Success = false
 					continue
 				}
@@ -601,7 +630,9 @@ func Entry(r *dic_dto.DicEntry, txt []string, funcV *dic_dto.DicFunc) error {
 				r.Sys_v.For.Num = forNum
 			}
 			content = append(content, text)
+			lineNums = append(lineNums, funcV.CurLine)
 			r.Sys_v.For.Content = content
+			r.Sys_v.For.LineNums = lineNums
 			continue
 		}
 
@@ -629,6 +660,11 @@ func Entry(r *dic_dto.DicEntry, txt []string, funcV *dic_dto.DicFunc) error {
 					for i := 0; i <= r.Sys_v.IfFunc.IfNum; i++ {
 						var ifval bool = Pd(funcV, r.Sys_v.IfFunc.If[i])
 						if ifval {
+							if i < len(r.Sys_v.IfFunc.LineNums) {
+								RunDic.LineNums = r.Sys_v.IfFunc.LineNums[i]
+							} else {
+								RunDic.LineNums = nil
+							}
 							resRun := dic_api.Api.DicRunLine(RunDic, r.Sys_v.IfFunc.Run[i])
 							r.Output.Add(resRun)
 
@@ -651,6 +687,7 @@ func Entry(r *dic_dto.DicEntry, txt []string, funcV *dic_dto.DicFunc) error {
 							if i != r.Sys_v.IfFunc.IfNum {
 								continue
 							}
+							RunDic.LineNums = r.Sys_v.IfFunc.ElseLineNums
 							resRun := dic_api.Api.DicRunLine(RunDic, r.Sys_v.IfFunc.Else)
 							r.Output.Add(resRun)
 						}
@@ -687,6 +724,8 @@ func Entry(r *dic_dto.DicEntry, txt []string, funcV *dic_dto.DicFunc) error {
 					r.Sys_v.IfFunc.If = []string{}
 					r.Sys_v.IfFunc.Else = []string{}
 					r.Sys_v.IfFunc.Run = [][]string{}
+					r.Sys_v.IfFunc.LineNums = nil
+					r.Sys_v.IfFunc.ElseLineNums = nil
 					r.Sys_v.IfFunc.IfNum = 0
 					r.Sys_v.IfFunc.IsElse = false
 					r.Sys_v.IfFunc.Success = false
@@ -710,11 +749,14 @@ func Entry(r *dic_dto.DicEntry, txt []string, funcV *dic_dto.DicFunc) error {
 
 			if r.Sys_v.IfFunc.IsElse {
 				r.Sys_v.IfFunc.Else = append(r.Sys_v.IfFunc.Else, text)
+				r.Sys_v.IfFunc.ElseLineNums = append(r.Sys_v.IfFunc.ElseLineNums, funcV.CurLine)
 			} else {
 				if r.Sys_v.IfFunc.IfNum >= len(r.Sys_v.IfFunc.Run) {
 					r.Sys_v.IfFunc.Run = append(r.Sys_v.IfFunc.Run, []string{})
+					r.Sys_v.IfFunc.LineNums = append(r.Sys_v.IfFunc.LineNums, []int{})
 				}
 				r.Sys_v.IfFunc.Run[r.Sys_v.IfFunc.IfNum] = append(r.Sys_v.IfFunc.Run[r.Sys_v.IfFunc.IfNum], text)
+				r.Sys_v.IfFunc.LineNums[r.Sys_v.IfFunc.IfNum] = append(r.Sys_v.IfFunc.LineNums[r.Sys_v.IfFunc.IfNum], funcV.CurLine)
 			}
 			continue
 		}

@@ -608,3 +608,32 @@ type UpdatePanelTargetRequest struct {
 	UserOpenIDs  []string `json:"user_openids,omitempty"`  // 用户 openid 列表，仅 c2c 有效
 	GroupOpenIDs []string `json:"group_openids,omitempty"` // 群 openid 列表，仅 group 有效
 }
+
+// ============= 流式消息 ============
+
+// StreamMessageRequest 流式发送单聊消息请求体（POST /v2/users/{user_openid}/stream_messages）
+type StreamMessageRequest struct {
+	InputMode   string `json:"input_mode,omitempty"`    // 输入模式：append（默认）拼接；replace 覆盖，ContentRaw 为当前全量正文
+	InputState  int    `json:"input_state,omitempty"`   // 输入状态：1=生成中，10=生成结束
+	Index       int    `json:"index,omitempty"`         // 分片序号，从 0 递增
+	ContentType string `json:"content_type,omitempty"`  // 内容格式类型：text / markdown
+	ContentRaw  string `json:"content_raw,omitempty"`   // 文本内容（markdown 或文本）
+	EventId     string `json:"event_id,omitempty"`      // 被动回复事件ID（与 msg_id 二选一）
+	MsgId       string `json:"msg_id,omitempty"`        // 被动回复消息ID（与 event_id 二选一）
+	StreamMsgId string `json:"stream_msg_id,omitempty"` // 流式消息ID，续片时携带上一分片返回的 id
+	MsgSeq      int    `json:"msg_seq,omitempty"`       // 消息序号，用于去重
+	IsWakeup    bool   `json:"is_wakeup,omitempty"`     // 是否为召回消息，true 时不校验 msg_id/event_id 有效期
+}
+
+// StreamMessageResponse 流式发送单聊消息响应体
+type StreamMessageResponse struct {
+	ID           string          `json:"id"`                       // 消息ID，首片返回 stream_msg_id，用于后续分片
+	Timestamp    string          `json:"timestamp"`                // 消息发送时间，RFC3339 格式
+	ExtInfo      *MessageExtInfo `json:"ext_info,omitempty"`       // 扩展信息
+	RemainMsgLen int             `json:"remain_msg_len,omitempty"` // 流式消息剩余长度（字符数）
+}
+
+// MessageExtInfo 消息扩展信息
+type MessageExtInfo struct {
+	RefIdx string `json:"ref_idx"` // 引用消息索引，对应消息时间 ext 里的 msg_idx 与 ref_msg_idx
+}

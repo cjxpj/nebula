@@ -67,7 +67,7 @@ func Setup() {
 		f{Name: "GC回收", L: "0", Fn: gcCollect},
 
 		// ========== 定时任务 ==========
-		f{Name: "添加定时任务", L: "1|2|3|4", Fn: addScheduledTaskFunc},
+		f{Name: "添加定时任务", L: "1|2|3|4|5", Fn: addScheduledTaskFunc},
 		f{Name: "删除定时任务", L: "1", Fn: delScheduledTaskFunc},
 		f{Name: "定时任务列表", L: "0", Fn: listScheduledTaskFunc},
 
@@ -172,6 +172,12 @@ func Setup() {
 		f{Name: "db_删除", L: "2", Fn: dbDelete},
 		f{Name: "db_删除文件", L: "1", Fn: dbDeleteFile},
 		f{Name: "db_删除文件夹", L: "1", Fn: dbDeleteDir},
+		f{Name: "db_添加", L: "3", Fn: dbMoneyAdd},
+		f{Name: "db_减少", L: "3", Fn: dbMoneySub},
+		f{Name: "db_设置", L: "3", Fn: dbMoneySet},
+		f{Name: "db_查询", L: "1|2", Fn: dbMoneyQuery},
+		f{Name: "db_查询排名", L: "1|2|3", Fn: dbMoneyRank},
+		f{Name: "db_清空经济系统", L: "0|1", Fn: dbMoneyClear},
 
 		// ========== JSON ==========
 		f{Name: "JSON解析", L: "1|2", Fn: queryJson},
@@ -190,6 +196,7 @@ func Setup() {
 		f{Name: "JSON查找文本", L: "2", Fn: jsonFindText},
 		f{Name: "JSON模糊查找文本", L: "2", Fn: jsonFindTextFuzzy},
 		f{Name: "JSON正则查找文本", L: "2", Fn: jsonFindTextRegex},
+		f{Name: "JSON拆分", L: "2", Fn: jsonSplit},
 
 		// ========== HTML / Markdown ==========
 		f{Name: "HTML解析", L: "1..", Fn: htmlParse},
@@ -208,6 +215,7 @@ func Setup() {
 		// ========== 其他 ==========
 		f{Name: "读配置", L: "2|3", Fn: readConfig},
 		f{Name: "写配置", L: "2|3", Fn: writeConfig},
+		f{Name: "云工具状态", L: "0", Fn: cloudToolStatus},
 		f{Name: "设置跨域", L: "1|2", Fn: setServerCors},
 		f{Name: "GIF拆帧", L: "1", Fn: getGif},
 		f{Name: "图片相似度", L: "2", Fn: imageSimilarity},
@@ -219,7 +227,8 @@ func Setup() {
 		f{Name: "ZIP解压", L: "2", Fn: zipDecompress},
 		f{Name: "创建邮件", L: "4", Fn: emailCreate},
 		f{Name: "主机", L: "1", Fn: host_information},
-		f{Name: "时间戳格式化时间", L: "2|3", Fn: timestampFormattingTime},
+		f{Name: "时间戳转时间", L: "1|2", Fn: timestampToTime},
+		f{Name: "时间转时间戳", L: "1|2", Fn: timeToTimestamp},
 		f{Name: "时间间隔", L: "1", Fn: timeSince},
 		f{Name: "腾讯接口", L: "6|7", Fn: tencentGetApi},
 		f{Name: "取前字符", L: "2", Fn: subStrHead},

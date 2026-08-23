@@ -18,7 +18,7 @@ func (b *QQBot) Send(path string, body any, respObj any) error {
 	}
 	headers := GetQQBotAuthHeader(b.Key.AccessToken)
 
-	err := postJson(APIURL+path, body, headers, respObj)
+	err := postJson(APIURL+path, body, headers, respObj, b.Debug)
 
 	if b.Debug {
 		if err != nil {
@@ -37,7 +37,7 @@ func (b *QQBot) Get(path string, respObj any) error {
 	}
 	headers := GetQQBotAuthHeader(b.Key.AccessToken)
 
-	err := getJson(APIURL+path, headers, respObj)
+	err := getJson(APIURL+path, headers, respObj, b.Debug)
 
 	if b.Debug {
 		if err != nil {
@@ -56,7 +56,7 @@ func (b *QQBot) Patch(path string, body any, respObj any) error {
 	}
 	headers := GetQQBotAuthHeader(b.Key.AccessToken)
 
-	err := patchJson(APIURL+path, body, headers, respObj)
+	err := patchJson(APIURL+path, body, headers, respObj, b.Debug)
 
 	if b.Debug {
 		if err != nil {
@@ -75,7 +75,7 @@ func (b *QQBot) Put(path string, body any, respObj any) error {
 	}
 	headers := GetQQBotAuthHeader(b.Key.AccessToken)
 
-	err := putJson(APIURL+path, body, headers, respObj)
+	err := putJson(APIURL+path, body, headers, respObj, b.Debug)
 
 	if b.Debug {
 		if err != nil {
@@ -94,7 +94,7 @@ func (b *QQBot) Delete(path string, respObj any) error {
 	}
 	headers := GetQQBotAuthHeader(b.Key.AccessToken)
 
-	err := deleteJson(APIURL+path, headers, respObj)
+	err := deleteJson(APIURL+path, headers, respObj, b.Debug)
 
 	if b.Debug {
 		if err != nil {
@@ -119,7 +119,7 @@ func (b *QQBot) SendChannelImage(path string, imgData []byte, body any, respObj 
 		debugLog.Infof("[QQBot 请求] %s | 图片大小: %d bytes", string(bodyJson), len(imgData))
 	}
 
-	err := postImageWithJsonDataAsFormFields(APIURL+path, imgData, "NebulaImage", body, headers, respObj)
+	err := postImageWithJsonDataAsFormFields(APIURL+path, imgData, "NebulaImage", body, headers, respObj, b.Debug)
 
 	if b.Debug {
 		if err != nil {
@@ -140,6 +140,7 @@ func postImageWithJsonDataAsFormFields(
 	jsonData any,
 	headers http.Header,
 	respObj any,
+	debug bool,
 ) error {
 	body := &bytes.Buffer{}
 	writer := multipart.NewWriter(body)
@@ -171,7 +172,9 @@ func postImageWithJsonDataAsFormFields(
 	// 遍历 map，写入普通表单字段
 	for key, val := range fieldsMap {
 		strVal := fmt.Sprintf("%v", val)
-		debugLog.Infof("key:%v val:%v", key, strVal)
+		if debug {
+			debugLog.Infof("key:%v val:%v", key, strVal)
+		}
 		if err := writer.WriteField(key, strVal); err != nil {
 			return fmt.Errorf("写入字段 %s 失败: %w", key, err)
 		}
@@ -218,12 +221,14 @@ func postImageWithJsonDataAsFormFields(
 }
 
 // POST 请求，发送 JSON 并解析响应
-func postJson(url string, body any, headers http.Header, respObj any) error {
+func postJson(url string, body any, headers http.Header, respObj any, debug bool) error {
 	data, err := json.Marshal(body)
 	if err != nil {
 		return fmt.Errorf("编码 JSON 请求失败: %w", err)
 	}
-	debugLog.Infof("[QQBot POST] %s %s", url, string(data))
+	if debug {
+		debugLog.Infof("[QQBot POST] %s %s", url, string(data))
+	}
 
 	req, err := http.NewRequest("POST", url, bytes.NewBuffer(data))
 	if err != nil {
@@ -261,8 +266,10 @@ func postJson(url string, body any, headers http.Header, respObj any) error {
 	return nil
 }
 
-func getJson(url string, headers http.Header, respObj any) error {
-	debugLog.Infof("[QQBot GET] %s", url)
+func getJson(url string, headers http.Header, respObj any, debug bool) error {
+	if debug {
+		debugLog.Infof("[QQBot GET] %s", url)
+	}
 	req, err := http.NewRequest("GET", url, nil)
 	if err != nil {
 		return fmt.Errorf("构造请求失败: %w", err)
@@ -295,12 +302,14 @@ func getJson(url string, headers http.Header, respObj any) error {
 	return nil
 }
 
-func patchJson(url string, body any, headers http.Header, respObj any) error {
+func patchJson(url string, body any, headers http.Header, respObj any, debug bool) error {
 	data, err := json.Marshal(body)
 	if err != nil {
 		return fmt.Errorf("编码 JSON 请求失败: %w", err)
 	}
-	debugLog.Infof("[QQBot PATCH] %s %s", url, string(data))
+	if debug {
+		debugLog.Infof("[QQBot PATCH] %s %s", url, string(data))
+	}
 
 	req, err := http.NewRequest("PATCH", url, bytes.NewBuffer(data))
 	if err != nil {
@@ -335,12 +344,14 @@ func patchJson(url string, body any, headers http.Header, respObj any) error {
 	return nil
 }
 
-func putJson(url string, body any, headers http.Header, respObj any) error {
+func putJson(url string, body any, headers http.Header, respObj any, debug bool) error {
 	data, err := json.Marshal(body)
 	if err != nil {
 		return fmt.Errorf("编码 JSON 请求失败: %w", err)
 	}
-	debugLog.Infof("[QQBot PUT] %s %s", url, string(data))
+	if debug {
+		debugLog.Infof("[QQBot PUT] %s %s", url, string(data))
+	}
 
 	req, err := http.NewRequest("PUT", url, bytes.NewBuffer(data))
 	if err != nil {
@@ -375,8 +386,10 @@ func putJson(url string, body any, headers http.Header, respObj any) error {
 	return nil
 }
 
-func deleteJson(url string, headers http.Header, respObj any) error {
-	debugLog.Infof("[QQBot DELETE] %s", url)
+func deleteJson(url string, headers http.Header, respObj any, debug bool) error {
+	if debug {
+		debugLog.Infof("[QQBot DELETE] %s", url)
+	}
 
 	req, err := http.NewRequest("DELETE", url, nil)
 	if err != nil {

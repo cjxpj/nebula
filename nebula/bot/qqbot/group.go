@@ -858,6 +858,7 @@ func parseGroupEvent(payload *qqbot_msg.Payload, appId string) (*dto.Val, string
 			Set("操作者", operatorID).
 			Set("QQ", userQQ).
 			Set("qq", userQQ).
+			Set("头像", "http://q.qlogo.cn/qqapp/"+appId+"/"+userQQ+"/640").
 			Set("robot", appId).
 			Set("Robot", appId), msg, m.GroupOpenID, "群事件", true
 
@@ -882,6 +883,7 @@ func parseGroupEvent(payload *qqbot_msg.Payload, appId string) (*dto.Val, string
 			Set("群号", m.GroupOpenID).
 			Set("QQ", m.MemberOpenID).
 			Set("qq", m.MemberOpenID).
+			Set("头像", "http://q.qlogo.cn/qqapp/"+appId+"/"+m.MemberOpenID+"/640").
 			Set("昵称", m.Username).
 			Set("申请理由", reason).
 			Set("申请问题", qaMsg).
@@ -919,6 +921,7 @@ func parseGroupEvent(payload *qqbot_msg.Payload, appId string) (*dto.Val, string
 				Set("群号", groupOpenID).
 				Set("QQ", userID).
 				Set("qq", userID).
+				Set("头像", "http://q.qlogo.cn/qqapp/"+appId+"/"+userID+"/640").
 				Set("功能ID", featureID).
 				Set("robot", appId).
 				Set("Robot", appId), featureID, groupOpenID, "菜单事件", true
@@ -937,6 +940,7 @@ func parseGroupEvent(payload *qqbot_msg.Payload, appId string) (*dto.Val, string
 			Set("群号", groupOpenID).
 			Set("QQ", userID).
 			Set("qq", userID).
+			Set("头像", "http://q.qlogo.cn/qqapp/"+appId+"/"+userID+"/640").
 			Set("robot", appId).
 			Set("Robot", appId), btnData, groupOpenID, "按钮事件", true
 	}
@@ -984,6 +988,7 @@ func parseFriendEvent(payload *qqbot_msg.Payload, appId string) (*dto.Val, strin
 			Set("来源", "好友添加").
 			Set("QQ", m.OpenID).
 			Set("qq", m.OpenID).
+			Set("头像", "http://q.qlogo.cn/qqapp/"+appId+"/"+m.OpenID+"/640").
 			Set("robot", appId).
 			Set("Robot", appId), "好友添加", m.OpenID, true
 
@@ -997,6 +1002,7 @@ func parseFriendEvent(payload *qqbot_msg.Payload, appId string) (*dto.Val, strin
 			Set("来源", "好友删除").
 			Set("QQ", m.OpenID).
 			Set("qq", m.OpenID).
+			Set("头像", "http://q.qlogo.cn/qqapp/"+appId+"/"+m.OpenID+"/640").
 			Set("robot", appId).
 			Set("Robot", appId), "好友删除", m.OpenID, true
 	}

@@ -2,8 +2,9 @@ package dto
 
 // 函数框
 type FuncBox struct {
-	Trigger string
-	Content []string
+	Trigger  string
+	Content  []string
+	LineNums []int // 每行内容对应的原始文件行号（1-based），用于调试报错定位
 }
 
 // 单个函数

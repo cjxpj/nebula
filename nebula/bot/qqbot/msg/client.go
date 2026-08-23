@@ -33,7 +33,7 @@ func (b *QQBot) EnsureToken() error {
 	}
 
 	// 获取新的 token
-	token, err := GetAccessToken(b.AppId, b.ClientSecret)
+	token, err := GetAccessToken(b.AppId, b.ClientSecret, b.Debug)
 	if err != nil {
 		return err
 	}

@@ -20,7 +20,7 @@ func (d *RouterQQBot) CheckOnce(key string) bool {
 }
 
 // GetAccessToken 获取 QQBot Access Token
-func GetAccessToken(appId, clientSecret string) (*AccessTokenResponse, error) {
+func GetAccessToken(appId, clientSecret string, debug bool) (*AccessTokenResponse, error) {
 	url := "https://api.bot.qq.com/app/getAppAccessToken"
 	body := map[string]string{
 		"appId":        appId,
@@ -30,7 +30,7 @@ func GetAccessToken(appId, clientSecret string) (*AccessTokenResponse, error) {
 	// fmt.Println("GetAccessToken", url, body)
 
 	var res *AccessTokenResponse
-	if err := postJson(url, body, nil, &res); err != nil {
+	if err := postJson(url, body, nil, &res, debug); err != nil {
 		return nil, err
 	}
 	return res, nil

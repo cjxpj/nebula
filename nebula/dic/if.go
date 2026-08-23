@@ -4,12 +4,18 @@ import (
 	"fmt"
 	"regexp"
 	"strconv"
+	"strings"
 
 	"github.com/cjxpj/nebula/count"
-	dic_dto "github.com/cjxpj/nebula/dic/dto"
 	"github.com/cjxpj/nebula/debugLog"
+	dic_dto "github.com/cjxpj/nebula/dic/dto"
 	"github.com/cjxpj/nebula/utils"
 )
+
+// ifExpr 一条解析后的判断项：text 非空表示括号/逻辑符号，否则为操作数或比较。
+type ifExpr struct {
+	a, b, c, text string
+}
 
 func Pd(dic *dic_dto.DicFunc, str string) bool {
 	it := &IfText{}
@@ -24,33 +30,47 @@ func Pd(dic *dic_dto.DicFunc, str string) bool {
 	return sendstr
 }
 
-func (it *IfText) Run(input string) []map[string]string {
-	type Token struct {
-		Type  string
-		Value string
+func (it *IfText) Run(input string) []ifExpr {
+	type tokenType uint8
+
+	const (
+		tokOperand tokenType = iota // 操作数
+		tokOp                       // 运算符
+		tokJump                     // 括号 / 逻辑
+	)
+
+	type token struct {
+		typ   tokenType
+		value string
 	}
 
-	var tokens []Token
-	var parsed []map[string]string
+	var tokens []token
 	inputLen := len(input)
 
 	i := 0
+	lastWasOperand := false
 	for i < inputLen {
 		switch {
 		case input[i] == '(' || input[i] == ')' || input[i] == '&' || input[i] == '|':
-			tokens = append(tokens, Token{Type: "jump", Value: string(input[i])})
+			tokens = append(tokens, token{typ: tokJump, value: string(input[i])})
+			lastWasOperand = input[i] == ')'
 			i++
 		case input[i] == '=' || input[i] == '!' || input[i] == '>' || input[i] == '<' || input[i] == '~':
 			if i+1 < inputLen && input[i+1] == '=' {
-				tokens = append(tokens, Token{Type: "b", Value: string(input[i : i+2])})
+				tokens = append(tokens, token{typ: tokOp, value: input[i : i+2]})
 				i += 2
+			} else if input[i] == '!' && !lastWasOperand {
+				tokens = append(tokens, token{typ: tokJump, value: "!"})
+				i++
 			} else {
-				tokens = append(tokens, Token{Type: "b", Value: string(input[i])})
+				tokens = append(tokens, token{typ: tokOp, value: string(input[i])})
 				i++
 			}
+			lastWasOperand = false
 		case input[i] == ' ' && i+3 < inputLen && input[i+1] == 'i' && input[i+2] == 'n' && input[i+3] == ' ':
-			tokens = append(tokens, Token{Type: "b", Value: string(input[i : i+4])})
+			tokens = append(tokens, token{typ: tokOp, value: input[i : i+4]})
 			i += 4
+			lastWasOperand = false
 		default:
 			start := i
 			for i < inputLen &&
@@ -66,359 +86,215 @@ func (it *IfText) Run(input string) []map[string]string {
 				!(input[i] == ' ' && i+3 < inputLen && input[i+1] == 'i' && input[i+2] == 'n' && input[i+3] == ' ') {
 				i++
 			}
-			tokens = append(tokens, Token{Type: "a", Value: input[start:i]})
+			tokens = append(tokens, token{typ: tokOperand, value: input[start:i]})
+			lastWasOperand = true
 		}
 	}
 
+	out := make([]ifExpr, 0, len(tokens))
 	dieNum := 0
-	i = 0
-	tokensLen := len(tokens)
-	for i < tokensLen {
-		current := make(map[string]string)
-		switch tokens[i].Type {
-		case "a":
-			current["a"] = tokens[i].Value
+	for i = 0; i < len(tokens); {
+		switch tokens[i].typ {
+		case tokOperand:
+			e := ifExpr{a: tokens[i].value}
 			i++
-			if i < tokensLen && tokens[i].Type == "b" {
-				current["b"] = tokens[i].Value
+			if i < len(tokens) && tokens[i].typ == tokOp {
+				e.b = tokens[i].value
 				i++
-				if len(tokens) > i {
-					if tokens[i].Type == "a" {
-						current["c"] = tokens[i].Value
-						i++
-						if i < len(tokens) && tokens[i].Type == "jump" {
-							current["jump"] = tokens[i].Value
-							i++
-						}
-					}
-				} else {
-					current["c"] = ""
+				if i < len(tokens) && tokens[i].typ == tokOperand {
+					e.c = tokens[i].value
 					i++
 				}
 			}
-		case "jump":
-			current["text"] = tokens[i].Value
+			out = append(out, e)
+		case tokJump:
+			out = append(out, ifExpr{text: tokens[i].value})
+			i++
+		default:
 			i++
 		}
-		parsed = append(parsed, current)
 		dieNum++
 		if dieNum > 5000 {
 			debugLog.Infof("错误判断: %v", input)
 			it.Error = true
-			return []map[string]string{
-				{
-					"a": "",
-					"b": "!=",
-					"c": "",
-				},
-			}
+			return nil
 		}
 	}
 
-	return parsed
+	return out
 }
 
-func (it *IfText) Evaluate(dic *dic_dto.DicFunc, parsed []map[string]string) string {
-	var result string
-	yes := "1"
-	no := "0"
+func (it *IfText) Evaluate(dic *dic_dto.DicFunc, parsed []ifExpr) string {
+	var b strings.Builder
 	for _, p := range parsed {
-		if p["text"] != "" {
-			result += p["text"]
+		if p.text != "" {
+			b.WriteString(p.text)
 			continue
 		}
-		a := utils.AnyToString(Runs(dic, utils.AnyToString(count.RunCountText(dic.Val, p["a"]))))
-		if len(p) == 1 {
+		a := utils.AnyToString(Runs(dic, utils.AnyToString(count.RunCountText(dic.Val, p.a))))
+		if p.b == "" {
 			switch a {
 			case "true", "1":
-				result += yes
+				b.WriteByte('1')
 			case "false", "0":
-				result += no
-			}
-
-			if p["jump"] != "" {
-				result += p["jump"]
+				b.WriteByte('0')
 			}
 			continue
 		}
-
-		c := utils.AnyToString(Runs(dic, utils.AnyToString(count.RunCountText(dic.Val, p["c"]))))
-
-		switch p["b"] {
-		case " in ":
-			var jsonOk bool
-			var jsonMap []any
-			if err := json.Unmarshal([]byte(a), &jsonMap); err == nil {
-				for _, v := range jsonMap {
-					switch jv := v.(type) {
-					case string:
-						if jv == c {
-							jsonOk = true
-							break
-						}
-					case []any, map[string]any:
-						if jvv, err := json.Marshal(jv); err == nil {
-							if string(jvv) == c {
-								jsonOk = true
-								break
-							}
-						}
-					default:
-						if fmt.Sprintf("%v", v) == c {
-							jsonOk = true
-							break
-						}
-					}
-				}
-			} else {
-				if err := json.Unmarshal([]byte(c), &jsonMap); err == nil {
-					for _, v := range jsonMap {
-						switch jv := v.(type) {
-						case string:
-							if jv == a {
-								jsonOk = true
-								break
-							}
-						case []any, map[string]any:
-							if jvv, err := json.Marshal(jv); err == nil {
-								if string(jvv) == a {
-									jsonOk = true
-									break
-								}
-							}
-						default:
-							if fmt.Sprintf("%v", v) == a {
-								jsonOk = true
-								break
-							}
-						}
-					}
-				}
-			}
-			if jsonOk {
-				result += yes
-			} else {
-				result += no
-			}
-		case "~=":
-			matches, _ := regexp.MatchString("^"+regexp.QuoteMeta(a)+"$", c)
-			if matches {
-				result += yes
-			} else {
-				result += no
-			}
-		case "==":
-			if a == c {
-				result += yes
-			} else {
-				result += no
-			}
-		case "!=":
-			if a != c {
-				result += yes
-			} else {
-				result += no
-			}
-		case ">=":
-			if A, err := strconv.ParseFloat(a, 64); err == nil {
-				if C, err2 := strconv.ParseFloat(c, 64); err2 == nil {
-					if A >= C {
-						result += yes
-					} else {
-						result += no
-					}
-				} else {
-					if a >= c {
-						result += yes
-					} else {
-						result += no
-					}
-				}
-			} else {
-				if a >= c {
-					result += yes
-				} else {
-					result += no
-				}
-			}
-		case "<=":
-			if A, err := strconv.ParseFloat(a, 64); err == nil {
-				if C, err2 := strconv.ParseFloat(c, 64); err2 == nil {
-					if A <= C {
-						result += yes
-					} else {
-						result += no
-					}
-				} else {
-					if a <= c {
-						result += yes
-					} else {
-						result += no
-					}
-				}
-			} else {
-				if a <= c {
-					result += yes
-				} else {
-					result += no
-				}
-			}
-		case "~":
-			matches, _ := regexp.MatchString("^"+regexp.QuoteMeta(a)+"$", c)
-			if !matches {
-				result += yes
-			} else {
-				result += no
-			}
-		case "!":
-			if len(a) == len(c) {
-				result += yes
-			} else {
-				result += no
-			}
-		case "<":
-			if A, err := strconv.ParseFloat(a, 64); err == nil {
-				if C, err2 := strconv.ParseFloat(c, 64); err2 == nil {
-					if A < C {
-						result += yes
-					} else {
-						result += no
-					}
-				} else {
-					if a < c {
-						result += yes
-					} else {
-						result += no
-					}
-				}
-			} else {
-				if a < c {
-					result += yes
-				} else {
-					result += no
-				}
-			}
-		case ">":
-			if A, err := strconv.ParseFloat(a, 64); err == nil {
-				if C, err2 := strconv.ParseFloat(c, 64); err2 == nil {
-					if A > C {
-						result += yes
-					} else {
-						result += no
-					}
-				} else {
-					if a > c {
-						result += yes
-					} else {
-						result += no
-					}
-				}
-			} else {
-				if a > c {
-					result += yes
-				} else {
-					result += no
-				}
-			}
-		}
-
-		if p["jump"] != "" {
-			result += p["jump"]
+		c := utils.AnyToString(Runs(dic, utils.AnyToString(count.RunCountText(dic.Val, p.c))))
+		if evalCmp(a, c, p.b) {
+			b.WriteByte('1')
+		} else {
+			b.WriteByte('0')
 		}
 	}
-
-	return result
+	return b.String()
 }
 
-// 评估一个表达式的真假值
+// 评估一个表达式的真假值，支持 ! 取反、& 与、| 或、() 分组。
 func (it *IfText) EvaluateExpression(expression string) bool {
+	n := len(expression)
+	idx := 0
 
-	// evaluateBinaryOperation 函数用于评估一个二元操作
-	evaluateBinaryOperation := func(left, right bool, operator rune) bool {
-		switch operator {
-		case '&':
-			return left && right // 如果操作符为 '&'，返回左右操作数的逻辑与结果
-		case '|':
-			return left || right // 如果操作符为 '|'，返回左右操作数的逻辑或结果
-		default:
-			return false // 默认返回 false
+	var parseOr func() bool
+	var parseAnd func() bool
+	var parseNot func() bool
+	var parsePrimary func() bool
+
+	parseOr = func() bool {
+		left := parseAnd()
+		for idx < n && expression[idx] == '|' {
+			idx++
+			right := parseAnd()
+			left = left || right
 		}
+		return left
 	}
-
-	// 用于存储操作数和操作符的栈
-	var operands []bool
-	var operators []rune
-
-	// performPendingOperations 函数用于执行优先级较高或相等的待处理操作
-	performPendingOperations := func(operator rune) {
-		for len(operators) > 0 && (operators[len(operators)-1] == '&' || operators[len(operators)-1] == '|') {
-			prevOperator := operators[len(operators)-1]
-			if (operator == '|' && prevOperator == '&') || (operator == prevOperator && len(operands) >= 2) {
-				right := operands[len(operands)-1]
-				operands = operands[:len(operands)-1]
-				left := operands[len(operands)-1]
-				operands = operands[:len(operands)-1]
-
-				operands = append(operands, evaluateBinaryOperation(left, right, prevOperator))
-
-				operators = operators[:len(operators)-1]
-			} else {
-				break
-			}
+	parseAnd = func() bool {
+		left := parseNot()
+		for idx < n && expression[idx] == '&' {
+			idx++
+			right := parseNot()
+			left = left && right
 		}
+		return left
 	}
-
-	// 遍历表达式
-	for _, char := range expression {
-		switch char {
+	parseNot = func() bool {
+		if idx < n && expression[idx] == '!' {
+			idx++
+			return !parseNot()
+		}
+		return parsePrimary()
+	}
+	parsePrimary = func() bool {
+		if idx >= n {
+			return false
+		}
+		switch expression[idx] {
 		case '1':
-			operands = append(operands, true) // 将 true 压入操作数栈
+			idx++
+			return true
 		case '0':
-			operands = append(operands, false) // 将 false 压入操作数栈
-		case '&', '|':
-			performPendingOperations(char)      // 执行待处理操作
-			operators = append(operators, char) // 将当前操作符压入操作符栈
+			idx++
+			return false
 		case '(':
-			operators = append(operators, '(') // 将左括号压入操作符栈
-		case ')':
-			for len(operators) > 0 && operators[len(operators)-1] != '(' {
-				if len(operands) < 2 {
-					return false
-				}
-				operator := operators[len(operators)-1]
-				operators = operators[:len(operators)-1]
-
-				right := operands[len(operands)-1]
-				operands = operands[:len(operands)-1]
-
-				left := operands[len(operands)-1]
-				operands = operands[:len(operands)-1]
-
-				operands = append(operands, evaluateBinaryOperation(left, right, operator))
+			idx++
+			v := parseOr()
+			if idx < n && expression[idx] == ')' {
+				idx++
 			}
-			if len(operators) > 0 {
-				operators = operators[:len(operators)-1] // 弹出左括号
+			return v
+		}
+		return false
+	}
+
+	return parseOr()
+}
+
+// cmpNumOrStr 优先按数字比较，无法解析时回退为字符串比较。
+func cmpNumOrStr(a, c, op string) bool {
+	if A, err := strconv.ParseFloat(a, 64); err == nil {
+		if C, err2 := strconv.ParseFloat(c, 64); err2 == nil {
+			switch op {
+			case ">":
+				return A > C
+			case "<":
+				return A < C
+			case ">=":
+				return A >= C
+			case "<=":
+				return A <= C
 			}
 		}
 	}
-
-	// 执行剩余的操作
-	for len(operators) > 0 && len(operands) >= 2 {
-		operator := operators[len(operators)-1]
-		operators = operators[:len(operators)-1]
-
-		right := operands[len(operands)-1]
-		operands = operands[:len(operands)-1]
-
-		left := operands[len(operands)-1]
-		operands = operands[:len(operands)-1]
-
-		operands = append(operands, evaluateBinaryOperation(left, right, operator))
+	switch op {
+	case ">":
+		return a > c
+	case "<":
+		return a < c
+	case ">=":
+		return a >= c
+	case "<=":
+		return a <= c
 	}
+	return false
+}
 
-	// 结果应在操作数栈的顶部
-	if len(operands) > 0 {
-		return operands[0] // 返回最终结果
+// evalCmp 计算二元比较结果。
+func evalCmp(a, c, op string) bool {
+	switch op {
+	case " in ":
+		return containsJSON(a, c)
+	case "~=":
+		m, _ := regexp.MatchString("^"+regexp.QuoteMeta(a)+"$", c)
+		return m
+	case "==":
+		return a == c
+	case "!=":
+		return a != c
+	case ">=", "<=", "<", ">":
+		return cmpNumOrStr(a, c, op)
+	case "~":
+		m, _ := regexp.MatchString("^"+regexp.QuoteMeta(a)+"$", c)
+		return !m
+	case "!":
+		return len(a) == len(c)
+	}
+	return false
+}
+
+// containsJSON 判断 a、c 是否构成数组包含关系（in 判断）。
+func containsJSON(a, c string) bool {
+	var arr []any
+	if json.Unmarshal([]byte(a), &arr) == nil {
+		for _, v := range arr {
+			if jsonElemEquals(v, c) {
+				return true
+			}
+		}
+		return false
+	}
+	if json.Unmarshal([]byte(c), &arr) == nil {
+		for _, v := range arr {
+			if jsonElemEquals(v, a) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// jsonElemEquals 判断 JSON 数组元素是否等于目标值。
+func jsonElemEquals(v any, target string) bool {
+	switch jv := v.(type) {
+	case string:
+		return jv == target
+	case []any, map[string]any:
+		if b, err := json.Marshal(jv); err == nil {
+			return string(b) == target
+		}
+	default:
+		return fmt.Sprintf("%v", v) == target
 	}
 	return false
 }

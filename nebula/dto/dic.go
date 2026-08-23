@@ -18,6 +18,7 @@ type LocalDicValue struct {
 		Content   []string `json:"content"`
 		IsFor     bool     `json:"IsFor"`
 		Jump      bool     `json:"jump"`
+		LineNums  []int    `json:"-"` // 每行内容对应的原始文件行号（1-based），用于调试报错定位
 	} `json:"循环框"`
 	ForEach LocalDicValueForEach `json:"遍历框"`
 	Func    struct {
@@ -26,6 +27,7 @@ type LocalDicValue struct {
 		VlaueName string   `json:"vlaueName"`
 		Trigger   string   `json:"trigger"`
 		Content   []string `json:"content"`
+		LineNums  []int    `json:"-"` // 每行内容对应的原始文件行号（1-based），用于调试报错定位
 	} `json:"函数框"`
 	Text struct {
 		Success   bool            `json:"success"`
@@ -58,6 +60,9 @@ type LocalDicValue struct {
 		Run     [][]string `json:"Run"`
 		IsIf    bool       `json:"IsIf"`
 		Jump    bool       `json:"jump"`
+		// 每个分支（Run）与 Else 分支每行内容对应的原始文件行号，用于调试报错定位
+		LineNums     [][]int `json:"-"`
+		ElseLineNums []int   `json:"-"`
 	} `json:"判断框"`
 	SetJson struct {
 		Success   bool   `json:"success"`
@@ -90,6 +95,7 @@ type LocalDicValueForEach struct {
 	Content   []string `json:"content"`
 	IsFor     bool     `json:"IsFor"`
 	Jump      bool     `json:"jump"`
+	LineNums  []int    `json:"-"` // 每行内容对应的原始文件行号（1-based），用于调试报错定位
 }
 
 // 词库结构

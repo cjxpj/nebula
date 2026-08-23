@@ -13,6 +13,7 @@ import (
 	"mime"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -22,6 +23,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 	"unicode/utf8"
 
@@ -77,6 +79,16 @@ type HttpOpUiConfig_opui struct {
 	Path   string `json:"path"`
 	Secret string `json:"secret"`
 	Cors   bool   `json:"cors"`
+}
+
+type HttpOpUiConfig_cloud_tool struct {
+	Addr          string `json:"addr"`           // 星云云工具 WebSocket 连接地址（基础地址，账号会拼到路径 /:username）
+	Connected     bool   `json:"connected"`      // 后端当前是否已连接云工具（get 返回）
+	Reconnecting  bool   `json:"reconnecting"`   // 后端当前是否正在断线重连云工具（get 返回）
+	Debug         bool   `json:"debug"`          // 是否开启云工具调试日志
+	OfflineNotify bool   `json:"offline_notify"` // 云工具断开时是否向面板推送离线警告（来自云工具端，默认开启）
+	MaxDevices    int    `json:"max_devices"`    // 当前账号最大在线设备数（来自云工具端，默认 1，0 表示无限制）
+	Email         string `json:"email"`          // 当前账号绑定的邮箱（来自云工具端，空表示未绑定）
 }
 
 type HttpOpUiConfig_bg struct {
@@ -193,6 +205,27 @@ var (
 	}
 	opuiNotifyClients   = make(map[*websocket.Conn]*opuiClientInfo)
 	opuiNotifyClientsMu sync.Mutex
+
+	cloudToolMu            sync.Mutex
+	cloudToolConn          *websocket.Conn
+	cloudToolWriteMu       sync.Mutex
+	cloudToolDebug         bool
+	cloudToolSeq           uint64
+	cloudToolPending       sync.Map // id(string) -> chan cloudToolMsg
+	cloudToolUsername      string
+	cloudToolToken         string
+	cloudToolWantConn      bool        // 是否期望保持云工具连接（登录成功后 true，登出/主动断开 false）
+	cloudToolReconnecting  atomic.Bool // 是否正在断线重连中，防止并发重连
+	cloudToolOfflineNotify = true      // 云工具断开时是否推送离线警告（来自云工具端，默认开启）
+	cloudToolMaxDevices    = 1         // 当前账号最大在线设备数（来自云工具端，默认 1，0 表示无限制）
+	cloudToolEmail         = ""        // 当前账号绑定的邮箱（来自云工具端，空表示未绑定）
+
+	cloudToolGen        uint64 // 连接代次，每次成功连接递增，用于断开时回收对应注入的云函数
+	cloudToolInjectedMu sync.Mutex
+	cloudToolInjected   = make(map[string]uint64) // 已注入的云函数名 -> 注入时的连接代次
+
+	cloudToolFuncsMu  sync.RWMutex
+	cloudToolFuncsMap = map[string]cloudFuncInfo{} // 云函数完整信息缓存（连接成功后由 list_funcs 写入，供前端复用）
 )
 
 func addOpuiNotifyClient(conn *websocket.Conn, ip string, writeMu *sync.Mutex) {
@@ -284,6 +317,530 @@ func broadcastServerLog(msg []byte) {
 		if err != nil {
 			delete(opuiNotifyClients, conn)
 		}
+	}
+}
+
+// ---------- 云工具（NebulaCloudTool）后端代理 ----------
+// 前端（OPUI）不再直连云工具，而是通过后端转发的这套 JSON 协议与 NebulaCloudTool 通信。
+
+// cloudToolMsg 云工具 WebSocket 消息结构，与 NebulaCloudTool 端保持一致。
+type cloudToolMsg struct {
+	Type          string   `json:"type"`
+	ID            string   `json:"id,omitempty"`
+	Func          string   `json:"func,omitempty"`
+	Data          string   `json:"data,omitempty"`
+	Args          []string `json:"args,omitempty"`
+	Msg           string   `json:"msg,omitempty"`
+	OldPassword   string   `json:"old_password,omitempty"`
+	NewPassword   string   `json:"new_password,omitempty"`
+	NewUsername   string   `json:"new_username,omitempty"`
+	OfflineNotify bool     `json:"offline_notify,omitempty"`
+	Debug         string   `json:"debug,omitempty"`
+	MaxDevices    int      `json:"max_devices,omitempty"`
+	Email         string   `json:"email,omitempty"`
+}
+
+// broadcastCloudToolStatus 把云工具连接状态推送给所有面板客户端
+func broadcastCloudToolStatus(connected bool) {
+	data, _ := json.Marshal(map[string]any{
+		"type": "cloud_tool_status",
+		"data": map[string]any{
+			"connected":    connected,
+			"reconnecting": cloudToolReconnecting.Load(),
+		},
+	})
+	broadcastOpuiNotify(data)
+}
+
+// broadcastCloudToolOffline 云工具异常断开时向所有面板客户端推送离线警告
+func broadcastCloudToolOffline() {
+	data, _ := json.Marshal(map[string]any{
+		"type": "cloud_tool_offline",
+		"data": map[string]any{"msg": "云工具连接已断开"},
+	})
+	broadcastOpuiNotify(data)
+}
+
+// cloudToolDefaultAddr 云工具连接地址的默认值，配置未填写时使用
+const cloudToolDefaultAddr = "https://nebulatool.cjxpj.cn/"
+
+// cloudToolAddr 读取 system.ini 中 [云工具] 连接地址，未配置时返回默认地址
+func cloudToolAddr() string {
+	ff := utils.NewFileQueue(dto.CONFIG_SYSTEM_PATH)
+	f, err := ff.LoadIni()
+	if err != nil {
+		return cloudToolDefaultAddr
+	}
+	addr := strings.TrimSpace(f.Section("云工具").Key("连接地址").String())
+	if addr == "" {
+		return cloudToolDefaultAddr
+	}
+	return addr
+}
+
+// cloudToolAuthTable 云工具登录凭据在全局数据库中的表名
+const cloudToolAuthTable = "cloud_tool"
+
+// cloudToolSaveAuth 把登录账号与 token 持久化到全局数据库，供后端重启后自动恢复连接
+func cloudToolSaveAuth(username, token string) {
+	db, err := dic_funcs.GetGlobalDB()
+	if err != nil {
+		return
+	}
+	if err := dic_funcs.EnsureFsTable(db, cloudToolAuthTable); err != nil {
+		return
+	}
+	now := time.Now().Unix()
+	_, _ = db.Exec(`
+		INSERT INTO "cloud_tool" (key, data, updated_at)
+		VALUES ('username', ?, ?)
+		ON CONFLICT(key) DO UPDATE SET
+			data = excluded.data,
+			updated_at = excluded.updated_at
+	`, username, now)
+	_, _ = db.Exec(`
+		INSERT INTO "cloud_tool" (key, data, updated_at)
+		VALUES ('token', ?, ?)
+		ON CONFLICT(key) DO UPDATE SET
+			data = excluded.data,
+			updated_at = excluded.updated_at
+	`, token, now)
+}
+
+// cloudToolClearAuth 清除持久化的账号与 token（登出或 token 失效时）
+func cloudToolClearAuth() {
+	db, err := dic_funcs.GetGlobalDB()
+	if err != nil {
+		return
+	}
+	if err := dic_funcs.EnsureFsTable(db, cloudToolAuthTable); err != nil {
+		return
+	}
+	_, _ = db.Exec(`DELETE FROM "cloud_tool" WHERE key IN ('username', 'token')`)
+}
+
+// cloudToolSavedAuth 读取持久化的账号与 token，供启动或断线重连时恢复连接
+func cloudToolSavedAuth() (string, string) {
+	db, err := dic_funcs.GetGlobalDB()
+	if err != nil {
+		return "", ""
+	}
+	if err := dic_funcs.EnsureFsTable(db, cloudToolAuthTable); err != nil {
+		return "", ""
+	}
+
+	var username, token string
+	_ = db.QueryRow(`SELECT data FROM "cloud_tool" WHERE key='username'`).Scan(&username)
+	_ = db.QueryRow(`SELECT data FROM "cloud_tool" WHERE key='token'`).Scan(&token)
+	return strings.TrimSpace(username), strings.TrimSpace(token)
+}
+
+// cloudToolSetWantConn 设置是否期望保持云工具连接（主动断开时应设为 false，避免触发断线重连）
+func cloudToolSetWantConn(want bool) {
+	cloudToolMu.Lock()
+	cloudToolWantConn = want
+	cloudToolMu.Unlock()
+}
+
+// cloudToolBuildURL 将连接地址规范为完整 WebSocket 地址，账号作为路径 /:username
+func cloudToolBuildURL(addr, username string) string {
+	if !strings.Contains(addr, "://") {
+		addr = "ws://" + addr
+	}
+	// https/http 地址统一转为 wss/ws，保证 WebSocket 可连接
+	if strings.HasPrefix(addr, "https://") {
+		addr = "wss://" + strings.TrimPrefix(addr, "https://")
+	} else if strings.HasPrefix(addr, "http://") {
+		addr = "ws://" + strings.TrimPrefix(addr, "http://")
+	}
+	u, err := url.Parse(addr)
+	if err != nil {
+		return addr
+	}
+	u.Path = "/" + url.PathEscape(username)
+	return u.String()
+}
+
+// cloudToolConnected 返回当前是否已连接云工具
+func cloudToolConnected() bool {
+	cloudToolMu.Lock()
+	defer cloudToolMu.Unlock()
+	return cloudToolConn != nil
+}
+
+// cloudToolGetOfflineNotify 返回云工具断开时是否推送离线警告（来自云工具端，默认开启）
+func cloudToolGetOfflineNotify() bool {
+	cloudToolMu.Lock()
+	defer cloudToolMu.Unlock()
+	return cloudToolOfflineNotify
+}
+
+// cloudToolGetMaxDevices 返回当前账号允许的最大在线设备数（来自云工具端，默认 1，0 表示无限制）
+func cloudToolGetMaxDevices() int {
+	cloudToolMu.Lock()
+	defer cloudToolMu.Unlock()
+	return cloudToolMaxDevices
+}
+
+// cloudToolGetEmail 返回当前账号绑定的邮箱（来自云工具端，空表示未绑定）
+func cloudToolGetEmail() string {
+	cloudToolMu.Lock()
+	defer cloudToolMu.Unlock()
+	return cloudToolEmail
+}
+
+// cloudToolDisconnect 断开与云工具的连接（不广播，由调用方决定是否广播）
+func cloudToolDisconnect() {
+	cloudToolMu.Lock()
+	conn := cloudToolConn
+	cloudToolConn = nil
+	cloudToolUsername = ""
+	cloudToolToken = ""
+	cloudToolEmail = ""
+	cloudToolMu.Unlock()
+	if conn != nil {
+		conn.Close()
+	}
+}
+
+// cloudToolReadLoop 持续读取云工具响应，按 id 路由到等待中的请求；连接断开时清理状态并触发断线重连
+func cloudToolReadLoop(conn *websocket.Conn, gen uint64) {
+	defer func() {
+		cloudToolMu.Lock()
+		isCurrent := cloudToolConn == conn
+		if isCurrent {
+			cloudToolConn = nil
+			cloudToolUsername = ""
+			cloudToolToken = ""
+			cloudToolEmail = ""
+		}
+		wantReconnect := isCurrent && cloudToolWantConn
+		offlineNotify := cloudToolOfflineNotify
+		cloudToolMu.Unlock()
+		conn.Close()
+		cloudToolPending.Range(func(key, value any) bool {
+			if ch, ok := value.(chan cloudToolMsg); ok {
+				ch <- cloudToolMsg{Type: "error", Msg: "云工具连接已断开"}
+			}
+			return true
+		})
+		broadcastCloudToolStatus(false)
+		if wantReconnect && offlineNotify {
+			broadcastCloudToolOffline()
+		}
+		clearInjectedCloudFuncs(gen) // 回收这条连接注入的云函数，断开后应不再存在
+		if wantReconnect {
+			go cloudToolReconnectLoop()
+		}
+	}()
+	for {
+		var msg cloudToolMsg
+		if err := conn.ReadJSON(&msg); err != nil {
+			debugLog.Errorf("[云工具] 连接断开: %v", err)
+			return
+		}
+		if cloudToolDebug {
+			debugLog.Infof("[云工具] 收到: type=%s id=%s", msg.Type, msg.ID)
+		}
+		if msg.Type == "result" || msg.Type == "error" {
+			if ch, ok := cloudToolPending.Load(msg.ID); ok {
+				ch.(chan cloudToolMsg) <- msg
+			}
+		}
+	}
+}
+
+// cloudToolReconnectLoop 断线后自动用持久化凭据重连，带指数退避，直到重连成功或主动停止
+func cloudToolReconnectLoop() {
+	if !cloudToolReconnecting.CompareAndSwap(false, true) {
+		return // 已有重连协程在运行
+	}
+	// 进入重连状态，立即通知前端
+	broadcastCloudToolStatus(false)
+	defer func() {
+		cloudToolReconnecting.Store(false)
+		// 重连结束（成功或停止），同步最终连接状态给前端
+		broadcastCloudToolStatus(cloudToolConnected())
+	}()
+
+	delay := time.Second
+	for {
+		cloudToolMu.Lock()
+		want := cloudToolWantConn
+		cloudToolMu.Unlock()
+		if !want {
+			return
+		}
+
+		username, token := cloudToolSavedAuth()
+		if username == "" || token == "" {
+			return
+		}
+
+		if _, _, _, _, err := cloudToolAuth(username, "", token); err == nil {
+			return // 重连成功
+		} else if cloudToolDebug {
+			debugLog.Errorf("[云工具] 断线重连失败: %v", err)
+		}
+
+		if !cloudToolReconnectSleep(delay) {
+			return // 等待期间被主动中断
+		}
+		if delay < 30*time.Second {
+			delay *= 2
+		}
+	}
+}
+
+// cloudToolReconnectSleep 可中断的退避等待：期间若期望连接被置为 false 则立即返回 false。
+func cloudToolReconnectSleep(d time.Duration) bool {
+	deadline := time.Now().Add(d)
+	for time.Now().Before(deadline) {
+		cloudToolMu.Lock()
+		want := cloudToolWantConn
+		cloudToolMu.Unlock()
+		if !want {
+			return false
+		}
+		time.Sleep(200 * time.Millisecond)
+	}
+	return true
+}
+
+// cloudToolAuth 建立到云工具的连接并完成认证（passwordHash 密码登录 / token 恢复登录）。
+// 成功时返回 token（恢复登录原样返回传入 token）。
+func cloudToolAuth(username, passwordHash, token string) (newToken string, offlineNotify bool, email string, debug string, err error) {
+	cloudToolDisconnect()
+
+	addr := cloudToolAddr()
+	if addr == "" {
+		return "", false, "", "", errors.New("云工具连接地址未配置")
+	}
+
+	conn, _, err := websocket.DefaultDialer.Dial(cloudToolBuildURL(addr, username), nil)
+	if err != nil {
+		return "", false, "", "", fmt.Errorf("连接云工具失败: %w", err)
+	}
+
+	var authMsg cloudToolMsg
+	if token != "" {
+		authMsg = cloudToolMsg{Type: "resume", Data: token}
+	} else {
+		authMsg = cloudToolMsg{Type: "auth", Data: passwordHash}
+	}
+
+	_ = conn.SetWriteDeadline(time.Now().Add(10 * time.Second))
+	if err := conn.WriteJSON(authMsg); err != nil {
+		conn.Close()
+		return "", false, "", "", fmt.Errorf("云工具认证发送失败: %w", err)
+	}
+	_ = conn.SetReadDeadline(time.Now().Add(10 * time.Second))
+	var resp cloudToolMsg
+	if err := conn.ReadJSON(&resp); err != nil {
+		conn.Close()
+		return "", false, "", "", fmt.Errorf("云工具认证读取失败: %w", err)
+	}
+	if resp.Type != "auth_ok" {
+		conn.Close()
+		if token != "" {
+			// 恢复登录失败（token 过期/失效），清除持久化凭据
+			cloudToolClearAuth()
+		}
+		return "", false, "", "", errors.New("云工具认证失败: " + resp.Msg)
+	}
+	_ = conn.SetReadDeadline(time.Time{})
+	_ = conn.SetWriteDeadline(time.Time{})
+
+	notify := resp.OfflineNotify
+	cloudToolMu.Lock()
+	cloudToolConn = conn
+	cloudToolUsername = username
+	cloudToolToken = resp.Data
+	cloudToolWantConn = true
+	cloudToolOfflineNotify = notify
+	cloudToolMaxDevices = resp.MaxDevices
+	cloudToolEmail = resp.Email
+	gen := atomic.AddUint64(&cloudToolGen, 1)
+	cloudToolMu.Unlock()
+
+	cloudToolSaveAuth(username, resp.Data)
+
+	if cloudToolDebug {
+		debugLog.Infof("[云工具] 已连接并认证: %s (%s)", addr, username)
+	}
+	go cloudToolReadLoop(conn, gen)
+	broadcastCloudToolStatus(true)
+	go injectAllCloudFuncs(gen)
+
+	if token != "" {
+		return token, notify, resp.Email, resp.Debug, nil
+	}
+	return resp.Data, notify, resp.Email, resp.Debug, nil
+}
+
+// cloudToolCall 发送一条带 id 的请求并等待对应 id 的响应
+func cloudToolCall(msg cloudToolMsg, timeout time.Duration) (cloudToolMsg, error) {
+	cloudToolMu.Lock()
+	conn := cloudToolConn
+	cloudToolMu.Unlock()
+	if conn == nil {
+		return cloudToolMsg{}, errors.New("云工具未连接")
+	}
+
+	id := fmt.Sprintf("%d", atomic.AddUint64(&cloudToolSeq, 1))
+	msg.ID = id
+	ch := make(chan cloudToolMsg, 1)
+	cloudToolPending.Store(id, ch)
+	defer cloudToolPending.Delete(id)
+
+	cloudToolWriteMu.Lock()
+	err := conn.WriteJSON(msg)
+	cloudToolWriteMu.Unlock()
+	if err != nil {
+		return cloudToolMsg{}, fmt.Errorf("云工具发送失败: %w", err)
+	}
+
+	select {
+	case res := <-ch:
+		return res, nil
+	case <-time.After(timeout):
+		// 收不到响应视为连接堵塞：关闭当前连接触发断线重连，并返回错误中断后续执行
+		conn.Close()
+		return cloudToolMsg{}, errors.New("云工具等待返回超时")
+	}
+}
+
+// cloudToolSend 发送一条无需响应的消息（如 logout）
+func cloudToolSend(msg cloudToolMsg) error {
+	cloudToolMu.Lock()
+	conn := cloudToolConn
+	cloudToolMu.Unlock()
+	if conn == nil {
+		return errors.New("云工具未连接")
+	}
+	cloudToolWriteMu.Lock()
+	defer cloudToolWriteMu.Unlock()
+	return conn.WriteJSON(msg)
+}
+
+// injectCloudFunc 把一个云工具云函数注入为 nebula 字典函数，供词库直接 $函数名$ 调用。
+// rule 为该云函数声明的参数数量规则，注入后字典函数按同一规则校验并原样传递位置参数。
+func injectCloudFunc(gen uint64, name, rule string) error {
+	err := dic_funcs.Register(name, rule, func(d *dto.DicInputs) (any, error) {
+		args := d.Inputs.StringAfterList(1) // 去掉第 0 位函数名占位，得到全部位置参数
+		res, err := cloudToolCall(cloudToolMsg{Type: "exec", Func: name, Args: args}, 15*time.Second)
+		if err != nil {
+			return "", err
+		}
+		if res.Type == "error" {
+			return "", errors.New(res.Msg)
+		}
+		return res.Data, nil
+	})
+	if err != nil {
+		return err
+	}
+	cloudToolInjectedMu.Lock()
+	cloudToolInjected[name] = gen
+	cloudToolInjectedMu.Unlock()
+	return nil
+}
+
+// cloudFuncInfo 云函数信息：参数规则、说明与每次扣除金额（与云工具 list_funcs 返回结构一致）。
+type cloudFuncInfo struct {
+	Rule  string `json:"rule"`
+	Desc  string `json:"desc"`
+	Price string `json:"price,omitempty"`
+}
+
+// fetchCloudFuncs 拉取云工具已注册的云函数完整信息并写入缓存，返回最新列表。
+func fetchCloudFuncs() (map[string]cloudFuncInfo, bool) {
+	res, err := cloudToolCall(cloudToolMsg{Type: "list_funcs"}, 15*time.Second)
+	if err != nil {
+		return nil, false
+	}
+	if res.Type != "result" {
+		return nil, false
+	}
+	var infos map[string]cloudFuncInfo
+	if err := json.Unmarshal([]byte(res.Data), &infos); err != nil {
+		return nil, false
+	}
+	cloudToolFuncsMu.Lock()
+	cloudToolFuncsMap = infos
+	cloudToolFuncsMu.Unlock()
+	return infos, true
+}
+
+// getCloudFuncs 返回缓存的云函数完整信息；缓存为空时返回 nil。
+func getCloudFuncs() map[string]cloudFuncInfo {
+	cloudToolFuncsMu.RLock()
+	defer cloudToolFuncsMu.RUnlock()
+	if len(cloudToolFuncsMap) == 0 {
+		return nil
+	}
+	cp := make(map[string]cloudFuncInfo, len(cloudToolFuncsMap))
+	for k, v := range cloudToolFuncsMap {
+		cp[k] = v
+	}
+	return cp
+}
+
+// injectAllCloudFuncs 拉取云工具已注册的云函数并逐个注入为字典函数，同时缓存完整信息供前端复用。
+// 每次连接成功（含断线重连）都会调用，重复注入已存在的函数会被忽略，新增函数会被补上。
+func injectAllCloudFuncs(gen uint64) {
+	infos, ok := fetchCloudFuncs()
+	if !ok {
+		return
+	}
+	for name, info := range infos {
+		if name == "" {
+			continue
+		}
+		_ = injectCloudFunc(gen, name, info.Rule) // 已存在会返回错误，忽略即可
+	}
+}
+
+// clearInjectedCloudFuncs 注销指定代次连接注入的全部云函数，断开后这些函数应不再存在。
+func clearInjectedCloudFuncs(gen uint64) {
+	cloudToolInjectedMu.Lock()
+	for name, g := range cloudToolInjected {
+		if g == gen {
+			dic_funcs.Unregister(name)
+			delete(cloudToolInjected, name)
+		}
+	}
+	cloudToolInjectedMu.Unlock()
+
+	// 断开后清空云函数信息缓存，避免残留上一连接的数据
+	cloudToolFuncsMu.Lock()
+	cloudToolFuncsMap = map[string]cloudFuncInfo{}
+	cloudToolFuncsMu.Unlock()
+}
+
+// StartCloudTool 启动时恢复云工具调试开关，并用上次登录持久化的账号与 token 自动恢复连接
+func StartCloudTool() {
+	// 注入状态查询回调，供字典函数 $云工具状态$ 判断是否已连接
+	dto.CloudToolConnected = cloudToolConnected
+
+	ff := utils.NewFileQueue(dto.CONFIG_SYSTEM_PATH)
+	f, err := ff.LoadIni()
+	if err != nil {
+		return
+	}
+	cloudToolDebug = f.Section("云工具").Key("调试").MustBool(false)
+
+	username, token := cloudToolSavedAuth()
+	if username != "" && token != "" {
+		cloudToolSetWantConn(true) // 期望保持连接，失败后交由断线重连循环持续重试
+		go func() {
+			if _, _, _, _, err := cloudToolAuth(username, "", token); err != nil {
+				if cloudToolDebug {
+					debugLog.Errorf("[云工具] 启动自动连接失败: %v", err)
+				}
+				go cloudToolReconnectLoop() // 失败后进入退避重试，直到云工具可用或凭据失效
+			}
+		}()
 	}
 }
 
@@ -2384,12 +2941,11 @@ func opuiHandleApi(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// 扩展部署相关接口仅支持 Windows 端，其他平台直接拒绝
+	// 扩展部署：php/ffmpeg/silk_v3/napcat 仅支持 Windows，python 全平台支持
 	switch h.Type {
-	case "install_php", "install_ffmpeg", "install_silk_v3", "install_napcat_bot", "install_python",
-		"get_install_status", "install_progress", "cancel_install", "uninstall":
+	case "install_php", "install_ffmpeg", "install_silk_v3", "install_napcat_bot":
 		if runtime.GOOS != "windows" {
-			jsonResp, _ := json.Marshal(map[string]string{"status": "error", "error": "扩展部署功能仅支持 Windows 端"})
+			jsonResp, _ := json.Marshal(map[string]string{"status": "error", "error": "该组件仅支持 Windows 端"})
 			w.Write(jsonResp)
 			return
 		}
@@ -2500,6 +3056,465 @@ func opuiHandleApi(w http.ResponseWriter, r *http.Request) {
 		} else {
 			dto.ServerConfig.OPUI = nil
 		}
+		w.Write([]byte(`{"status":"ok"}`))
+		return
+
+	case "get_cloud_tool":
+		ff := utils.NewFileQueue(dto.CONFIG_SYSTEM_PATH)
+		f, err := ff.LoadIni()
+		if err != nil {
+			w.Write([]byte(`{"addr":"","connected":false,"debug":false}`))
+			return
+		}
+		var j HttpOpUiConfig_cloud_tool
+		j.Addr = cloudToolAddr()
+		j.Connected = cloudToolConnected()
+		j.Reconnecting = cloudToolReconnecting.Load()
+		j.Debug = f.Section("云工具").Key("调试").MustBool(false)
+		j.OfflineNotify = cloudToolGetOfflineNotify()
+		j.MaxDevices = cloudToolGetMaxDevices()
+		j.Email = cloudToolGetEmail()
+		cloudToolDebug = j.Debug
+		r, err := json.Marshal(j)
+		if err != nil {
+			w.Write([]byte(`{"addr":"","connected":false,"debug":false}`))
+			return
+		}
+		w.Write(r)
+		return
+
+	case "get_cloud_funcs":
+		infos := getCloudFuncs()
+		if infos == nil {
+			// 缓存未就绪（连接刚建立尚未完成 list_funcs），兜底拉取一次并缓存
+			var ok bool
+			infos, ok = fetchCloudFuncs()
+			if !ok {
+				resp, _ := json.Marshal(map[string]string{"status": "error", "error": "获取云函数列表失败"})
+				w.Write(resp)
+				return
+			}
+		}
+		resp, _ := json.Marshal(map[string]any{"status": "ok", "funcs": infos})
+		w.Write(resp)
+		return
+
+	case "cloud_money_logs":
+		var req struct {
+			Page     int `json:"page"`
+			PageSize int `json:"page_size"`
+		}
+		if err := json.Unmarshal(h.Data, &req); err != nil {
+			resp, _ := json.Marshal(map[string]string{"status": "error", "error": err.Error()})
+			w.Write(resp)
+			return
+		}
+		if req.Page < 1 {
+			req.Page = 1
+		}
+		if req.PageSize <= 0 {
+			req.PageSize = 20
+		}
+		offset := (req.Page - 1) * req.PageSize
+		data, _ := json.Marshal(map[string]int{"offset": offset, "limit": req.PageSize})
+		res, err := cloudToolCall(cloudToolMsg{Type: "money_logs", Data: string(data)}, 15*time.Second)
+		if err != nil {
+			resp, _ := json.Marshal(map[string]string{"status": "error", "error": err.Error()})
+			w.Write(resp)
+			return
+		}
+		if res.Type == "error" {
+			resp, _ := json.Marshal(map[string]string{"status": "error", "error": res.Msg})
+			w.Write(resp)
+			return
+		}
+		var page struct {
+			Items json.RawMessage `json:"items"`
+			Total int             `json:"total"`
+		}
+		if err := json.Unmarshal([]byte(res.Data), &page); err != nil {
+			resp, _ := json.Marshal(map[string]string{"status": "error", "error": err.Error()})
+			w.Write(resp)
+			return
+		}
+		resp, _ := json.Marshal(map[string]any{"status": "ok", "items": page.Items, "total": page.Total})
+		w.Write(resp)
+		return
+
+	case "cloud_account_info":
+		res, err := cloudToolCall(cloudToolMsg{Type: "account_info"}, 15*time.Second)
+		if err != nil {
+			resp, _ := json.Marshal(map[string]string{"status": "error", "error": err.Error()})
+			w.Write(resp)
+			return
+		}
+		if res.Type == "error" {
+			resp, _ := json.Marshal(map[string]string{"status": "error", "error": res.Msg})
+			w.Write(resp)
+			return
+		}
+		var info struct {
+			DiskSize      int64  `json:"disk_size"`
+			Money         string `json:"money"`
+			Coupon        string `json:"coupon"`
+			TotalMoney    string `json:"total_money"`
+			OnlineSeconds int64  `json:"online_seconds"`
+			Devices       []struct {
+				IP    string `json:"ip"`
+				Start int64  `json:"start"`
+			} `json:"devices"`
+		}
+		if err := json.Unmarshal([]byte(res.Data), &info); err != nil {
+			resp, _ := json.Marshal(map[string]string{"status": "error", "error": err.Error()})
+			w.Write(resp)
+			return
+		}
+		resp, _ := json.Marshal(map[string]any{
+			"status":         "ok",
+			"disk_size":      info.DiskSize,
+			"money":          info.Money,
+			"coupon":         info.Coupon,
+			"total_money":    info.TotalMoney,
+			"online_seconds": info.OnlineSeconds,
+			"devices":        info.Devices,
+		})
+		w.Write(resp)
+		return
+
+	case "save_cloud_tool":
+		var j HttpOpUiConfig_cloud_tool
+		if err := json.Unmarshal(h.Data, &j); err != nil {
+			http.Error(w, `{"status":"error","error":"invalid json"}`, http.StatusBadRequest)
+			return
+		}
+		ff := utils.NewFileQueue(dto.CONFIG_SYSTEM_PATH)
+		f, err := ff.LoadIni()
+		if err != nil {
+			utils.ErrorStop("系统配置不存在")
+		}
+		newAddr := strings.TrimSpace(j.Addr)
+		oldAddr := strings.TrimSpace(f.Section("云工具").Key("连接地址").String())
+		f.Section("云工具").Key("连接地址").SetValue(newAddr)
+		f.Section("云工具").Key("调试").SetValue(strconv.FormatBool(j.Debug))
+		cloudToolDebug = j.Debug
+		ff.SaveIni(f)
+		if newAddr != oldAddr {
+			// 地址变化：断开旧连接，等待下次登录/断线重连使用新地址
+			cloudToolSetWantConn(false)
+			cloudToolDisconnect()
+			broadcastCloudToolStatus(false)
+		}
+		w.Write([]byte(`{"status":"ok"}`))
+		return
+
+	case "cloud_connect":
+		var j struct {
+			Username string `json:"username"`
+			Password string `json:"password"` // 已 SHA-256 加密后的密码哈希
+		}
+		if err := json.Unmarshal(h.Data, &j); err != nil {
+			http.Error(w, `{"status":"error","error":"invalid json"}`, http.StatusBadRequest)
+			return
+		}
+		if j.Username == "" || j.Password == "" {
+			http.Error(w, `{"status":"error","error":"账号、密码均不能为空"}`, http.StatusBadRequest)
+			return
+		}
+		token, offlineNotify, email, debug, err := cloudToolAuth(j.Username, j.Password, "")
+		if err != nil {
+			resp, _ := json.Marshal(map[string]string{"status": "error", "error": err.Error()})
+			w.Write(resp)
+			return
+		}
+		resp, _ := json.Marshal(map[string]any{
+			"status":         "ok",
+			"connected":      true,
+			"token":          token,
+			"offline_notify": offlineNotify,
+			"debug":          debug,
+			"max_devices":    cloudToolGetMaxDevices(),
+			"email":          email,
+		})
+		w.Write(resp)
+		return
+
+	case "cloud_resume":
+		var j struct {
+			Username string `json:"username"`
+			Token    string `json:"token"`
+		}
+		if err := json.Unmarshal(h.Data, &j); err != nil {
+			http.Error(w, `{"status":"error","error":"invalid json"}`, http.StatusBadRequest)
+			return
+		}
+		if j.Username == "" || j.Token == "" {
+			http.Error(w, `{"status":"error","error":"账号、token 均不能为空"}`, http.StatusBadRequest)
+			return
+		}
+		token, offlineNotify, email, debug, err := cloudToolAuth(j.Username, "", j.Token)
+		if err != nil {
+			resp, _ := json.Marshal(map[string]string{"status": "error", "error": err.Error()})
+			w.Write(resp)
+			return
+		}
+		resp, _ := json.Marshal(map[string]any{
+			"status":         "ok",
+			"connected":      true,
+			"token":          token,
+			"offline_notify": offlineNotify,
+			"debug":          debug,
+			"max_devices":    cloudToolGetMaxDevices(),
+			"email":          email,
+		})
+		w.Write(resp)
+		return
+
+	case "cloud_disconnect":
+		cloudToolSetWantConn(false)
+		cloudToolDisconnect()
+		broadcastCloudToolStatus(false)
+		w.Write([]byte(`{"status":"ok"}`))
+		return
+
+	case "cloud_cancel_reconnect":
+		cloudToolSetWantConn(false)
+		cloudToolDisconnect()
+		cloudToolClearAuth()
+		broadcastCloudToolStatus(false)
+		w.Write([]byte(`{"status":"ok"}`))
+		return
+
+	case "cloud_exec":
+		var j struct {
+			Func string `json:"func"`
+			Data string `json:"data"`
+		}
+		if err := json.Unmarshal(h.Data, &j); err != nil {
+			http.Error(w, `{"status":"error","error":"invalid json"}`, http.StatusBadRequest)
+			return
+		}
+		res, err := cloudToolCall(cloudToolMsg{Type: "exec", Func: j.Func, Data: j.Data}, 15*time.Second)
+		if err != nil {
+			resp, _ := json.Marshal(map[string]string{"status": "error", "error": err.Error()})
+			w.Write(resp)
+			return
+		}
+		if res.Type == "error" {
+			resp, _ := json.Marshal(map[string]string{"status": "error", "error": res.Msg})
+			w.Write(resp)
+			return
+		}
+		resp, _ := json.Marshal(map[string]string{"status": "ok", "result": res.Data})
+		w.Write(resp)
+		return
+
+	case "cloud_change_password":
+		var j struct {
+			OldPassword string `json:"old_password"`
+			NewPassword string `json:"new_password"`
+		}
+		if err := json.Unmarshal(h.Data, &j); err != nil {
+			http.Error(w, `{"status":"error","error":"invalid json"}`, http.StatusBadRequest)
+			return
+		}
+		res, err := cloudToolCall(cloudToolMsg{Type: "change_password", OldPassword: j.OldPassword, NewPassword: j.NewPassword}, 15*time.Second)
+		if err != nil {
+			resp, _ := json.Marshal(map[string]string{"status": "error", "error": err.Error()})
+			w.Write(resp)
+			return
+		}
+		if res.Type == "error" {
+			resp, _ := json.Marshal(map[string]string{"status": "error", "error": res.Msg})
+			w.Write(resp)
+			return
+		}
+		resp, _ := json.Marshal(map[string]string{"status": "ok", "result": res.Data})
+		w.Write(resp)
+		return
+
+	case "cloud_change_username":
+		var j struct {
+			OldPassword string `json:"old_password"`
+			NewUsername string `json:"new_username"`
+		}
+		if err := json.Unmarshal(h.Data, &j); err != nil {
+			http.Error(w, `{"status":"error","error":"invalid json"}`, http.StatusBadRequest)
+			return
+		}
+		j.NewUsername = strings.TrimSpace(j.NewUsername)
+		res, err := cloudToolCall(cloudToolMsg{Type: "change_username", OldPassword: j.OldPassword, NewUsername: j.NewUsername}, 15*time.Second)
+		if err != nil {
+			resp, _ := json.Marshal(map[string]string{"status": "error", "error": err.Error()})
+			w.Write(resp)
+			return
+		}
+		if res.Type == "error" {
+			resp, _ := json.Marshal(map[string]string{"status": "error", "error": res.Msg})
+			w.Write(resp)
+			return
+		}
+		// 更新本地保存的用户名，保证后续断线重连使用新用户名
+		cloudToolMu.Lock()
+		cloudToolUsername = j.NewUsername
+		token := cloudToolToken
+		cloudToolMu.Unlock()
+		cloudToolSaveAuth(j.NewUsername, token)
+		resp, _ := json.Marshal(map[string]string{"status": "ok", "result": res.Data})
+		w.Write(resp)
+		return
+
+	case "cloud_set_offline_notify":
+		var j struct {
+			Enabled bool `json:"enabled"`
+		}
+		if err := json.Unmarshal(h.Data, &j); err != nil {
+			http.Error(w, `{"status":"error","error":"invalid json"}`, http.StatusBadRequest)
+			return
+		}
+		data := "0"
+		if j.Enabled {
+			data = "1"
+		}
+		res, err := cloudToolCall(cloudToolMsg{Type: "set_offline_notify", Data: data}, 15*time.Second)
+		if err != nil {
+			resp, _ := json.Marshal(map[string]string{"status": "error", "error": err.Error()})
+			w.Write(resp)
+			return
+		}
+		if res.Type == "error" {
+			resp, _ := json.Marshal(map[string]string{"status": "error", "error": res.Msg})
+			w.Write(resp)
+			return
+		}
+		cloudToolMu.Lock()
+		cloudToolOfflineNotify = j.Enabled
+		cloudToolMu.Unlock()
+		resp, _ := json.Marshal(map[string]string{"status": "ok", "result": res.Data})
+		w.Write(resp)
+		return
+
+	case "cloud_set_max_devices":
+		var j struct {
+			MaxDevices int `json:"max_devices"`
+		}
+		if err := json.Unmarshal(h.Data, &j); err != nil {
+			http.Error(w, `{"status":"error","error":"invalid json"}`, http.StatusBadRequest)
+			return
+		}
+		if j.MaxDevices < 0 {
+			j.MaxDevices = 0
+		}
+		res, err := cloudToolCall(cloudToolMsg{Type: "set_max_devices", Data: strconv.Itoa(j.MaxDevices)}, 15*time.Second)
+		if err != nil {
+			resp, _ := json.Marshal(map[string]string{"status": "error", "error": err.Error()})
+			w.Write(resp)
+			return
+		}
+		if res.Type == "error" {
+			resp, _ := json.Marshal(map[string]string{"status": "error", "error": res.Msg})
+			w.Write(resp)
+			return
+		}
+		cloudToolMu.Lock()
+		cloudToolMaxDevices = j.MaxDevices
+		cloudToolMu.Unlock()
+		resp, _ := json.Marshal(map[string]string{"status": "ok", "result": res.Data})
+		w.Write(resp)
+		return
+
+	case "cloud_bind_email":
+		var j struct {
+			Email string `json:"email"`
+		}
+		if err := json.Unmarshal(h.Data, &j); err != nil {
+			http.Error(w, `{"status":"error","error":"invalid json"}`, http.StatusBadRequest)
+			return
+		}
+		j.Email = strings.TrimSpace(j.Email)
+		res, err := cloudToolCall(cloudToolMsg{Type: "send_email_code", Data: j.Email}, 15*time.Second)
+		if err != nil {
+			resp, _ := json.Marshal(map[string]string{"status": "error", "error": err.Error()})
+			w.Write(resp)
+			return
+		}
+		if res.Type == "error" {
+			resp, _ := json.Marshal(map[string]string{"status": "error", "error": res.Msg})
+			w.Write(resp)
+			return
+		}
+		// 仅发送验证码，绑定邮箱在验证码校验通过后完成
+		resp, _ := json.Marshal(map[string]string{"status": "ok", "result": res.Data})
+		w.Write(resp)
+		return
+
+	case "cloud_confirm_email":
+		var j struct {
+			Code string `json:"code"`
+		}
+		if err := json.Unmarshal(h.Data, &j); err != nil {
+			http.Error(w, `{"status":"error","error":"invalid json"}`, http.StatusBadRequest)
+			return
+		}
+		res, err := cloudToolCall(cloudToolMsg{Type: "confirm_email", Data: j.Code}, 15*time.Second)
+		if err != nil {
+			resp, _ := json.Marshal(map[string]string{"status": "error", "error": err.Error()})
+			w.Write(resp)
+			return
+		}
+		if res.Type == "error" {
+			resp, _ := json.Marshal(map[string]string{"status": "error", "error": res.Msg})
+			w.Write(resp)
+			return
+		}
+		cloudToolMu.Lock()
+		if res.Email != "" {
+			cloudToolEmail = res.Email
+		}
+		cloudToolMu.Unlock()
+		resp, _ := json.Marshal(map[string]string{"status": "ok", "result": res.Data, "email": res.Email})
+		w.Write(resp)
+		return
+
+	case "cloud_delete_account":
+		var j struct {
+			Password string `json:"password"` // 已 SHA-256 加密后的密码哈希
+		}
+		if err := json.Unmarshal(h.Data, &j); err != nil {
+			http.Error(w, `{"status":"error","error":"invalid json"}`, http.StatusBadRequest)
+			return
+		}
+		res, err := cloudToolCall(cloudToolMsg{Type: "delete_account", Data: j.Password}, 15*time.Second)
+		if err != nil {
+			resp, _ := json.Marshal(map[string]string{"status": "error", "error": err.Error()})
+			w.Write(resp)
+			return
+		}
+		if res.Type == "error" {
+			resp, _ := json.Marshal(map[string]string{"status": "error", "error": res.Msg})
+			w.Write(resp)
+			return
+		}
+		// 注销成功：清除本地认证与连接，前端随之回到未登录状态
+		cloudToolSetWantConn(false)
+		cloudToolDisconnect()
+		cloudToolClearAuth()
+		broadcastCloudToolStatus(false)
+		resp, _ := json.Marshal(map[string]string{"status": "ok", "result": res.Data})
+		w.Write(resp)
+		return
+
+	case "cloud_logout":
+		cloudToolMu.Lock()
+		username := cloudToolUsername
+		cloudToolMu.Unlock()
+		if username != "" {
+			// logout 触发云工具端删除 token 并断开，这里只需发送即可，随后关闭本地代理
+			_ = cloudToolSend(cloudToolMsg{Type: "logout"})
+		}
+		cloudToolSetWantConn(false)
+		cloudToolDisconnect()
+		cloudToolClearAuth()
+		broadcastCloudToolStatus(false)
 		w.Write([]byte(`{"status":"ok"}`))
 		return
 
@@ -3265,7 +4280,7 @@ func opuiHandleApi(w http.ResponseWriter, r *http.Request) {
 	case "install_php":
 		appDir := utils.GetAppDir()
 		destDir := filepath.Join(appDir, "private", "extensions", "php")
-		if utils.NewFileQueue(filepath.Join(destDir, "php.exe")).FileExists() {
+		if fileExists(filepath.Join(destDir, "php.exe")) {
 			resp := HttpOpUiInstallResponse{
 				Status: "ok",
 				Output: []string{"PHP 已安装"},
@@ -3353,7 +4368,7 @@ func opuiHandleApi(w http.ResponseWriter, r *http.Request) {
 	case "install_silk_v3":
 		appDir := utils.GetAppDir()
 		destDir := filepath.Join(appDir, "private", "extensions")
-		if utils.NewFileQueue(filepath.Join(destDir, "silk_v3", "silk_v3_encoder.exe")).FileExists() {
+		if fileExists(filepath.Join(destDir, "silk_v3", "silk_v3_encoder.exe")) {
 			resp := HttpOpUiInstallResponse{
 				Status: "ok",
 				Output: []string{"silk_v3 已安装"},
@@ -3407,7 +4422,7 @@ func opuiHandleApi(w http.ResponseWriter, r *http.Request) {
 		}
 		appDir := utils.GetAppDir()
 		destDir := filepath.Join(appDir, "private", "extensions", "NapCat.Shell")
-		if utils.NewFileQueue(filepath.Join(destDir, "launcher.bat")).FileExists() {
+		if fileExists(filepath.Join(destDir, "launcher.bat")) {
 			resp := HttpOpUiInstallResponse{
 				Status: "ok",
 				Output: []string{"napcat_bot 已安装"},
@@ -3451,10 +4466,20 @@ func opuiHandleApi(w http.ResponseWriter, r *http.Request) {
 	case "install_python":
 		appDir := utils.GetAppDir()
 		destDir := filepath.Join(appDir, "private", "extensions", "python")
-		if utils.NewFileQueue(filepath.Join(destDir, "python.exe")).FileExists() {
+		if isPythonInstalled(destDir) {
 			resp := HttpOpUiInstallResponse{
 				Status: "ok",
 				Output: []string{"Python 已安装"},
+			}
+			jsonResp, _ := json.Marshal(resp)
+			w.Write(jsonResp)
+			return
+		}
+		// Linux 等非 Windows 平台使用系统 python3，无法通过此处下载安装
+		if runtime.GOOS != "windows" {
+			resp := HttpOpUiInstallResponse{
+				Status: "error",
+				Error:  "未检测到 Python 运行环境，请通过系统包管理器安装 python3",
 			}
 			jsonResp, _ := json.Marshal(resp)
 			w.Write(jsonResp)
@@ -3496,11 +4521,11 @@ func opuiHandleApi(w http.ResponseWriter, r *http.Request) {
 		appDir := utils.GetAppDir()
 		extDir := filepath.Join(appDir, "private", "extensions")
 		allStatus := map[string]bool{
-			"php":        utils.NewFileQueue(filepath.Join(extDir, "php", "php.exe")).FileExists(),
-			"python":     utils.NewFileQueue(filepath.Join(extDir, "python", "python.exe")).FileExists(),
-			"napcat_bot": utils.NewFileQueue(filepath.Join(extDir, "NapCat.Shell", "launcher.bat")).FileExists(),
+			"php":        fileExists(filepath.Join(extDir, "php", "php.exe")),
+			"python":     isPythonInstalled(filepath.Join(extDir, "python")),
+			"napcat_bot": fileExists(filepath.Join(extDir, "NapCat.Shell", "launcher.bat")),
 			"ffmpeg":     utils.FindFfmpegExe(filepath.Join(extDir, "ffmpeg")) != "",
-			"silk_v3":    utils.NewFileQueue(filepath.Join(extDir, "silk_v3", "silk_v3_encoder.exe")).FileExists(),
+			"silk_v3":    fileExists(filepath.Join(extDir, "silk_v3", "silk_v3_encoder.exe")),
 		}
 		jsonResp, _ := json.Marshal(allStatus)
 		w.Write(jsonResp)
@@ -3559,6 +4584,13 @@ func opuiHandleApi(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		appDir := utils.GetAppDir()
+		// 非 Windows 仅支持卸载 Python
+		if runtime.GOOS != "windows" && config.Component != "python" {
+			resp := HttpOpUiInstallResponse{Status: "error", Error: "该组件仅支持 Windows 端"}
+			jsonResp, _ := json.Marshal(resp)
+			w.Write(jsonResp)
+			return
+		}
 		var rmDir string
 		switch config.Component {
 		case "php":
@@ -3570,6 +4602,13 @@ func opuiHandleApi(w http.ResponseWriter, r *http.Request) {
 		case "napcat_bot":
 			rmDir = filepath.Join(appDir, "private", "extensions", "NapCat.Shell")
 		case "python":
+			// Linux 使用系统 python3，仅当存在内置扩展时才可删除
+			if runtime.GOOS != "windows" && !fileExists(filepath.Join(appDir, "private", "extensions", "python", "python3")) {
+				resp := HttpOpUiInstallResponse{Status: "error", Error: "当前使用系统 python3，请通过系统包管理器卸载"}
+				jsonResp, _ := json.Marshal(resp)
+				w.Write(jsonResp)
+				return
+			}
 			rmDir = filepath.Join(appDir, "private", "extensions", "python")
 		default:
 			http.Error(w, `{"status":"error","error":"unknown component"}`, http.StatusBadRequest)
@@ -3783,6 +4822,110 @@ func opuiHandleApi(w http.ResponseWriter, r *http.Request) {
 		w.Write(jsonResp)
 		return
 
+	case "file_search":
+		// 文件管理搜索：默认搜索当前目录下的直接子项（文件夹+文件），
+		// 开启深度搜索则递归子目录；默认按名称包含关键字（忽略大小写），
+		// 开启正则则按正则表达式匹配名称（忽略大小写）
+		var j struct {
+			Path    string `json:"path"`
+			Keyword string `json:"keyword"`
+			Deep    bool   `json:"deep"`
+			Regex   bool   `json:"regex"`
+		}
+		_ = json.Unmarshal(h.Data, &j)
+		dirPath := strings.TrimSpace(j.Path)
+		root := utils.GetAppDir()
+		if dirPath != "" {
+			if !checkFilePath(dirPath) {
+				http.Error(w, `{"status":"error","error":"目录路径不合法"}`, http.StatusBadRequest)
+				return
+			}
+			root = filepath.Join(utils.GetAppDir(), filepath.FromSlash(dirPath))
+		}
+		kw := strings.TrimSpace(j.Keyword)
+		var re *regexp.Regexp
+		if j.Regex && kw != "" {
+			var rerr error
+			re, rerr = regexp.Compile("(?i)" + kw)
+			if rerr != nil {
+				http.Error(w, `{"status":"error","error":"正则表达式无效: `+rerr.Error()+`"}`, http.StatusBadRequest)
+				return
+			}
+		}
+		matchName := func(name string) bool {
+			if kw == "" {
+				return true
+			}
+			if re != nil {
+				return re.MatchString(name)
+			}
+			return strings.Contains(strings.ToLower(name), strings.ToLower(kw))
+		}
+		type fileEntry struct {
+			Name  string `json:"name"`
+			Path  string `json:"path"`
+			Dir   bool   `json:"dir"`
+			Size  int64  `json:"size"`
+			Mtime int64  `json:"mtime"`
+		}
+		entries := make([]fileEntry, 0)
+		if j.Deep {
+			_ = filepath.Walk(root, func(full string, info os.FileInfo, err error) error {
+				if err != nil || full == root {
+					return nil
+				}
+				name := info.Name()
+				if !matchName(name) {
+					return nil
+				}
+				rel, _ := filepath.Rel(root, full)
+				relPath := filepath.ToSlash(rel)
+				if dirPath != "" {
+					relPath = filepath.ToSlash(filepath.Join(dirPath, rel))
+				}
+				entries = append(entries, fileEntry{
+					Name:  name,
+					Path:  relPath,
+					Dir:   info.IsDir(),
+					Size:  info.Size(),
+					Mtime: info.ModTime().Unix(),
+				})
+				return nil
+			})
+		} else {
+			items, err := os.ReadDir(root)
+			if err != nil {
+				http.Error(w, `{"status":"error","error":"读取目录失败: `+err.Error()+`"}`, http.StatusBadRequest)
+				return
+			}
+			for _, it := range items {
+				name := it.Name()
+				if !matchName(name) {
+					continue
+				}
+				info, ierr := it.Info()
+				if ierr != nil {
+					continue
+				}
+				entries = append(entries, fileEntry{
+					Name:  name,
+					Path:  filepath.ToSlash(filepath.Join(dirPath, name)),
+					Dir:   it.IsDir(),
+					Size:  info.Size(),
+					Mtime: info.ModTime().Unix(),
+				})
+			}
+		}
+		sort.Slice(entries, func(i, j int) bool {
+			if entries[i].Dir != entries[j].Dir {
+				return entries[i].Dir
+			}
+			return strings.ToLower(entries[i].Name) < strings.ToLower(entries[j].Name)
+		})
+		jsonResp, _ := json.Marshal(map[string]any{"entries": entries})
+		w.Write(jsonResp)
+		return
+
 	case "file_read":
 		// 读取应用目录下任意文件（.n 词库请使用 dic_get_content）
 		var j struct {
@@ -3813,6 +4956,52 @@ func opuiHandleApi(w http.ResponseWriter, r *http.Request) {
 			resp["content"] = string(data)
 		}
 		jsonResp, _ := json.Marshal(resp)
+		w.Write(jsonResp)
+		return
+
+	case "file_image":
+		// 读取图片文件并返回 base64，供前端在线预览
+		var j struct {
+			Path string `json:"path"`
+		}
+		if err := json.Unmarshal(h.Data, &j); err != nil {
+			http.Error(w, `{"status":"error","error":"invalid json"}`, http.StatusBadRequest)
+			return
+		}
+		if !checkFilePath(j.Path) {
+			http.Error(w, `{"status":"error","error":"文件路径不合法"}`, http.StatusBadRequest)
+			return
+		}
+		full := filepath.Join(utils.GetAppDir(), filepath.FromSlash(j.Path))
+		data, err := os.ReadFile(full)
+		if err != nil {
+			http.Error(w, `{"status":"error","error":"文件读取失败: `+err.Error()+`"}`, http.StatusBadRequest)
+			return
+		}
+		mime := "application/octet-stream"
+		switch strings.ToLower(filepath.Ext(j.Path)) {
+		case ".png":
+			mime = "image/png"
+		case ".jpg", ".jpeg":
+			mime = "image/jpeg"
+		case ".gif":
+			mime = "image/gif"
+		case ".webp":
+			mime = "image/webp"
+		case ".bmp":
+			mime = "image/bmp"
+		case ".svg":
+			mime = "image/svg+xml"
+		case ".ico":
+			mime = "image/x-icon"
+		case ".avif":
+			mime = "image/avif"
+		}
+		jsonResp, _ := json.Marshal(map[string]any{
+			"path": j.Path,
+			"mime": mime,
+			"data": base64.StdEncoding.EncodeToString(data),
+		})
 		w.Write(jsonResp)
 		return
 
@@ -4254,10 +5443,11 @@ func opuiHandleApi(w http.ResponseWriter, r *http.Request) {
 
 	case "add_dic_task":
 		var j struct {
-			DicPath  string `json:"dic_path"`
-			Trigger  string `json:"trigger"`
-			Interval string `json:"interval"`
-			Once     bool   `json:"once"`
+			DicPath    string `json:"dic_path"`
+			Trigger    string `json:"trigger"`
+			Interval   string `json:"interval"`
+			Once       bool   `json:"once"`
+			RunAtStart bool   `json:"run_at_start"`
 		}
 		if err := json.Unmarshal(h.Data, &j); err != nil {
 			http.Error(w, `{"status":"error","error":"invalid json"}`, http.StatusBadRequest)
@@ -4273,7 +5463,7 @@ func opuiHandleApi(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, `{"status":"error","error":"词库路径不合法"}`, http.StatusBadRequest)
 			return
 		}
-		id, err := dic_funcs.AddScheduledTask(j.DicPath, j.Trigger, j.Interval, j.Once)
+		id, err := dic_funcs.AddScheduledTask(j.DicPath, j.Trigger, j.Interval, j.Once, j.RunAtStart)
 		if err != nil {
 			http.Error(w, `{"status":"error","error":"`+err.Error()+`"}`, http.StatusBadRequest)
 			return

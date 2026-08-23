@@ -450,25 +450,31 @@ var ReplyFuncs = map[string]dto.DicFunc{
 			if ctx == nil || ctx.Bot == nil || ctx.Bot.API == nil {
 				return "", fmt.Errorf("QQBot上下文未初始化")
 			}
-			go func() {
-				rMsg := strings.ReplaceAll(d.Inputs.String(1), "\\r", "\n")
-				if d.Inputs.LenOk(1) {
-					if rMsg != "" {
-						if ctx.PrivateUserID != "" {
-							ctx.Bot.API.ReplyGroupPrivateMessage(ctx.MsgID, ctx.PrivateUserID, "\n"+rMsg)
-						} else {
-							ctx.Bot.API.ReplyGroupMessage(ctx.MsgID, ctx.GroupOpenID, "\n"+rMsg, ConsumeEventID(d))
-						}
-					}
-				} else {
+			rMsg := strings.ReplaceAll(d.Inputs.String(1), "\\r", "\n")
+			var resp *qqbot_msg.MessageResponse
+			var err error
+			if d.Inputs.LenOk(1) {
+				if rMsg != "" {
 					if ctx.PrivateUserID != "" {
-						ctx.Bot.API.ReplyGroupPrivateImgMessage(ctx.MsgID, ctx.PrivateUserID, d.Inputs.String(2), rMsg)
+						resp, err = ctx.Bot.API.ReplyGroupPrivateMessage(ctx.MsgID, ctx.PrivateUserID, "\n"+rMsg)
 					} else {
-						ctx.Bot.API.ReplyGroupImgMessage(ctx.MsgID, ctx.GroupOpenID, d.Inputs.String(2), rMsg, ConsumeEventID(d))
+						resp, err = ctx.Bot.API.ReplyGroupMessage(ctx.MsgID, ctx.GroupOpenID, "\n"+rMsg, ConsumeEventID(d))
 					}
 				}
-			}()
-			return "", nil
+			} else {
+				if ctx.PrivateUserID != "" {
+					resp, err = ctx.Bot.API.ReplyGroupPrivateImgMessage(ctx.MsgID, ctx.PrivateUserID, d.Inputs.String(2), rMsg)
+				} else {
+					resp, err = ctx.Bot.API.ReplyGroupImgMessage(ctx.MsgID, ctx.GroupOpenID, d.Inputs.String(2), rMsg, ConsumeEventID(d))
+				}
+			}
+			if err != nil {
+				return "", err
+			}
+			if resp == nil {
+				return "", nil
+			}
+			return resp.ID, nil
 		},
 	},
 	"发送MD": {
@@ -480,32 +486,40 @@ var ReplyFuncs = map[string]dto.DicFunc{
 			}
 			pLen, kb := popMDKeyboard(d)
 
+			var resp *qqbot_msg.MessageResponse
+			var err error
 			// 简单MD文本发送
 			if pLen == 1 || (pLen-1)%2 != 0 {
 				if ctx.PrivateUserID != "" {
-					ctx.Bot.API.ReplyPrivateAnyMarkdownWithKeyboard(ctx.MsgID, ctx.PrivateUserID, d.Inputs.String(1), kb)
+					resp, err = ctx.Bot.API.ReplyPrivateAnyMarkdownWithKeyboard(ctx.MsgID, ctx.PrivateUserID, d.Inputs.String(1), kb)
 				} else {
-					ctx.Bot.API.ReplyGroupAnyMarkdownWithKeyboard(ctx.MsgID, ctx.GroupOpenID, d.Inputs.String(1), kb, ConsumeEventID(d))
+					resp, err = ctx.Bot.API.ReplyGroupAnyMarkdownWithKeyboard(ctx.MsgID, ctx.GroupOpenID, d.Inputs.String(1), kb, ConsumeEventID(d))
 				}
+			} else {
+				// CustomTemplateId + key=value 参数对
+				params := make([]*qqbot_msg.MarkdownParams, 0, (pLen-1)/2)
+				for i := 2; i <= pLen; i += 2 {
+					params = append(params, formatMDPair(d.Inputs.String(i), d.Inputs.String(i+1)))
+				}
+				if ctx.PrivateUserID != "" {
+					resp, err = ctx.Bot.API.ReplyPrivateMarkdownWithKeyboard(ctx.MsgID, ctx.PrivateUserID, &qqbot_msg.Markdown{
+						CustomTemplateId: d.Inputs.String(1),
+						Params:           params,
+					}, kb)
+				} else {
+					resp, err = ctx.Bot.API.ReplyGroupMarkdownWithKeyboard(ctx.MsgID, ctx.GroupOpenID, &qqbot_msg.Markdown{
+						CustomTemplateId: d.Inputs.String(1),
+						Params:           params,
+					}, kb, ConsumeEventID(d))
+				}
+			}
+			if err != nil {
+				return "", err
+			}
+			if resp == nil {
 				return "", nil
 			}
-			// CustomTemplateId + key=value 参数对
-			params := make([]*qqbot_msg.MarkdownParams, 0, (pLen-1)/2)
-			for i := 2; i <= pLen; i += 2 {
-				params = append(params, formatMDPair(d.Inputs.String(i), d.Inputs.String(i+1)))
-			}
-			if ctx.PrivateUserID != "" {
-				ctx.Bot.API.ReplyPrivateMarkdownWithKeyboard(ctx.MsgID, ctx.PrivateUserID, &qqbot_msg.Markdown{
-					CustomTemplateId: d.Inputs.String(1),
-					Params:           params,
-				}, kb)
-			} else {
-				ctx.Bot.API.ReplyGroupMarkdownWithKeyboard(ctx.MsgID, ctx.GroupOpenID, &qqbot_msg.Markdown{
-					CustomTemplateId: d.Inputs.String(1),
-					Params:           params,
-				}, kb, ConsumeEventID(d))
-			}
-			return "", nil
+			return resp.ID, nil
 		},
 	},
 	"发送视频": {
@@ -515,14 +529,20 @@ var ReplyFuncs = map[string]dto.DicFunc{
 			if ctx == nil || ctx.Bot == nil || ctx.Bot.API == nil {
 				return "", fmt.Errorf("QQBot上下文未初始化")
 			}
-			go func() {
-				if ctx.PrivateUserID != "" {
-					ctx.Bot.API.ReplyGroupPrivateVideoMessage(ctx.MsgID, ctx.PrivateUserID, d.Inputs.String(1))
-				} else {
-					ctx.Bot.API.ReplyGroupVideoMessage(ctx.MsgID, ctx.GroupOpenID, d.Inputs.String(1), ConsumeEventID(d))
-				}
-			}()
-			return "", nil
+			var resp *qqbot_msg.MessageResponse
+			var err error
+			if ctx.PrivateUserID != "" {
+				resp, err = ctx.Bot.API.ReplyGroupPrivateVideoMessage(ctx.MsgID, ctx.PrivateUserID, d.Inputs.String(1))
+			} else {
+				resp, err = ctx.Bot.API.ReplyGroupVideoMessage(ctx.MsgID, ctx.GroupOpenID, d.Inputs.String(1), ConsumeEventID(d))
+			}
+			if err != nil {
+				return "", err
+			}
+			if resp == nil {
+				return "", nil
+			}
+			return resp.ID, nil
 		},
 	},
 	"发送语音": {
@@ -532,14 +552,68 @@ var ReplyFuncs = map[string]dto.DicFunc{
 			if ctx == nil || ctx.Bot == nil || ctx.Bot.API == nil {
 				return "", fmt.Errorf("QQBot上下文未初始化")
 			}
-			go func() {
-				if ctx.PrivateUserID != "" {
-					ctx.Bot.API.ReplyGroupPrivateVoiceMessage(ctx.MsgID, ctx.PrivateUserID, d.Inputs.String(1))
-				} else {
-					ctx.Bot.API.ReplyGroupVoiceMessage(ctx.MsgID, ctx.GroupOpenID, d.Inputs.String(1), ConsumeEventID(d))
-				}
-			}()
-			return "", nil
+			var resp *qqbot_msg.MessageResponse
+			var err error
+			if ctx.PrivateUserID != "" {
+				resp, err = ctx.Bot.API.ReplyGroupPrivateVoiceMessage(ctx.MsgID, ctx.PrivateUserID, d.Inputs.String(1))
+			} else {
+				resp, err = ctx.Bot.API.ReplyGroupVoiceMessage(ctx.MsgID, ctx.GroupOpenID, d.Inputs.String(1), ConsumeEventID(d))
+			}
+			if err != nil {
+				return "", err
+			}
+			if resp == nil {
+				return "", nil
+			}
+			return resp.ID, nil
+		},
+	},
+	"流式发送": {
+		L: "1|2|3|4|5",
+		Fn: func(d *dto.DicInputs) (any, error) {
+			ctx := GetPushContext(d)
+			if ctx == nil || ctx.Bot == nil || ctx.Bot.API == nil {
+				return "", fmt.Errorf("QQBot上下文未初始化")
+			}
+			userOpenID := ctx.UserOpenID
+			if userOpenID == "" {
+				userOpenID = ctx.PrivateUserID
+			}
+			if userOpenID == "" {
+				return "", fmt.Errorf("当前消息无用户OpenID，无法流式发送单聊消息")
+			}
+			content := d.Inputs.String(1)
+			if content == "" {
+				return "", fmt.Errorf("流式内容为空")
+			}
+			// 输入状态：1=生成中，10=生成结束（默认结束）
+			inputState := 10
+			if s := d.Inputs.String(2); s != "" {
+				inputState = d.Inputs.Int(2)
+			}
+			// 内容格式类型：默认 markdown
+			contentType := "markdown"
+			switch strings.ToLower(d.Inputs.String(5)) {
+			case "text", "txt", "文本":
+				contentType = "text"
+			}
+			req := &qqbot_msg.StreamMessageRequest{
+				InputMode:   "replace",
+				InputState:  inputState,
+				Index:       d.Inputs.Int(4),
+				ContentType: contentType,
+				ContentRaw:  content,
+				MsgId:       ctx.MsgID,
+				StreamMsgId: d.Inputs.String(3),
+			}
+			resp, err := ctx.Bot.API.SendStreamMessage(userOpenID, req)
+			if err != nil {
+				return "", err
+			}
+			if resp == nil {
+				return "", nil
+			}
+			return resp.ID, nil
 		},
 	},
 	"禁": {

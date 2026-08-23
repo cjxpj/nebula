@@ -73,7 +73,7 @@ func BuildFuncStr(
 			}
 		}
 
-		// 内部文本：按空格分割，\ 处理转义（\ , \\, \$）
+		// 内部文本：按空格分割，\ 处理转义（\\、\$、\"；成对引号内 \n → 换行）
 		content := str[openIndex+1 : closeIndex]
 		args := splitWithEscape(content)
 		if in, stop := process(args); stop {
@@ -115,7 +115,7 @@ func findUnescaped(s, sub string, start int) int {
 	}
 }
 
-// 在 $...$ 内部：按空格切分；支持 "\\"=>"\", "\$"=>"$"
+// 在 $...$ 内部：按空格切分；支持 "\\"=>"\", "\$"=>"$"，成对引号内 "\n"=>换行
 // 支持 "..." 双引号包裹：引号前的空格或行首开启引号，引号后的空格或行尾关闭引号，中间的空格不参与切分
 // \" 始终表示字面引号；JSON 等非边界位置的 " 保持原样不被当作引号
 func splitWithEscape(s string) []string {
@@ -135,6 +135,13 @@ func splitWithEscape(s string) []string {
 				b.WriteByte('$') // \$ → $
 			case '"':
 				b.WriteByte('"') // \" → 字面引号
+			case 'n':
+				if inQuote {
+					b.WriteByte('\n') // \n → 换行（仅成对引号内）
+				} else {
+					b.WriteByte('\\')
+					b.WriteByte('n')
+				}
 			default:
 				// 未知转义：按字面写回
 				b.WriteByte('\\')
@@ -156,14 +163,12 @@ func splitWithEscape(s string) []string {
 					inQuote = false
 					continue
 				}
-			} else {
-				// 开启引号：前是空格或行首
-				if i == 0 || s[i-1] == ' ' {
-					inQuote = true
-					continue
-				}
+			} else if (i == 0 || s[i-1] == ' ') && hasClosingQuote(s, i+1) {
+				// 开启引号：前是空格或行首，且存在成对结尾
+				inQuote = true
+				continue
 			}
-			// 非边界位置的引号 → 字面字符
+			// 非边界位置或没有结尾的引号 → 字面字符
 			b.WriteByte(ch)
 			continue
 		}
@@ -187,6 +192,29 @@ func splitWithEscape(s string) []string {
 		args = append(args, b.String())
 	}
 	return args
+}
+
+// hasClosingQuote 判断从 from 开始往后是否存在成对的结束引号（未被反斜杠转义，
+// 且后跟空格或行尾）。用于确定当前开启的引号是否有结尾。
+func hasClosingQuote(s string, from int) bool {
+	escaped := false
+	for i := from; i < len(s); i++ {
+		ch := s[i]
+		if escaped {
+			escaped = false
+			continue
+		}
+		if ch == '\\' {
+			escaped = true
+			continue
+		}
+		if ch == '"' {
+			if i+1 >= len(s) || s[i+1] == ' ' {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // replaceProcessedContent 接受一个字符串、开始和结束的子串，以及一个处理函数作为参数
@@ -544,7 +572,23 @@ func web(dicPath string, lines []string, stack *importStack) *dto.BuildValue {
 }
 
 func BuildDic(dicPath, text string) *dto.BuildValue {
-	return buildDic(dicPath, text, newImportStack())
+	stack := newImportStack()
+	// 顶层词库同样压入引入链，路径与 #引入= 加载路径保持一致（统一 private/ 前缀与 .n 后缀），
+	// 避免被引入文件反向引入顶层时把顶层重复加载，导致同一条循环引入被重复报告。
+	dicPath = importFilePath(dicPath)
+	stack.push(dicPath)
+	return buildDic(dicPath, text, stack)
+}
+
+// importFilePath 将 #引入= 目标或顶层词库路径规范化为统一的文件路径（private/xxx.n）。
+func importFilePath(name string) string {
+	if !strings.HasPrefix(name, "private/") {
+		name = "private/" + name
+	}
+	if !strings.HasSuffix(name, ".n") {
+		name += ".n"
+	}
+	return name
 }
 
 // buildDic 为 BuildDic 的内部实现，携带引入链用于检测循环引入。
