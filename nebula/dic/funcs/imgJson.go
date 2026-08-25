@@ -8,6 +8,7 @@ import (
 	"image/color/palette"
 	"image/draw"
 	"image/gif"
+	"path"
 	"strconv"
 	"strings"
 
@@ -44,9 +45,9 @@ func (j *JsonImage) Draw(jsonData []map[string]any) string {
 	gif_time := []int{}
 
 	var img *image.NRGBA
-	ttfDir := "private/ttf/"
+	ttfDir := "private/ttf"
 	ttfFile := "font.ttf"
-	imgDefaultTtf := ttfDir + ttfFile
+	imgDefaultTtf := path.Join(ttfDir, ttfFile)
 	imgTtf, err := utils.NewFileQueue(imgDefaultTtf).ReadFileByte()
 	if err != nil {
 		return "请检查[" + imgDefaultTtf + "]是否正常"
@@ -314,9 +315,9 @@ func (j *JsonImage) Draw(jsonData []map[string]any) string {
 			if valueLen != 1 {
 				return "参数不对"
 			}
-			imgTtf, err = utils.NewFileQueue(ttfDir + value[0]).ReadFileByte()
+			imgTtf, err = utils.NewFileQueue(path.Join(ttfDir, value[0])).ReadFileByte()
 			if err != nil {
-				if imgTtf, err = utils.NewFileQueue("system/ttf/" + value[0]).ReadFileByte(); err != nil {
+				if imgTtf, err = utils.NewFileQueue(path.Join("system", "ttf", value[0])).ReadFileByte(); err != nil {
 					return "请检查字体是否正常"
 				}
 			}

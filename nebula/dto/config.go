@@ -42,17 +42,17 @@ func LoadConfig_napcat(NapCat_Config *ini.Section) {
 		}
 		BotDic := utils.NewFileQueue(filepath.Join(dicPath, "dic"))
 		if !BotDic.DirExists() {
-			BotDic.SetPath(dicPath + "/dic/dic.n")
+			BotDic.SetPath(filepath.Join(dicPath, "dic", "dic.n"))
 			if data, err := appfiles.GetFile("dic/NapCatBot.n"); err == nil {
 				BotDic.WriteFileByte(data)
 			} else {
 				fmt.Println("embed err:", err)
 			}
 			// 群白名单
-			BotDic.SetPath(dicPath + "/groups.txt")
+			BotDic.SetPath(filepath.Join(dicPath, "groups.txt"))
 			BotDic.WriteFileByte([]byte("all"))
 			// 主人文件
-			BotDic.SetPath(dicPath + "/admin.txt")
+			BotDic.SetPath(filepath.Join(dicPath, "admin.txt"))
 			BotDic.WriteFileByte([]byte(""))
 		}
 	}
@@ -105,14 +105,14 @@ func LoadConfig_qq(QQBot_Config *ini.Section, sectionName string) {
 
 		BotDic := utils.NewFileQueue(dicPath)
 		if !BotDic.DirExists() {
-			BotDic.SetPath(dicPath + "/dic/dic.n")
+			BotDic.SetPath(filepath.Join(dicPath, "dic", "dic.n"))
 			if data, err := appfiles.GetFile("dic/QQBot.n"); err == nil {
 				BotDic.WriteFileByte(data)
 			} else {
 				fmt.Println("embed err:", err)
 			}
 			// 主人文件
-			BotDic.SetPath(dicPath + "/admin.txt")
+			BotDic.SetPath(filepath.Join(dicPath, "admin.txt"))
 			BotDic.WriteFileByte([]byte(""))
 		}
 	} else if bot, exists := ServerConfig.QQBots[sectionName]; exists {
@@ -157,14 +157,14 @@ func LoadConfig_feishu(FeiShu_Config *ini.Section) {
 		}
 		BotDic := utils.NewFileQueue(dicPath)
 		if !BotDic.DirExists() {
-			BotDic.SetPath(dicPath + "/dic/dic.n")
+			BotDic.SetPath(filepath.Join(dicPath, "dic", "dic.n"))
 			if data, err := appfiles.GetFile("dic/NapCatBot.n"); err == nil {
 				BotDic.WriteFileByte(data)
 			} else {
 				fmt.Println("embed err:", err)
 			}
 			// 主人文件
-			BotDic.SetPath(dicPath + "/admin.txt")
+			BotDic.SetPath(filepath.Join(dicPath, "admin.txt"))
 			BotDic.WriteFileByte([]byte(""))
 		}
 	}

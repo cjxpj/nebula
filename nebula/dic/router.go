@@ -110,8 +110,6 @@ func dicWebRouter(w http.ResponseWriter, r *http.Request) {
 	}
 	responseJSON := string(resS)
 
-	var FileData string
-
 	routerFile := utils.NewFileQueue("private/system/router.n")
 	if !routerFile.FileExists() {
 		if data, e := appfiles.GetFile("dic/system/router.n"); e == nil {
@@ -119,12 +117,6 @@ func dicWebRouter(w http.ResponseWriter, r *http.Request) {
 		} else {
 			fmt.Println("embed err:", e)
 		}
-	}
-
-	FileData, err = routerFile.ReadFromFile()
-	if err != nil {
-		utils.Error("读取路由词库出错")
-		return
 	}
 
 	// 运行词库
@@ -138,7 +130,11 @@ func dicWebRouter(w http.ResponseWriter, r *http.Request) {
 	globalV.Set("_请求数据_", r)
 	globalV.Set("_响应数据_", w)
 
-	dic := dic_dto.NewDic("private/system/router.n", FileData)
+	dic, err := dic_dto.NewDicFile("private/system/router.n")
+	if err != nil {
+		utils.Error("读取路由词库出错")
+		return
+	}
 	defer dic.Close()
 
 	dic.SetGlobal_v(globalV).
@@ -334,8 +330,7 @@ func handleWsServer(w http.ResponseWriter, r *http.Request, ws *dto.ServerRouter
 	}
 
 	// 运行词库
-	if wsFileData, err := utils.NewFileQueue(dicPath).ReadFromFile(); err == nil {
-		dic := dic_dto.NewDic(dicPath, wsFileData)
+	if dic, err := dic_dto.NewDicFile(dicPath); err == nil {
 		dic.Val.P.Set("_词库路径_", dicPath)
 		dic.Val.G.Set("访问数据", string(responseJSON))
 		dic.SetFunc("断开连接", dto.DicFunc{
@@ -383,14 +378,12 @@ func handleWsServer(w http.ResponseWriter, r *http.Request, ws *dto.ServerRouter
 				typeName = "未知消息"
 			}
 
-			wsfile := utils.NewFileQueue(dicPath)
-			wsfileData, err := wsfile.ReadFromFile()
+			d, err := dic_dto.NewDicFile(dicPath)
 			if err != nil {
 				debugLog.Infof("读取文件时出错: %v", err)
 				conn.Close() // 关闭连接
 				break
 			}
-			d := dic_dto.NewDic(dicPath, wsfileData)
 			d.Val.P.Set("_词库路径_", dicPath)
 			d.Val.G.Set("_WS连接_", conn)
 			d.Val.G.Set("访问数据", string(responseJSON))

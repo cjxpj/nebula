@@ -3,13 +3,14 @@ package appfiles
 import (
 	"embed"
 	"fmt"
+	"path"
 )
 
 //go:embed static/*
 var content embed.FS
 
 func GetFileString(filename string) (string, error) {
-	data, err := content.ReadFile("static/" + filename)
+	data, err := content.ReadFile(path.Join("static", filename))
 	if err != nil {
 		return "", fmt.Errorf("read embedded file %s: %w", filename, err)
 	}
@@ -17,7 +18,7 @@ func GetFileString(filename string) (string, error) {
 }
 
 func GetFile(filename string) ([]byte, error) {
-	data, err := content.ReadFile("static/" + filename)
+	data, err := content.ReadFile(path.Join("static", filename))
 	if err != nil {
 		return nil, fmt.Errorf("read embedded file %s: %w", filename, err)
 	}

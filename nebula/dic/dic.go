@@ -296,9 +296,9 @@ func (m *dicImpl) DicRun(D *dic_dto.Dic, trigger string) string {
 
 	// 设置头部行号映射
 	dicRun.LineNums = D.Data.HeadLineNums
-	D.Val.P.Set(redirectHeaderKey, true)
+	D.Data.InHeader = true
 	RunDichader := m.DicRunLine(dicRun, DicHaderText)
-	D.Val.P.Set(redirectHeaderKey, false)
+	D.Data.InHeader = false
 
 	if !dicRun.Sys_v.Stop.Load() {
 		// 头部可能通过 $重定向触发词$ 修改了触发词，重新匹配一次再执行正文
@@ -354,9 +354,9 @@ func (m *dicImpl) DicRunTimeout(D *dic_dto.Dic, trigger string, timeout time.Dur
 			}
 		}()
 		dicRun.LineNums = D.Data.HeadLineNums
-		D.Val.P.Set(redirectHeaderKey, true)
+		D.Data.InHeader = true
 		RunDichader := m.DicRunLine(dicRun, D.Data.Head)
-		D.Val.P.Set(redirectHeaderKey, false)
+		D.Data.InHeader = false
 		text := RunDichader
 		if !dicRun.Sys_v.Stop.Load() {
 			// 头部可能通过 $重定向触发词$ 修改了触发词，重新匹配一次再执行正文

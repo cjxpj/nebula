@@ -2,6 +2,7 @@ package dic_dto
 
 import (
 	"maps"
+	"strings"
 
 	"github.com/cjxpj/nebula/appfiles"
 	"github.com/cjxpj/nebula/dto"
@@ -142,11 +143,7 @@ func (WD *WebDic) Set_v(v *dto.Val) *WebDic {
 }
 
 func RunDic(path string) (*Dic, error) {
-	d, err := utils.NewFileQueue(path).ReadFromFile()
-	if err != nil {
-		return nil, err
-	}
-	return NewDic(path, d), nil
+	return NewDicFile(path)
 }
 
 func NewDic(path, text string) *Dic {
@@ -168,6 +165,36 @@ func NewDic(path, text string) *Dic {
 		ClassText: nil,
 		MyFunc:    SplitText.MyFunc,
 	}
+}
+
+// NewDicFile 读取词库文件并编译。
+func NewDicFile(path string) (*Dic, error) {
+	data, err := utils.NewFileQueue(path).ReadFileByte()
+	if err != nil {
+		return nil, err
+	}
+	lines := utils.SplitLines(data)
+	raw := data
+	// 加密词库：密文为单行，整块解密后重新切分
+	if len(lines) == 1 {
+		if str, err := utils.Decrypt(utils.RemoveComments(lines[0]), appfiles.Key); err == nil {
+			lines = strings.Split(str, "\n")
+			raw = []byte(str)
+		}
+	}
+
+	val := dto.NewDicVal()
+	SplitText := run.BuildDicLinesWithRaw(path, lines, raw)
+
+	return &Dic{
+		Data:      SplitText,
+		Val:       val,
+		Id:        0,
+		Path:      path,
+		FuncText:  nil,
+		ClassText: nil,
+		MyFunc:    SplitText.MyFunc,
+	}, nil
 }
 
 // 执行词库

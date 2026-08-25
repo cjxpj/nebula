@@ -13,6 +13,7 @@ import (
 	"github.com/cjxpj/nebula/debugLog"
 	dic_dto "github.com/cjxpj/nebula/dic/dto"
 	"github.com/cjxpj/nebula/dto"
+	"github.com/cjxpj/nebula/utils"
 )
 
 func init() {
@@ -193,13 +194,23 @@ type botInfo struct {
 	UnionOpenID string `json:"union_openid"`
 }
 
-// botInfoPath 返回 botinfo.json 的路径，与 users.json（RecordUser）完全一致：
-// 直接以 bot.FilePath（配置「词库」）为读写目录，保证机器人数据文件落在同一目录。
-func botInfoPath(bot *qqbot_msg.RouterQQBot) string {
+// botFilePath 返回 bot 词库目录下 name 文件的落盘路径。
+// bot.FilePath 来自配置「词库」（如 private/bot/qq），是相对 NebulaData 的路径，
+// 这里统一拼到应用数据目录（NebulaData）下，避免相对路径被直接写到运行目录。
+func botFilePath(bot *qqbot_msg.RouterQQBot, name string) string {
 	if bot == nil {
 		return ""
 	}
-	return filepath.Join(bot.FilePath, botInfoFile)
+	p := filepath.Join(bot.FilePath, name)
+	if !filepath.IsAbs(p) {
+		p = filepath.Join(utils.GetAppDir(), p)
+	}
+	return p
+}
+
+// botInfoPath 返回 botinfo.json 的路径，与 users.json（RecordUser）完全一致。
+func botInfoPath(bot *qqbot_msg.RouterQQBot) string {
+	return botFilePath(bot, botInfoFile)
 }
 
 // saveBotInfo 把机器人自身信息保存到机器人读写目录下的 botinfo.json，重启后可用于恢复。

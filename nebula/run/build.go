@@ -1,7 +1,14 @@
 package run
 
 import (
+	"bytes"
+	"crypto/sha256"
+	"encoding/gob"
+	"encoding/hex"
 	"maps"
+	"os"
+	pathpkg "path"
+	"path/filepath"
 	"regexp"
 	"strings"
 	"sync"
@@ -26,6 +33,29 @@ func compileTriggerRegex(t string) *regexp.Regexp {
 	}
 	actual, _ := triggerRegexCache.LoadOrStore(t, regex)
 	return actual.(*regexp.Regexp)
+}
+
+// triggerPlainCache 缓存触发词是否为纯文本的判断结果，避免每次匹配重复扫描触发词。
+var triggerPlainCache sync.Map
+
+// isPlainTrigger 判断触发词是否不含任何正则元字符。
+// 纯文本触发词的匹配等价于字符串相等，可跳过正则编译与匹配，加速命中。
+func isPlainTrigger(t string) bool {
+	if v, ok := triggerPlainCache.Load(t); ok {
+		return v.(bool)
+	}
+	plain := true
+	for i := 0; i < len(t); i++ {
+		switch t[i] {
+		case '.', '*', '+', '?', '(', ')', '[', ']', '{', '}', '|', '^', '$', '\\':
+			plain = false
+		}
+		if !plain {
+			break
+		}
+	}
+	triggerPlainCache.Store(t, plain)
+	return plain
 }
 
 // 自义定替换函数
@@ -219,6 +249,10 @@ func hasClosingQuote(s string, from int) bool {
 
 // replaceProcessedContent 接受一个字符串、开始和结束的子串，以及一个处理函数作为参数
 func ReplaceProcessedContent(str, strStart, strEnd string, process func(string) string) string {
+	// 快速路径：不含起始标记时直接返回原字符串，避免 Builder 往返复制
+	if !strings.Contains(str, strStart) {
+		return str
+	}
 	var result strings.Builder
 	start := 0
 
@@ -272,6 +306,14 @@ func RunFor(jsonData []*dto.BuildDic, trigger string, runNum int) ([]string, str
 
 		// 使用动态编译的正则表达式
 		t := item.Trigger
+
+		// 纯文本触发词：直接字符串相等匹配，跳过正则编译与匹配（多数触发词为纯文本）
+		if isPlainTrigger(t) {
+			if trigger == t {
+				return text, t, i, nil
+			}
+			continue
+		}
 
 		regex := compileTriggerRegex(t)
 		if regex == nil {
@@ -391,12 +433,18 @@ func isBlankOrComment(line string) bool {
 // 加载为单 goroutine 递归，无需加锁。
 type importStack struct {
 	files    map[string]bool
-	warnings []dto.BuildWarning // 收集编译警告（如循环引入），供前端调试面板展示
+	warnings []dto.BuildWarning
+
+	// deps 记录所有已成功加载文件（含主文件）的路径与内容 hash，用于磁盘编译缓存失效校验。
+	deps map[string]string
 }
 
 // newImportStack 创建空的引入链。
 func newImportStack() *importStack {
-	return &importStack{files: make(map[string]bool)}
+	return &importStack{
+		files: make(map[string]bool),
+		deps:  make(map[string]string),
+	}
 }
 
 // push 将文件压入引入链；若该文件已在链上则返回 false（循环引入）。
@@ -416,6 +464,159 @@ func (s *importStack) pop(path string) {
 // addWarning 追加一条编译警告。
 func (s *importStack) addWarning(line int, text string) {
 	s.warnings = append(s.warnings, dto.BuildWarning{Line: line, Text: text})
+}
+
+// dicCacheVersion 磁盘编译缓存格式版本，结构变化时递增以淘汰旧缓存。
+const dicCacheVersion = 2
+
+// dicCacheEntry 词库编译结果的磁盘缓存结构（gob 序列化）。
+// 只缓存可序列化词条；含 bot 注入（MyFunc 非空）的词库不落缓存，故无需序列化 Go 函数。
+type dicCacheEntry struct {
+	Version int
+	// Deps 所有依赖文件（含主文件）路径 -> 内容 hash，用于失效校验。
+	Deps map[string]string
+
+	// BuildValue 可序列化部分
+	Head         []string
+	HeadLineNums []int
+	Dic          []*dto.BuildDic
+	DicFuncs     map[string][]*dto.BuildDic
+	ClassFuncs   map[string]map[string][]*dto.BuildDic
+	BotImports   []string
+	Warnings     []dto.BuildWarning
+}
+
+// dicHash 计算字符串的 sha256 十六进制摘要。
+func dicHash(s string) string {
+	return dicHashBytes([]byte(s))
+}
+
+func dicHashBytes(b []byte) string {
+	sum := sha256.Sum256(b)
+	return hex.EncodeToString(sum[:])
+}
+
+// dicCachePath 返回某词库对应的磁盘缓存文件路径（private/.dic_cache 目录下）。
+func dicCachePath(dicPath string) string {
+	return filepath.Join(utils.GetAppDir(), "private", ".dic_cache", dicHash(dicPath)+".gob")
+}
+
+// readDicFileContent 读取词库文件，返回编译输入行与用于内容 hash 的原始字节；
+// 若为单行密文则整块解密后重新切分，此时原始字节取解密后的内容。
+func readDicFileContent(filePath string) (lines []string, raw []byte, err error) {
+	data, err := utils.NewFileQueue(filePath).ReadFileByte()
+	if err != nil {
+		return nil, nil, err
+	}
+	lines = utils.SplitLines(data)
+	raw = data
+	if len(lines) == 1 {
+		if str, err := utils.Decrypt(utils.RemoveComments(lines[0]), appfiles.Key); err == nil {
+			lines = strings.Split(str, "\n")
+			raw = []byte(str)
+		}
+	}
+	return lines, raw, nil
+}
+
+// classFuncsOf 提取 Class 表里可序列化的 DicFuncs 部分。
+func classFuncsOf(class map[string]*dto.DicClass) map[string]map[string][]*dto.BuildDic {
+	if len(class) == 0 {
+		return nil
+	}
+	out := make(map[string]map[string][]*dto.BuildDic, len(class))
+	for name, c := range class {
+		if c != nil {
+			out[name] = c.DicFuncs
+		}
+	}
+	return out
+}
+
+// rebuildBuildValue 从缓存条目重建 BuildValue。
+// 缓存仅覆盖无 bot 注入的词库，故 MyFunc 与各 Class.Fn 均为空，直接用 NewDicClass 初始化。
+func rebuildBuildValue(e *dicCacheEntry) *dto.BuildValue {
+	result := &dto.BuildValue{
+		Head:         e.Head,
+		HeadLineNums: e.HeadLineNums,
+		Dic:          e.Dic,
+		DicFuncs:     e.DicFuncs,
+		Class:        make(map[string]*dto.DicClass),
+		MyFunc:       make(map[string]dto.DicFunc),
+		BotImports:   e.BotImports,
+		Warnings:     e.Warnings,
+	}
+	for name, funcs := range e.ClassFuncs {
+		cls := dto.NewDicClass()
+		cls.DicFuncs = funcs
+		result.Class[name] = cls
+	}
+	return result
+}
+
+// dicCacheMu 保护磁盘缓存写入，避免并发写坏缓存文件。
+var dicCacheMu sync.Mutex
+
+// loadDicCache 读取并校验磁盘编译缓存；命中则返回重建的 BuildValue，否则返回 nil。
+func loadDicCache(dicPath, mainHash string) *dto.BuildValue {
+	data, err := os.ReadFile(dicCachePath(dicPath))
+	if err != nil {
+		return nil
+	}
+	var e dicCacheEntry
+	if err := gob.NewDecoder(bytes.NewReader(data)).Decode(&e); err != nil {
+		return nil
+	}
+	if e.Version != dicCacheVersion || e.Deps[dicPath] != mainHash {
+		return nil
+	}
+	for dep, h := range e.Deps {
+		if dep == dicPath {
+			continue
+		}
+		_, raw, err := readDicFileContent(dep)
+		if err != nil || dicHashBytes(raw) != h {
+			return nil
+		}
+	}
+	debugLog.Debugf("命中词库编译缓存：%v", dicPath)
+	return rebuildBuildValue(&e)
+}
+
+// saveDicCache 将编译结果写入磁盘缓存。先在当前 goroutine 同步编码为字节
+// （此时编译结果尚未对外可见，避免异步读取共享数据），再异步落盘，
+// 避免磁盘 IO 阻塞词库加载。
+func saveDicCache(dicPath string, e *dicCacheEntry) {
+	var buf bytes.Buffer
+	if err := gob.NewEncoder(&buf).Encode(e); err != nil {
+		return
+	}
+	go writeDicCacheFile(dicPath, buf.Bytes())
+}
+
+// writeDicCacheFile 将编码后的缓存字节写入磁盘（临时文件 + 原子替换，并发安全）。
+func writeDicCacheFile(dicPath string, data []byte) {
+	dicCacheMu.Lock()
+	defer dicCacheMu.Unlock()
+
+	p := dicCachePath(dicPath)
+	if err := os.MkdirAll(filepath.Dir(p), 0755); err != nil {
+		return
+	}
+	tmp := p + ".tmp"
+	if err := os.WriteFile(tmp, data, 0644); err != nil {
+		return
+	}
+	if err := os.Rename(tmp, p); err != nil {
+		return
+	}
+	debugLog.Debugf("已写入词库编译缓存：%v", dicPath)
+}
+
+// ClearDicCache 清空磁盘编译缓存目录，供程序启动时调用，
+// 避免旧缓存（含已删除词库的残留缓存）在进程间累积。
+func ClearDicCache() {
+	_ = os.RemoveAll(filepath.Join(utils.GetAppDir(), "private", ".dic_cache"))
 }
 
 // injectBotFuncs 处理 @xxx 的编译期 bot 函数注入，命中返回注入的函数表（未命中返回 nil）。
@@ -447,7 +648,7 @@ func loadImport(dicPath, path, fHeaderName string, funcMap map[string][]*dto.Bui
 
 	var filesToLoad []string
 	if isDir {
-		dirPath := "private/" + dirName
+		dirPath := pathpkg.Join("private", dirName)
 		fileLoad := utils.NewFileQueue(dirPath)
 		if !fileLoad.DirExists() {
 			debugLog.Infof("加载目录不存在：%v", dirPath)
@@ -458,14 +659,14 @@ func loadImport(dicPath, path, fHeaderName string, funcMap map[string][]*dto.Bui
 			return isDir, pkg
 		}
 		for i, v := range filesToLoad2 {
-			filesToLoad2[i] = dirPath + "/" + v
+			filesToLoad2[i] = pathpkg.Join(dirPath, v)
 		}
 		filesToLoad = append(filesToLoad, filesToLoad2...)
 	} else {
 		if !strings.HasSuffix(path, ".n") {
 			path += ".n"
 		}
-		filesToLoad = append(filesToLoad, "private/"+path)
+		filesToLoad = append(filesToLoad, pathpkg.Join("private", path))
 	}
 
 	for _, filePath := range filesToLoad {
@@ -473,17 +674,14 @@ func loadImport(dicPath, path, fHeaderName string, funcMap map[string][]*dto.Bui
 			stack.addWarning(lineNum, "循环引入："+filePath+" 已在引入链中，跳过加载（由 "+dicPath+" 引入）")
 			continue
 		}
-		file := utils.NewFile()
-		file.SetPath(filePath)
 
-		FileData, err := file.ReadFromFile()
+		FileData, raw, err := readDicFileContent(filePath)
 		if err != nil {
 			stack.pop(filePath)
 			continue
 		}
-		if str, err := utils.Decrypt(utils.RemoveComments(FileData), appfiles.Key); err == nil {
-			FileData = str
-		}
+		// 记录依赖文件内容 hash，供磁盘编译缓存失效校验。
+		stack.deps[filePath] = dicHashBytes(raw)
 
 		z := buildDic(filePath, FileData, stack)
 		stack.pop(filePath)
@@ -585,18 +783,52 @@ func web(dicPath string, lines []string, stack *importStack) *dto.BuildValue {
 }
 
 func BuildDic(dicPath, text string) *dto.BuildValue {
+	return BuildDicLinesWithRaw(dicPath, strings.Split(text, "\n"), []byte(text))
+}
+
+// BuildDicLinesWithRaw 以已切分的行与原始内容字节编译词库；raw 用于计算内容 hash（缓存键），
+// 供已一次性读入文件的调用方直接使用，避免重新拼接整块文本。
+func BuildDicLinesWithRaw(dicPath string, lines []string, raw []byte) *dto.BuildValue {
+	return buildDicWithHash(dicPath, lines, dicHashBytes(raw))
+}
+
+// buildDicWithHash 为编译入口的内部实现，携带引入链用于检测循环引入，并按内容 hash 校验磁盘缓存。
+func buildDicWithHash(dicPath string, lines []string, mainHash string) *dto.BuildValue {
 	stack := newImportStack()
 	// 顶层词库同样压入引入链，路径与 #引入= 加载路径保持一致（统一 private/ 前缀与 .n 后缀），
 	// 避免被引入文件反向引入顶层时把顶层重复加载，导致同一条循环引入被重复报告。
 	dicPath = importFilePath(dicPath)
 	stack.push(dicPath)
-	return buildDic(dicPath, text, stack)
+	stack.deps[dicPath] = mainHash
+
+	if cached := loadDicCache(dicPath, mainHash); cached != nil {
+		return cached
+	}
+
+	result := buildDic(dicPath, lines, stack)
+
+	// 含 bot 注入的词库（MyFunc 非空）不落缓存，避免序列化 Go 函数；其余词库写缓存加速后续加载。
+	if len(result.MyFunc) == 0 {
+		saveDicCache(dicPath, &dicCacheEntry{
+			Version:      dicCacheVersion,
+			Deps:         stack.deps,
+			Head:         result.Head,
+			HeadLineNums: result.HeadLineNums,
+			Dic:          result.Dic,
+			DicFuncs:     result.DicFuncs,
+			ClassFuncs:   classFuncsOf(result.Class),
+			BotImports:   result.BotImports,
+			Warnings:     result.Warnings,
+		})
+	}
+
+	return result
 }
 
 // importFilePath 将 #引入= 目标或顶层词库路径规范化为统一的文件路径（private/xxx.n）。
 func importFilePath(name string) string {
 	if !strings.HasPrefix(name, "private/") {
-		name = "private/" + name
+		name = pathpkg.Join("private", name)
 	}
 	if !strings.HasSuffix(name, ".n") {
 		name += ".n"
@@ -605,11 +837,7 @@ func importFilePath(name string) string {
 }
 
 // buildDic 为 BuildDic 的内部实现，携带引入链用于检测循环引入。
-func buildDic(dicPath, text string, stack *importStack) *dto.BuildValue {
-	// 词条总数据
-	// 现在可以安全地使用\n作为分隔符
-	lines := strings.Split(text, "\n")
-
+func buildDic(dicPath string, lines []string, stack *importStack) *dto.BuildValue {
 	lines_num := len(lines) - 1
 
 	var (

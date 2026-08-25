@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"io"
 	"net/http"
+	"path"
 	"strings"
 	"time"
 
@@ -17,7 +18,7 @@ import (
 )
 
 func groupMsg(m *feishubot_msg.ImMessageReceiveV1) {
-	botDicPath := utils.NewFileQueue(dto.ServerConfig.FeiShuBot.FilePath + "/dic")
+	botDicPath := utils.NewFileQueue(path.Join(dto.ServerConfig.FeiShuBot.FilePath, "dic"))
 	botDicList, err := botDicPath.GetFileList()
 	if err != nil {
 		return
@@ -33,7 +34,7 @@ func groupMsg(m *feishubot_msg.ImMessageReceiveV1) {
 
 	isAdmin := "null" // 是否是管理员
 	// 主人列表
-	if adminList, err := utils.NewFileQueue(dto.ServerConfig.FeiShuBot.FilePath + "/admin.txt").ReadFromFile(); err == nil {
+	if adminList, err := utils.NewFileQueue(path.Join(dto.ServerConfig.FeiShuBot.FilePath, "admin.txt")).ReadFromFile(); err == nil {
 		for s := range strings.SplitSeq(adminList, ",") {
 			id := strings.TrimSpace(s)
 			if userID == id {
@@ -58,7 +59,7 @@ func groupMsg(m *feishubot_msg.ImMessageReceiveV1) {
 			continue
 		}
 		go func() {
-			dicPath := dto.ServerConfig.FeiShuBot.FilePath + "/dic/" + v
+			dicPath := path.Join(dto.ServerConfig.FeiShuBot.FilePath, "dic", v)
 			FileData, err := utils.NewFileQueue(dicPath).ReadFromFile()
 			if err != nil {
 				return

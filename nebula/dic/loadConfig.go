@@ -16,6 +16,7 @@ import (
 	dic_api "github.com/cjxpj/nebula/dic/api"
 	dic_dto "github.com/cjxpj/nebula/dic/dto"
 	"github.com/cjxpj/nebula/dto"
+	"github.com/cjxpj/nebula/run"
 	dic_server "github.com/cjxpj/nebula/server"
 	"github.com/cjxpj/nebula/utils"
 )
@@ -24,6 +25,9 @@ func Start() string {
 
 	// 启动时清理超过保留天数的旧日志文件
 	dic_server.ClearOldServerLogs()
+
+	// 启动时清空词库编译缓存（进程内加速，重启后重建）
+	run.ClearDicCache()
 
 	file := utils.NewFile()
 
@@ -38,15 +42,12 @@ func Start() string {
 		}
 	}
 
-	// start := time.Now()
-	FileData, err := file.ReadFromFile()
+	GV := dto.NewVal()
+	GV.Set("版本", appfiles.Version)
+	infoDic, err := dic_dto.NewDicFile("private/system/start.n")
 	if err != nil {
 		utils.ErrorStop("启动词库不存在")
 	}
-
-	GV := dto.NewVal()
-	GV.Set("版本", appfiles.Version)
-	infoDic := dic_dto.NewDic("private/system/start.n", FileData)
 	infoDic.SetGlobal_v(GV)
 
 	res := dic_server.Start(dto.ServerConfig.Router.Http.Addr)

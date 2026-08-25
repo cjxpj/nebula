@@ -2216,6 +2216,28 @@ type HttpOpUiConfig_qq_list struct {
 	Instances []HttpOpUiConfig_qq_instance `json:"instances"`
 }
 
+// qqBotInfoCache 是 botinfo.json 的最小字段，用于重启后兜底恢复机器人头像昵称。
+type qqBotInfoCache struct {
+	Username string `json:"username"`
+	Avatar   string `json:"avatar"`
+}
+
+// loadQQBotInfoCache 从机器人词库目录下的 botinfo.json 读取缓存的头像昵称。
+func loadQQBotInfoCache(filePath string) *qqBotInfoCache {
+	if filePath == "" {
+		return nil
+	}
+	p := filepath.Join(filePath, "botinfo.json")
+	if !filepath.IsAbs(p) {
+		p = filepath.Join(utils.GetAppDir(), p)
+	}
+	var info qqBotInfoCache
+	if data, err := os.ReadFile(p); err == nil && json.Unmarshal(data, &info) == nil {
+		return &info
+	}
+	return nil
+}
+
 type HttpOpUiConfig_napcat struct {
 	Open   bool   `json:"open"`
 	Dic    string `json:"dic"`
@@ -4252,6 +4274,13 @@ func opuiHandleApi(w http.ResponseWriter, r *http.Request) {
 							j.BotName = bot.API.BotUsername
 							j.BotAvatar = bot.API.BotAvatar
 						}
+					}
+				}
+				// 未启用或尚未上线时，从本地 botinfo.json 兜底恢复头像昵称
+				if j.BotName == "" && j.BotAvatar == "" {
+					if info := loadQQBotInfoCache(j.Dic); info != nil {
+						j.BotName = info.Username
+						j.BotAvatar = info.Avatar
 					}
 				}
 				list.Instances = append(list.Instances, HttpOpUiConfig_qq_instance{

@@ -3,6 +3,7 @@ package secludedbot
 import (
 	"encoding/json"
 	"fmt"
+	"path"
 	"regexp"
 	"strings"
 	"sync"
@@ -271,7 +272,7 @@ func dispatchPush(elems []pushElem, rawData json.RawMessage) {
 	}
 
 	// 遍历 dic/*.n 词库
-	botDicPath := utils.NewFileQueue(dto.ServerConfig.SecludedBot.FilePath + "/dic")
+	botDicPath := utils.NewFileQueue(path.Join(dto.ServerConfig.SecludedBot.FilePath, "dic"))
 	botDicList, err := botDicPath.GetFileList()
 	if err != nil {
 		dbgLog("[secluded] get dic list failed: %v", err)
@@ -282,7 +283,7 @@ func dispatchPush(elems []pushElem, rawData json.RawMessage) {
 
 	// 主人列表
 	isAdmin := "null"
-	adminPath := dto.ServerConfig.SecludedBot.FilePath + "/admin.txt"
+	adminPath := path.Join(dto.ServerConfig.SecludedBot.FilePath, "admin.txt")
 	if adminList, err := utils.NewFileQueue(adminPath).ReadFromFile(); err == nil {
 		for s := range strings.SplitSeq(adminList, ",") {
 			if userId == strings.TrimSpace(s) || uid == strings.TrimSpace(s) {
@@ -294,7 +295,7 @@ func dispatchPush(elems []pushElem, rawData json.RawMessage) {
 
 	// 群白名单
 	if sourceType == "群聊" {
-		groupPath := dto.ServerConfig.SecludedBot.FilePath + "/groups.txt"
+		groupPath := path.Join(dto.ServerConfig.SecludedBot.FilePath, "groups.txt")
 		if groupList, err := utils.NewFileQueue(groupPath).ReadFromFile(); err == nil && groupList != "" {
 			if strings.TrimSpace(groupList) == "all" {
 				goto skipGroupCheck
@@ -357,7 +358,7 @@ skipGroupCheck:
 		msgValData := valData
 
 		go func() {
-			dicPath := dto.ServerConfig.SecludedBot.FilePath + "/dic/" + dicFile
+			dicPath := path.Join(dto.ServerConfig.SecludedBot.FilePath, "dic", dicFile)
 			fileData, err := utils.NewFileQueue(dicPath).ReadFromFile()
 			if err != nil {
 				return
@@ -448,7 +449,7 @@ func triggerSystemPush(meta pushElem, rawData json.RawMessage) {
 		Set("GolineMode", meta.GolineMode)
 
 	// 遍历 dic/*.n 词库
-	botDicPath := utils.NewFileQueue(dto.ServerConfig.SecludedBot.FilePath + "/dic")
+	botDicPath := utils.NewFileQueue(path.Join(dto.ServerConfig.SecludedBot.FilePath, "dic"))
 	botDicList, err := botDicPath.GetFileList()
 	if err != nil {
 		dbgLog("[secluded] get dic list for system push failed: %v", err)
@@ -463,7 +464,7 @@ func triggerSystemPush(meta pushElem, rawData json.RawMessage) {
 		dicFile := v
 		msgValData := valData
 		go func() {
-			dicPath := dto.ServerConfig.SecludedBot.FilePath + "/dic/" + dicFile
+			dicPath := path.Join(dto.ServerConfig.SecludedBot.FilePath, "dic", dicFile)
 			fileData, err := utils.NewFileQueue(dicPath).ReadFromFile()
 			if err != nil {
 				return

@@ -10,6 +10,7 @@ import (
 	"math"
 	"math/rand"
 	"net/http"
+	"path"
 	"strconv"
 	"strings"
 	"time"
@@ -162,9 +163,9 @@ func drawImgNew(d *dto.DicInputs) (any, error) {
 	}
 
 	// 加载字体（不变）
-	ttfDir := "private/ttf/"
+	ttfDir := "private/ttf"
 	ttfFile := "font.ttf"
-	imgDefaultTtf := ttfDir + ttfFile
+	imgDefaultTtf := path.Join(ttfDir, ttfFile)
 	imgTtf, err := utils.NewFileQueue(imgDefaultTtf).ReadFileByte()
 	if err != nil {
 		return nil, fmt.Errorf("加载字体失败：%s", err)
@@ -485,9 +486,9 @@ func (f *DicFunc) DrawImgLoadFont() error {
 		return errors.New("图片不能为空")
 	}
 
-	ttfDir := "private/ttf/"
+	ttfDir := "private/ttf"
 	ttfFile := f.Inputs.String(2)
-	imgTtf, err := utils.NewFileQueue(ttfDir + ttfFile).ReadFileByte()
+	imgTtf, err := utils.NewFileQueue(path.Join(ttfDir, ttfFile)).ReadFileByte()
 	if err != nil {
 		return fmt.Errorf("加载字体失败：%s", err)
 	}
@@ -1968,9 +1969,9 @@ func drawImgLoadFont(d *dto.DicInputs) (any, error) {
 	if err != nil {
 		return nil, err
 	}
-	ttfDir := "private/ttf/"
+	ttfDir := "private/ttf"
 	ttfFile := d.Inputs.String(2)
-	imgTtf, err := utils.NewFileQueue(ttfDir + ttfFile).ReadFileByte()
+	imgTtf, err := utils.NewFileQueue(path.Join(ttfDir, ttfFile)).ReadFileByte()
 	if err != nil {
 		return nil, fmt.Errorf("加载字体失败：%s", err)
 	}

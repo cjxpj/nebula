@@ -8,6 +8,7 @@ import (
 	"io"
 	"net"
 	"os"
+	"path"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -246,7 +247,7 @@ func (ftp *ftpSession) readLine() (string, error) {
 func (ftp *ftpSession) resolvePath(vpath string) (string, error) {
 	// 相对路径拼接当前工作目录
 	if !strings.HasPrefix(vpath, "/") {
-		vpath = ftp.workDir + "/" + vpath
+		vpath = path.Join(ftp.workDir, vpath)
 	}
 	if !strings.HasPrefix(vpath, "/") {
 		vpath = "/" + vpath

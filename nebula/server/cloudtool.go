@@ -11,6 +11,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"path"
 	"regexp"
 	"sort"
 	"strconv"
@@ -194,12 +195,12 @@ func ensureCloudToolTables(db *sql.DB) error {
 
 // ensureCloudToolDicFiles 首次运行时创建云工具词库目录并写入示例词库。
 func ensureCloudToolDicFiles(dicDir string) error {
-	dir := "private/" + dicDir
+	dir := path.Join("private", dicDir)
 	fq := utils.NewFileQueue(dir)
 	if fq.DirExists() {
 		return nil
 	}
-	example := utils.NewFileQueue(dir + "/示例.n")
+	example := utils.NewFileQueue(path.Join(dir, "示例.n"))
 	if data, err := appfiles.GetFile("dic/cloudtool/示例.n"); err == nil {
 		example.WriteFileByte(data)
 	} else {
@@ -211,7 +212,7 @@ func ensureCloudToolDicFiles(dicDir string) error {
 
 // buildCloudToolDic 编译云工具词库目录：通过 #引入= 目录/* 聚合目录下全部 .n 文件。
 func buildCloudToolDic(dicDir string) (*dto.BuildValue, string, error) {
-	entryPath := "private/" + dicDir + "/main.n"
+	entryPath := path.Join("private", dicDir, "main.n")
 	entryText := "#引入=" + dicDir + "/*\n"
 	dic := dic_dto.NewDic(entryPath, entryText)
 	if dic == nil || dic.Data == nil {

@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"path"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -262,7 +263,7 @@ func triggerStartupCallback() {
 	}
 
 	// 遍历 dic/*.n 词库
-	botDicPath := utils.NewFileQueue(dto.ServerConfig.SecludedBot.FilePath + "/dic")
+	botDicPath := utils.NewFileQueue(path.Join(dto.ServerConfig.SecludedBot.FilePath, "dic"))
 	botDicList, err := botDicPath.GetFileList()
 	if err != nil {
 		debugLog.Infof("[secluded] get dic list for startup callback failed: %v", err)
@@ -275,7 +276,7 @@ func triggerStartupCallback() {
 		}
 		dicFile := v
 		go func() {
-			dicPath := dto.ServerConfig.SecludedBot.FilePath + "/dic/" + dicFile
+			dicPath := path.Join(dto.ServerConfig.SecludedBot.FilePath, "dic", dicFile)
 			fileData, err := utils.NewFileQueue(dicPath).ReadFromFile()
 			if err != nil {
 				return
@@ -320,7 +321,7 @@ func triggerDisconnectCallback() {
 		return
 	}
 
-	botDicPath := utils.NewFileQueue(dto.ServerConfig.SecludedBot.FilePath + "/dic")
+	botDicPath := utils.NewFileQueue(path.Join(dto.ServerConfig.SecludedBot.FilePath, "dic"))
 	botDicList, err := botDicPath.GetFileList()
 	if err != nil {
 		debugLog.Infof("[secluded] get dic list for disconnect callback failed: %v", err)
@@ -333,7 +334,7 @@ func triggerDisconnectCallback() {
 		}
 		dicFile := v
 		go func() {
-			dicPath := dto.ServerConfig.SecludedBot.FilePath + "/dic/" + dicFile
+			dicPath := path.Join(dto.ServerConfig.SecludedBot.FilePath, "dic", dicFile)
 			fileData, err := utils.NewFileQueue(dicPath).ReadFromFile()
 			if err != nil {
 				return

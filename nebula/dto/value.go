@@ -606,6 +606,10 @@ func (v *Val) Text(vv *Val, content any) any {
 
 // replaceProcessedContent 接受一个字符串、开始和结束的子串，以及一个处理函数作为参数
 func replaceProcessedContent(str, strStart, strEnd string, process func(string) any) any {
+	// 快速路径：不含起始标记时直接返回原字符串，避免 Builder 往返复制
+	if !strings.Contains(str, strStart) {
+		return str
+	}
 	var result strings.Builder
 	start := 0
 

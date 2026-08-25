@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"path"
 	"strconv"
 	"strings"
 	"time"
@@ -21,7 +22,7 @@ import (
 func napCatBOTGroupUploadFileRun(msgData *MessagePayload) {
 	groupID := msgData.GroupID // 群号
 	// 群列表
-	groupList := utils.NewFileQueue(dto.ServerConfig.NapCatBot.FilePath + "/groups.txt")
+	groupList := utils.NewFileQueue(path.Join(dto.ServerConfig.NapCatBot.FilePath, "groups.txt"))
 	FileData, err := groupList.ReadFromFile()
 	if err != nil {
 		return
@@ -40,7 +41,7 @@ func napCatBOTGroupUploadFileRun(msgData *MessagePayload) {
 		}
 	}
 
-	botDicPath := utils.NewFileQueue(dto.ServerConfig.NapCatBot.FilePath + "/dic")
+	botDicPath := utils.NewFileQueue(path.Join(dto.ServerConfig.NapCatBot.FilePath, "dic"))
 	botDicList, err := botDicPath.GetFileList()
 	if err != nil {
 		return
@@ -51,7 +52,7 @@ func napCatBOTGroupUploadFileRun(msgData *MessagePayload) {
 
 	isAdmin := "null" // 是否是管理员
 	// 主人列表
-	if adminList, err := utils.NewFileQueue(dto.ServerConfig.NapCatBot.FilePath + "/admin.txt").ReadFromFile(); err == nil {
+	if adminList, err := utils.NewFileQueue(path.Join(dto.ServerConfig.NapCatBot.FilePath, "admin.txt")).ReadFromFile(); err == nil {
 		for s := range strings.SplitSeq(adminList, ",") {
 			id, _ := strconv.ParseInt(strings.TrimSpace(s), 10, 64)
 			if userID == id {
@@ -77,7 +78,7 @@ func napCatBOTGroupUploadFileRun(msgData *MessagePayload) {
 			continue
 		}
 		go func() {
-			dicPath := dto.ServerConfig.NapCatBot.FilePath + "/dic/" + v
+			dicPath := path.Join(dto.ServerConfig.NapCatBot.FilePath, "dic", v)
 			FileData, err := utils.NewFileQueue(dicPath).ReadFromFile()
 			if err != nil {
 				return
@@ -124,7 +125,7 @@ func napCatBOTGroupUploadFileRun(msgData *MessagePayload) {
 func napCatBOTGroupRecallRun(msgData *MessagePayload) {
 	groupID := msgData.GroupID // 群号
 	// 群列表
-	groupList := utils.NewFileQueue(dto.ServerConfig.NapCatBot.FilePath + "/groups.txt")
+	groupList := utils.NewFileQueue(path.Join(dto.ServerConfig.NapCatBot.FilePath, "groups.txt"))
 	FileData, err := groupList.ReadFromFile()
 	if err != nil {
 		return
@@ -143,7 +144,7 @@ func napCatBOTGroupRecallRun(msgData *MessagePayload) {
 		}
 	}
 
-	botDicPath := utils.NewFileQueue(dto.ServerConfig.NapCatBot.FilePath + "/dic")
+	botDicPath := utils.NewFileQueue(path.Join(dto.ServerConfig.NapCatBot.FilePath, "dic"))
 	botDicList, err := botDicPath.GetFileList()
 	if err != nil {
 		return
@@ -154,7 +155,7 @@ func napCatBOTGroupRecallRun(msgData *MessagePayload) {
 
 	isAdmin := "null" // 是否是管理员
 	// 主人列表
-	if adminList, err := utils.NewFileQueue(dto.ServerConfig.NapCatBot.FilePath + "/admin.txt").ReadFromFile(); err == nil {
+	if adminList, err := utils.NewFileQueue(path.Join(dto.ServerConfig.NapCatBot.FilePath, "admin.txt")).ReadFromFile(); err == nil {
 		for s := range strings.SplitSeq(adminList, ",") {
 			id, _ := strconv.ParseInt(strings.TrimSpace(s), 10, 64)
 			if userID == id {
@@ -187,7 +188,7 @@ func napCatBOTGroupRecallRun(msgData *MessagePayload) {
 			continue
 		}
 		go func() {
-			dicPath := dto.ServerConfig.NapCatBot.FilePath + "/dic/" + v
+			dicPath := path.Join(dto.ServerConfig.NapCatBot.FilePath, "dic", v)
 			FileData, err := utils.NewFileQueue(dicPath).ReadFromFile()
 			if err != nil {
 				return
@@ -232,7 +233,7 @@ func napCatBOTGroupRecallRun(msgData *MessagePayload) {
 
 // 点赞处理
 func napCatBOTProfileLikeRun(msgData *MessagePayload) {
-	botDicPath := utils.NewFileQueue(dto.ServerConfig.NapCatBot.FilePath + "/dic")
+	botDicPath := utils.NewFileQueue(path.Join(dto.ServerConfig.NapCatBot.FilePath, "dic"))
 	botDicList, err := botDicPath.GetFileList()
 	if err != nil {
 		return
@@ -243,7 +244,7 @@ func napCatBOTProfileLikeRun(msgData *MessagePayload) {
 
 	isAdmin := "null" // 是否是管理员
 	// 主人列表
-	if adminList, err := utils.NewFileQueue(dto.ServerConfig.NapCatBot.FilePath + "/admin.txt").ReadFromFile(); err == nil {
+	if adminList, err := utils.NewFileQueue(path.Join(dto.ServerConfig.NapCatBot.FilePath, "admin.txt")).ReadFromFile(); err == nil {
 		for s := range strings.SplitSeq(adminList, ",") {
 			id, _ := strconv.ParseInt(strings.TrimSpace(s), 10, 64)
 			if userID == id {
@@ -266,7 +267,7 @@ func napCatBOTProfileLikeRun(msgData *MessagePayload) {
 			continue
 		}
 		go func() {
-			dicPath := dto.ServerConfig.NapCatBot.FilePath + "/dic/" + v
+			dicPath := path.Join(dto.ServerConfig.NapCatBot.FilePath, "dic", v)
 			FileData, err := utils.NewFileQueue(dicPath).ReadFromFile()
 			if err != nil {
 				return
@@ -312,7 +313,7 @@ func napCatBOTProfileLikeRun(msgData *MessagePayload) {
 func napCatBOTGroupNudgeRun(msgData *MessagePayload) {
 	groupID := msgData.GroupID // 群号
 	// 群列表
-	groupList := utils.NewFileQueue(dto.ServerConfig.NapCatBot.FilePath + "/groups.txt")
+	groupList := utils.NewFileQueue(path.Join(dto.ServerConfig.NapCatBot.FilePath, "groups.txt"))
 	FileData, err := groupList.ReadFromFile()
 	if err != nil {
 		return
@@ -331,7 +332,7 @@ func napCatBOTGroupNudgeRun(msgData *MessagePayload) {
 		}
 	}
 
-	botDicPath := utils.NewFileQueue(dto.ServerConfig.NapCatBot.FilePath + "/dic")
+	botDicPath := utils.NewFileQueue(path.Join(dto.ServerConfig.NapCatBot.FilePath, "dic"))
 	botDicList, err := botDicPath.GetFileList()
 	if err != nil {
 		return
@@ -342,7 +343,7 @@ func napCatBOTGroupNudgeRun(msgData *MessagePayload) {
 
 	isAdmin := "null" // 是否是管理员
 	// 主人列表
-	if adminList, err := utils.NewFileQueue(dto.ServerConfig.NapCatBot.FilePath + "/admin.txt").ReadFromFile(); err == nil {
+	if adminList, err := utils.NewFileQueue(path.Join(dto.ServerConfig.NapCatBot.FilePath, "admin.txt")).ReadFromFile(); err == nil {
 		for s := range strings.SplitSeq(adminList, ",") {
 			id, _ := strconv.ParseInt(strings.TrimSpace(s), 10, 64)
 			if userID == id {
@@ -365,7 +366,7 @@ func napCatBOTGroupNudgeRun(msgData *MessagePayload) {
 			continue
 		}
 		go func() {
-			dicPath := dto.ServerConfig.NapCatBot.FilePath + "/dic/" + v
+			dicPath := path.Join(dto.ServerConfig.NapCatBot.FilePath, "dic", v)
 			FileData, err := utils.NewFileQueue(dicPath).ReadFromFile()
 			if err != nil {
 				return
@@ -411,7 +412,7 @@ func napCatBOTGroupNudgeRun(msgData *MessagePayload) {
 // 私聊消息处理
 func napCatBOTPrivateRun(msgData *MessagePayload) {
 
-	botDicPath := utils.NewFileQueue(dto.ServerConfig.NapCatBot.FilePath + "/dic")
+	botDicPath := utils.NewFileQueue(path.Join(dto.ServerConfig.NapCatBot.FilePath, "dic"))
 	botDicList, err := botDicPath.GetFileList()
 	if err != nil {
 		return
@@ -422,7 +423,7 @@ func napCatBOTPrivateRun(msgData *MessagePayload) {
 
 	isAdmin := "null" // 是否是管理员
 	// 主人列表
-	if adminList, err := utils.NewFileQueue(dto.ServerConfig.NapCatBot.FilePath + "/admin.txt").ReadFromFile(); err == nil {
+	if adminList, err := utils.NewFileQueue(path.Join(dto.ServerConfig.NapCatBot.FilePath, "admin.txt")).ReadFromFile(); err == nil {
 		for s := range strings.SplitSeq(adminList, ",") {
 			id, _ := strconv.ParseInt(strings.TrimSpace(s), 10, 64)
 			if userID == id {
@@ -464,7 +465,7 @@ func napCatBOTPrivateRun(msgData *MessagePayload) {
 			continue
 		}
 		go func() {
-			dicPath := dto.ServerConfig.NapCatBot.FilePath + "/dic/" + v
+			dicPath := path.Join(dto.ServerConfig.NapCatBot.FilePath, "dic", v)
 			FileData, err := utils.NewFileQueue(dicPath).ReadFromFile()
 			if err != nil {
 				return
@@ -511,7 +512,7 @@ func napCatBOTPrivateRun(msgData *MessagePayload) {
 func napCatBOTGroupRun(msgData *MessagePayload) {
 	groupID := msgData.GroupID // 群号
 	// 群列表
-	groupList := utils.NewFileQueue(dto.ServerConfig.NapCatBot.FilePath + "/groups.txt")
+	groupList := utils.NewFileQueue(path.Join(dto.ServerConfig.NapCatBot.FilePath, "groups.txt"))
 	FileData, err := groupList.ReadFromFile()
 	if err != nil {
 		return
@@ -530,7 +531,7 @@ func napCatBOTGroupRun(msgData *MessagePayload) {
 		}
 	}
 
-	botDicPath := utils.NewFileQueue(dto.ServerConfig.NapCatBot.FilePath + "/dic")
+	botDicPath := utils.NewFileQueue(path.Join(dto.ServerConfig.NapCatBot.FilePath, "dic"))
 	botDicList, err := botDicPath.GetFileList()
 	if err != nil {
 		return
@@ -541,7 +542,7 @@ func napCatBOTGroupRun(msgData *MessagePayload) {
 
 	isAdmin := "null" // 是否是管理员
 	// 主人列表
-	if adminList, err := utils.NewFileQueue(dto.ServerConfig.NapCatBot.FilePath + "/admin.txt").ReadFromFile(); err == nil {
+	if adminList, err := utils.NewFileQueue(path.Join(dto.ServerConfig.NapCatBot.FilePath, "admin.txt")).ReadFromFile(); err == nil {
 		for s := range strings.SplitSeq(adminList, ",") {
 			id, _ := strconv.ParseInt(strings.TrimSpace(s), 10, 64)
 			if userID == id {
@@ -605,7 +606,7 @@ func napCatBOTGroupRun(msgData *MessagePayload) {
 			continue
 		}
 		go func() {
-			dicPath := dto.ServerConfig.NapCatBot.FilePath + "/dic/" + v
+			dicPath := path.Join(dto.ServerConfig.NapCatBot.FilePath, "dic", v)
 			FileData, err := utils.NewFileQueue(dicPath).ReadFromFile()
 			if err != nil {
 				return

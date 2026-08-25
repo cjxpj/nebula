@@ -16,6 +16,7 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"path"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -53,7 +54,7 @@ func PrintLog(code bool, head, text string) {
 	text = strings.ReplaceAll(text, "\n", `\n`)
 	currentTime := time.Now().Format("20060102/15")
 	currentTime2 := time.Now().Format("04m05s")
-	file := NewFileQueue("database/log/" + currentTime + ".txt")
+	file := NewFileQueue(path.Join("database", "log", currentTime+".txt"))
 	resCode := "No"
 	if code {
 		resCode = "Yes"
@@ -82,7 +83,7 @@ func GetAppDir() string {
 	}
 	switch runtime.GOOS {
 	case "android":
-		return "/storage/emulated/0/Documents/" + GPATH
+		return path.Join("/storage/emulated/0/Documents", GPATH)
 	}
 	return GPATH
 }
@@ -1082,33 +1083,43 @@ func (fq *FileQueue) OpenFile() (*os.File, error) {
 	return os.Open(fq.FileName)
 }
 
-// ReadFromFile 从文件读取数据
-func (fq *FileQueue) ReadFromFile() (string, error) {
+// SplitLines 将文件字节按行切分，去除行尾的 \n 与 \r（兼容 CRLF），
+// 并去掉末尾因换行产生的空行。返回的行切片共享同一块底层数据（零拷贝）。
+func SplitLines(data []byte) []string {
+	s := string(data)
+	if s == "" {
+		return nil
+	}
+	// 去掉末尾换行，避免结尾多出一个空行（与 bufio.Scanner 的 ScanLines 行为一致）
+	s = strings.TrimSuffix(s, "\n")
+	lines := strings.Split(s, "\n")
+	// 兼容 Windows CRLF：去掉每行行尾的 \r
+	for i := range lines {
+		lines[i] = strings.TrimSuffix(lines[i], "\r")
+	}
+	return lines
+}
+
+// ReadFromFileLines 读取文件并按行切分，返回所有行（行尾的 \n 与 \r 已被移除）。
+// 采用一次性读入 + strings.Split 切分，行切片共享同一块底层数据，避免逐行分配，兼顾速度与内存。
+func (fq *FileQueue) ReadFromFileLines() ([]string, error) {
 	fileMutex.RLock()
 	defer fileMutex.RUnlock()
 
-	file, err := os.Open(fq.FileName)
+	data, err := os.ReadFile(fq.FileName)
+	if err != nil {
+		return nil, err
+	}
+	return SplitLines(data), nil
+}
+
+// ReadFromFile 从文件读取数据（逐行读取后拼接）
+func (fq *FileQueue) ReadFromFile() (string, error) {
+	lines, err := fq.ReadFromFileLines()
 	if err != nil {
 		return "", err
 	}
-	defer file.Close()
-
-	var result strings.Builder
-	buf := make([]byte, 1024)
-	for {
-		n, err := file.Read(buf)
-		if n > 0 {
-			result.Write(buf[:n])
-		}
-		if err != nil {
-			if err == io.EOF {
-				break
-			}
-			return "", err
-		}
-	}
-	// 将\r\n替换为\n
-	return strings.ReplaceAll(result.String(), "\r\n", "\n"), nil
+	return strings.Join(lines, "\n"), nil
 }
 
 // Copy 复制文件或文件夹

@@ -158,12 +158,159 @@ func Entry(r *dic_dto.DicEntry, txt []string, funcV *dic_dto.DicFunc) error {
 			return nil
 		}
 
-		if r.Sys_v.NodeJs.Success {
+		// 状态机：优先处理正在收集的框（同一时刻至多一个非 StateNormal 状态）
+		switch r.Sys_v.State {
+		case dto.StateValTextr:
+			if text == `'''` {
+				valName := r.Sys_v.ValTextr.ValueName
+				r.Val.P.Set(valName, strings.Join(r.Sys_v.ValTextr.Content, "\n"))
+				r.Sys_v.ValTextr.Content = []string{}
+				r.Sys_v.State = dto.StateNormal
+				continue
+			}
+			r.Sys_v.ValTextr.Content = append(r.Sys_v.ValTextr.Content, strings.ReplaceAll(text, `\'''`, `'''`))
+			continue
+		case dto.StateValText:
+			if text == `"""` {
+				valName := r.Sys_v.ValText.ValueName
+				r.Val.P.Set(valName, strings.Join(r.Sys_v.ValText.Content, "\n"))
+				r.Sys_v.ValText.Content = []string{}
+				r.Sys_v.State = dto.StateNormal
+				continue
+			}
+			r.Sys_v.ValText.Content = append(r.Sys_v.ValText.Content, strings.ReplaceAll(utils.AnyIsString(r.Val.Text(text)), `\"""`, `"""`))
+			continue
+		case dto.StateValChain:
+			if text == "<<<" {
+				r.Sys_v.State = dto.StateNormal
+				continue
+			}
+			// 空行跳过，避免清空当前值
+			if text == "" {
+				continue
+			}
+			runValSet(r, funcV, r.Sys_v.ValChain.ValueName, text)
+			continue
+		case dto.StateText:
+			if text == "<文本" {
+				valName := r.Sys_v.Text.ValueName
+				if valName != "" {
+					r.Val.P.Set(valName, r.Sys_v.Text.Content.String())
+				} else {
+					r.Output.Add(r.Sys_v.Text.Content.String())
+				}
+				r.Sys_v.Text.Content.Reset()
+				r.Sys_v.State = dto.StateNormal
+				continue
+			}
+			if index+1 < txtLen && txt[index+1] == "<文本" {
+				if r.Sys_v.Text.ReadValue {
+					r.Sys_v.Text.Content.WriteString(utils.AnyIsString(r.Val.Text(text)))
+				} else {
+					r.Sys_v.Text.Content.WriteString(text)
+				}
+			} else {
+				if r.Sys_v.Text.ReadValue {
+					r.Sys_v.Text.Content.WriteString(utils.AnyIsString(r.Val.Text(text)))
+					r.Sys_v.Text.Content.WriteString(r.Sys_v.Text.LineFeed)
+				} else {
+					r.Sys_v.Text.Content.WriteString(text)
+					r.Sys_v.Text.Content.WriteString(r.Sys_v.Text.LineFeed)
+				}
+			}
+			continue
+		case dto.StateSetNewJson:
+			r.Sys_v.SetNewJson.Append(text)
+			if strings.HasSuffix(text, "{") || strings.HasSuffix(text, "[") {
+				r.Sys_v.SetNewJson.Len++
+			}
+			if text == "}" || text == "]" || text == "}," || text == "]," {
+				r.Sys_v.SetNewJson.Len--
+				if r.Sys_v.SetNewJson.Len == 0 && (text == "}" || text == "]") {
+					valName := r.Sys_v.SetNewJson.ValueName
+					jsonText := r.Sys_v.SetNewJson.Complete()
+					if valName != "" {
+						r.Val.P.Set(valName, NewJson(r, r.Val.P, jsonText))
+					} else {
+						r.Output.Add(NewJson(r, r.Val.P, jsonText))
+					}
+					r.Sys_v.State = dto.StateNormal
+					continue
+				}
+			}
+			continue
+		case dto.StateSetJson:
+			if text == "<JSON" {
+				valName := r.Sys_v.SetJson.ValueName
+				resS, err := json.Marshal(r.Sys_v.SetJson.Json)
+				if err == nil {
+					jsonString := string(resS)
+					if valName != "" {
+						r.Val.P.Set(valName, jsonString)
+					} else {
+						r.Output.Add(jsonString)
+					}
+				}
+				r.Sys_v.State = dto.StateNormal
+				continue
+			}
+			if startIdx := strings.IndexByte(text, '='); startIdx != -1 {
+				endIdx := startIdx + 1
+				if startIdx > 0 && text[startIdx-1] == ':' && textLen >= endIdx {
+					key := text[:startIdx-1]
+					keys := strings.Split(key, "->")
+					if keys[0] == "[]" {
+						if !r.Sys_v.SetJson.OkLen {
+							if getLen, ok := r.Sys_v.SetJson.Json.(map[string]any); ok {
+								r.Sys_v.SetJson.Len = len(getLen)
+							}
+							if getLen, ok := r.Sys_v.SetJson.Json.([]any); ok {
+								r.Sys_v.SetJson.Len = len(getLen)
+							}
+							r.Sys_v.SetJson.OkLen = true
+						} else {
+							r.Sys_v.SetJson.Len++
+						}
+						keys[0] = strconv.Itoa(r.Sys_v.SetJson.Len)
+					}
+					value := utils.AnyIsString(r.Val.Text(text[endIdx:]))
+					for k, setv := range keys {
+						keys[k] = utils.AnyIsString(r.Val.Text(setv))
+					}
+					r.Sys_v.SetJson.Json = funcs.JsonSetValue(r.Sys_v.SetJson.Json, keys, value, false)
+					continue
+				}
+				if textLen >= endIdx {
+					key := text[:startIdx]
+					keys := strings.Split(key, "->")
+					if keys[0] == "[]" {
+						if !r.Sys_v.SetJson.OkLen {
+							if getLen, ok := r.Sys_v.SetJson.Json.(map[string]any); ok {
+								r.Sys_v.SetJson.Len = len(getLen)
+							}
+							if getLen, ok := r.Sys_v.SetJson.Json.([]any); ok {
+								r.Sys_v.SetJson.Len = len(getLen)
+							}
+							r.Sys_v.SetJson.OkLen = true
+						} else {
+							r.Sys_v.SetJson.Len++
+						}
+						keys[0] = strconv.Itoa(r.Sys_v.SetJson.Len)
+					}
+					value := utils.AnyIsString(r.Val.Text(text[endIdx:]))
+					for k, setv := range keys {
+						keys[k] = utils.AnyIsString(r.Val.Text(setv))
+					}
+					r.Sys_v.SetJson.Json = funcs.JsonSetValue(r.Sys_v.SetJson.Json, keys, value, true)
+					continue
+				}
+			}
+		case dto.StateNodeJs:
 			if text != "--end" {
 				r.Sys_v.NodeJs.Content = append(r.Sys_v.NodeJs.Content, text)
 			}
 			if index == txtLen-1 || text == "--end" {
-				r.Sys_v.NodeJs.Success = false
+				r.Sys_v.State = dto.StateNormal
 
 				registry := new(require.Registry)
 				loop := eventloop.NewEventLoop()
@@ -245,169 +392,7 @@ func Entry(r *dic_dto.DicEntry, txt []string, funcV *dic_dto.DicFunc) error {
 				continue
 			}
 			continue
-		}
-
-		// 赋予值纯文本框
-		if r.Sys_v.ValTextr.Success {
-			if text == `'''` {
-				valName := r.Sys_v.ValTextr.VlaueName
-				r.Val.P.Set(valName, strings.Join(r.Sys_v.ValTextr.Content, "\n"))
-				r.Sys_v.ValTextr.Content = []string{}
-				r.Sys_v.ValTextr.Success = false
-				continue
-			}
-			r.Sys_v.ValTextr.Content = append(r.Sys_v.ValTextr.Content, strings.ReplaceAll(text, `\'''`, `'''`))
-			continue
-		}
-
-		// 赋予值纯文本框
-		if r.Sys_v.ValText.Success {
-			if text == `"""` {
-				valName := r.Sys_v.ValText.VlaueName
-				r.Val.P.Set(valName, strings.Join(r.Sys_v.ValText.Content, "\n"))
-				r.Sys_v.ValText.Content = []string{}
-				r.Sys_v.ValText.Success = false
-				continue
-			}
-			r.Sys_v.ValText.Content = append(r.Sys_v.ValText.Content, strings.ReplaceAll(utils.AnyIsString(r.Val.Text(text)), `\"""`, `"""`))
-			continue
-		}
-
-		// 赋予值连续执行框 >>>
-		if r.Sys_v.ValChain.Success {
-			if text == "<<<" {
-				r.Sys_v.ValChain.Success = false
-				continue
-			}
-			// 空行跳过，避免清空当前值
-			if text == "" {
-				continue
-			}
-			runValSet(r, funcV, r.Sys_v.ValChain.VlaueName, text)
-			continue
-		}
-
-		if r.Sys_v.Text.Success {
-			if text == "<文本" {
-				valName := r.Sys_v.Text.VlaueName
-				if valName != "" {
-					r.Val.P.Set(valName, r.Sys_v.Text.Content.String())
-				} else {
-					r.Output.Add(r.Sys_v.Text.Content.String())
-				}
-				r.Sys_v.Text.Content.Reset()
-				r.Sys_v.Text.Success = false
-				continue
-			}
-			if index+1 < txtLen && txt[index+1] == "<文本" {
-				if r.Sys_v.Text.ReadValue {
-					r.Sys_v.Text.Content.WriteString(utils.AnyIsString(r.Val.Text(text)))
-				} else {
-					r.Sys_v.Text.Content.WriteString(text)
-				}
-			} else {
-				if r.Sys_v.Text.ReadValue {
-					r.Sys_v.Text.Content.WriteString(utils.AnyIsString(r.Val.Text(text)))
-					r.Sys_v.Text.Content.WriteString(r.Sys_v.Text.LineFeed)
-				} else {
-					r.Sys_v.Text.Content.WriteString(text)
-					r.Sys_v.Text.Content.WriteString(r.Sys_v.Text.LineFeed)
-				}
-			}
-			continue
-		}
-
-		// JSON结尾
-		if r.Sys_v.SetNewJson.Success {
-			r.Sys_v.SetNewJson.Json = r.Sys_v.SetNewJson.Json + text
-			if strings.HasSuffix(text, "{") || strings.HasSuffix(text, "[") {
-				r.Sys_v.SetNewJson.Len++
-			}
-			if text == "}" || text == "]" || text == "}," || text == "]," {
-				r.Sys_v.SetNewJson.Len--
-				if r.Sys_v.SetNewJson.Len == 0 && (text == "}" || text == "]") {
-					valName := r.Sys_v.SetNewJson.VlaueName
-					if valName != "" {
-						r.Val.P.Set(valName, NewJson(r, r.Val.P, r.Sys_v.SetNewJson.Json))
-					} else {
-						r.Output.Add(NewJson(r, r.Val.P, r.Sys_v.SetNewJson.Json))
-					}
-					r.Sys_v.SetNewJson.Success = false
-					continue
-				}
-			}
-			continue
-		}
-
-		if r.Sys_v.SetJson.Success {
-			if text == "<JSON" {
-				valName := r.Sys_v.SetJson.VlaueName
-				resS, err := json.Marshal(r.Sys_v.SetJson.Json)
-				if err == nil {
-					jsonString := string(resS)
-					if valName != "" {
-						r.Val.P.Set(valName, jsonString)
-					} else {
-						r.Output.Add(jsonString)
-					}
-				}
-				r.Sys_v.SetJson.Success = false
-				continue
-			}
-			if startIdx := strings.IndexByte(text, '='); startIdx != -1 {
-				endIdx := startIdx + 1
-				if text[startIdx-1] == ':' && textLen >= endIdx {
-					key := text[:startIdx-1]
-					keys := strings.Split(key, "->")
-					if keys[0] == "[]" {
-						if !r.Sys_v.SetJson.OkLen {
-							if getLen, ok := r.Sys_v.SetJson.Json.(map[string]any); ok {
-								r.Sys_v.SetJson.Len = len(getLen)
-							}
-							if getLen, ok := r.Sys_v.SetJson.Json.([]any); ok {
-								r.Sys_v.SetJson.Len = len(getLen)
-							}
-							r.Sys_v.SetJson.OkLen = true
-						} else {
-							r.Sys_v.SetJson.Len++
-						}
-						keys[0] = strconv.Itoa(r.Sys_v.SetJson.Len)
-					}
-					value := utils.AnyIsString(r.Val.Text(text[endIdx:]))
-					for k, setv := range keys {
-						keys[k] = utils.AnyIsString(r.Val.Text(setv))
-					}
-					r.Sys_v.SetJson.Json = funcs.JsonSetValue(r.Sys_v.SetJson.Json, keys, value, false)
-					continue
-				}
-				if textLen >= endIdx {
-					key := text[:startIdx]
-					keys := strings.Split(key, "->")
-					if keys[0] == "[]" {
-						if !r.Sys_v.SetJson.OkLen {
-							if getLen, ok := r.Sys_v.SetJson.Json.(map[string]any); ok {
-								r.Sys_v.SetJson.Len = len(getLen)
-							}
-							if getLen, ok := r.Sys_v.SetJson.Json.([]any); ok {
-								r.Sys_v.SetJson.Len = len(getLen)
-							}
-							r.Sys_v.SetJson.OkLen = true
-						} else {
-							r.Sys_v.SetJson.Len++
-						}
-						keys[0] = strconv.Itoa(r.Sys_v.SetJson.Len)
-					}
-					value := utils.AnyIsString(r.Val.Text(text[endIdx:]))
-					for k, setv := range keys {
-						keys[k] = utils.AnyIsString(r.Val.Text(setv))
-					}
-					r.Sys_v.SetJson.Json = funcs.JsonSetValue(r.Sys_v.SetJson.Json, keys, value, true)
-					continue
-				}
-			}
-		}
-
-		if r.Sys_v.Func.Success {
+		case dto.StateFunc:
 			forNum := r.Sys_v.Func.Num
 			content := r.Sys_v.Func.Content
 			lineNums := r.Sys_v.Func.LineNums
@@ -418,7 +403,7 @@ func Entry(r *dic_dto.DicEntry, txt []string, funcV *dic_dto.DicFunc) error {
 			}
 			if text == "<函数" {
 				if forNum == 0 {
-					if r.Sys_v.Func.VlaueName == "" {
+					if r.Sys_v.Func.ValueName == "" {
 						// 赋予值名留空：不存储函数框，直接执行内容并输出返回
 						funcv := dto.NewVal().
 							Reset(r.Val.P.GetAll()).
@@ -434,7 +419,7 @@ func Entry(r *dic_dto.DicEntry, txt []string, funcV *dic_dto.DicFunc) error {
 						r.Output.Add(resRunDic)
 					} else {
 						// 插入函数框
-						r.Val.P.Set(r.Sys_v.Func.VlaueName, &dto.FuncBox{
+						r.Val.P.Set(r.Sys_v.Func.ValueName, &dto.FuncBox{
 							Trigger:  funcTrigger,
 							Content:  content,
 							LineNums: lineNums,
@@ -443,7 +428,7 @@ func Entry(r *dic_dto.DicEntry, txt []string, funcV *dic_dto.DicFunc) error {
 
 					r.Sys_v.Func.Content = []string{}
 					r.Sys_v.Func.LineNums = nil
-					r.Sys_v.Func.Success = false
+					r.Sys_v.State = dto.StateNormal
 					continue
 				}
 				forNum--
@@ -454,9 +439,7 @@ func Entry(r *dic_dto.DicEntry, txt []string, funcV *dic_dto.DicFunc) error {
 			r.Sys_v.Func.Content = content
 			r.Sys_v.Func.LineNums = lineNums
 			continue
-		}
-
-		if r.Sys_v.ForEach.Success {
+		case dto.StateForEach:
 			forNum := r.Sys_v.ForEach.Num
 			content := r.Sys_v.ForEach.Content
 			lineNums := r.Sys_v.ForEach.LineNums
@@ -466,7 +449,7 @@ func Entry(r *dic_dto.DicEntry, txt []string, funcV *dic_dto.DicFunc) error {
 			}
 			if text == "<遍历" {
 				if forNum == 0 {
-					valName := r.Sys_v.ForEach.VlaueName
+					valName := r.Sys_v.ForEach.ValueName
 					RunDic := dic_dto.NewRunDicEntry().
 						SetV(r.Val).
 						SetDic_v(r.Dic).
@@ -534,10 +517,12 @@ func Entry(r *dic_dto.DicEntry, txt []string, funcV *dic_dto.DicFunc) error {
 						}
 					default:
 						r.Sys_v.ForEach.Close()
+						r.Sys_v.State = dto.StateNormal
 						continue
 					}
 
 					r.Sys_v.ForEach.Close()
+					r.Sys_v.State = dto.StateNormal
 					continue
 				}
 				forNum--
@@ -548,9 +533,7 @@ func Entry(r *dic_dto.DicEntry, txt []string, funcV *dic_dto.DicFunc) error {
 			r.Sys_v.ForEach.Content = content
 			r.Sys_v.ForEach.LineNums = lineNums
 			continue
-		}
-
-		if r.Sys_v.For.Success {
+		case dto.StateFor:
 			forNum := r.Sys_v.For.Num
 			content := r.Sys_v.For.Content
 			lineNums := r.Sys_v.For.LineNums
@@ -560,7 +543,7 @@ func Entry(r *dic_dto.DicEntry, txt []string, funcV *dic_dto.DicFunc) error {
 			}
 			if text == "<循环" {
 				if forNum == 0 {
-					valName := r.Sys_v.For.VlaueName
+					valName := r.Sys_v.For.ValueName
 					RunDic := dic_dto.NewRunDicEntry().
 						SetV(r.Val).
 						SetDic_v(r.Dic).
@@ -623,7 +606,7 @@ func Entry(r *dic_dto.DicEntry, txt []string, funcV *dic_dto.DicFunc) error {
 					r.Sys_v.For.Run = 0
 					r.Sys_v.For.Content = []string{}
 					r.Sys_v.For.LineNums = nil
-					r.Sys_v.For.Success = false
+					r.Sys_v.State = dto.StateNormal
 					continue
 				}
 				forNum--
@@ -634,9 +617,7 @@ func Entry(r *dic_dto.DicEntry, txt []string, funcV *dic_dto.DicFunc) error {
 			r.Sys_v.For.Content = content
 			r.Sys_v.For.LineNums = lineNums
 			continue
-		}
-
-		if r.Sys_v.IfFunc.Success {
+		case dto.StateIf:
 			forNum := r.Sys_v.IfFunc.Num
 			if textLen > 7 && text[:7] == "如果>" {
 				forNum++
@@ -728,7 +709,7 @@ func Entry(r *dic_dto.DicEntry, txt []string, funcV *dic_dto.DicFunc) error {
 					r.Sys_v.IfFunc.ElseLineNums = nil
 					r.Sys_v.IfFunc.IfNum = 0
 					r.Sys_v.IfFunc.IsElse = false
-					r.Sys_v.IfFunc.Success = false
+					r.Sys_v.State = dto.StateNormal
 					continue
 				}
 				forNum--
@@ -892,23 +873,23 @@ func Entry(r *dic_dto.DicEntry, txt []string, funcV *dic_dto.DicFunc) error {
 				if textLen >= endIdx {
 					key := text[7:startIdx]
 					value := text[endIdx:]
-					r.Sys_v.Func.VlaueName = key
+					r.Sys_v.Func.ValueName = key
 					r.Sys_v.Func.Trigger = value
-					r.Sys_v.Func.Success = true
+					r.Sys_v.State = dto.StateFunc
 					continue
 				}
 			}
 			key := text[7:]
-			r.Sys_v.Func.VlaueName = key
+			r.Sys_v.Func.ValueName = key
 			r.Sys_v.Func.Trigger = ""
-			r.Sys_v.Func.Success = true
+			r.Sys_v.State = dto.StateFunc
 			continue
 		}
 
 		if textLen > 7 && text[:7] == "如果>" {
 			key := text[7:]
 			r.Sys_v.IfFunc.If = append(r.Sys_v.IfFunc.If, key)
-			r.Sys_v.IfFunc.Success = true
+			r.Sys_v.State = dto.StateIf
 			continue
 		}
 
@@ -919,36 +900,30 @@ func Entry(r *dic_dto.DicEntry, txt []string, funcV *dic_dto.DicFunc) error {
 					key := text[10:startIdx]
 					value := text[endIdx:]
 					runText := utils.AnyIsString(r.Val.Text(value))
-					r.Sys_v.Text.Success = true
+					r.Sys_v.State = dto.StateText
 					r.Sys_v.Text.ReadValue = false
-					r.Sys_v.Text.VlaueName = key
+					r.Sys_v.Text.ValueName = key
 					r.Sys_v.Text.LineFeed = runText
 					continue
 				}
 			}
 			runText := utils.AnyIsString(r.Val.Text(text[10:]))
-			r.Sys_v.Text.Success = true
+			r.Sys_v.State = dto.StateText
 			r.Sys_v.Text.ReadValue = false
-			r.Sys_v.Text.VlaueName = ""
+			r.Sys_v.Text.ValueName = ""
 			r.Sys_v.Text.LineFeed = runText
 			continue
 		}
 
 		if textLen == 6 && text == "JSON>[" {
-			r.Sys_v.SetNewJson.Success = true
-			r.Sys_v.SetNewJson.Json = "["
-			r.Sys_v.SetNewJson.JsonType = true
-			r.Sys_v.SetNewJson.Len = 1
-			r.Sys_v.SetNewJson.VlaueName = ""
+			r.Sys_v.State = dto.StateSetNewJson
+			r.Sys_v.SetNewJson.Start("[", "")
 			continue
 		}
 
 		if textLen == 6 && text == "JSON>{" {
-			r.Sys_v.SetNewJson.Success = true
-			r.Sys_v.SetNewJson.Json = "{"
-			r.Sys_v.SetNewJson.JsonType = true
-			r.Sys_v.SetNewJson.Len = 1
-			r.Sys_v.SetNewJson.VlaueName = ""
+			r.Sys_v.State = dto.StateSetNewJson
+			r.Sys_v.SetNewJson.Start("{", "")
 			continue
 		}
 
@@ -961,8 +936,8 @@ func Entry(r *dic_dto.DicEntry, txt []string, funcV *dic_dto.DicFunc) error {
 					runText := utils.AnyIsString(r.Val.Text(value))
 					err := json.Unmarshal([]byte(runText), &r.Sys_v.SetJson.Json)
 					if err == nil {
-						r.Sys_v.SetJson.Success = true
-						r.Sys_v.SetJson.VlaueName = key
+						r.Sys_v.State = dto.StateSetJson
+						r.Sys_v.SetJson.ValueName = key
 					}
 					continue
 				}
@@ -970,8 +945,8 @@ func Entry(r *dic_dto.DicEntry, txt []string, funcV *dic_dto.DicFunc) error {
 			runText := utils.AnyIsString(r.Val.Text(text[5:]))
 			err := json.Unmarshal([]byte(runText), &r.Sys_v.SetJson.Json)
 			if err == nil {
-				r.Sys_v.SetJson.Success = true
-				r.Sys_v.SetJson.VlaueName = ""
+				r.Sys_v.State = dto.StateSetJson
+				r.Sys_v.SetJson.ValueName = ""
 			}
 			continue
 		}
@@ -983,18 +958,18 @@ func Entry(r *dic_dto.DicEntry, txt []string, funcV *dic_dto.DicFunc) error {
 					key := getInput[:startIdx]
 					value := getInput[endIdx:]
 					runText := utils.AnyIsString(r.Val.Text(value))
-					r.Sys_v.Text.Success = true
+					r.Sys_v.State = dto.StateText
 					r.Sys_v.Text.ReadValue = true
-					r.Sys_v.Text.VlaueName = key
+					r.Sys_v.Text.ValueName = key
 					r.Sys_v.Text.LineFeed = runText
 					r.Sys_v.Text.Content.Reset()
 					continue
 				}
 			}
 			runText := utils.AnyIsString(r.Val.Text(getInput))
-			r.Sys_v.Text.Success = true
+			r.Sys_v.State = dto.StateText
 			r.Sys_v.Text.ReadValue = true
-			r.Sys_v.Text.VlaueName = ""
+			r.Sys_v.Text.ValueName = ""
 			r.Sys_v.Text.LineFeed = runText
 			r.Sys_v.Text.Content.Reset()
 			continue
@@ -1016,14 +991,14 @@ func Entry(r *dic_dto.DicEntry, txt []string, funcV *dic_dto.DicFunc) error {
 							r.Sys_v.ForEach.Run = thisjson
 						}
 					}
-					r.Sys_v.ForEach.VlaueName = key
-					r.Sys_v.ForEach.Success = true
+					r.Sys_v.ForEach.ValueName = key
+					r.Sys_v.State = dto.StateForEach
 					continue
 				}
 			}
 			key := text[7:]
-			r.Sys_v.ForEach.VlaueName = key
-			r.Sys_v.ForEach.Success = true
+			r.Sys_v.ForEach.ValueName = key
+			r.Sys_v.State = dto.StateForEach
 			continue
 		}
 
@@ -1041,15 +1016,15 @@ func Entry(r *dic_dto.DicEntry, txt []string, funcV *dic_dto.DicFunc) error {
 					} else {
 						r.Sys_v.For.Run = 1
 					}
-					r.Sys_v.For.VlaueName = key
-					r.Sys_v.For.Success = true
+					r.Sys_v.For.ValueName = key
+					r.Sys_v.State = dto.StateFor
 					continue
 				}
 			}
 			key := text[7:]
-			r.Sys_v.For.VlaueName = key
+			r.Sys_v.For.ValueName = key
 			r.Sys_v.For.Run = nil
-			r.Sys_v.For.Success = true
+			r.Sys_v.State = dto.StateFor
 			continue
 		}
 
@@ -1072,7 +1047,7 @@ func Entry(r *dic_dto.DicEntry, txt []string, funcV *dic_dto.DicFunc) error {
 		}
 
 		if text == "--js" {
-			r.Sys_v.NodeJs.Success = true
+			r.Sys_v.State = dto.StateNodeJs
 			continue
 		}
 
@@ -1216,8 +1191,8 @@ func Entry(r *dic_dto.DicEntry, txt []string, funcV *dic_dto.DicFunc) error {
 
 				// >>> 连续执行框，往下逐行执行并写回赋予值
 				if vSuffix == ">>>" {
-					r.Sys_v.ValChain.Success = true
-					r.Sys_v.ValChain.VlaueName = vPrefix
+					r.Sys_v.State = dto.StateValChain
+					r.Sys_v.ValChain.ValueName = vPrefix
 					break
 				}
 
@@ -1273,29 +1248,23 @@ func Entry(r *dic_dto.DicEntry, txt []string, funcV *dic_dto.DicFunc) error {
 				// }
 
 				if vSuffix == "{" {
-					r.Sys_v.SetNewJson.Success = true
-					r.Sys_v.SetNewJson.Json = "{"
-					r.Sys_v.SetNewJson.JsonType = true
-					r.Sys_v.SetNewJson.Len = 1
-					r.Sys_v.SetNewJson.VlaueName = vPrefix
+					r.Sys_v.State = dto.StateSetNewJson
+					r.Sys_v.SetNewJson.Start("{", vPrefix)
 					continue
 				}
 				if vSuffix == "[" {
-					r.Sys_v.SetNewJson.Success = true
-					r.Sys_v.SetNewJson.Json = "["
-					r.Sys_v.SetNewJson.JsonType = true
-					r.Sys_v.SetNewJson.Len = 1
-					r.Sys_v.SetNewJson.VlaueName = vPrefix
+					r.Sys_v.State = dto.StateSetNewJson
+					r.Sys_v.SetNewJson.Start("[", vPrefix)
 					continue
 				}
 				if vSuffix == `"""` {
-					r.Sys_v.ValText.Success = true
-					r.Sys_v.ValText.VlaueName = vPrefix
+					r.Sys_v.State = dto.StateValText
+					r.Sys_v.ValText.ValueName = vPrefix
 					break
 				}
 				if vSuffix == `'''` {
-					r.Sys_v.ValTextr.Success = true
-					r.Sys_v.ValTextr.VlaueName = vPrefix
+					r.Sys_v.State = dto.StateValTextr
+					r.Sys_v.ValTextr.ValueName = vPrefix
 					break
 				}
 

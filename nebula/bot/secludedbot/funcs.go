@@ -3,6 +3,7 @@ package secludedbot
 import (
 	"encoding/json"
 	"fmt"
+	"path"
 	"slices"
 	"strings"
 	"time"
@@ -814,8 +815,8 @@ var Funcs = map[string]dto.DicFunc{
 			if groupId == "" || dto.ServerConfig.SecludedBot == nil {
 				return "", nil
 			}
-			path := dto.ServerConfig.SecludedBot.FilePath + "/groups.txt"
-			groupFile := utils.NewFileQueue(path)
+			filePath := path.Join(dto.ServerConfig.SecludedBot.FilePath, "groups.txt")
+			groupFile := utils.NewFileQueue(filePath)
 			content, err := groupFile.ReadFromFile()
 			if err != nil {
 				return "", nil
@@ -843,8 +844,8 @@ var Funcs = map[string]dto.DicFunc{
 			if groupId == "" || dto.ServerConfig.SecludedBot == nil {
 				return "", nil
 			}
-			path := dto.ServerConfig.SecludedBot.FilePath + "/groups.txt"
-			groupFile := utils.NewFileQueue(path)
+			filePath := path.Join(dto.ServerConfig.SecludedBot.FilePath, "groups.txt")
+			groupFile := utils.NewFileQueue(filePath)
 			content, err := groupFile.ReadFromFile()
 			if err != nil {
 				return "", nil
