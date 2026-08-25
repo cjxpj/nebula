@@ -43,3 +43,12 @@ func (b *QQBot) EnsureToken() error {
 
 	return nil
 }
+
+// GetBotUser 获取机器人自身信息（GET /users/@me），返回机器人id等
+func (b *QQBot) GetBotUser() (*BotUser, error) {
+	var resp BotUser
+	if err := b.Get("/users/@me", &resp); err != nil {
+		return nil, err
+	}
+	return &resp, nil
+}

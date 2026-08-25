@@ -230,11 +230,14 @@ func wsEventLoop(ctx context.Context, conn *websocket.Conn, bot *qqbot_msg.Route
 	// 收到 READY/RESUMED 后才允许发心跳（对齐 botpy：鉴权成功后才开启心跳）
 	readyCh := make(chan struct{})
 
-	// 消息处理队列：读循环只负责快速入队，由下方 worker 池并发消费。
-	// 词库执行/回复接口调用（最长 10s 超时）不再阻塞读循环，
+	// 消息处理队列：读循环只做快速入队，由下方 worker 池并发消费。
+	// 词库执行/回复接口调用（最长 10s 超时）不会阻塞读循环；
 	// 上一条消息未处理完时下一条也能立即开始；PushContext 已按消息隔离，可安全并发。
-	msgCh := make(chan *qqbot_msg.Payload, 512)
-	for i := 0; i < 8; i++ {
+	// 队列采用无界设计（读循环 → pendingCh → 转发器积压切片 → msgCh → worker），
+	// 高并发下既不阻塞读循环/心跳，也不丢弃任何事件。
+	pendingCh := make(chan *qqbot_msg.Payload, 256)
+	msgCh := make(chan *qqbot_msg.Payload, 256)
+	for range 8 {
 		go func() {
 			for {
 				select {
@@ -246,6 +249,36 @@ func wsEventLoop(ctx context.Context, conn *websocket.Conn, bot *qqbot_msg.Route
 			}
 		}()
 	}
+	// 无界队列转发器：始终优先从 pendingCh 收件，积压按序暂存切片后再投递，
+	// 保证读循环入队（pendingCh <- payload）永远不会因队列满而阻塞或丢弃
+	go func() {
+		var backlog []*qqbot_msg.Payload
+		for {
+			if len(backlog) == 0 {
+				select {
+				case <-loopCtx.Done():
+					return
+				case p := <-pendingCh:
+					backlog = append(backlog, p)
+				}
+			} else {
+				select {
+				case <-loopCtx.Done():
+					return
+				case msgCh <- backlog[0]:
+					backlog = backlog[1:]
+					if len(backlog) == 0 {
+						backlog = backlog[:0] // 释放对已出队对象的引用
+					}
+				case p := <-pendingCh:
+					backlog = append(backlog, p)
+					if len(backlog)%1024 == 0 {
+						dbg(bot, "消息积压 %d 条待处理", len(backlog))
+					}
+				}
+			}
+		}
+	}()
 
 	go func() {
 		select {
@@ -330,21 +363,39 @@ func wsEventLoop(ctx context.Context, conn *websocket.Conn, bot *qqbot_msg.Route
 				if !hbRunning {
 					hbRunning = true
 					close(readyCh)
-					// 首次上线，触发 [系统]启动
+					// 首次上线，同步获取机器人id（/users/@me）后再触发 [系统]启动
+					if bot.API != nil {
+						if u, err := bot.API.GetBotUser(); err == nil && u.ID != "" {
+							bot.API.BotId = u.ID
+							bot.API.BotUsername = u.Username
+							bot.API.BotAvatar = u.Avatar
+							bot.API.BotUnionOpenID = u.UnionOpenID
+							dbg(bot, "机器人id=%s", u.ID)
+							// 头像昵称等本地保存，重启后用于恢复
+							saveBotInfo(bot, u)
+						} else if info := loadBotInfo(bot); info != nil {
+							// 获取失败时从本地恢复上次保存的头像昵称等
+							bot.API.BotId = info.ID
+							bot.API.BotUsername = info.Username
+							bot.API.BotAvatar = info.Avatar
+							bot.API.BotUnionOpenID = info.UnionOpenID
+							dbg(bot, "机器人自身信息从本地恢复: id=%s", info.ID)
+						}
+					}
 					go triggerStartupCallback(bot)
 				}
 			} else {
-				// 拷贝消息数据后入队，避免处理期间缓冲区被复用
+				// 拷贝消息数据后入队（无界队列，不丢弃），避免处理期间缓冲区被复用
 				select {
-				case msgCh <- &qqbot_msg.Payload{
+				case <-loopCtx.Done():
+					return nil
+				case pendingCh <- &qqbot_msg.Payload{
 					Op:   0,
 					Id:   payload.Id,
 					Data: append([]byte(nil), payload.D...),
 					Type: payload.T,
 					Seq:  payload.S,
 				}:
-				default:
-					dbg(bot, "消息处理队列已满，丢弃事件: %s", payload.T)
 				}
 			}
 

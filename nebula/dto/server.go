@@ -51,11 +51,31 @@ type OPUI struct {
 	Cors bool
 }
 
+// CloudTool 内置云工具服务端配置（system.ini [云工具服务端] 节）。
+type CloudTool struct {
+	// 是否开启
+	Open bool
+	// 访问路径（含前导 /，如 /cloudtool）
+	Addr string
+	// 是否允许任意账号注册（关闭时仅白名单账号可登录/注册）
+	AllowRegister bool
+	// 账号白名单（用户名 -> true）
+	Whitelist map[string]bool
+	// 云工具词库目录（相对 private/，如 cloudtool）
+	DicDir string
+	// 断开自动注销时长（秒）：连接断开时本次在线时长低于该值即注销，0 表示关闭
+	LogoutSec int
+	// 调试打印
+	Debug bool
+}
+
 type ServerConfigInfo struct {
 	// HTTP地址
 	Router *ServerHTTP
 	// OPUI
 	OPUI *OPUI
+	// 内置云工具
+	CloudTool *CloudTool
 	// 正在监听的WS列表
 	WsList map[string]*ServerRouterWebSocket
 	// WS列表锁

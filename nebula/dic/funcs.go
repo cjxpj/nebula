@@ -162,6 +162,26 @@ func callDic(d *dto.DicInputs) (any, error) {
 	return RunDic, nil
 }
 
+// redirectHeaderKey 标记当前是否处于词库头部执行阶段（仅在头部允许使用 $重定向触发词$）。
+const redirectHeaderKey = "_重定向_头部_"
+
+// 重定向触发词：把当前触发词重定向为指定文本，随后按该文本重新匹配并执行对应正文。
+// 仅在词库头部执行阶段生效。
+func redirectTrigger(d *dto.DicInputs) (any, error) {
+	inHeader, _ := d.V.P.Get(redirectHeaderKey).(bool)
+	if !inHeader {
+		return "", errors.New("重定向触发词：仅允许在词库头部使用")
+	}
+	text := d.Inputs.String(1) // 重定向后的触发词
+	if text == "" {
+		return "", errors.New("重定向触发词：触发词不能为空")
+	}
+	// 更新触发词，并立即刷新 %参数% / %括号% 等触发变量
+	d.V.P.Set("触发词", text)
+	dto.RunTrigger(text, text, d.V.P)
+	return "", nil
+}
+
 // 执行网页词库
 func runWebPHPDic(d *dto.DicInputs) (any, error) {
 	data := d.Inputs.String(1)

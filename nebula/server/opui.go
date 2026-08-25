@@ -91,6 +91,15 @@ type HttpOpUiConfig_cloud_tool struct {
 	Email         string `json:"email"`          // 当前账号绑定的邮箱（来自云工具端，空表示未绑定）
 }
 
+type HttpOpUiConfig_cloudtool_server struct {
+	Open          bool   `json:"open"`           // 是否开启内置云工具服务端
+	Addr          string `json:"addr"`           // 访问路径（不含前导 /）
+	AllowRegister bool   `json:"allow_register"` // 是否允许任意账号注册
+	DicDir        string `json:"dic_dir"`        // 云工具词库目录（相对 private/）
+	LogoutSec     int    `json:"logout_sec"`     // 断开自动注销时长（秒），0 表示关闭
+	Debug         bool   `json:"debug"`          // 调试打印
+}
+
 type HttpOpUiConfig_bg struct {
 	Light HttpOpUiConfig_bgItem `json:"light"` // 亮色主题背景
 	Dark  HttpOpUiConfig_bgItem `json:"dark"`  // 暗色主题背景
@@ -361,19 +370,35 @@ func broadcastCloudToolOffline() {
 	broadcastOpuiNotify(data)
 }
 
-// cloudToolDefaultAddr 云工具连接地址的默认值，配置未填写时使用
-const cloudToolDefaultAddr = "https://nebulatool.cjxpj.cn/"
+// cloudToolSelfAddr 返回本机内置云工具服务端的 WebSocket 地址（默认连接自己）。
+// 地址 = ws://127.0.0.1:{HTTP端口}/{云工具服务端访问路径}。
+func cloudToolSelfAddr() string {
+	host := "127.0.0.1"
+	port := "8080"
+	if dto.ServerConfig.Router != nil && dto.ServerConfig.Router.Http != nil {
+		if addr := dto.ServerConfig.Router.Http.Addr; addr != "" {
+			if i := strings.LastIndex(addr, ":"); i != -1 {
+				port = addr[i+1:]
+			}
+		}
+	}
+	path := "/cloudtool"
+	if dto.ServerConfig.CloudTool != nil && dto.ServerConfig.CloudTool.Addr != "" {
+		path = dto.ServerConfig.CloudTool.Addr
+	}
+	return "ws://" + host + ":" + port + path
+}
 
-// cloudToolAddr 读取 system.ini 中 [云工具] 连接地址，未配置时返回默认地址
+// cloudToolAddr 读取 system.ini 中 [云工具] 连接地址，未配置时默认连接本机内置云工具服务端。
 func cloudToolAddr() string {
 	ff := utils.NewFileQueue(dto.CONFIG_SYSTEM_PATH)
 	f, err := ff.LoadIni()
 	if err != nil {
-		return cloudToolDefaultAddr
+		return cloudToolSelfAddr()
 	}
 	addr := strings.TrimSpace(f.Section("云工具").Key("连接地址").String())
 	if addr == "" {
-		return cloudToolDefaultAddr
+		return cloudToolSelfAddr()
 	}
 	return addr
 }
@@ -442,7 +467,8 @@ func cloudToolSetWantConn(want bool) {
 	cloudToolMu.Unlock()
 }
 
-// cloudToolBuildURL 将连接地址规范为完整 WebSocket 地址，账号作为路径 /:username
+// cloudToolBuildURL 将连接地址规范为完整 WebSocket 地址，账号作为路径 /:username。
+// 若地址已包含路径前缀（如 /cloudtool），账号会拼到该前缀之后（/cloudtool/:username）。
 func cloudToolBuildURL(addr, username string) string {
 	if !strings.Contains(addr, "://") {
 		addr = "ws://" + addr
@@ -457,7 +483,12 @@ func cloudToolBuildURL(addr, username string) string {
 	if err != nil {
 		return addr
 	}
-	u.Path = "/" + url.PathEscape(username)
+	base := strings.TrimRight(u.Path, "/")
+	if base == "" {
+		u.Path = "/" + url.PathEscape(username)
+	} else {
+		u.Path = base + "/" + url.PathEscape(username)
+	}
 	return u.String()
 }
 
@@ -505,6 +536,24 @@ func cloudToolDisconnect() {
 
 // cloudToolReadLoop 持续读取云工具响应，按 id 路由到等待中的请求；连接断开时清理状态并触发断线重连
 func cloudToolReadLoop(conn *websocket.Conn, gen uint64) {
+	// 客户端心跳：周期发送 ping 探测服务端存活，pong 到达即刷新读超时
+	pingStop := make(chan struct{})
+	defer close(pingStop)
+	go func() {
+		ticker := time.NewTicker(cloudPingPeriod)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ticker.C:
+				if err := conn.WriteControl(websocket.PingMessage, nil, time.Now().Add(10*time.Second)); err != nil {
+					return
+				}
+			case <-pingStop:
+				return
+			}
+		}
+	}()
+
 	defer func() {
 		cloudToolMu.Lock()
 		isCurrent := cloudToolConn == conn
@@ -536,11 +585,18 @@ func cloudToolReadLoop(conn *websocket.Conn, gen uint64) {
 	for {
 		var msg cloudToolMsg
 		if err := conn.ReadJSON(&msg); err != nil {
+			// 连接断开（含服务端关闭）：交由断线重连循环持续重试恢复连接
 			debugLog.Errorf("[云工具] 连接断开: %v", err)
 			return
 		}
 		if cloudToolDebug {
 			debugLog.Infof("[云工具] 收到: type=%s id=%s", msg.Type, msg.ID)
+		}
+		if msg.Type == "logout_ok" {
+			// 服务端主动注销（显式登出或在线时间过短被注销）：停止重连并清除本地登录态，回到未登录状态
+			cloudToolSetWantConn(false)
+			cloudToolClearAuth()
+			return
 		}
 		if msg.Type == "result" || msg.Type == "error" {
 			if ch, ok := cloudToolPending.Load(msg.ID); ok {
@@ -648,7 +704,15 @@ func cloudToolAuth(username, passwordHash, token string) (newToken string, offli
 		}
 		return "", false, "", "", errors.New("云工具认证失败: " + resp.Msg)
 	}
-	_ = conn.SetReadDeadline(time.Time{})
+	// 连接后保持在线：以心跳保活探测服务端存活（收到 ping/pong 即刷新读超时），不做空闲超时断开
+	conn.SetReadDeadline(time.Now().Add(cloudPongWait))
+	conn.SetPingHandler(func(appData string) error {
+		conn.SetReadDeadline(time.Now().Add(cloudPongWait))
+		return conn.WriteControl(websocket.PongMessage, []byte(appData), time.Now().Add(10*time.Second))
+	})
+	conn.SetPongHandler(func(string) error {
+		return conn.SetReadDeadline(time.Now().Add(cloudPongWait))
+	})
 	_ = conn.SetWriteDeadline(time.Time{})
 
 	notify := resp.OfflineNotify
@@ -2137,6 +2201,10 @@ type HttpOpUiConfig_qq struct {
 	Ws          bool   `json:"ws"`
 	WsIntents   int    `json:"ws_intents"`
 	Remark      string `json:"remark"`
+	BotName     string `json:"bot_name"`
+	BotAvatar   string `json:"bot_avatar"`
+	Robot       string `json:"robot"`
+	Connected   bool   `json:"connected"`
 }
 
 type HttpOpUiConfig_qq_instance struct {
@@ -3207,6 +3275,256 @@ func opuiHandleApi(w http.ResponseWriter, r *http.Request) {
 		w.Write([]byte(`{"status":"ok"}`))
 		return
 
+	case "get_cloudtool_server":
+		ff := utils.NewFileQueue(dto.CONFIG_SYSTEM_PATH)
+		f, err := ff.LoadIni()
+		if err != nil {
+			utils.ErrorStop("系统配置不存在")
+		}
+		d := f.Section("云工具服务端")
+		var j HttpOpUiConfig_cloudtool_server
+		j.Open = d.Key("启用").MustBool(false)
+		j.Addr = d.Key("访问路径").String()
+		if j.Addr == "" {
+			j.Addr = "cloudtool"
+		}
+		j.AllowRegister = d.Key("任意账号注册").MustBool(true)
+		j.DicDir = d.Key("词库目录").String()
+		if j.DicDir == "" {
+			j.DicDir = "cloudtool"
+		}
+		j.LogoutSec = d.Key("断开注销时长").MustInt(30)
+		j.Debug = d.Key("调试").MustBool(false)
+		r, _ := json.Marshal(j)
+		w.Write(r)
+		return
+
+	case "save_cloudtool_server":
+		var j HttpOpUiConfig_cloudtool_server
+		if err := json.Unmarshal(h.Data, &j); err != nil {
+			http.Error(w, `{"status":"error","error":"invalid json"}`, http.StatusBadRequest)
+			return
+		}
+		addr := strings.TrimPrefix(strings.TrimSpace(j.Addr), "/")
+		if addr == "" {
+			addr = "cloudtool"
+		}
+		dicDir := strings.TrimSpace(j.DicDir)
+		if dicDir == "" {
+			dicDir = "cloudtool"
+		}
+		if j.LogoutSec < 0 {
+			j.LogoutSec = 0
+		}
+		ff := utils.NewFileQueue(dto.CONFIG_SYSTEM_PATH)
+		f, err := ff.LoadIni()
+		if err != nil {
+			utils.ErrorStop("系统配置不存在")
+		}
+		d := f.Section("云工具服务端")
+		d.Key("启用").SetValue(strconv.FormatBool(j.Open))
+		d.Key("访问路径").SetValue(addr)
+		d.Key("任意账号注册").SetValue(strconv.FormatBool(j.AllowRegister))
+		d.Key("词库目录").SetValue(dicDir)
+		d.Key("断开注销时长").SetValue(strconv.Itoa(j.LogoutSec))
+		d.Key("调试").SetValue(strconv.FormatBool(j.Debug))
+		ff.SaveIni(f)
+
+		// 更新内存配置并即时生效（Open=false 时仅拒绝新连接）；白名单由白名单配置页单独管理，不在此覆盖
+		dto.ServerConfig.CloudTool = &dto.CloudTool{
+			Open:          j.Open,
+			Addr:          "/" + addr,
+			AllowRegister: j.AllowRegister,
+			Whitelist:     CloudToolSplitWhitelist(d.Key("白名单").String()),
+			DicDir:        dicDir,
+			LogoutSec:     j.LogoutSec,
+			Debug:         j.Debug,
+		}
+		StartCloudToolServer()
+		w.Write([]byte(`{"status":"ok"}`))
+		return
+
+	case "get_cloudtool_accounts":
+		// 云工具服务端账号列表（分页 + 账号模糊搜索，含实时连接状态）
+		var req struct {
+			Page     int    `json:"page"`
+			PageSize int    `json:"page_size"`
+			Keyword  string `json:"keyword"`
+		}
+		if err := json.Unmarshal(h.Data, &req); err != nil {
+			http.Error(w, `{"status":"error","error":"invalid json"}`, http.StatusBadRequest)
+			return
+		}
+		if req.Page < 1 {
+			req.Page = 1
+		}
+		if req.PageSize <= 0 {
+			req.PageSize = 20
+		}
+		if req.PageSize > 100 {
+			req.PageSize = 100
+		}
+		items, total, err := CloudToolListAccounts(req.Keyword, req.Page, req.PageSize)
+		if err != nil {
+			resp, _ := json.Marshal(map[string]string{"status": "error", "error": err.Error()})
+			w.Write(resp)
+			return
+		}
+		resp, _ := json.Marshal(map[string]any{"status": "ok", "items": items, "total": total})
+		w.Write(resp)
+		return
+
+	case "disconnect_cloudtool_account":
+		// 强制断开云工具账号（远程下线）
+		var j struct {
+			Username string `json:"username"`
+		}
+		if err := json.Unmarshal(h.Data, &j); err != nil {
+			http.Error(w, `{"status":"error","error":"invalid json"}`, http.StatusBadRequest)
+			return
+		}
+		if err := CloudToolDisconnectAccount(j.Username); err != nil {
+			resp, _ := json.Marshal(map[string]string{"status": "error", "error": err.Error()})
+			w.Write(resp)
+			return
+		}
+		w.Write([]byte(`{"status":"ok"}`))
+		return
+
+	case "delete_cloudtool_account":
+		// 删除云工具账号（可附带删除云工具余额，默认删除）
+		var j struct {
+			Username      string `json:"username"`
+			DeleteBalance bool   `json:"delete_balance"`
+		}
+		if err := json.Unmarshal(h.Data, &j); err != nil {
+			http.Error(w, `{"status":"error","error":"invalid json"}`, http.StatusBadRequest)
+			return
+		}
+		if err := CloudToolDeleteAccount(j.Username, j.DeleteBalance); err != nil {
+			resp, _ := json.Marshal(map[string]string{"status": "error", "error": err.Error()})
+			w.Write(resp)
+			return
+		}
+		w.Write([]byte(`{"status":"ok"}`))
+		return
+
+	case "get_cloudtool_whitelist":
+		// 云工具服务端白名单列表（分页 + 账号模糊搜索）
+		var req struct {
+			Page     int    `json:"page"`
+			PageSize int    `json:"page_size"`
+			Keyword  string `json:"keyword"`
+		}
+		if err := json.Unmarshal(h.Data, &req); err != nil {
+			http.Error(w, `{"status":"error","error":"invalid json"}`, http.StatusBadRequest)
+			return
+		}
+		if req.Page < 1 {
+			req.Page = 1
+		}
+		if req.PageSize <= 0 {
+			req.PageSize = 20
+		}
+		if req.PageSize > 100 {
+			req.PageSize = 100
+		}
+		items, total, err := CloudToolListWhitelist(req.Keyword, req.Page, req.PageSize)
+		if err != nil {
+			resp, _ := json.Marshal(map[string]string{"status": "error", "error": err.Error()})
+			w.Write(resp)
+			return
+		}
+		resp, _ := json.Marshal(map[string]any{"status": "ok", "items": items, "total": total})
+		w.Write(resp)
+		return
+
+	case "add_cloudtool_whitelist":
+		// 把账号加入云工具服务端白名单
+		var j struct {
+			Username string `json:"username"`
+		}
+		if err := json.Unmarshal(h.Data, &j); err != nil {
+			http.Error(w, `{"status":"error","error":"invalid json"}`, http.StatusBadRequest)
+			return
+		}
+		whitelisted, err := CloudToolAddWhitelist(j.Username)
+		if err != nil {
+			resp, _ := json.Marshal(map[string]string{"status": "error", "error": err.Error()})
+			w.Write(resp)
+			return
+		}
+		resp, _ := json.Marshal(map[string]any{"status": "ok", "whitelisted": whitelisted})
+		w.Write(resp)
+		return
+
+	case "remove_cloudtool_whitelist":
+		// 把账号移出云工具服务端白名单
+		var j struct {
+			Username string `json:"username"`
+		}
+		if err := json.Unmarshal(h.Data, &j); err != nil {
+			http.Error(w, `{"status":"error","error":"invalid json"}`, http.StatusBadRequest)
+			return
+		}
+		whitelisted, err := CloudToolRemoveWhitelist(j.Username)
+		if err != nil {
+			resp, _ := json.Marshal(map[string]string{"status": "error", "error": err.Error()})
+			w.Write(resp)
+			return
+		}
+		resp, _ := json.Marshal(map[string]any{"status": "ok", "whitelisted": whitelisted})
+		w.Write(resp)
+		return
+
+	case "rename_cloudtool_account":
+		// 重命名云工具服务端账号（在线连接将先被断开，白名单自动迁移）
+		var j struct {
+			Username string `json:"username"`
+			NewName  string `json:"new_name"`
+		}
+		if err := json.Unmarshal(h.Data, &j); err != nil {
+			http.Error(w, `{"status":"error","error":"invalid json"}`, http.StatusBadRequest)
+			return
+		}
+		if err := CloudToolRenameAccount(j.Username, j.NewName); err != nil {
+			resp, _ := json.Marshal(map[string]string{"status": "error", "error": err.Error()})
+			w.Write(resp)
+			return
+		}
+		w.Write([]byte(`{"status":"ok"}`))
+		return
+
+	case "reset_cloudtool_password":
+		// 重置云工具服务端账号密码（在线连接将先被断开）
+		var j struct {
+			Username    string `json:"username"`
+			NewPassword string `json:"new_password"`
+		}
+		if err := json.Unmarshal(h.Data, &j); err != nil {
+			http.Error(w, `{"status":"error","error":"invalid json"}`, http.StatusBadRequest)
+			return
+		}
+		if err := CloudToolResetPassword(j.Username, j.NewPassword); err != nil {
+			resp, _ := json.Marshal(map[string]string{"status": "error", "error": err.Error()})
+			w.Write(resp)
+			return
+		}
+		w.Write([]byte(`{"status":"ok"}`))
+		return
+
+	case "clear_cloudtool_accounts":
+		// 清空全部云工具账号（白名单内账号保留）
+		deleted, kept, err := CloudToolClearAccounts()
+		if err != nil {
+			resp, _ := json.Marshal(map[string]string{"status": "error", "error": err.Error()})
+			w.Write(resp)
+			return
+		}
+		resp, _ := json.Marshal(map[string]any{"status": "ok", "deleted": deleted, "kept": kept})
+		w.Write(resp)
+		return
+
 	case "cloud_connect":
 		var j struct {
 			Username string `json:"username"`
@@ -3926,6 +4244,16 @@ func opuiHandleApi(w http.ResponseWriter, r *http.Request) {
 				j.Ws = d.Key("WebSocket").MustBool(false)
 				j.WsIntents = d.Key("监听码").MustInt(0)
 				j.Remark = d.Key("备注").String()
+				j.Robot = d.Key("Robot").String()
+				if dto.ServerConfig.QQBots != nil {
+					if bot := dto.ServerConfig.QQBots[secName]; bot != nil {
+						j.Connected = bot.WsConn != nil
+						if bot.API != nil {
+							j.BotName = bot.API.BotUsername
+							j.BotAvatar = bot.API.BotAvatar
+						}
+					}
+				}
 				list.Instances = append(list.Instances, HttpOpUiConfig_qq_instance{
 					Section: secName,
 					Config:  j,
@@ -3975,6 +4303,7 @@ func opuiHandleApi(w http.ResponseWriter, r *http.Request) {
 		d.Key("WebSocket").SetValue(strconv.FormatBool(j.Config.Ws))
 		d.Key("监听码").SetValue(strconv.Itoa(j.Config.WsIntents))
 		d.Key("备注").SetValue(j.Config.Remark)
+		d.Key("Robot").SetValue(j.Config.Robot)
 		dto.LoadConfig_qq(d, sectionName)
 		ff.SaveIni(f)
 		w.Write([]byte(`{"status":"ok"}`))
@@ -4047,6 +4376,7 @@ func opuiHandleApi(w http.ResponseWriter, r *http.Request) {
 		d.Key("WebSocket").SetValue("true")
 		d.Key("监听码").SetValue("0")
 		d.Key("备注").SetValue("")
+		d.Key("Robot").SetValue("")
 		ff.SaveIni(f)
 		j := HttpOpUiConfig_qq_instance{
 			Section: newSection,
@@ -4062,6 +4392,7 @@ func opuiHandleApi(w http.ResponseWriter, r *http.Request) {
 				Ws:          true,
 				WsIntents:   0,
 				Remark:      "",
+				Robot:       "",
 			},
 		}
 		r, _ := json.Marshal(j)
@@ -4076,8 +4407,8 @@ func opuiHandleApi(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, `{"status":"error","error":"invalid json"}`, http.StatusBadRequest)
 			return
 		}
-		if j.Section == "" || j.Section == "QQ" {
-			http.Error(w, `{"status":"error","error":"cannot delete primary QQ instance"}`, http.StatusBadRequest)
+		if j.Section == "" {
+			http.Error(w, `{"status":"error","error":"section is empty"}`, http.StatusBadRequest)
 			return
 		}
 		ff := utils.NewFileQueue(dto.CONFIG_PATH)

@@ -296,9 +296,15 @@ func (m *dicImpl) DicRun(D *dic_dto.Dic, trigger string) string {
 
 	// 设置头部行号映射
 	dicRun.LineNums = D.Data.HeadLineNums
+	D.Val.P.Set(redirectHeaderKey, true)
 	RunDichader := m.DicRunLine(dicRun, DicHaderText)
+	D.Val.P.Set(redirectHeaderKey, false)
 
 	if !dicRun.Sys_v.Stop.Load() {
+		// 头部可能通过 $重定向触发词$ 修改了触发词，重新匹配一次再执行正文
+		DicText = D.Data.Dic
+		GetDic, GetDicTrigger, triggerIdx, _ = run.RunFor(DicText, D.Val.P.GetStr("触发词"), 0)
+		D.Val.P.Set("触发", GetDicTrigger)
 		// 设置 body 行号映射（仅当触发器匹配时）
 		if GetDic != nil && triggerIdx < len(DicText) {
 			dicRun.LineNums = DicText[triggerIdx].LineNums
@@ -326,7 +332,7 @@ func (m *dicImpl) DicRunTimeout(D *dic_dto.Dic, trigger string, timeout time.Dur
 		maps.Copy(D.Data.Class, D.ClassText)
 	}
 
-	GetDic, GetDicTrigger, triggerIdx, _ := run.RunFor(D.Data.Dic, trigger, 0)
+	_, GetDicTrigger, _, _ := run.RunFor(D.Data.Dic, trigger, 0)
 	D.Val.P.Set("触发词", trigger)
 	D.Val.P.Set("触发", GetDicTrigger)
 
@@ -334,12 +340,6 @@ func (m *dicImpl) DicRunTimeout(D *dic_dto.Dic, trigger string, timeout time.Dur
 		SetV(D.Val).
 		SetDic(D.Data)
 	dicRun.Dic.MyFunc = D.MyFunc
-
-	// 预存 body 行号映射，供 goroutine 内使用（仅当触发器匹配时）
-	var bodyLineNums []int
-	if GetDic != nil && triggerIdx < len(D.Data.Dic) {
-		bodyLineNums = D.Data.Dic[triggerIdx].LineNums
-	}
 
 	type runResult struct {
 		text string
@@ -354,11 +354,19 @@ func (m *dicImpl) DicRunTimeout(D *dic_dto.Dic, trigger string, timeout time.Dur
 			}
 		}()
 		dicRun.LineNums = D.Data.HeadLineNums
+		D.Val.P.Set(redirectHeaderKey, true)
 		RunDichader := m.DicRunLine(dicRun, D.Data.Head)
+		D.Val.P.Set(redirectHeaderKey, false)
 		text := RunDichader
 		if !dicRun.Sys_v.Stop.Load() {
-			dicRun.LineNums = bodyLineNums
-			text += m.DicRunLine(dicRun, GetDic)
+			// 头部可能通过 $重定向触发词$ 修改了触发词，重新匹配一次再执行正文
+			reGetDic, reTrigger, reIdx, _ := run.RunFor(D.Data.Dic, D.Val.P.GetStr("触发词"), 0)
+			D.Val.P.Set("触发", reTrigger)
+			dicRun.LineNums = nil
+			if reGetDic != nil && reIdx < len(D.Data.Dic) {
+				dicRun.LineNums = D.Data.Dic[reIdx].LineNums
+			}
+			text += m.DicRunLine(dicRun, reGetDic)
 		}
 		done <- runResult{text}
 	}()

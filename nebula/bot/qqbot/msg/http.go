@@ -39,13 +39,8 @@ func (b *QQBot) Get(path string, respObj any) error {
 
 	err := getJson(APIURL+path, headers, respObj, b.Debug)
 
-	if b.Debug {
-		if err != nil {
-			debugLog.Infof("[QQBot 错误] %v", err)
-		} else if respObj != nil {
-			respJson, _ := json.Marshal(respObj)
-			debugLog.Infof("[QQBot GET返回] %s", string(respJson))
-		}
+	if b.Debug && err != nil {
+		debugLog.Infof("[QQBot 错误] %v", err)
 	}
 	return err
 }
@@ -286,15 +281,20 @@ func getJson(url string, headers http.Header, respObj any, debug bool) error {
 	}
 	defer resp.Body.Close()
 
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return fmt.Errorf("读取响应失败: %w", err)
+	}
+	if debug {
+		debugLog.Infof("[QQBot GET返回] %s", string(body))
+	}
+
 	if resp.StatusCode != http.StatusOK {
-		if c, err := io.ReadAll(resp.Body); err == nil {
-			return fmt.Errorf("请求失败，状态码: %d, 内容: %s", resp.StatusCode, string(c))
-		}
-		return fmt.Errorf("请求失败，状态码: %d", resp.StatusCode)
+		return fmt.Errorf("请求失败，状态码: %d, 内容: %s", resp.StatusCode, string(body))
 	}
 
 	if respObj != nil {
-		if err := json.NewDecoder(resp.Body).Decode(respObj); err != nil {
+		if err := json.Unmarshal(body, respObj); err != nil {
 			return fmt.Errorf("解析响应失败: %w", err)
 		}
 	}

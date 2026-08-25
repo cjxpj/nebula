@@ -1,6 +1,6 @@
 
 [系统]启动
-$打印 QQBot 已上线，AppId=%robot%$
+$打印 QQBot 已上线，机器人union_openid=%robot% AppId=%robot_appid%$
 
 你好
 你好啊

@@ -374,6 +374,19 @@ func parseImportLine(line string) (varName, target string, ok bool) {
 	return "", "", false
 }
 
+// isBlankOrComment 判断一行是否为空白或注释行（用于头部/正文分隔）。
+// //@ 开头的指令不算注释，它们是有实际作用的编译指令。
+func isBlankOrComment(line string) bool {
+	line = strings.TrimSpace(line)
+	if line == "" {
+		return true
+	}
+	if strings.HasPrefix(line, "//@") {
+		return false
+	}
+	return strings.HasPrefix(line, "//") || strings.HasPrefix(line, "/*")
+}
+
 // importStack 记录当前 #引入= 递归加载链上的文件路径，用于检测循环引入。
 // 加载为单 goroutine 递归，无需加锁。
 type importStack struct {
@@ -643,15 +656,19 @@ func buildDic(dicPath, text string, stack *importStack) *dto.BuildValue {
 
 		fParamRule string // 当前函数触发的参数数量规则（[函数|规则]）
 
+		// 函数上方 // 注释收集（作为函数说明）与当前函数说明
+		pendingComment  []string
+		currentFuncDesc string
+
 		// 自定义函数（含bot注入）
 		myFunc map[string]dto.DicFunc = make(map[string]dto.DicFunc)
 	)
 
-	// 头部区域：文件开头到第一个空行之间为头部（#引入= 与初始化语句），
-	// 空行之后为正文；无空行分隔时文件直接按正文解析（如被引入的 [函数] 文件）。
+	// 头部区域：文件开头到第一个空行（或注释行）之间为头部（#引入= 与初始化语句），
+	// 空行/注释行之后为正文；无空行或注释分隔时文件直接按正文解析（如被引入的 [函数] 文件）。
 	runhead = false
 	for i, l := range lines {
-		if strings.TrimSpace(l) == "" {
+		if isBlankOrComment(l) {
 			runhead = i > 0
 			break
 		}
@@ -668,11 +685,30 @@ func buildDic(dicPath, text string, stack *importStack) *dto.BuildValue {
 		if zhushi {
 			if lineLen >= 2 && line[lineLen-2:] == "*/" {
 				zhushi = false
+				// 结束行：收集 */ 之前的内容
+				if content := strings.TrimSpace(line[:lineLen-2]); content != "" {
+					pendingComment = append(pendingComment, content)
+				}
+			} else if content := strings.TrimSpace(line); content != "" {
+				// 块注释中间行
+				pendingComment = append(pendingComment, content)
 			}
 			continue
 		}
 		if !zhushi && lineLen >= 2 && line[:2] == "/*" {
-			zhushi = true
+			runhead = false
+			if idx := strings.Index(line[2:], "*/"); idx >= 0 {
+				// 单行块注释 /* ... */
+				if content := strings.TrimSpace(line[2 : 2+idx]); content != "" {
+					pendingComment = append(pendingComment, content)
+				}
+			} else {
+				// 多行块注释开始
+				zhushi = true
+				if content := strings.TrimSpace(line[2:]); content != "" {
+					pendingComment = append(pendingComment, content)
+				}
+			}
 			continue
 		}
 
@@ -688,6 +724,11 @@ func buildDic(dicPath, text string, stack *importStack) *dto.BuildValue {
 			}
 			if lineLen > 13 && line[:13] == "//@函数头=" {
 				fHeaderName = line[13:]
+			}
+			// 普通 // 注释（非 @ 指令）：收集为函数上方的说明，并视作空行分隔头部与正文
+			if !strings.HasPrefix(line, "//@") {
+				pendingComment = append(pendingComment, strings.TrimSpace(line[2:]))
+				runhead = false
 			}
 			continue
 		}
@@ -767,6 +808,14 @@ func buildDic(dicPath, text string, stack *importStack) *dto.BuildValue {
 					dicTrigger = rest
 				}
 
+				// 函数说明：仅 [函数] 触发词关联其上方的 // 注释，其余类别清空
+				if buildCategory == "函数" {
+					currentFuncDesc = strings.Join(pendingComment, "\n")
+				} else {
+					currentFuncDesc = ""
+				}
+				pendingComment = nil
+
 				if strings.HasSuffix(dicTrigger, " #{") {
 					fRunAll = true
 					dicTrigger = dicTrigger[:len(dicTrigger)-3]
@@ -791,6 +840,7 @@ func buildDic(dicPath, text string, stack *importStack) *dto.BuildValue {
 					Text:      dicTexts,
 					LineNums:  dicTextLineNums,
 					ParamRule: fParamRule,
+					Desc:      currentFuncDesc,
 				}
 				if neibu {
 					neibu = false
@@ -829,6 +879,7 @@ func buildDic(dicPath, text string, stack *importStack) *dto.BuildValue {
 				classN = ""
 				buildCategory = ""
 				fParamRule = ""
+				currentFuncDesc = ""
 				dicTexts = nil
 				dicTextLineNums = nil
 			}

@@ -126,6 +126,14 @@ func Funcs(d *dic_dto.DicFunc, dic_i *utils.DicInputs) (any, error) {
 		return "", nil
 	}
 
+	// 捕获报错调用：$!函数名 参数$，报错时写入「报错」变量并返回错误文本，不停止后续执行
+	captureErr := false
+	if name := dic_i.String(0); strings.HasPrefix(name, "!") {
+		captureErr = true
+		dic_i.List[0] = name[1:]
+		d.Val.P.Set("报错", "")
+	}
+
 	// 创建 Class 实例
 	if dic_i.String(0) == "new" {
 		return newClassInstance(d, dic_i)
@@ -137,7 +145,7 @@ func Funcs(d *dic_dto.DicFunc, dic_i *utils.DicInputs) (any, error) {
 			if value, ok := d.Val.GetVal(s[:dot]); ok {
 				if classData, isClass := value.(*dto.DicClass); isClass {
 					methodArgs := append([]string{s[dot+1:]}, dic_i.StringAfterList(1)...)
-					if res, ok := runClassMethod(d, classData, methodArgs); ok {
+					if res, ok := runClassMethod(d, classData, methodArgs, captureErr); ok {
 						return res, nil
 					}
 				}
@@ -190,7 +198,7 @@ func Funcs(d *dic_dto.DicFunc, dic_i *utils.DicInputs) (any, error) {
 		}
 
 		// Class 局部函数
-		if res, ok := runClassMethod(d, classData, dic_i.StringAfterList(1)); ok {
+		if res, ok := runClassMethod(d, classData, dic_i.StringAfterList(1), captureErr); ok {
 			return res, nil
 		}
 	} else {
@@ -220,6 +228,10 @@ func Funcs(d *dic_dto.DicFunc, dic_i *utils.DicInputs) (any, error) {
 			RunDic.ClearDicFuncs()
 
 			resRunDic := dic_api.Api.DicRunLine(RunDic, str)
+			if captureErr && RunDic.Sys_v.Stop.Load() {
+				d.Val.P.Set("报错", resRunDic)
+				return "", nil
+			}
 			if tparts != "" {
 				subParts := strings.SplitSeq(tparts, ",")
 				for setv := range subParts {
@@ -229,7 +241,7 @@ func Funcs(d *dic_dto.DicFunc, dic_i *utils.DicInputs) (any, error) {
 			}
 			return resRunDic, nil
 		} else if errRule != "" {
-			return "", paramCountError(d, dic_i.String(0), errRule, dic_i.Len())
+			return handleFuncError(d, dic_i.String(0), fmt.Errorf("参数数量错误(需要%s，实际%d)", errRule, dic_i.Len()), captureErr), nil
 		}
 	}
 
@@ -266,44 +278,44 @@ func Funcs(d *dic_dto.DicFunc, dic_i *utils.DicInputs) (any, error) {
 
 	if fn, ok := d.Dic.MyFunc[dic_i.String(0)]; ok {
 		if !inputs.LenOk(fn.L) {
-			return "", paramCountError(d, dic_i.String(0), fn.L, inputs.Len())
+			return handleFuncError(d, dic_i.String(0), fmt.Errorf("参数数量错误(需要%s，实际%d)", fn.L, inputs.Len()), captureErr), nil
 		}
 		res, err := fn.Fn(dto.NewDicInputsWithOutput(d.Dic, d.Val, &inputs, d.Output))
 		if err != nil {
-			d.Sys.Stop.Store(true)
-			if err.Error() != "stop" {
-				d.Output.Clear()
-				d.Output.Add(fmt.Sprintf("[%s]%s(line:%d)：%v", d.Val.Get("_词库路径_"), dic_i.String(0), d.CurLine, err))
-			}
+			return handleFuncError(d, dic_i.String(0), err, captureErr), nil
 		}
-		return res, err
+		return res, nil
 	}
 
 	if fnInfo, ok := funcs.GetFunc(dic_i.String(0)); ok {
 		if !inputs.LenOk(fnInfo.L) {
-			return "", paramCountError(d, dic_i.String(0), fnInfo.L, inputs.Len())
+			return handleFuncError(d, dic_i.String(0), fmt.Errorf("参数数量错误(需要%s，实际%d)", fnInfo.L, inputs.Len()), captureErr), nil
 		}
 		res, err := fnInfo.Fn(dto.NewDicInputsWithOutput(d.Dic, d.Val, &inputs, d.Output))
 		if err != nil {
-			d.Sys.Stop.Store(true)
-			if err.Error() != "stop" {
-				d.Output.Clear()
-				d.Output.Add(fmt.Sprintf("[%s]%s(line:%d)：%v", d.Val.Get("_词库路径_"), dic_i.String(0), d.CurLine, err))
-			}
+			return handleFuncError(d, dic_i.String(0), err, captureErr), nil
 		}
-		return res, err
+		return res, nil
 	}
 
 	return "$" + strings.Join(dic_i.StringList(), " ") + "$", nil
 }
 
-// paramCountError 参数数量校验失败：输出错误并停止执行，避免静默返回原文
-func paramCountError(d *dic_dto.DicFunc, name, rule string, actual int) error {
-	err := fmt.Errorf("参数数量错误(需要%s，实际%d)", rule, actual)
+// handleFuncError 统一处理函数调用报错。
+// captureErr 为 true（$!函数名$ 调用）时把错误写入「报错」变量、清除 Stop 并返回空串（函数不返回错误文本）；
+// 否则按原逻辑停止执行并把格式化错误写入输出，返回空串。
+func handleFuncError(d *dic_dto.DicFunc, name string, err error, captureErr bool) string {
+	if captureErr {
+		d.Val.P.Set("报错", err.Error())
+		d.Sys.Stop.Store(false)
+		return ""
+	}
 	d.Sys.Stop.Store(true)
-	d.Output.Clear()
-	d.Output.Add(fmt.Sprintf("[%s]%s(line:%d)：%v", d.Val.Get("_词库路径_"), name, d.CurLine, err))
-	return err
+	if err.Error() != "stop" {
+		d.Output.Clear()
+		d.Output.Add(fmt.Sprintf("[%s]%s(line:%d)：%v", d.Val.Get("_词库路径_"), name, d.CurLine, err))
+	}
+	return ""
 }
 
 // newClassInstance 创建 Class 实例并执行构造函数：$new 类名$
@@ -351,7 +363,7 @@ func newClassInstance(d *dic_dto.DicFunc, dic_i *utils.DicInputs) (any, error) {
 // runClassMethod 执行类方法（函数）：methodArgs 为 [方法名, 参数...]。
 // 优先匹配 Class.Fn 自定义函数，再回退到 BuildDic 函数。
 // 返回执行结果与是否命中方法。
-func runClassMethod(d *dic_dto.DicFunc, classData *dto.DicClass, methodArgs []string) (any, bool) {
+func runClassMethod(d *dic_dto.DicFunc, classData *dto.DicClass, methodArgs []string, captureErr bool) (any, bool) {
 	// 内置回调：$变量.回调 名称$ 触发类内 [内部]名称
 	if methodArgs[0] == "回调" {
 		trigger := strings.Join(methodArgs[1:], " ")
@@ -368,7 +380,12 @@ func runClassMethod(d *dic_dto.DicFunc, classData *dto.DicClass, methodArgs []st
 			SetDic_v(d.Dic).
 			WithRecursionDepth(d.RecursionDepth)
 		RunDic.ClearDicFuncs()
-		return dic_api.Api.DicRunLine(RunDic, str), true
+		res := dic_api.Api.DicRunLine(RunDic, str)
+		if captureErr && RunDic.Sys_v.Stop.Load() {
+			d.Val.P.Set("报错", res)
+			return "", true
+		}
+		return res, true
 	}
 
 	// 自定义函数优先
@@ -381,8 +398,7 @@ func runClassMethod(d *dic_dto.DicFunc, classData *dto.DicClass, methodArgs []st
 		}
 		inputs.Set(list)
 		if !inputs.LenOk(fn.L) {
-			paramCountError(d, methodArgs[0], fn.L, inputs.Len())
-			return "", true
+			return handleFuncError(d, methodArgs[0], fmt.Errorf("参数数量错误(需要%s，实际%d)", fn.L, inputs.Len()), captureErr), true
 		}
 		funcv := dto.NewVal().
 			Set("触发", methodArgs[0]).
@@ -391,11 +407,7 @@ func runClassMethod(d *dic_dto.DicFunc, classData *dto.DicClass, methodArgs []st
 		newV := d.Val.NewDicVal(funcv)
 		res, err := fn.Fn(dto.NewDicInputsWithOutput(d.Dic, newV, &inputs, d.Output))
 		if err != nil {
-			d.Sys.Stop.Store(true)
-			if err.Error() != "stop" {
-				d.Output.Clear()
-				d.Output.Add(fmt.Sprintf("[%s]%s(line:%d)：%v", d.Val.Get("_词库路径_"), methodArgs[0], d.CurLine, err))
-			}
+			return handleFuncError(d, methodArgs[0], err, captureErr), true
 		}
 		return res, true
 	}
@@ -404,8 +416,7 @@ func runClassMethod(d *dic_dto.DicFunc, classData *dto.DicClass, methodArgs []st
 	str, Tstr, _, errRule, ok := run.RunFunc(classData.DicFuncs["函数"], methodArgs[0], len(methodArgs)-1)
 	if !ok {
 		if errRule != "" {
-			paramCountError(d, methodArgs[0], errRule, len(methodArgs)-1)
-			return "", true
+			return handleFuncError(d, methodArgs[0], fmt.Errorf("参数数量错误(需要%s，实际%d)", errRule, len(methodArgs)-1), captureErr), true
 		}
 		return nil, false
 	}
@@ -421,5 +432,10 @@ func runClassMethod(d *dic_dto.DicFunc, classData *dto.DicClass, methodArgs []st
 		SetDic_v(d.Dic).
 		WithRecursionDepth(d.RecursionDepth)
 	RunDic.ClearDicFuncs()
-	return dic_api.Api.DicRunLine(RunDic, str), true
+	res := dic_api.Api.DicRunLine(RunDic, str)
+	if captureErr && RunDic.Sys_v.Stop.Load() {
+		d.Val.P.Set("报错", res)
+		return "", true
+	}
+	return res, true
 }

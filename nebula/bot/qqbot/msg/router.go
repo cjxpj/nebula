@@ -30,6 +30,8 @@ type RouterQQBot struct {
 	Debug bool
 	// 备注名
 	Remark string
+	// 自定义 robot 变量值（union_openid 取不到时使用）
+	Robot string
 	// WebSocket 模式
 	Ws bool
 	// WebSocket 连接

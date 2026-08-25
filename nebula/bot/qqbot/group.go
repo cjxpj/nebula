@@ -23,6 +23,19 @@ var mdRe = regexp.MustCompile(`(?s)\[((?:\\.|[^\]\\])+)\]\(((?:\\.|[^)\\])+)\)`)
 var mdReAt = regexp.MustCompile(`<(.+?)(\/)?>`)
 var groupInviterMap sync.Map // key: botPath+groupOpenID, value: inviter OpenID
 
+// botRobotID 返回机器人 union_openid（/users/@me 获取，需特殊申请），取不到时回退到配置的自定义 Robot 值
+func botRobotID(bot *qqbot_msg.RouterQQBot) string {
+	if bot != nil && bot.API != nil {
+		if bot.API.BotUnionOpenID != "" {
+			return bot.API.BotUnionOpenID
+		}
+	}
+	if bot != nil && bot.Robot != "" {
+		return bot.Robot
+	}
+	return ""
+}
+
 // popMDKeyboard 检测"按钮"关键字，其后的参数为文本按钮定义
 // "标签" → 点击发送 "/标签"；"标签|数据" → 点击发送 "数据"
 // 自定义按钮仅简单文本模式（$发送MD "文本" 按钮 ...$）支持；
@@ -241,6 +254,7 @@ func qqBOTGroupRun(payload *qqbot_msg.Payload, bot *qqbot_msg.RouterQQBot) {
 	if bot.API != nil {
 		appId = bot.API.AppId
 	}
+	robotID := botRobotID(bot)
 
 	valData := dto.NewVal().
 		Set("来源", "群聊").
@@ -259,8 +273,8 @@ func qqBOTGroupRun(payload *qqbot_msg.Payload, bot *qqbot_msg.RouterQQBot) {
 				return "0"
 			}
 		}()).
-		Set("robot", appId).
-		Set("Robot", appId).
+		Set("robot", robotID).
+		Set("Robot", robotID).Set("robot_appid", appId).
 		Set("头像", "http://q.qlogo.cn/qqapp/"+appId+"/"+userID+"/640").
 		Set("MsgId", m.ID).
 		Set("消息ID", m.ID).
@@ -525,6 +539,7 @@ func qqBOTGroupATRun(payload *qqbot_msg.Payload, bot *qqbot_msg.RouterQQBot) {
 	if bot.API != nil {
 		appId = bot.API.AppId
 	}
+	robotID := botRobotID(bot)
 
 	valData := dto.NewVal().
 		Set("来源", "群聊").
@@ -543,8 +558,8 @@ func qqBOTGroupATRun(payload *qqbot_msg.Payload, bot *qqbot_msg.RouterQQBot) {
 				return "0"
 			}
 		}()).
-		Set("robot", appId).
-		Set("Robot", appId).
+		Set("robot", robotID).
+		Set("Robot", robotID).Set("robot_appid", appId).
 		Set("头像", "http://q.qlogo.cn/qqapp/"+appId+"/"+userID+"/640").
 		Set("MsgId", m.ID).
 		Set("消息ID", m.ID).
@@ -744,8 +759,9 @@ func qqBOTGroupEventRun(payload *qqbot_msg.Payload, bot *qqbot_msg.RouterQQBot) 
 	if bot.API != nil {
 		appId = bot.API.AppId
 	}
+	robotID := botRobotID(bot)
 
-	valData, msg, groupOpenID, event, ok := parseGroupEvent(payload, appId)
+	valData, msg, groupOpenID, event, ok := parseGroupEvent(payload, appId, robotID)
 	if !ok {
 		return
 	}
@@ -807,7 +823,7 @@ func qqBOTGroupEventRun(payload *qqbot_msg.Payload, bot *qqbot_msg.RouterQQBot) 
 }
 
 // parseGroupEvent 解析群事件 payload，返回 valData、触发词、群号、特殊触发类别
-func parseGroupEvent(payload *qqbot_msg.Payload, appId string) (*dto.Val, string, string, string, bool) {
+func parseGroupEvent(payload *qqbot_msg.Payload, appId, robotID string) (*dto.Val, string, string, string, bool) {
 	switch payload.Type {
 	case "GROUP_MEMBER_ADD", "GROUP_MEMBER_REMOVE",
 		"GROUP_ADD_ROBOT", "GROUP_DEL_ROBOT":
@@ -859,8 +875,8 @@ func parseGroupEvent(payload *qqbot_msg.Payload, appId string) (*dto.Val, string
 			Set("QQ", userQQ).
 			Set("qq", userQQ).
 			Set("头像", "http://q.qlogo.cn/qqapp/"+appId+"/"+userQQ+"/640").
-			Set("robot", appId).
-			Set("Robot", appId), msg, m.GroupOpenID, "群事件", true
+			Set("robot", robotID).
+			Set("Robot", robotID).Set("robot_appid", appId), msg, m.GroupOpenID, "群事件", true
 
 	case "GROUP_JOIN_REQUEST":
 		m := &qqbot_msg.JoinRequestEvent{}
@@ -890,8 +906,8 @@ func parseGroupEvent(payload *qqbot_msg.Payload, appId string) (*dto.Val, string
 			Set("申请时间", m.ApplyAt).
 			Set("申请来源", m.ApplySource).
 			Set("申请ID", m.JoinRequestID).
-			Set("robot", appId).
-			Set("Robot", appId), "入群申请", m.GroupOpenID, "群事件", true
+			Set("robot", robotID).
+			Set("Robot", robotID).Set("robot_appid", appId), "入群申请", m.GroupOpenID, "群事件", true
 
 	case "INTERACTION_CREATE":
 		m := &qqbot_msg.InteractionEvent{}
@@ -923,8 +939,8 @@ func parseGroupEvent(payload *qqbot_msg.Payload, appId string) (*dto.Val, string
 				Set("qq", userID).
 				Set("头像", "http://q.qlogo.cn/qqapp/"+appId+"/"+userID+"/640").
 				Set("功能ID", featureID).
-				Set("robot", appId).
-				Set("Robot", appId), featureID, groupOpenID, "菜单事件", true
+				Set("robot", robotID).
+				Set("Robot", robotID).Set("robot_appid", appId), featureID, groupOpenID, "菜单事件", true
 		}
 
 		// 消息按钮回调 (type=11)：以按钮 data 作为触发词
@@ -941,8 +957,8 @@ func parseGroupEvent(payload *qqbot_msg.Payload, appId string) (*dto.Val, string
 			Set("QQ", userID).
 			Set("qq", userID).
 			Set("头像", "http://q.qlogo.cn/qqapp/"+appId+"/"+userID+"/640").
-			Set("robot", appId).
-			Set("Robot", appId), btnData, groupOpenID, "按钮事件", true
+			Set("robot", robotID).
+			Set("Robot", robotID).Set("robot_appid", appId), btnData, groupOpenID, "按钮事件", true
 	}
 	return nil, "", "", "", false
 }
@@ -957,8 +973,9 @@ func qqBOTFriendEventRun(payload *qqbot_msg.Payload, bot *qqbot_msg.RouterQQBot)
 	if bot.API != nil {
 		appId = bot.API.AppId
 	}
+	robotID := botRobotID(bot)
 
-	valData, msg, userOpenID, ok := parseFriendEvent(payload, appId)
+	valData, msg, userOpenID, ok := parseFriendEvent(payload, appId, robotID)
 	if !ok {
 		return
 	}
@@ -976,7 +993,7 @@ func qqBOTFriendEventRun(payload *qqbot_msg.Payload, bot *qqbot_msg.RouterQQBot)
 }
 
 // parseFriendEvent 解析好友事件 payload，返回 valData、触发词、用户 OpenID
-func parseFriendEvent(payload *qqbot_msg.Payload, appId string) (*dto.Val, string, string, bool) {
+func parseFriendEvent(payload *qqbot_msg.Payload, appId, robotID string) (*dto.Val, string, string, bool) {
 	switch payload.Type {
 	case "FRIEND_ADD":
 		m := &qqbot_msg.FriendAddEvent{}
@@ -989,8 +1006,8 @@ func parseFriendEvent(payload *qqbot_msg.Payload, appId string) (*dto.Val, strin
 			Set("QQ", m.OpenID).
 			Set("qq", m.OpenID).
 			Set("头像", "http://q.qlogo.cn/qqapp/"+appId+"/"+m.OpenID+"/640").
-			Set("robot", appId).
-			Set("Robot", appId), "好友添加", m.OpenID, true
+			Set("robot", robotID).
+			Set("Robot", robotID).Set("robot_appid", appId), "好友添加", m.OpenID, true
 
 	case "FRIEND_DEL":
 		m := &qqbot_msg.FriendDelEvent{}
@@ -1003,8 +1020,8 @@ func parseFriendEvent(payload *qqbot_msg.Payload, appId string) (*dto.Val, strin
 			Set("QQ", m.OpenID).
 			Set("qq", m.OpenID).
 			Set("头像", "http://q.qlogo.cn/qqapp/"+appId+"/"+m.OpenID+"/640").
-			Set("robot", appId).
-			Set("Robot", appId), "好友删除", m.OpenID, true
+			Set("robot", robotID).
+			Set("Robot", robotID).Set("robot_appid", appId), "好友删除", m.OpenID, true
 	}
 	return nil, "", "", false
 }
@@ -1095,6 +1112,7 @@ func triggerStartupCallback(bot *qqbot_msg.RouterQQBot) {
 	if bot.API != nil {
 		appId = bot.API.AppId
 	}
+	robotID := botRobotID(bot)
 
 	for _, v := range botDicList {
 		if !strings.HasSuffix(v, ".n") {
@@ -1107,8 +1125,8 @@ func triggerStartupCallback(bot *qqbot_msg.RouterQQBot) {
 
 		valData := dto.NewVal().
 			Set("来源", "机器人上线").
-			Set("robot", appId).
-			Set("Robot", appId)
+			Set("robot", robotID).
+			Set("Robot", robotID).Set("robot_appid", appId)
 
 		dic := dic_dto.NewDic(filepath.Join(bot.FilePath, "dic", v), FileData).
 			SetGlobal_v(valData)
@@ -1167,6 +1185,7 @@ func qqBOTGroupPrivateRun(payload *qqbot_msg.Payload, bot *qqbot_msg.RouterQQBot
 	if bot.API != nil {
 		appId = bot.API.AppId
 	}
+	robotID := botRobotID(bot)
 
 	valData := dto.NewVal().
 		Set("来源", "群私聊").
@@ -1174,8 +1193,8 @@ func qqBOTGroupPrivateRun(payload *qqbot_msg.Payload, bot *qqbot_msg.RouterQQBot
 		Set("qq", userID).
 		Set("QQ", userID).
 		Set("主人", isAdmin).
-		Set("robot", appId).
-		Set("Robot", appId).
+		Set("robot", robotID).
+		Set("Robot", robotID).Set("robot_appid", appId).
 		Set("头像", "http://q.qlogo.cn/qqapp/"+appId+"/"+userID+"/640").
 		Set("MsgId", m.ID).
 		Set("消息ID", m.ID)

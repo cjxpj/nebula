@@ -105,6 +105,8 @@ type BuildDic struct {
 	LineNums []int    `json:"-"` // 每行文本对应的原始文件行号（1-based），用于调试定位
 	// ParamRule 参数数量规则，如 "1|2"、"1.."；仅在 [函数|规则] 声明时非空，空串表示不校验（沿用正则匹配）。
 	ParamRule string `json:"paramRule,omitempty"`
+	// Desc 函数说明：来自 [函数] 上方连续的 // 注释（按行拼接）。
+	Desc string `json:"desc,omitempty"`
 }
 
 type DicClass struct {

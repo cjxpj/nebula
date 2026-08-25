@@ -57,6 +57,15 @@ func webRun(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// 内置云工具服务端
+	cloudTool := s.CloudTool
+	if cloudTool != nil && cloudTool.Open {
+		if r.URL.Path == cloudTool.Addr || strings.HasPrefix(r.URL.Path, cloudTool.Addr+"/") {
+			dic_server.CloudToolServerHandler(w, r)
+			return
+		}
+	}
+
 	// 全局跨域
 	router := s.Router
 	if router != nil && router.Cors {

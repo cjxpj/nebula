@@ -181,6 +181,70 @@ func saveStringSet(path string, m map[string]bool) {
 	os.WriteFile(path, []byte(strings.Join(lines, "\n")), 0644)
 }
 
+// ========== 机器人自身信息本地存储 ==========
+
+// botInfoFile 机器人自身信息（/users/@me 获取的头像昵称等）的本地保存文件。
+const botInfoFile = "botinfo.json"
+
+type botInfo struct {
+	ID          string `json:"id"`
+	Username    string `json:"username"` // 昵称
+	Avatar      string `json:"avatar"`   // 头像
+	UnionOpenID string `json:"union_openid"`
+}
+
+// botInfoPath 返回 botinfo.json 的路径，与 users.json（RecordUser）完全一致：
+// 直接以 bot.FilePath（配置「词库」）为读写目录，保证机器人数据文件落在同一目录。
+func botInfoPath(bot *qqbot_msg.RouterQQBot) string {
+	if bot == nil {
+		return ""
+	}
+	return filepath.Join(bot.FilePath, botInfoFile)
+}
+
+// saveBotInfo 把机器人自身信息保存到机器人读写目录下的 botinfo.json，重启后可用于恢复。
+func saveBotInfo(bot *qqbot_msg.RouterQQBot, u *qqbot_msg.BotUser) {
+	if bot == nil || u == nil {
+		return
+	}
+	p := botInfoPath(bot)
+	if p == "" {
+		return
+	}
+	recordMu.Lock()
+	defer recordMu.Unlock()
+	data, _ := json.MarshalIndent(botInfo{
+		ID:          u.ID,
+		Username:    u.Username,
+		Avatar:      u.Avatar,
+		UnionOpenID: u.UnionOpenID,
+	}, "", "  ")
+	if err := os.MkdirAll(filepath.Dir(p), 0755); err != nil {
+		return
+	}
+	_ = os.WriteFile(p, data, 0644)
+}
+
+// loadBotInfo 从主目录下的 botinfo.json 恢复机器人自身信息（/users/@me 获取失败时兜底）。
+func loadBotInfo(bot *qqbot_msg.RouterQQBot) *botInfo {
+	if bot == nil {
+		return nil
+	}
+	p := botInfoPath(bot)
+	if p == "" {
+		return nil
+	}
+	data, err := os.ReadFile(p)
+	if err != nil {
+		return nil
+	}
+	var info botInfo
+	if err := json.Unmarshal(data, &info); err != nil {
+		return nil
+	}
+	return &info
+}
+
 // ========== ActiveFuncs：主动发送（#引入=@QQBot 注入），第一个参数为账号序号（0=第一个） ==========
 var ActiveFuncs = map[string]dto.DicFunc{
 	"获取账号": {

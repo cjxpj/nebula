@@ -71,6 +71,7 @@ func LoadConfig_qq(QQBot_Config *ini.Section, sectionName string) {
 		debug, _ := QQBot_Config.Key("调试打印").Bool()
 		ws, _ := QQBot_Config.Key("WebSocket").Bool()
 		wsIntents := QQBot_Config.Key("监听码").MustInt(0)
+		robot := QQBot_Config.Key("Robot").String()
 
 		// 停止旧实例的 WS 连接
 		if oldBot := ServerConfig.QQBots[sectionName]; oldBot != nil {
@@ -92,6 +93,7 @@ func LoadConfig_qq(QQBot_Config *ini.Section, sectionName string) {
 			FilterSlash: filterSlash,
 			Debug:       debug,
 			Remark:      QQBot_Config.Key("备注").String(),
+			Robot:       robot,
 			Ws:          ws,
 			WsIntents:   wsIntents,
 		}

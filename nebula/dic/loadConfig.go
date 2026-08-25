@@ -136,6 +136,33 @@ func loadConfig() {
 		}
 	}
 
+	// 内置云工具服务端
+	cloudToolCfg := httpData.Section("云工具服务端")
+	if ok, _ := cloudToolCfg.Key("启用").Bool(); ok {
+		allowRegister := cloudToolCfg.Key("任意账号注册").MustBool(true)
+		addr := strings.TrimSpace(cloudToolCfg.Key("访问路径").String())
+		if addr == "" {
+			addr = "cloudtool"
+		}
+		if !strings.HasPrefix(addr, "/") {
+			addr = "/" + addr
+		}
+		dicDir := strings.TrimSpace(cloudToolCfg.Key("词库目录").String())
+		if dicDir == "" {
+			dicDir = "cloudtool"
+		}
+		dto.ServerConfig.CloudTool = &dto.CloudTool{
+			Open:          true,
+			Addr:          addr,
+			AllowRegister: allowRegister,
+			Whitelist:     dic_server.CloudToolSplitWhitelist(cloudToolCfg.Key("白名单").String()),
+			DicDir:        dicDir,
+			// 断开自动注销时长（秒），默认 30
+			LogoutSec: cloudToolCfg.Key("断开注销时长").MustInt(30),
+			Debug:     cloudToolCfg.Key("调试").MustBool(false),
+		}
+	}
+
 	file.SetPath(dto.CONFIG_PATH)
 	if !file.FileExists() {
 		if data, err := appfiles.GetFile("dic/system/config.ini"); err == nil {
@@ -303,5 +330,8 @@ func loadConfig() {
 
 	// 启动时恢复云工具调试开关，并用上次登录持久化的账号与 token 自动连接
 	dic_server.StartCloudTool()
+
+	// 启动内置云工具服务端
+	dic_server.StartCloudToolServer()
 
 }

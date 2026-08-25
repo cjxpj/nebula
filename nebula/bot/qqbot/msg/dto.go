@@ -11,10 +11,18 @@ var MsgCount = 0
 
 // QQBot 封装机器人鉴权和发消息流程
 type QQBot struct {
-	AppId        string
-	ClientSecret string
-	Key          *AccessTokenResponse
-	TokenTime    time.Time
+	AppId string
+	// 机器人id（上线后通过 /users/@me 获取）
+	BotId string
+	// 机器人昵称（上线后通过 /users/@me 获取）
+	BotUsername string
+	// 机器人头像（上线后通过 /users/@me 获取）
+	BotAvatar string
+	// 机器人 union_openid（上线后通过 /users/@me 获取，需特殊申请，取不到为空）
+	BotUnionOpenID string
+	ClientSecret   string
+	Key            *AccessTokenResponse
+	TokenTime      time.Time
 	// 处理次数（msg_seq 递增，原子操作，无需加锁）
 	Count atomic.Int64
 	// token 刷新互斥，防止并发同时刷新
@@ -27,6 +35,17 @@ type QQBot struct {
 type AccessTokenResponse struct {
 	AccessToken string `json:"access_token"`
 	ExpiresIn   string `json:"expires_in"`
+}
+
+// BotUser 机器人自身信息（GET /users/@me）
+type BotUser struct {
+	// 机器人id
+	ID               string `json:"id"`
+	Username         string `json:"username"`
+	Avatar           string `json:"avatar"`
+	Bot              bool   `json:"bot"`
+	UnionOpenID      string `json:"union_openid"`
+	UnionUserAccount string `json:"union_user_account"`
 }
 
 // 事件
