@@ -40,6 +40,11 @@ type ServerHTTP struct {
 	TLS                 bool
 	CertFile            string
 	KeyFile             string
+	Debug               bool
+	// TLSMode 证书来源：file（手动路径）/ self（自签名）/ upload（上传）/ system（系统证书库）/ acme（Let's Encrypt）
+	TLSMode    string
+	TLSDomains string // acme 域名列表（逗号分隔）
+	TLSEmail   string // acme 邮箱（可选）
 }
 
 type OPUI struct {

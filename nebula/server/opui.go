@@ -54,6 +54,12 @@ type HttpOpUiConfig_server struct {
 	TLS                 bool   `json:"tls"`
 	CertFile            string `json:"cert_file"`
 	KeyFile             string `json:"key_file"`
+	Debug               bool   `json:"debug"` // 调试开关：控制打印词库缓存等调试信息
+	// TLSMode 证书来源：file（手动路径）/ self（自签名）/ upload（上传）/ system（系统证书库）/ acme（Let's Encrypt）
+	TLSMode    string `json:"tls_mode"`
+	TLSDomains string `json:"tls_domains"` // acme 域名列表（逗号分隔）
+	TLSEmail   string `json:"tls_email"`   // acme 邮箱（可选）
+	OS         string `json:"os"`          // 服务器操作系统（windows/linux/darwin），用于前端判断是否显示系统证书库
 }
 
 type HttpOpUiWebSocketItem struct {
@@ -3059,8 +3065,13 @@ func opuiHandleApi(w http.ResponseWriter, r *http.Request) {
 		j.TLS = d.Key("TLS").MustBool(false)
 		j.CertFile = d.Key("TLS证书文件").String()
 		j.KeyFile = d.Key("TLS密钥文件").String()
+		j.Debug = d.Key("调试").MustBool(false)
+		j.TLSMode = d.Key("TLS方式").MustString("file")
+		j.TLSDomains = d.Key("TLS域名").String()
+		j.TLSEmail = d.Key("TLS邮箱").String()
+		j.OS = runtime.GOOS
 		if r, err := json.Marshal(j); err != nil {
-			w.Write([]byte(`{"server":"","cors":false,"cors_origins":"","temp_cleanup_interval":60,"tls":false,"cert_file":"","key_file":""}`))
+			w.Write([]byte(`{"server":"","cors":false,"cors_origins":"","temp_cleanup_interval":60,"tls":false,"cert_file":"","key_file":"","debug":false,"tls_mode":"file","tls_domains":"","tls_email":"","os":"` + runtime.GOOS + `"}`))
 		} else {
 			w.Write(r)
 		}
@@ -3077,6 +3088,16 @@ func opuiHandleApi(w http.ResponseWriter, r *http.Request) {
 		if err != nil {
 			utils.ErrorStop("系统配置不存在")
 		}
+		// 记录旧 HTTP 配置，判断是否需要热重启 HTTP 服务器（无需重启进程）
+		router := dto.ServerConfig.Router
+		needRestart := router == nil || router.Http == nil ||
+			router.Http.Addr != j.Server ||
+			router.TLS != j.TLS ||
+			router.TLSMode != j.TLSMode ||
+			router.CertFile != j.CertFile ||
+			router.KeyFile != j.KeyFile ||
+			router.TLSDomains != j.TLSDomains ||
+			router.TLSEmail != j.TLSEmail
 		d := f.Section("HTTP")
 		d.Key("server").SetValue(j.Server)
 		d.Key("跨域").SetValue(strconv.FormatBool(j.CORS))
@@ -3085,6 +3106,10 @@ func opuiHandleApi(w http.ResponseWriter, r *http.Request) {
 		d.Key("TLS").SetValue(strconv.FormatBool(j.TLS))
 		d.Key("TLS证书文件").SetValue(j.CertFile)
 		d.Key("TLS密钥文件").SetValue(j.KeyFile)
+		d.Key("调试").SetValue(strconv.FormatBool(j.Debug))
+		d.Key("TLS方式").SetValue(j.TLSMode)
+		d.Key("TLS域名").SetValue(j.TLSDomains)
+		d.Key("TLS邮箱").SetValue(j.TLSEmail)
 		if err := ff.SaveIni(f); err != nil {
 			utils.ErrorStop("系统配置保存失败")
 		}
@@ -3094,8 +3119,39 @@ func opuiHandleApi(w http.ResponseWriter, r *http.Request) {
 		dto.ServerConfig.Router.TLS = j.TLS
 		dto.ServerConfig.Router.CertFile = j.CertFile
 		dto.ServerConfig.Router.KeyFile = j.KeyFile
+		dto.ServerConfig.Router.Debug = j.Debug
+		dto.ServerConfig.Router.TLSMode = j.TLSMode
+		dto.ServerConfig.Router.TLSDomains = j.TLSDomains
+		dto.ServerConfig.Router.TLSEmail = j.TLSEmail
+		debugLog.SetDebug(j.Debug)
+		// 更新监听地址并热重启 HTTP 服务器（HTTPS 开关/证书/地址变化即时生效）
+		if needRestart {
+			if router != nil && router.Http != nil {
+				router.Http.Addr = j.Server
+			}
+			if err := RestartHTTPServer(); err != nil {
+				w.Write([]byte(`{"status":"error","error":` + strconvQuote("HTTPS 配置热更新失败: "+err.Error()) + `}`))
+				return
+			}
+		}
 		// 处理配置请求
 		w.Write([]byte(`{"status":"ok"}`))
+		return
+
+	case "gen_https_cert":
+		opuiGenHttpsCert(w, r, h)
+		return
+
+	case "import_https_cert":
+		opuiImportHttpsCert(w, r, h)
+		return
+
+	case "list_system_certs":
+		opuiListSystemCerts(w, r, h)
+		return
+
+	case "extract_system_cert":
+		opuiExtractSystemCert(w, r, h)
 		return
 
 	case "get_opui":
@@ -6054,6 +6110,23 @@ func opuiHandleApi(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		defer dic.Close()
+
+		// 编译存在 error 级诊断（框配对错误、触发词正则错误等）时拒绝运行：
+		// 不执行词库，直接把错误与编译诊断回传前端高亮。
+		for _, warn := range dic.Data.Warnings {
+			if warn.Level == "error" {
+				jsonResp, _ := json.Marshal(map[string]any{
+					"output":       "",
+					"timedOut":     false,
+					"segments":     []any{},
+					"vars":         map[string]any{"P": map[string]any{}, "G": map[string]any{}, "GV": map[string]any{}},
+					"warnings":     dic.Data.Warnings,
+					"compileError": "编译存在错误，无法运行",
+				})
+				w.Write(jsonResp)
+				return
+			}
+		}
 
 		// 注入词库路径，便于错误日志显示来源（顶层词库默认没有 _词库路径_）
 		dic.Val.P.Set("_词库路径_", j.Path)

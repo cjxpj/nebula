@@ -264,11 +264,12 @@ type inlineBranch struct {
 	breakAfter bool
 }
 
-// compileInlineIf 编译一条行内判断链，语义与解释器 execProgram 的 isif/lock 状态机一致：
+// compileInlineIf 编译一条行内判断链，语义对齐判断框（如果>/<如果）：
 //
 //	如果:/if: cond ... [否则如果:/elif: cond ...] [否则/else ...] [如果尾/end]
-//	- 命中分支后执行其正文，遇到下一个分支标记（否则如果:/elif:/否则/else）时结束当前执行块（break）；
-//	- 命中分支到 如果尾/end 时正常继续后续语句；
+//	- 命中分支后执行其正文，遇到下一个分支标记（否则如果:/elif:/否则/else）时结束当前分支；
+//	- 有 如果尾/end 时（自动结尾），命中任意分支后跳到 如果尾 之后继续；
+//	- 无 如果尾/end 时，else 正文延续到节点末尾，非末尾分支命中后 break 到当前执行块末尾；
 //	- 无分支命中时执行 else 正文（若有）。
 //
 // start 为「如果:/if:」语句下标，返回最后一个已消费节点下标（调用方 for 循环 i++ 后推进到下一未消费节点）。
@@ -277,6 +278,7 @@ func (c *compiler) compileInlineIf(nodes []ast.Node, start int, cond string) int
 	cur := inlineBranch{cond: cond}
 	i := start + 1
 	endIndex := len(nodes) - 1
+	hasEndif := false
 
 parse:
 	for i < len(nodes) {
@@ -295,13 +297,36 @@ parse:
 		}
 		if inlineIsElse(t) {
 			branches = append(branches, cur)
-			// else 正文为之后全部节点（含可能的 如果尾/end 等，均按普通文本执行，与解释器一致）。
-			branches = append(branches, inlineBranch{body: nodes[i+1:]})
-			endIndex = len(nodes) - 1
+			// else 正文延续到闭合本判断的 如果尾/end（自动结尾），否则到节点末尾。
+			// 扫描时跳过嵌套的 如果:/if: ... 如果尾/end，避免把内层闭合误当外层闭合。
+			depth := 0
+			j := i + 1
+			for j < len(nodes) {
+				s2, ok := nodes[j].(*ast.Stmt)
+				if !ok {
+					j++
+					continue
+				}
+				if _, nested := inlineIfStart(s2.Text); nested {
+					depth++
+				} else if inlineIsEndif(s2.Text) {
+					if depth == 0 {
+						break
+					}
+					depth--
+				}
+				j++
+			}
+			branches = append(branches, inlineBranch{body: nodes[i+1 : j]})
+			if j < len(nodes) {
+				hasEndif = true
+				endIndex = j
+			}
 			break parse
 		}
 		if inlineIsEndif(t) {
 			branches = append(branches, cur)
+			hasEndif = true
 			endIndex = i
 			break parse
 		}
@@ -320,7 +345,10 @@ parse:
 		branches = append(branches, cur)
 	}
 
-	// 编译分支：末尾分支命中后自然落到底部继续；非末尾分支命中后 break 到当前执行块末尾。
+	// 编译分支：末尾分支命中后自然落到底部继续。
+	// 有 如果尾 时，非末尾分支命中后跳到 如果尾 之后（ifEndJumps，回填到末尾分支之后）；
+	// 无 如果尾 时，非末尾分支命中后 break 到当前执行块末尾（返回+如果尾 同理 break 到块末）。
+	ifEndJumps := make([]int, 0)
 	for idx := range branches {
 		br := branches[idx]
 		last := idx == len(branches)-1
@@ -330,10 +358,19 @@ parse:
 		}
 		jf := c.emit(Instr{Op: OpJumpIfFalse, Text: br.cond})
 		c.compileNodes(br.body)
-		if br.breakAfter || !last {
+		switch {
+		case br.breakAfter:
+			c.emitInlineBreak()
+		case !last && hasEndif:
+			jmp := c.emit(Instr{Op: OpJump})
+			ifEndJumps = append(ifEndJumps, jmp)
+		case !last:
 			c.emitInlineBreak()
 		}
 		c.instrs[jf].Arg = len(c.instrs)
+	}
+	for _, idx := range ifEndJumps {
+		c.instrs[idx].Arg = len(c.instrs)
 	}
 	return endIndex
 }

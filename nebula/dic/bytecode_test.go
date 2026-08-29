@@ -104,9 +104,14 @@ var golden = map[string]string{
 	"行内判断否则真":        "是",
 	"行内判断elif否则":     "二",
 	"行内判断elif否则无命中":  "三",
-	"行内判断elif尾后首分支":  "一",
+	"行内判断elif尾后首分支":  "一后",
 	"行内判断elif尾后末分支":  "二后",
 	"行内判断elif尾后无命中":  "后",
+	"行内判断否则尾后真":   "是后",
+	"行内判断否则尾后假":   "否后",
+	"行内判断elif否则尾后首": "一后",
+	"行内判断elif否则尾后中": "二后",
+	"行内判断elif否则尾后末": "三后",
 	"行内判断英文":         "三",
 	"行内判断返回尾":        "是",
 	"行内判断返回尾假":       "后",
@@ -976,7 +981,7 @@ func TestEquivInlineIfElifElseNone(t *testing.T) {
 }
 
 func TestEquivInlineIfElifEndifFirst(t *testing.T) {
-	// elif 链以 如果尾 收尾且其后有语句：命中首个分支后 break，跳过其后全部内容
+	// elif 链以 如果尾 收尾且其后有语句：命中首个分支后跳到 如果尾 之后继续
 	assertEquivalent(t, "行内判断elif尾后首分支", []string{
 		"如果:%x%==1",
 		"一",
@@ -1004,6 +1009,69 @@ func TestEquivInlineIfElifEndifNone(t *testing.T) {
 		"一",
 		"否则如果:%x%==2",
 		"二",
+		"如果尾",
+		"后",
+	}, func(p *dto.Val) { p.Set("x", "3") })
+}
+
+func TestEquivInlineIfElseEndifTrue(t *testing.T) {
+	// 否则 + 如果尾 自动结尾：命中真分支后跳到 如果尾 之后继续
+	assertEquivalent(t, "行内判断否则尾后真", []string{
+		"如果:%x%==1",
+		"是",
+		"否则",
+		"否",
+		"如果尾",
+		"后",
+	}, func(p *dto.Val) { p.Set("x", "1") })
+}
+
+func TestEquivInlineIfElseEndifFalse(t *testing.T) {
+	// 否则 + 如果尾 自动结尾：走否则分支，如果尾 之后继续
+	assertEquivalent(t, "行内判断否则尾后假", []string{
+		"如果:%x%==1",
+		"是",
+		"否则",
+		"否",
+		"如果尾",
+		"后",
+	}, func(p *dto.Val) { p.Set("x", "2") })
+}
+
+func TestEquivInlineIfElifElseEndifFirst(t *testing.T) {
+	assertEquivalent(t, "行内判断elif否则尾后首", []string{
+		"如果:%x%==1",
+		"一",
+		"否则如果:%x%==2",
+		"二",
+		"否则",
+		"三",
+		"如果尾",
+		"后",
+	}, func(p *dto.Val) { p.Set("x", "1") })
+}
+
+func TestEquivInlineIfElifElseEndifMid(t *testing.T) {
+	assertEquivalent(t, "行内判断elif否则尾后中", []string{
+		"如果:%x%==1",
+		"一",
+		"否则如果:%x%==2",
+		"二",
+		"否则",
+		"三",
+		"如果尾",
+		"后",
+	}, func(p *dto.Val) { p.Set("x", "2") })
+}
+
+func TestEquivInlineIfElifElseEndifLast(t *testing.T) {
+	assertEquivalent(t, "行内判断elif否则尾后末", []string{
+		"如果:%x%==1",
+		"一",
+		"否则如果:%x%==2",
+		"二",
+		"否则",
+		"三",
 		"如果尾",
 		"后",
 	}, func(p *dto.Val) { p.Set("x", "3") })

@@ -126,7 +126,13 @@ func loadConfig() {
 		TLS:                 tlsOk,
 		CertFile:            HTTP_Config.Key("TLS证书文件").String(),
 		KeyFile:             HTTP_Config.Key("TLS密钥文件").String(),
+		Debug:               HTTP_Config.Key("调试").MustBool(false),
+		TLSMode:             HTTP_Config.Key("TLS方式").MustString("file"),
+		TLSDomains:          HTTP_Config.Key("TLS域名").String(),
+		TLSEmail:            HTTP_Config.Key("TLS邮箱").String(),
 	}
+	// 启动时同步全局调试开关，控制词库缓存等调试信息打印
+	debugLog.SetDebug(dto.ServerConfig.Router.Debug)
 
 	opUi := httpData.Section("管理面板")
 	if ok, _ := opUi.Key("启用").Bool(); ok {

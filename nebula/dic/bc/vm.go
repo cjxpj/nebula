@@ -77,17 +77,12 @@ type Runtime interface {
 
 // Run 执行字节码，返回累积输出。
 func Run(instrs []Instr, rt Runtime) string {
-	type frameKind uint8
-	const (
-		frameLoop frameKind = iota
-		frameForEach
-	)
+	// debugLog.Info("Run", utils.AnyToString(instrs))
+	// defer debugLog.Info("Run end")
 	type frame struct {
-		kind    frameKind
-		varName string // frameLoop 专用
-		start   int    // frameLoop：起始值（普通循环=1，范围循环=起始值）
-		count   int    // frameLoop：结束值(范围循环)或循环次数；frameForEach：迭代项数
-		i       int    // frameLoop：当前值；frameForEach：当前游标
+		varName string // 循环变量名（遍历帧为空）
+		count   int    // 循环结束值/次数；遍历帧为迭代项数；while 为 -1
+		i       int    // 当前值/游标
 	}
 	var frames []frame
 
@@ -126,7 +121,7 @@ func Run(instrs []Instr, rt Runtime) string {
 				}
 			}
 		case OpLoop:
-			frames = append(frames, frame{kind: frameLoop, varName: in.Text, start: 1, count: in.Arg, i: 1})
+			frames = append(frames, frame{varName: in.Text, count: in.Arg, i: 1})
 			if in.Arg == 0 {
 				// 0 次：跳过循环体（含 OpLoopEnd），直接落到 OpLoopPop 弹出帧。
 				pc = in.End - 1
@@ -135,7 +130,7 @@ func Run(instrs []Instr, rt Runtime) string {
 			}
 		case OpLoopDyn:
 			count := rt.LoopCount(in.Expr)
-			frames = append(frames, frame{kind: frameLoop, varName: in.Text, start: 1, count: count, i: 1})
+			frames = append(frames, frame{varName: in.Text, count: count, i: 1})
 			if count < 1 {
 				// 次数 ≤0：跳过循环体（含 OpLoopEnd），直接落到 OpLoopPop 弹出帧。
 				pc = in.End - 1
@@ -147,7 +142,7 @@ func Run(instrs []Instr, rt Runtime) string {
 			if in.Expr != "" {
 				start, end = rt.LoopRange(in.Expr)
 			}
-			frames = append(frames, frame{kind: frameLoop, varName: in.Text, start: start, count: end, i: start})
+			frames = append(frames, frame{varName: in.Text, count: end, i: start})
 			if end < start {
 				// 空范围（起始值 > 结束值）：跳过循环体（含 OpLoopEnd），直接落到 OpLoopPop 弹出帧。
 				pc = in.End - 1
@@ -156,7 +151,7 @@ func Run(instrs []Instr, rt Runtime) string {
 			}
 		case OpWhile:
 			// while 循环：仅压入一个无限循环帧，实际是否进入循环体由紧随其后的 OpJumpIfFalse 判断。
-			frames = append(frames, frame{kind: frameLoop, varName: "", count: -1})
+			frames = append(frames, frame{varName: "", count: -1})
 		case OpLoopEnd:
 			f := &frames[len(frames)-1]
 			if newVal, changed, breakLoop := rt.LoopVarChanged(f.varName, f.i); breakLoop {
@@ -207,7 +202,7 @@ func Run(instrs []Instr, rt Runtime) string {
 		case OpForEachInit:
 			depth := len(frames)
 			count := rt.ForEachInit(depth, in.Text)
-			frames = append(frames, frame{kind: frameForEach, count: count, i: 0})
+			frames = append(frames, frame{count: count, i: 0})
 			if count < 1 {
 				// 0 项：跳过循环体（含 OpForEachEnd），直接落到 OpForEachPop 弹出帧。
 				pc = in.End - 1

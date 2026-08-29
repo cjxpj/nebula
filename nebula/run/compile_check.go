@@ -3,8 +3,10 @@ package run
 import (
 	"fmt"
 	"regexp"
+	"strconv"
 	"strings"
 
+	"github.com/cjxpj/nebula/build"
 	"github.com/cjxpj/nebula/dto"
 	"github.com/cjxpj/nebula/utils"
 )
@@ -15,6 +17,7 @@ func runCompileChecks(v *dto.BuildValue, stack *importStack) {
 	checkTriggerRegex(v, stack)
 	checkFuncParams(v, stack)
 	checkFuncNameConflict(v, stack)
+	checkUndefinedVars(v, stack)
 }
 
 // allBuildDics 收集编译产物中全部词条（正文、全局函数、类内函数），按指针去重，
@@ -287,7 +290,11 @@ func checkFuncCall(name string, argCount, line int, v *dto.BuildValue, funcIndex
 		if !utils.MatchLenRule(argCount, rule) {
 			stack.addError(line, fmt.Sprintf("函数参数数量错误：$%s$ 需要 %s 个参数，实际 %d 个", name, rule, argCount))
 		}
+		return
 	}
+
+	// 未定义的函数：非局部函数、非自定义函数、非内置函数，运行时将原样返回 $...$ 文本。
+	stack.addWarning(line, "函数不存在："+name)
 }
 
 // ============ 函数名与内置函数冲突检查 ============
@@ -304,4 +311,253 @@ func checkFuncNameConflict(v *dto.BuildValue, stack *importStack) {
 			stack.addError(e.TriggerLine, fmt.Sprintf("禁止覆盖系统内置函数：%s", name))
 		}
 	}
+}
+
+// ============ 变量引用存在性检查 ============
+
+// checkUndefinedVars 静态检查变量引用：%变量% 引用了「到当前行为止仍未赋值」、且非魔术/消息变量时给出警告。
+// 按词条正文顺序分析：赋值行/框声明即时生效，函数传出变量仅在 $函数$ 调用写回后才视为已定义。
+func checkUndefinedVars(v *dto.BuildValue, stack *importStack) {
+	funcOutVars := collectFuncOutVars(v)
+
+	// 头部初始化语句：顺序检查并累积赋值，结果作为所有词条正文的初始已定义变量。
+	headDefined := make(map[string]bool)
+	for i, line := range v.Head {
+		ln := 0
+		if i < len(v.HeadLineNums) {
+			ln = v.HeadLineNums[i]
+		}
+		checkUndefinedVarsLine(line, ln, headDefined, stack)
+		collectAssignedVars(line, headDefined)
+		collectBlockVars(line, headDefined)
+		collectFuncOutVarsFromLine(line, funcOutVars, headDefined)
+	}
+
+	for _, e := range allBuildDics(v) {
+		checkUndefinedVarsEntry(e, headDefined, funcOutVars, stack)
+	}
+}
+
+// checkUndefinedVarsEntry 顺序检查单个词条正文里的变量引用：
+// 每行先按「当前已定义变量」检查引用，再把本行的赋值/框声明/函数调用写回加入已定义集合。
+func checkUndefinedVarsEntry(e *dto.BuildDic, headDefined map[string]bool, funcOutVars map[string]map[string]bool, stack *importStack) {
+	if e == nil {
+		return
+	}
+	defined := make(map[string]bool, len(headDefined)+4)
+	for k := range headDefined {
+		defined[k] = true
+	}
+	for i, line := range e.Text {
+		ln := 0
+		if i < len(e.LineNums) {
+			ln = e.LineNums[i]
+		}
+		checkUndefinedVarsLine(line, ln, defined, stack)
+		collectAssignedVars(line, defined)
+		collectBlockVars(line, defined)
+		collectFuncOutVarsFromLine(line, funcOutVars, defined)
+	}
+}
+
+// checkUndefinedVarsLine 检查单行里的变量引用；同一行内重复引用去重。
+func checkUndefinedVarsLine(line string, ln int, defined map[string]bool, stack *importStack) {
+	if !strings.Contains(line, "%") {
+		return
+	}
+	// $%名字%...$ 的首个 token 是函数框引用（调用变量里存的函数），而非变量读取，跳过变量检查。
+	funcBoxNames := make(map[string]bool)
+	if strings.Contains(line, "$") {
+		for _, seg := range parseFuncSegments(line) {
+			if seg.isFunc && len(seg.args) > 0 {
+				name := seg.args[0]
+				if len(name) > 2 && name[0] == '%' && name[len(name)-1] == '%' {
+					funcBoxNames[name[1:len(name)-1]] = true
+				}
+			}
+		}
+	}
+
+	seen := make(map[string]bool)
+	for _, name := range extractVarRefs(line) {
+		if name == "" || seen[name] || funcBoxNames[name] {
+			continue
+		}
+		seen[name] = true
+		if defined[name] || isMagicVar(name) {
+			continue
+		}
+		stack.addWarning(ln, "变量不存在："+name)
+	}
+}
+
+// extractVarRefs 提取字符串中 %...% 之间的变量名（静态切分，与运行时 % 切分语义一致）。
+func extractVarRefs(s string) []string {
+	if !strings.Contains(s, "%") {
+		return nil
+	}
+	var names []string
+	start := 0
+	for {
+		open := strings.Index(s[start:], "%")
+		if open == -1 {
+			break
+		}
+		open += start
+		close := strings.Index(s[open+1:], "%")
+		if close == -1 {
+			break
+		}
+		close += open + 1
+		names = append(names, s[open+1:close])
+		start = close + 1
+	}
+	return names
+}
+
+// collectFuncOutVars 建立「函数名 → 传出变量集合」映射，供 $函数$ 调用写回分析使用。
+func collectFuncOutVars(v *dto.BuildValue) map[string]map[string]bool {
+	out := make(map[string]map[string]bool)
+	for _, e := range v.DicFuncs["函数"] {
+		if e == nil {
+			continue
+		}
+		t := e.Trigger
+		i := strings.LastIndex(t, "->")
+		if i == -1 {
+			continue
+		}
+		name := strings.TrimSpace(t[:i])
+		if name == "" {
+			continue
+		}
+		if out[name] == nil {
+			out[name] = make(map[string]bool)
+		}
+		for _, vname := range strings.Split(t[i+2:], ",") {
+			vname = strings.TrimSpace(vname)
+			if vname != "" {
+				out[name][vname] = true
+			}
+		}
+	}
+	return out
+}
+
+// collectFuncOutVarsFromLine 识别一行中的 $函数$ 调用，把对应函数的传出变量加入 defined。
+func collectFuncOutVarsFromLine(line string, funcOutVars map[string]map[string]bool, defined map[string]bool) {
+	if !strings.Contains(line, "$") || len(funcOutVars) == 0 {
+		return
+	}
+	for _, seg := range parseFuncSegments(line) {
+		if !seg.isFunc || len(seg.args) == 0 {
+			continue
+		}
+		name := seg.args[0]
+		name = strings.TrimPrefix(name, "!")
+		if name == "" || name == "new" {
+			continue
+		}
+		// 动态调用（类方法、%变量% 函数框、实例方法）无法静态确定传出变量，跳过。
+		if name[0] == '.' || name[0] == '%' || strings.Contains(name, ".") {
+			continue
+		}
+		for vname := range funcOutVars[name] {
+			defined[vname] = true
+		}
+	}
+}
+
+// collectAssignedVars 收集赋值行（变量:值、变量:$函数$、变量:%变量%、变量:、变量+/-/*// 等）的变量名。
+func collectAssignedVars(line string, defined map[string]bool) {
+	vt, vp, _ := build.ValTextTest(line)
+	if vt != 0 && vp != "" {
+		defined[vp] = true
+	}
+}
+
+// collectBlockVars 收集块开启行声明的变量：
+// 循环>变量、遍历>k,v、函数>变量名、文本>/纯文本>变量=...（赋值目标）。
+func collectBlockVars(line string, defined map[string]bool) {
+	var rest string
+	isTextBlock := false
+	switch {
+	case strings.HasPrefix(line, "纯文本>"):
+		rest = line[len("纯文本>"):]
+		isTextBlock = true
+	case strings.HasPrefix(line, "文本>"):
+		rest = line[len("文本>"):]
+		isTextBlock = true
+	case strings.HasPrefix(line, "函数>"):
+		rest = line[len("函数>"):]
+	case strings.HasPrefix(line, "循环>"):
+		rest = line[len("循环>"):]
+	case strings.HasPrefix(line, "遍历>"):
+		rest = line[len("遍历>"):]
+	default:
+		return
+	}
+
+	if i := strings.IndexByte(rest, '='); i >= 0 {
+		rest = rest[:i]
+	} else if isTextBlock {
+		// 文本>/纯文本> 无 = 时是直接输出，不声明变量。
+		return
+	}
+
+	for _, name := range strings.Split(rest, ",") {
+		name = strings.TrimSpace(name)
+		if name == "" || strings.ContainsAny(name, " %$[]<>.") {
+			continue
+		}
+		defined[name] = true
+	}
+}
+
+// isParamVar 判断变量名是否为 参数N / 括号N 形式的运行时参数变量。
+func isParamVar(name string) bool {
+	for _, prefix := range [...]string{"参数", "括号"} {
+		if after, ok := strings.CutPrefix(name, prefix); ok && after != "" {
+			if _, err := strconv.Atoi(after); err == nil {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// isMagicVar 判断变量名是否为运行时自动注入或内置的「魔术变量」，这些引用无需预先赋值。
+func isMagicVar(name string) bool {
+	if name == "" {
+		return false
+	}
+	switch name {
+	case "时间", "时间戳", "毫秒时间戳", "微秒时间戳", "纳秒时间戳", "空格", "换行", "系统", "版本",
+		"val0", "val1", "val2", "val3", "val4", "val5", "val6", "val7", "val8", "val9", "val10",
+		// 运行时上下文/系统变量
+		"触发词", "触发", "报错", "Class", "自己", "类型",
+		// 各机器人注入的消息变量
+		"来源", "昵称", "群号", "群名", "QQ", "qq", "uid", "主人", "MsgId", "MessageID",
+		"Op", "robot", "Robot", "data", "GolineMode", "文件数据", "撤回消息", "AT0",
+		"子群号", "管理", "头像", "robot_appid":
+		return true
+	}
+	// 系统魔术变量：_xxx_
+	if strings.HasPrefix(name, "_") {
+		return true
+	}
+	if isParamVar(name) {
+		return true
+	}
+	// 编码/类型/JSON路径/取反前缀
+	for _, p := range [...]string{"URL编码@", "B64编码@", "URL@", "B64@", "TYPE@", "@", "!"} {
+		if strings.HasPrefix(name, p) {
+			return true
+		}
+	}
+	// 时间格式化（如 时间yyyy-MM-dd）与随机数（如 随机数1-100）
+	if strings.HasPrefix(name, "时间") || strings.HasPrefix(name, "随机数") {
+		return true
+	}
+	return false
 }

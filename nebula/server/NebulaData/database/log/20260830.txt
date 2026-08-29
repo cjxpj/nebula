@@ -1,0 +1,21 @@
+=== RUN   TestGenerateSelfSignedCert
+--- PASS: TestGenerateSelfSignedCert (0.00s)
+=== RUN   TestWriteCertFiles
+--- PASS: TestWriteCertFiles (0.00s)
+=== RUN   TestListSystemCerts
+=== RUN   TestListSystemCerts
+=== RUN   TestListSystemCerts
+    https_cert_test.go:45: 系统证书数量: 2
+    https_cert_test.go:47: cert: map[HasPrivateKey:True Issuer:CN=ee25d4d1-7eea-4d26-a40a-6a047d6ea76d NotAfter:2027-08-01 Store:user Subject:CN=ee25d4d1-7eea-4d26-a40a-6a047d6ea76d Thumbprint:410CCA78364A4AF652805B61A98D2632A45B41F7]
+    https_cert_test.go:47: cert: map[HasPrivateKey:True Issuer:CN=SteelSeries A/S NotAfter:2036-08-02 Store:machine Subject:CN=SteelSeries A/S Thumbprint:68BC662C794D38DA44D15941E0F9336F77DCBBCA]
+--- PASS: TestListSystemCerts (0.25s)
+=== RUN   TestExtractSystemCertInvalid
+=== RUN   TestGenerateSelfSignedCert
+--- PASS: TestGenerateSelfSignedCert (0.00s)
+=== RUN   TestWriteCertFiles
+--- PASS: TestWriteCertFiles (0.00s)
+=== RUN   TestListSystemCerts
+    https_system_windows_test.go:12: 系统证书数量: 2
+--- PASS: TestListSystemCerts (0.27s)
+=== RUN   TestExtractSystemCertInvalid
+=== RUN   TestListSystemCerts

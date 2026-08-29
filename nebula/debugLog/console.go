@@ -16,6 +16,9 @@ type consoleLogger struct{}
 
 // Debug 日志
 func (consoleLogger) Debug(v ...any) {
+	if !debugEnabled.Load() {
+		return
+	}
 	output("Debug", fmt.Sprint(v...))
 }
 
@@ -36,6 +39,9 @@ func (consoleLogger) Error(v ...any) {
 
 // Debugf Debug Format 日志
 func (consoleLogger) Debugf(format string, v ...any) {
+	if !debugEnabled.Load() {
+		return
+	}
 	output("Debug", fmt.Sprintf(format, v...))
 }
 

@@ -227,3 +227,145 @@ func TestCheckFuncNameConflict(t *testing.T) {
 		t.Fatalf("普通函数不应触发冲突警告，实际：%v", warningsText(s.warnings))
 	}
 }
+
+func TestCheckUndefinedFunc(t *testing.T) {
+	v := newTestBuildValue()
+	v.Dic = []*dto.BuildDic{{
+		Trigger:     "测试",
+		TriggerLine: 1,
+		Text:        []string{"$不存在的函数 参数$"},
+		LineNums:    []int{3},
+	}}
+	s := newTestStack()
+	runCompileChecks(v, s)
+	if !containsText(s.warnings, "函数不存在：不存在的函数") {
+		t.Fatalf("期望报告未定义函数，实际：%v", warningsText(s.warnings))
+	}
+}
+
+func TestCheckUndefinedVar(t *testing.T) {
+	v := newTestBuildValue()
+	v.Dic = []*dto.BuildDic{{
+		Trigger:     "测试",
+		TriggerLine: 1,
+		Text:        []string{"你好%未定义变量%"},
+		LineNums:    []int{3},
+	}}
+	s := newTestStack()
+	runCompileChecks(v, s)
+	if !containsText(s.warnings, "变量不存在：未定义变量") {
+		t.Fatalf("期望报告未定义变量，实际：%v", warningsText(s.warnings))
+	}
+}
+
+func TestCheckUndefinedVarSkipsDefined(t *testing.T) {
+	v := newTestBuildValue()
+	v.Dic = []*dto.BuildDic{{
+		Trigger:     "测试",
+		TriggerLine: 1,
+		Text: []string{
+			"a:1",
+			"%a%",
+			"循环>i=3",
+			"%i%",
+			"<循环",
+			"遍历>k,v=[\"x\"]",
+			"%k%%v%",
+			"<遍历",
+			"函数>foo",
+			"$%foo%$",
+			"<函数",
+		},
+		LineNums: []int{2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12},
+	}}
+	s := newTestStack()
+	runCompileChecks(v, s)
+	if len(s.warnings) != 0 {
+		t.Fatalf("已定义变量不应告警，实际：%v", warningsText(s.warnings))
+	}
+}
+
+func TestCheckUndefinedVarSkipsMagic(t *testing.T) {
+	v := newTestBuildValue()
+	v.Dic = []*dto.BuildDic{{
+		Trigger:     "测试",
+		TriggerLine: 1,
+		Text:        []string{"%参数1%%QQ%%时间%%换行%%_词库路径_%"},
+		LineNums:    []int{3},
+	}}
+	s := newTestStack()
+	runCompileChecks(v, s)
+	if len(s.warnings) != 0 {
+		t.Fatalf("魔术/消息变量不应告警，实际：%v", warningsText(s.warnings))
+	}
+}
+
+func TestCheckUndefinedVarFuncOutNotAssigned(t *testing.T) {
+	v := newTestBuildValue()
+	v.DicFuncs["函数"] = []*dto.BuildDic{{
+		Trigger:   "a->aa",
+		ParamRule: "1",
+		Text:      []string{"a"}, // 函数正文仅输出，未给传出变量 aa 赋值
+		LineNums:  []int{2},
+	}}
+	v.Dic = []*dto.BuildDic{{
+		Trigger:     "测试",
+		TriggerLine: 1,
+		Text:        []string{"%aa%"},
+		LineNums:    []int{3},
+	}}
+	s := newTestStack()
+	runCompileChecks(v, s)
+	if !containsText(s.warnings, "变量不存在：aa") {
+		t.Fatalf("函数传出变量未被赋值时应告警，实际：%v", warningsText(s.warnings))
+	}
+}
+
+func TestCheckUndefinedVarFuncOutAssigned(t *testing.T) {
+	v := newTestBuildValue()
+	v.DicFuncs["函数"] = []*dto.BuildDic{{
+		Trigger:   "a->aa",
+		ParamRule: "1",
+		Text:      []string{"aa:1"},
+		LineNums:  []int{2},
+	}}
+	v.Dic = []*dto.BuildDic{{
+		Trigger:     "测试",
+		TriggerLine: 1,
+		Text:        []string{"$a x$", "%aa%"},
+		LineNums:    []int{3, 4},
+	}}
+	s := newTestStack()
+	runCompileChecks(v, s)
+	if containsText(s.warnings, "变量不存在：aa") {
+		t.Fatalf("函数正文已赋值传出变量，不应告警，实际：%v", warningsText(s.warnings))
+	}
+}
+
+func TestCheckUndefinedVarFuncOutBeforeCall(t *testing.T) {
+	v := newTestBuildValue()
+	v.DicFuncs["函数"] = []*dto.BuildDic{{
+		Trigger:   "a->aa",
+		ParamRule: "1",
+		Text:      []string{"aa:ok"},
+		LineNums:  []int{2},
+	}}
+	v.Dic = []*dto.BuildDic{{
+		Trigger:     "测试",
+		TriggerLine: 1,
+		Text:        []string{"%aa%", "$a x$", "%aa%"},
+		LineNums:    []int{3, 4, 5},
+	}}
+	s := newTestStack()
+	runCompileChecks(v, s)
+	// 只有调用 $a$ 之前（第 3 行）的 %aa% 应告警，调用之后（第 5 行）不应告警
+	var warnedLines []int
+	for _, w := range s.warnings {
+		if strings.Contains(w.Text, "变量不存在：aa") {
+			warnedLines = append(warnedLines, w.Line)
+		}
+	}
+	if len(warnedLines) != 1 || warnedLines[0] != 3 {
+		t.Fatalf("期望仅第 3 行 %%aa%% 告警，实际告警行：%v，全部：%v", warnedLines, warningsText(s.warnings))
+	}
+}
