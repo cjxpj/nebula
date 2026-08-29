@@ -2,7 +2,7 @@
 
 <div align="center">
 
-![版本](https://img.shields.io/badge/%E7%89%88%E6%9C%AC-17.3.0-blue)
+![版本](https://img.shields.io/badge/%E7%89%88%E6%9C%AC-19.0.0-blue)
 ![平台](https://img.shields.io/badge/%E5%B9%B3%E5%8F%B0-Windows%20%7C%20Linux%20%7C%20macOS-green)
 ![语言](https://img.shields.io/badge/%E8%AF%AD%E8%A8%80-Go%20%7C%20Nebula%20Script-orange)
 ![许可证](https://img.shields.io/badge/%E8%AE%B8%E5%8F%AF%E8%AF%81-MIT-yellow)
@@ -23,8 +23,10 @@
 ## 🚀 核心特性
 
 ### 🔧 技术特性
+- **高性能词库引擎**：AST + 字节码 VM 双引擎架构，结构控制流下沉为字节码指令，兼顾性能与语义兼容
 - **按需扩展运行时**：支持 PHP、Python、FFmpeg 等扩展运行时，通过管理后台一键安装
 - **多机器人支持**：QQ、NapCat、飞书、云湖机器人一体化集成
+- **云工具服务端**：内置账号、余额、白名单、在线时长管理的云函数服务，词库函数即云端 API
 - **跨平台部署**：Windows 独立客户端 / Linux & macOS Docker 容器化部署
 - **自动配置管理**：首次启动自动生成配置目录和默认文件
 - **健康检查监控**：内置服务健康检查和资源监控
@@ -40,6 +42,7 @@
 - **HTTP API 服务**：RESTful 风格 API 自动映射
 - **WebSocket 支持**：实时双向通信
 - **管理面板**：内置 Web 管理界面
+- **云工具服务端**：WebSocket 云函数服务，词库 `[函数]` 直接映射为云端 API，内置账号/余额/白名单管理
 - **Ngrok 穿透**：内网穿透支持
 - **跨域支持**：CORS 配置和管理
 
@@ -132,8 +135,11 @@ nebula/
 │   ├── appfiles/             # 嵌入式资源文件
 │   ├── bot/                  # 机器人模块（QQ、NapCat、飞书、云湖）
 │   ├── dic/                  # 词库解析和运行引擎
+│   │   ├── ast/              # AST 结构解析器（框/语句叶子）
+│   │   ├── bc/               # 字节码指令集、编译器与 VM
+│   │   └── funcs/            # 内置字典函数
 │   ├── dto/                  # 数据传输对象
-│   ├── server/               # HTTP 服务器实现
+│   ├── server/               # HTTP 服务器实现（含云工具服务端）
 │   └── utils/                # 工具函数
 ├── deploy.sh                 # Linux/macOS 部署脚本
 ├── deploy.ps1                # Windows PowerShell 部署脚本
@@ -202,6 +208,20 @@ $发送音乐卡片 <群号> <类型> <标题> <描述> <链接>$
 $图片 <类型> <图片数据>$
 ```
 
+## 🧠 词库执行引擎
+
+Nebula 词库采用 **AST + 字节码 VM** 双引擎架构，默认启用字节码执行，在保证与旧解释器 100% 语义兼容的前提下显著提升运行性能。
+
+| 层次 | 位置 | 职责 |
+|------|------|------|
+| AST 结构解析器 | `nebula/dic/ast` | 将词库正文解析为框（Block）与语句叶子（Stmt），并记录原始行号 |
+| 字节码指令集 | `nebula/dic/bc` | 定义指令（op）、编译器（compile）与 VM 执行器（vm） |
+| 运行时适配器 | `nebula/dic/bytecode.go` | 将字节码 VM 接入现有词库运行时 |
+
+- **结构控制流下沉**：`如果>` / `循环>`（字面量整数次数）编译为跳转/循环指令，`>终止` / `>终止循环` / `>跳过` 编译为终止/跳转指令
+- **语义全兼容**：复杂框与有状态叶子（`遍历>`、`文本>`、`JSON>`、`函数>`、`--js`、行内 `if:`/`elif:`、`>跳行(` 等）通过委托或整段回退交给旧解释器，保证行为一致
+- **等价性测试**：集中在 `nebula/dic/bytecode_test.go` 与 `nebula/dic/bc/vm_test.go`，持续校验新旧引擎输出一致性
+
 ## 📚 Nebula 语言基础
 
 ### 文件分类
@@ -244,6 +264,19 @@ yes
 否则
 no
 ```
+
+#### 重定向触发词
+仅限词库头部使用，把当前触发词重定向为指定文本后重新匹配：
+```nebula
+$重定向触发词 test$
+
+Main
+ok
+
+test
+ok2
+```
+上例中，无论发送什么消息都会被重定向到 `test` 触发词，返回 `ok2`。
 
 ### 数据库操作
 ```nebula
