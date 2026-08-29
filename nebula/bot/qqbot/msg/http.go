@@ -13,6 +13,11 @@ import (
 )
 
 func (b *QQBot) Send(path string, body any, respObj any) error {
+	if b.Sandbox != nil {
+		b.captureSend(body)
+		b.fillSandboxResp(respObj)
+		return nil
+	}
 	if err := b.EnsureToken(); err != nil {
 		return err
 	}

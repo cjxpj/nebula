@@ -28,6 +28,8 @@ import (
 	"unicode/utf8"
 
 	"github.com/cjxpj/nebula/appfiles"
+	"github.com/cjxpj/nebula/bot/qqbot"
+	qqbot_msg "github.com/cjxpj/nebula/bot/qqbot/msg"
 	"github.com/cjxpj/nebula/bot/secludedbot"
 	"github.com/cjxpj/nebula/debugLog"
 	dic_api "github.com/cjxpj/nebula/dic/api"
@@ -4454,6 +4456,84 @@ func opuiHandleApi(w http.ResponseWriter, r *http.Request) {
 		w.Write([]byte(`{"status":"ok"}`))
 		return
 
+	case "qq_sandbox_run":
+		var j struct {
+			Section string `json:"section"`
+			// Dic 自定义词库路径（优先于 section，无需选择实例即可测试）
+			Dic string `json:"dic"`
+			Msg string `json:"msg"`
+			// Private 按群私聊模拟（词库 #私聊# 触发词生效），默认群聊
+			Private bool `json:"private"`
+			// ReplyID 前端右键回复指定的被引用消息 ID，空则回退为本次消息自身
+			ReplyID string `json:"reply_id"`
+			// GroupID 自定义模拟群号（写入 %群号%），空则使用默认 sandbox_group
+			GroupID string `json:"group_id"`
+			// Images 用户发送的图片（data URL 列表），注入词库 $IMG$ 附件
+			Images []string `json:"images"`
+			// User 自定义模拟用户（ID 写入 QQ/qq 变量，Name 写入 昵称 变量）
+			User struct {
+				ID   string `json:"id"`
+				Name string `json:"name"`
+			} `json:"user"`
+		}
+		if err := json.Unmarshal(h.Data, &j); err != nil {
+			http.Error(w, `{"status":"error","error":"invalid json"}`, http.StatusBadRequest)
+			return
+		}
+
+		dicPath := j.Dic
+		appid, secret := "", ""
+		atCompat, filterSlash := true, true
+		debug := false
+		robot := ""
+
+		// 未直接传词库路径时，回退到按 section 从配置读取（兼容旧调用）
+		if dicPath == "" {
+			if j.Section == "" {
+				http.Error(w, `{"status":"error","error":"dic或section不能为空"}`, http.StatusBadRequest)
+				return
+			}
+			ff := utils.NewFileQueue(dto.CONFIG_PATH)
+			f, err := ff.LoadIni()
+			if err != nil {
+				utils.ErrorStop("系统配置不存在")
+			}
+			d := f.Section(j.Section)
+			dicPath = d.Key("词库").String()
+			appid = d.Key("APPID").String()
+			secret = d.Key("密钥").String()
+			atCompat = d.Key("全量艾特兼容").MustBool(true)
+			filterSlash = d.Key("过滤开头斜杠").MustBool(true)
+			debug = d.Key("调试打印").MustBool(false)
+			robot = d.Key("Robot").String()
+		}
+		if dicPath == "" {
+			http.Error(w, `{"status":"error","error":"词库路径不能为空"}`, http.StatusBadRequest)
+			return
+		}
+
+		capture := qqbot_msg.NewSandboxCapture()
+		api := qqbot_msg.NewQQBot(appid, secret)
+		api.Debug = debug
+		api.Sandbox = capture
+
+		bot := &qqbot_msg.RouterQQBot{
+			FilePath:    dicPath,
+			API:         api,
+			AtCompat:    atCompat,
+			FilterSlash: filterSlash,
+			Debug:       debug,
+			Robot:       robot,
+		}
+
+		msgID, messages := qqbot.SandboxRun(bot, j.Msg, qqbot.SandboxUser{ID: j.User.ID, Name: j.User.Name}, j.Private, j.ReplyID, j.GroupID, j.Images)
+		if messages == nil {
+			messages = []qqbot_msg.SandboxMessage{}
+		}
+		resp, _ := json.Marshal(map[string]any{"status": "ok", "msg_id": msgID, "messages": messages})
+		w.Write(resp)
+		return
+
 	case "get_napcat":
 		ff := utils.NewFileQueue(dto.CONFIG_PATH)
 		f, err := ff.LoadIni()
@@ -4997,6 +5077,17 @@ func opuiHandleApi(w http.ResponseWriter, r *http.Request) {
 		w.Write(jsonResp)
 		return
 
+	case "get_dic_doc_raw":
+		data, err := appfiles.GetFile("dic.md")
+		if err != nil {
+			http.Error(w, `{"status":"error","error":"embedded file not found"}`, http.StatusInternalServerError)
+			return
+		}
+		resp := map[string]string{"content": string(data)}
+		jsonResp, _ := json.Marshal(resp)
+		w.Write(jsonResp)
+		return
+
 	case "get_autostart":
 		enabled, err := GetAutoStart()
 		if err != nil {
@@ -5100,7 +5191,16 @@ func opuiHandleApi(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, `{"status":"error","error":"词库读取失败: `+err.Error()+`"}`, http.StatusBadRequest)
 			return
 		}
-		jsonResp, _ := json.Marshal(map[string]any{"content": content})
+
+		// 编译检测：打开词库时也编译一次，返回编译问题（error 红色 / warning 黄色）供前端高亮
+		resp := map[string]any{"content": content}
+		if dicCheck, err := dic_dto.RunDicNoCache(j.Path); err == nil && dicCheck != nil {
+			defer dicCheck.Close()
+			if len(dicCheck.Data.Warnings) > 0 {
+				resp["warnings"] = dicCheck.Data.Warnings
+			}
+		}
+		jsonResp, _ := json.Marshal(resp)
 		w.Write(jsonResp)
 		return
 
@@ -5122,7 +5222,16 @@ func opuiHandleApi(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		utils.NewFileQueue(j.Path).WriteToFile(j.Content)
-		jsonResp, _ := json.Marshal(map[string]any{"status": "ok"})
+
+		// 编译检测：保存后重新编译词库，返回编译问题（error 红色 / warning 黄色）供前端高亮
+		resp := map[string]any{"status": "ok"}
+		if dicCheck, err := dic_dto.RunDicNoCache(j.Path); err == nil && dicCheck != nil {
+			defer dicCheck.Close()
+			if len(dicCheck.Data.Warnings) > 0 {
+				resp["warnings"] = dicCheck.Data.Warnings
+			}
+		}
+		jsonResp, _ := json.Marshal(resp)
 		w.Write(jsonResp)
 		return
 

@@ -194,6 +194,11 @@ func qqBOTGroupRun(payload *qqbot_msg.Payload, bot *qqbot_msg.RouterQQBot) {
 		return
 	}
 
+	qqBOTGroupRunEvent(m, bot)
+}
+
+// qqBOTGroupRunEvent 处理一条已解析的群消息（沙箱测试也复用此入口）
+func qqBOTGroupRunEvent(m *qqbot_msg.GroupMessageEvent, bot *qqbot_msg.RouterQQBot) {
 	botDicPath := utils.NewFileQueue(filepath.Join(bot.FilePath, "dic"))
 	botDicList, err := botDicPath.GetFileList()
 	if err != nil {
@@ -226,6 +231,9 @@ func qqBOTGroupRun(payload *qqbot_msg.Payload, bot *qqbot_msg.RouterQQBot) {
 
 	// 处理消息次数
 	qqbot_msg.MsgCount++
+
+	// 记录「消息ID → 引用索引」，供 ±atMsg=消息ID± 还原引用回复
+	storeMsgRefIdx(m.ID, extValue(m.MessageScene, "msg_idx"))
 
 	// 新建副本消息
 	msg := m.Content
@@ -277,9 +285,9 @@ func qqBOTGroupRun(payload *qqbot_msg.Payload, bot *qqbot_msg.RouterQQBot) {
 		Set("Robot", robotID).Set("robot_appid", appId).
 		Set("头像", "http://q.qlogo.cn/qqapp/"+appId+"/"+userID+"/640").
 		Set("MsgId", m.ID).
+		Set("msgid", m.ID).
 		Set("消息ID", m.ID).
-		Set("RefMsgId", refIdxOf(m.MessageScene)).
-		Set("回复消息ID", refIdxOf(m.MessageScene))
+		Set("消息id", m.ID)
 
 	for i, id := range atIDs {
 		valData.Set(fmt.Sprintf("AT%d", i), id)
@@ -352,7 +360,8 @@ func qqBOTGroupRun(payload *qqbot_msg.Payload, bot *qqbot_msg.RouterQQBot) {
 					rMsg = strings.ReplaceAll(rMsg, "\\r", "\n")
 
 					// fmt.Println("QQBot回复:", rMsg)
-					strippedMsg, imgs, refID := stripReplyTags(rMsg)
+					strippedMsg, imgs, atMsgID := stripReplyTags(rMsg)
+					refID := resolveAtMsgRefID(atMsgID)
 					if len(imgs) != 0 {
 						for i, img := range imgs {
 							if i == 1 {
@@ -463,7 +472,8 @@ func qqBOTGroupRun(payload *qqbot_msg.Payload, bot *qqbot_msg.RouterQQBot) {
 
 		// fmt.Println("QQBot回复:", rMsg)
 
-		strippedMsg, imgs, refID := stripReplyTags(rMsg)
+		strippedMsg, imgs, atMsgID := stripReplyTags(rMsg)
+		refID := resolveAtMsgRefID(atMsgID)
 		if len(imgs) != 0 {
 			for i, img := range imgs {
 				if i == 1 {
@@ -525,6 +535,9 @@ func qqBOTGroupATRun(payload *qqbot_msg.Payload, bot *qqbot_msg.RouterQQBot) {
 	// 处理消息次数
 	qqbot_msg.MsgCount++
 
+	// 记录「消息ID → 引用索引」，供 ±atMsg=消息ID± 还原引用回复
+	storeMsgRefIdx(m.ID, extValue(m.MessageScene, "msg_idx"))
+
 	// 新建副本消息
 	msg := m.Content
 
@@ -562,9 +575,9 @@ func qqBOTGroupATRun(payload *qqbot_msg.Payload, bot *qqbot_msg.RouterQQBot) {
 		Set("Robot", robotID).Set("robot_appid", appId).
 		Set("头像", "http://q.qlogo.cn/qqapp/"+appId+"/"+userID+"/640").
 		Set("MsgId", m.ID).
+		Set("msgid", m.ID).
 		Set("消息ID", m.ID).
-		Set("RefMsgId", refIdxOf(m.MessageScene)).
-		Set("回复消息ID", refIdxOf(m.MessageScene))
+		Set("消息id", m.ID)
 
 	// 词库
 	for _, v := range botDicList {
@@ -606,7 +619,8 @@ func qqBOTGroupATRun(payload *qqbot_msg.Payload, bot *qqbot_msg.RouterQQBot) {
 					rMsg = strings.ReplaceAll(rMsg, "\\r", "\n")
 
 					// fmt.Println("QQBot回复:", rMsg)
-					strippedMsg, imgs, refID := stripReplyTags(rMsg)
+					strippedMsg, imgs, atMsgID := stripReplyTags(rMsg)
+					refID := resolveAtMsgRefID(atMsgID)
 					if len(imgs) != 0 {
 						if strippedMsg != "" {
 							strippedMsg = "\n" + strippedMsg
@@ -725,7 +739,8 @@ func qqBOTGroupATRun(payload *qqbot_msg.Payload, bot *qqbot_msg.RouterQQBot) {
 
 		// fmt.Println("QQBot回复:", rMsg)
 
-		strippedMsg, imgs, refID := stripReplyTags(rMsg)
+		strippedMsg, imgs, atMsgID := stripReplyTags(rMsg)
+		refID := resolveAtMsgRefID(atMsgID)
 		if len(imgs) != 0 {
 			if strippedMsg != "" {
 				strippedMsg = "\n" + strippedMsg
@@ -1067,7 +1082,8 @@ func runGroupEventDic(bot *qqbot_msg.RouterQQBot, ctx *PushContext, valData *dto
 		}
 		rMsg = strings.ReplaceAll(rMsg, "\\r", "\n")
 
-		strippedMsg, imgs, refID := stripReplyTags(rMsg)
+		strippedMsg, imgs, atMsgID := stripReplyTags(rMsg)
+		refID := resolveAtMsgRefID(atMsgID)
 		if len(imgs) != 0 {
 			for i, img := range imgs {
 				if i == 1 {
@@ -1152,6 +1168,11 @@ func qqBOTGroupPrivateRun(payload *qqbot_msg.Payload, bot *qqbot_msg.RouterQQBot
 		return
 	}
 
+	qqBOTGroupPrivateRunEvent(m, bot)
+}
+
+// qqBOTGroupPrivateRunEvent 处理一条已解析的群私聊消息（沙箱测试也复用此入口）
+func qqBOTGroupPrivateRunEvent(m *qqbot_msg.GroupMessageEvent, bot *qqbot_msg.RouterQQBot) {
 	botDicPath := utils.NewFileQueue(filepath.Join(bot.FilePath, "dic"))
 	botDicList, err := botDicPath.GetFileList()
 	if err != nil {
@@ -1160,6 +1181,10 @@ func qqBOTGroupPrivateRun(payload *qqbot_msg.Payload, bot *qqbot_msg.RouterQQBot
 
 	// 取出需要的数据
 	userID := m.Author.UserOpenID // QQ
+	username := m.Author.Username
+	if username == "" {
+		username = "未知"
+	}
 
 	isAdmin := "null" // 是否是管理员
 	// 主人列表
@@ -1181,6 +1206,9 @@ func qqBOTGroupPrivateRun(payload *qqbot_msg.Payload, bot *qqbot_msg.RouterQQBot
 	// 处理消息次数
 	qqbot_msg.MsgCount++
 
+	// 记录「消息ID → 引用索引」，供 ±atMsg=消息ID± 还原引用回复
+	storeMsgRefIdx(m.ID, extValue(m.MessageScene, "msg_idx"))
+
 	appId := ""
 	if bot.API != nil {
 		appId = bot.API.AppId
@@ -1189,7 +1217,7 @@ func qqBOTGroupPrivateRun(payload *qqbot_msg.Payload, bot *qqbot_msg.RouterQQBot
 
 	valData := dto.NewVal().
 		Set("来源", "群私聊").
-		Set("昵称", "未知").
+		Set("昵称", username).
 		Set("qq", userID).
 		Set("QQ", userID).
 		Set("主人", isAdmin).
@@ -1197,7 +1225,9 @@ func qqBOTGroupPrivateRun(payload *qqbot_msg.Payload, bot *qqbot_msg.RouterQQBot
 		Set("Robot", robotID).Set("robot_appid", appId).
 		Set("头像", "http://q.qlogo.cn/qqapp/"+appId+"/"+userID+"/640").
 		Set("MsgId", m.ID).
-		Set("消息ID", m.ID)
+		Set("msgid", m.ID).
+		Set("消息ID", m.ID).
+		Set("消息id", m.ID)
 
 	// 词库
 	for _, v := range botDicList {

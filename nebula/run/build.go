@@ -75,15 +75,24 @@ func ReplaceFunc(input, old string, replaceFunc func(string) string) string {
 	return result.String()
 }
 
-// 处理函数
-func BuildFuncStr(
-	str string,
-	process func([]string) (string, bool), // 处理函数文本
-	process2 func(string) (string, bool), // 处理外部文本，原样给你，不做转义
-) string {
-	var result strings.Builder
-	start := 0
+// funcStrCache 缓存字符串的 $...$ 分段解析结果，避免每次调用 BuildFuncStr 都重复扫描 $ 与转义切分。
+var funcStrCache sync.Map
 
+// funcSeg 预编译后的 $...$ 分段。
+type funcSeg struct {
+	isFunc bool
+	text   string   // isFunc=false：字面量文本
+	args   []string // isFunc=true：函数调用参数（已按空格切分并处理转义）
+	start  int      // 该段在原始字符串中的起始偏移，用于中断时按原语义回退处理剩余文本
+}
+
+// parseFuncSegments 把字符串按 $...$ 预切分为分段序列。仅做静态切分，转义/引号处理同 splitWithEscape。
+func parseFuncSegments(str string) []funcSeg {
+	if !strings.Contains(str, "$") {
+		return []funcSeg{{isFunc: false, text: str, start: 0}}
+	}
+	segs := make([]funcSeg, 0, 4)
+	start := 0
 	for {
 		openIndex := findUnescaped(str, "$", start)
 		if openIndex == -1 {
@@ -93,32 +102,70 @@ func BuildFuncStr(
 		if closeIndex == -1 {
 			break
 		}
-
-		// 外部文本（不做转义）
-		if outside := str[start:openIndex]; len(outside) > 0 {
-			if out, stop := process2(outside); stop {
-				break
-			} else {
-				result.WriteString(out)
-			}
+		if openIndex > start {
+			segs = append(segs, funcSeg{isFunc: false, text: str[start:openIndex], start: start})
 		}
-
-		// 内部文本：按空格分割，\ 处理转义（\\、\$、\"；成对引号内 \n → 换行）
-		content := str[openIndex+1 : closeIndex]
-		args := splitWithEscape(content)
-		if in, stop := process(args); stop {
-			break
-		} else {
-			result.WriteString(in)
-		}
-
+		segs = append(segs, funcSeg{isFunc: true, args: splitWithEscape(str[openIndex+1 : closeIndex]), start: start})
 		start = closeIndex + 1
 	}
+	if start < len(str) {
+		segs = append(segs, funcSeg{isFunc: false, text: str[start:], start: start})
+	}
+	return segs
+}
 
-	// 余下外部文本
-	if outside := str[start:]; len(outside) > 0 {
-		out, _ := process2(outside)
-		result.WriteString(out)
+// getFuncSegments 返回字符串的预编译分段（带缓存）。
+func getFuncSegments(str string) []funcSeg {
+	if v, ok := funcStrCache.Load(str); ok {
+		return v.([]funcSeg)
+	}
+	segs := parseFuncSegments(str)
+	actual, _ := funcStrCache.LoadOrStore(str, segs)
+	return actual.([]funcSeg)
+}
+
+// 处理函数
+func BuildFuncStr(
+	str string,
+	process func([]string) (string, bool), // 处理函数文本
+	process2 func(string) (string, bool), // 处理外部文本，原样给你，不做转义
+) string {
+	// 快速路径：不含 $ 时整串作为外部文本处理一次，避免 Builder 往返复制。
+	if !strings.Contains(str, "$") {
+		out, _ := process2(str)
+		return out
+	}
+
+	segs := getFuncSegments(str)
+	var result strings.Builder
+	for i, seg := range segs {
+		if !seg.isFunc {
+			out, stop := process2(seg.text)
+			if stop {
+				if i == len(segs)-1 {
+					result.WriteString(out)
+				} else {
+					// 原语义：中断后剩余文本（自本段起始）按字面量一次性交给 process2。
+					tail, _ := process2(str[seg.start:])
+					result.WriteString(tail)
+				}
+				return result.String()
+			}
+			result.WriteString(out)
+			continue
+		}
+
+		in, stop := process(seg.args)
+		if stop {
+			if i == len(segs)-1 {
+				return result.String()
+			}
+			// 原语义：函数中断后剩余文本（自本段起始）按字面量一次性交给 process2。
+			tail, _ := process2(str[seg.start:])
+			result.WriteString(tail)
+			return result.String()
+		}
+		result.WriteString(in)
 	}
 
 	return result.String()
@@ -327,11 +374,50 @@ func RunFor(jsonData []*dto.BuildDic, trigger string, runNum int) ([]string, str
 	return nil, "", 0, nil
 }
 
-// RunFunc 匹配 [函数] 词条：函数名精确匹配 + 参数数量校验（不使用正则）。
-// 未声明参数规则时默认 0 个参数。返回函数正文、函数名、变量传出列表（-> 后缀）、
-// 参数规则（命中名称但数量不符时非空）以及是否命中。
-func RunFunc(jsonData []*dto.BuildDic, callName string, paramCount int) (text []string, name string, tparts string, errRule string, ok bool) {
-	for _, item := range jsonData {
+// RunForIndexed 使用预构建的触发词索引做匹配：纯文本 O(1) 命中，正则按原顺序线性匹配。
+// 返回首个命中（原始下标最小）的词条正文、触发词与原始下标，语义与 RunFor 一致（不含正则对象）。
+func RunForIndexed(idx *dto.TriggerIndex, list []*dto.BuildDic, trigger string, runNum int) ([]string, string, int) {
+	if idx == nil || runNum >= len(list) {
+		return nil, "", 0
+	}
+
+	best := len(list) // 无命中哨兵
+
+	// 纯文本命中：取 >= runNum 的最小下标（索引按原始顺序排列）
+	if is := idx.Plain[trigger]; len(is) > 0 {
+		for _, i := range is {
+			if i >= runNum {
+				best = i
+				break
+			}
+		}
+	}
+
+	// 正则命中：按原始顺序线性匹配，取 >= runNum 且 < best 的最小下标
+	for _, i := range idx.Regex {
+		if i < runNum {
+			continue
+		}
+		if i >= best {
+			break // regex 下标按原始顺序排列，之后只会更大
+		}
+		re := compileTriggerRegex(list[i].Trigger)
+		if re != nil && re.MatchString(trigger) {
+			best = i
+			break
+		}
+	}
+
+	if best >= len(list) {
+		return nil, "", 0
+	}
+	item := list[best]
+	return item.Text, item.Trigger, best
+}
+
+// RunFuncIndexed 使用预构建的函数索引（函数名 -> 词条）做 O(1) 查找。
+func RunFuncIndexed(idx map[string][]*dto.BuildDic, callName string, paramCount int) (text []string, name string, tparts string, errRule string, ok bool) {
+	for _, item := range idx[callName] {
 		t := item.Trigger
 		resF := ""
 		if i := strings.LastIndex(t, "->"); i != -1 {
@@ -461,13 +547,18 @@ func (s *importStack) pop(path string) {
 	delete(s.files, path)
 }
 
-// addWarning 追加一条编译警告。
+// addWarning 追加一条编译警告（黄色）。
 func (s *importStack) addWarning(line int, text string) {
-	s.warnings = append(s.warnings, dto.BuildWarning{Line: line, Text: text})
+	s.warnings = append(s.warnings, dto.BuildWarning{Line: line, Text: text, Level: "warning"})
+}
+
+// addError 追加一条编译错误（红色）。
+func (s *importStack) addError(line int, text string) {
+	s.warnings = append(s.warnings, dto.BuildWarning{Line: line, Text: text, Level: "error"})
 }
 
 // dicCacheVersion 磁盘编译缓存格式版本，结构变化时递增以淘汰旧缓存。
-const dicCacheVersion = 2
+const dicCacheVersion = 4
 
 // dicCacheEntry 词库编译结果的磁盘缓存结构（gob 序列化）。
 // 只缓存可序列化词条；含 bot 注入（MyFunc 非空）的词库不落缓存，故无需序列化 Go 函数。
@@ -792,8 +883,19 @@ func BuildDicLinesWithRaw(dicPath string, lines []string, raw []byte) *dto.Build
 	return buildDicWithHash(dicPath, lines, dicHashBytes(raw))
 }
 
+// BuildDicLinesWithRawNoCache 与 BuildDicLinesWithRaw 相同，但不写磁盘缓存。
+// 供「编译检测」等仅需诊断信息、无需缓存加速的场景使用，避免每次保存/打开都产生缓存文件。
+func BuildDicLinesWithRawNoCache(dicPath string, lines []string, raw []byte) *dto.BuildValue {
+	return buildDicWithHashMode(dicPath, lines, dicHashBytes(raw), false)
+}
+
 // buildDicWithHash 为编译入口的内部实现，携带引入链用于检测循环引入，并按内容 hash 校验磁盘缓存。
 func buildDicWithHash(dicPath string, lines []string, mainHash string) *dto.BuildValue {
+	return buildDicWithHashMode(dicPath, lines, mainHash, true)
+}
+
+// buildDicWithHashMode 编译核心；writeCache 为 false 时跳过写缓存（读缓存不受影响）。
+func buildDicWithHashMode(dicPath string, lines []string, mainHash string, writeCache bool) *dto.BuildValue {
 	stack := newImportStack()
 	// 顶层词库同样压入引入链，路径与 #引入= 加载路径保持一致（统一 private/ 前缀与 .n 后缀），
 	// 避免被引入文件反向引入顶层时把顶层重复加载，导致同一条循环引入被重复报告。
@@ -808,7 +910,7 @@ func buildDicWithHash(dicPath string, lines []string, mainHash string) *dto.Buil
 	result := buildDic(dicPath, lines, stack)
 
 	// 含 bot 注入的词库（MyFunc 非空）不落缓存，避免序列化 Go 函数；其余词库写缓存加速后续加载。
-	if len(result.MyFunc) == 0 {
+	if writeCache && len(result.MyFunc) == 0 {
 		saveDicCache(dicPath, &dicCacheEntry{
 			Version:      dicCacheVersion,
 			Deps:         stack.deps,
@@ -827,6 +929,9 @@ func buildDicWithHash(dicPath string, lines []string, mainHash string) *dto.Buil
 
 // importFilePath 将 #引入= 目标或顶层词库路径规范化为统一的文件路径（private/xxx.n）。
 func importFilePath(name string) string {
+	// 统一分隔符为 /，兼容 Windows 下 filepath.Join 产生的反斜杠，
+	// 避免 private\... 匹配不到 private/ 前缀而被重复拼接（如 private/private\...）。
+	name = filepath.ToSlash(name)
 	if !strings.HasPrefix(name, "private/") {
 		name = pathpkg.Join("private", name)
 	}
@@ -842,7 +947,8 @@ func buildDic(dicPath string, lines []string, stack *importStack) *dto.BuildValu
 
 	var (
 		// 触发变量
-		dicTrigger string // 触发词
+		dicTrigger     string // 触发词
+		dicTriggerLine int    // 触发词所在原始文件行号（1-based）
 
 		// 词库条目
 		dicText         []*dto.BuildDic // 词库条目
@@ -1011,6 +1117,7 @@ func buildDic(dicPath string, lines []string, stack *importStack) *dto.BuildValu
 			} else {
 				// 判断触发为空就执行记录
 				dicTrigger = line
+				dicTriggerLine = dic_i + 1
 
 				switch category, class, param, rest := parseTriggerPrefix(line); category {
 				case "函数":
@@ -1064,11 +1171,12 @@ func buildDic(dicPath string, lines []string, stack *importStack) *dto.BuildValu
 
 			if line == "" || dic_i == lines_num {
 				json := &dto.BuildDic{
-					Trigger:   dicTrigger,
-					Text:      dicTexts,
-					LineNums:  dicTextLineNums,
-					ParamRule: fParamRule,
-					Desc:      currentFuncDesc,
+					Trigger:     dicTrigger,
+					Text:        dicTexts,
+					LineNums:    dicTextLineNums,
+					ParamRule:   fParamRule,
+					Desc:        currentFuncDesc,
+					TriggerLine: dicTriggerLine,
 				}
 				if neibu {
 					neibu = false
@@ -1104,6 +1212,7 @@ func buildDic(dicPath string, lines []string, stack *importStack) *dto.BuildValu
 					dicText = append(dicText, json)
 				}
 				dicTrigger = ""
+				dicTriggerLine = 0
 				classN = ""
 				buildCategory = ""
 				fParamRule = ""
@@ -1121,8 +1230,12 @@ func buildDic(dicPath string, lines []string, stack *importStack) *dto.BuildValu
 		DicFuncs:     chajianText,
 		Class:        classText,
 		MyFunc:       myFunc,
-		Warnings:     stack.warnings,
 	}
+
+	// 编译期静态检查：框配对/嵌套、触发词正则语法、函数参数数量。
+	// 统一追加到 stack.warnings，最后再赋给 result，保证共享的引入链警告切片一致。
+	runCompileChecks(result, stack)
+	result.Warnings = stack.warnings
 
 	// 打印普通json
 	// dd, derr := utils.Json.MarshalIndent(result, "", "  ")
@@ -1130,10 +1243,6 @@ func buildDic(dicPath string, lines []string, stack *importStack) *dto.BuildValu
 	// 	fmt.Println("JSON 序列化失败:", derr)
 	// } else {
 	// 	fmt.Println(string(dd))
-	// }
-
-	// if t.Cache && t.Uid != "" {
-	// 	dto.GV.Set("cache_"+t.Uid, result)
 	// }
 
 	return result

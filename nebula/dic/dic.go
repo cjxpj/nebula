@@ -285,7 +285,7 @@ func (m *dicImpl) DicRun(D *dic_dto.Dic, trigger string) string {
 
 	DicText = D.Data.Dic
 
-	GetDic, GetDicTrigger, triggerIdx, _ := run.RunFor(DicText, trigger, 0)
+	GetDic, GetDicTrigger, triggerIdx := run.RunForIndexed(D.Data.GetTriggerIndex(), DicText, trigger, 0)
 	D.Val.P.Set("触发词", trigger)
 	D.Val.P.Set("触发", GetDicTrigger)
 
@@ -303,7 +303,7 @@ func (m *dicImpl) DicRun(D *dic_dto.Dic, trigger string) string {
 	if !dicRun.Sys_v.Stop.Load() {
 		// 头部可能通过 $重定向触发词$ 修改了触发词，重新匹配一次再执行正文
 		DicText = D.Data.Dic
-		GetDic, GetDicTrigger, triggerIdx, _ = run.RunFor(DicText, D.Val.P.GetStr("触发词"), 0)
+		GetDic, GetDicTrigger, triggerIdx = run.RunForIndexed(D.Data.GetTriggerIndex(), DicText, D.Val.P.GetStr("触发词"), 0)
 		D.Val.P.Set("触发", GetDicTrigger)
 		// 设置 body 行号映射（仅当触发器匹配时）
 		if GetDic != nil && triggerIdx < len(DicText) {
@@ -332,7 +332,7 @@ func (m *dicImpl) DicRunTimeout(D *dic_dto.Dic, trigger string, timeout time.Dur
 		maps.Copy(D.Data.Class, D.ClassText)
 	}
 
-	_, GetDicTrigger, _, _ := run.RunFor(D.Data.Dic, trigger, 0)
+	_, GetDicTrigger, _ := run.RunForIndexed(D.Data.GetTriggerIndex(), D.Data.Dic, trigger, 0)
 	D.Val.P.Set("触发词", trigger)
 	D.Val.P.Set("触发", GetDicTrigger)
 
@@ -360,7 +360,7 @@ func (m *dicImpl) DicRunTimeout(D *dic_dto.Dic, trigger string, timeout time.Dur
 		text := RunDichader
 		if !dicRun.Sys_v.Stop.Load() {
 			// 头部可能通过 $重定向触发词$ 修改了触发词，重新匹配一次再执行正文
-			reGetDic, reTrigger, reIdx, _ := run.RunFor(D.Data.Dic, D.Val.P.GetStr("触发词"), 0)
+			reGetDic, reTrigger, reIdx := run.RunForIndexed(D.Data.GetTriggerIndex(), D.Data.Dic, D.Val.P.GetStr("触发词"), 0)
 			D.Val.P.Set("触发", reTrigger)
 			dicRun.LineNums = nil
 			if reGetDic != nil && reIdx < len(D.Data.Dic) {

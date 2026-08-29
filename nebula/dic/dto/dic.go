@@ -87,30 +87,6 @@ func (r *DicEntry) Set_v(v *dto.Val) *DicEntry {
 	return r
 }
 
-// 清空词库函数（保留内部/特殊，仅清空函数类）。
-// 复制一份 DicFuncs 并替换为独立 BuildValue，避免修改父级共享数据。
-func (r *DicEntry) ClearDicFuncs() *DicEntry {
-	if r.Dic == nil || r.Dic.DicFuncs == nil {
-		return r
-	}
-	funcs := make(map[string][]*dto.BuildDic, len(r.Dic.DicFuncs))
-	for k, v := range r.Dic.DicFuncs {
-		if k != "函数" {
-			funcs[k] = v
-		}
-	}
-	r.Dic = &dto.BuildValue{
-		Head:         r.Dic.Head,
-		HeadLineNums: r.Dic.HeadLineNums,
-		Dic:          r.Dic.Dic,
-		DicFuncs:     funcs,
-		Class:        r.Dic.Class,
-		MyFunc:       r.Dic.MyFunc,
-		BotImports:   r.Dic.BotImports,
-	}
-	return r
-}
-
 // 继承词库变量
 func (r *DicEntry) SetDic_v(v *dto.BuildValue) *DicEntry {
 	r.Dic = v
@@ -126,12 +102,6 @@ func (r *DicEntry) CloseTrigger() *DicEntry {
 	return r
 }
 
-// WithRecursionDepth 基于父级深度设置递归深度+1，防止 $调用$ 无限递归
-func (r *DicEntry) WithRecursionDepth(parentDepth int) *DicEntry {
-	r.RecursionDepth = parentDepth + 1
-	return r
-}
-
 func (WD *WebDic) SetGlobal_v(v *dto.Val) *WebDic {
 	WD.Val.G = v
 	return WD
@@ -144,6 +114,11 @@ func (WD *WebDic) Set_v(v *dto.Val) *WebDic {
 
 func RunDic(path string) (*Dic, error) {
 	return NewDicFile(path)
+}
+
+// RunDicNoCache 编译词库但不写磁盘缓存，供「编译检测」使用。
+func RunDicNoCache(path string) (*Dic, error) {
+	return NewDicFileNoCache(path)
 }
 
 func NewDic(path, text string) *Dic {
@@ -167,8 +142,17 @@ func NewDic(path, text string) *Dic {
 	}
 }
 
-// NewDicFile 读取词库文件并编译。
+// NewDicFile 读取词库文件并编译（写磁盘缓存）。
 func NewDicFile(path string) (*Dic, error) {
+	return newDicFile(path, false)
+}
+
+// NewDicFileNoCache 读取词库文件并编译，但不写磁盘缓存（供编译检测使用）。
+func NewDicFileNoCache(path string) (*Dic, error) {
+	return newDicFile(path, true)
+}
+
+func newDicFile(path string, noCache bool) (*Dic, error) {
 	data, err := utils.NewFileQueue(path).ReadFileByte()
 	if err != nil {
 		return nil, err
@@ -184,7 +168,12 @@ func NewDicFile(path string) (*Dic, error) {
 	}
 
 	val := dto.NewDicVal()
-	SplitText := run.BuildDicLinesWithRaw(path, lines, raw)
+	var SplitText *dto.BuildValue
+	if noCache {
+		SplitText = run.BuildDicLinesWithRawNoCache(path, lines, raw)
+	} else {
+		SplitText = run.BuildDicLinesWithRaw(path, lines, raw)
+	}
 
 	return &Dic{
 		Data:      SplitText,

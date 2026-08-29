@@ -1,5 +1,32 @@
 package dto
 
+import "sync"
+
+// FuncRules 内置函数参数数量规则注册表（函数名 -> 参数规则，如 "1|2"）。
+// 由 funcs.Register 在注册时写入，供 run 编译期做函数参数数量静态检查，
+// 避免 run 直接 import funcs 造成循环依赖。
+var FuncRules sync.Map
+
+// RegisterFuncRule 写入内置函数参数规则。
+func RegisterFuncRule(name, l string) {
+	FuncRules.Store(name, l)
+}
+
+// UnregisterFuncRule 移除内置函数参数规则。
+func UnregisterFuncRule(name string) {
+	FuncRules.Delete(name)
+}
+
+// GetFuncRule 读取内置函数参数规则；未注册返回 ("", false)。
+func GetFuncRule(name string) (string, bool) {
+	v, ok := FuncRules.Load(name)
+	if !ok {
+		return "", false
+	}
+	s, ok := v.(string)
+	return s, ok
+}
+
 // 函数框
 type FuncBox struct {
 	Trigger  string

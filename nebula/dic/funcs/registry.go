@@ -57,6 +57,7 @@ func Setup() {
 		f{Name: "创建字典", L: "0|1", Fn: newMapData},
 
 		// ========== 流程控制 ==========
+		f{Name: "判断", L: "1..", Fn: ifCondition},
 		f{Name: "判断值", L: "1", Fn: ifNONull},
 		f{Name: "判断空值", L: "1", Fn: ifNull},
 		f{Name: "延迟", L: "1", Fn: appSleep},

@@ -853,7 +853,7 @@ func callCloudToolFunc(data *dto.BuildValue, dicPath, username, name string, arg
 		return "", errors.New("云工具词库未就绪")
 	}
 
-	str, Tstr, _, errRule, ok := run.RunFunc(data.DicFuncs["函数"], name, len(args))
+	str, Tstr, _, errRule, ok := run.RunFuncIndexed(data.GetFuncIndex(), name, len(args))
 	if !ok {
 		if errRule != "" {
 			return "", fmt.Errorf("参数数量错误(需要%s，实际%d)", errRule, len(args))
@@ -878,7 +878,6 @@ func callCloudToolFunc(data *dto.BuildValue, dicPath, username, name string, arg
 		SetGlobal_v(v.G).
 		Set_v(funcv).
 		SetDic_v(data)
-	runDic.ClearDicFuncs()
 
 	return dic_api.Api.DicRunLine(runDic, str), nil
 }

@@ -43,12 +43,14 @@ func Register(name, l string, fn func(d *dto.DicInputs) (any, error)) error {
 	if loaded {
 		return fmt.Errorf("已存在函数 %s", name)
 	}
+	dto.RegisterFuncRule(name, l)
 	return nil
 }
 
 // Unregister 注销函数，不存在则忽略。
 func Unregister(name string) {
 	FuncList.Delete(name)
+	dto.UnregisterFuncRule(name)
 }
 
 // 批量注册函数

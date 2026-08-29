@@ -171,12 +171,29 @@ type BuildDic struct {
 	ParamRule string `json:"paramRule,omitempty"`
 	// Desc 函数说明：来自 [函数] 上方连续的 // 注释（按行拼接）。
 	Desc string `json:"desc,omitempty"`
+	// TriggerLine 触发词所在原始文件行号（1-based），用于触发词正则语法等编译警告定位。
+	TriggerLine int `json:"-"`
 }
 
 type DicClass struct {
 	LocalValue *Val                   `json:"变量"`
 	DicFuncs   map[string][]*BuildDic `json:"函数"`
 	Fn         map[string]DicFunc     `json:"-"` // 自定义函数
+	// funcIndex 类内函数名 -> 词条索引，惰性构建；非序列化。
+	funcIndex atomic.Pointer[map[string][]*BuildDic]
+}
+
+// GetFuncIndex 返回类内函数查找索引，惰性构建并缓存。
+func (c *DicClass) GetFuncIndex() map[string][]*BuildDic {
+	if p := c.funcIndex.Load(); p != nil {
+		return *p
+	}
+	idx := BuildFuncIndex(c.DicFuncs)
+	if idx == nil {
+		idx = map[string][]*BuildDic{}
+	}
+	c.funcIndex.Store(&idx)
+	return idx
 }
 
 // NewDicClass 初始化 Class，避免字段为 nil 导致 JSON 序列化输出 null。
@@ -188,10 +205,11 @@ func NewDicClass() *DicClass {
 	}
 }
 
-// BuildWarning 编译警告（如循环引入），携带行号供前端定位。
+// BuildWarning 编译警告/错误（如循环引入、框配对错误），携带行号与级别供前端定位。
 type BuildWarning struct {
-	Line int    `json:"line"` // 触发警告的行号（1-based）
-	Text string `json:"text"` // 警告文本
+	Line  int    `json:"line"`  // 触发警告的行号（1-based）
+	Text  string `json:"text"`  // 警告文本
+	Level string `json:"level"` // 级别：error（红色错误）/ warning（黄色警告）
 }
 
 type BuildValue struct {
@@ -205,6 +223,12 @@ type BuildValue struct {
 	Warnings     []BuildWarning         `json:"警告,omitempty"` // 编译警告（如循环引入），供前端调试面板展示
 	// InHeader 运行时标记：当前是否正在执行词库头部（供 $重定向触发词$ 等仅在头部生效的功能判断）。
 	InHeader bool `json:"-"`
+	// funcIndex 函数名 -> 词条索引（触发词去掉 -> 后缀后作为键），惰性构建；MergeFuncs 追加后失效重建。非序列化。
+	funcIndex atomic.Pointer[map[string][]*BuildDic]
+	// triggerIndex 词库正文触发词匹配索引，惰性构建；Dic 编译后不变，非序列化。
+	triggerIndex atomic.Pointer[TriggerIndex]
+	// classValues 类名 -> 类变量表的缓存，避免每次执行（含循环体内每轮迭代）重建 map。非序列化。
+	classValues atomic.Pointer[map[string]*Val]
 }
 
 // 词库参数数据
@@ -217,6 +241,8 @@ type DicInputs struct {
 	Inputs *utils.DicInputs
 	// 输出数据
 	Output *SingleValue
+	// Raw 未展开的原始参数（%变量%/[算术] 保持原样），供需要自行按 operand 边界求值的函数使用；为 nil 时退回 Inputs。
+	Raw *utils.DicInputs
 }
 
 func NewDicInputs(dic *BuildValue, v *DicVal, i *utils.DicInputs) *DicInputs {
@@ -247,6 +273,78 @@ func (v *BuildValue) MergeFuncs(fn map[string][]*BuildDic) {
 	for k, val := range fn {
 		v.DicFuncs[k] = append(v.DicFuncs[k], val...)
 	}
+	// 函数表已变化，失效函数索引，下次 GetFuncIndex 时重建。
+	v.funcIndex.Store(nil)
+}
+
+// BuildFuncIndex 从 DicFuncs 的「函数」类别构建函数名 -> 词条索引（触发词去掉 -> 后缀后作为键）。
+func BuildFuncIndex(dicFuncs map[string][]*BuildDic) map[string][]*BuildDic {
+	list := dicFuncs["函数"]
+	if len(list) == 0 {
+		return nil
+	}
+	idx := make(map[string][]*BuildDic, len(list))
+	for _, item := range list {
+		name := item.Trigger
+		if i := strings.LastIndex(name, "->"); i != -1 {
+			name = name[:i]
+		}
+		idx[name] = append(idx[name], item)
+	}
+	return idx
+}
+
+// GetFuncIndex 返回函数查找索引，惰性构建并缓存；MergeFuncs 追加后自动失效重建。
+func (v *BuildValue) GetFuncIndex() map[string][]*BuildDic {
+	if p := v.funcIndex.Load(); p != nil {
+		return *p
+	}
+	idx := BuildFuncIndex(v.DicFuncs)
+	if idx == nil {
+		idx = map[string][]*BuildDic{}
+	}
+	v.funcIndex.Store(&idx)
+	return idx
+}
+
+// TriggerIndex 触发词匹配索引：纯文本触发词 -> 原始下标列表（保序），正则触发词 -> 原始下标列表（保序）。
+type TriggerIndex struct {
+	Plain map[string][]int
+	Regex []int
+}
+
+// isPlainTriggerText 判断触发词是否不含任何正则元字符，纯文本触发词可 O(1) 定位。
+func isPlainTriggerText(t string) bool {
+	for i := 0; i < len(t); i++ {
+		switch t[i] {
+		case '.', '*', '+', '?', '(', ')', '[', ']', '{', '}', '|', '^', '$', '\\':
+			return false
+		}
+	}
+	return true
+}
+
+// BuildTriggerIndex 从词条切片构建触发词匹配索引。
+func BuildTriggerIndex(list []*BuildDic) *TriggerIndex {
+	idx := &TriggerIndex{Plain: make(map[string][]int)}
+	for i, item := range list {
+		if isPlainTriggerText(item.Trigger) {
+			idx.Plain[item.Trigger] = append(idx.Plain[item.Trigger], i)
+		} else {
+			idx.Regex = append(idx.Regex, i)
+		}
+	}
+	return idx
+}
+
+// GetTriggerIndex 返回词库正文触发词匹配索引，惰性构建并缓存。
+func (v *BuildValue) GetTriggerIndex() *TriggerIndex {
+	if p := v.triggerIndex.Load(); p != nil {
+		return p
+	}
+	idx := BuildTriggerIndex(v.Dic)
+	v.triggerIndex.Store(idx)
+	return idx
 }
 
 // ClassValues 返回 Class 变量表（类名 -> 类变量），供 %类名.变量% 解析使用。
@@ -254,12 +352,17 @@ func (v *BuildValue) ClassValues() map[string]*Val {
 	if v.Class == nil {
 		return nil
 	}
+	// 类表编译后不变，惰性构建一次并缓存，避免循环/遍历体内每轮迭代都重建 map。
+	if cv := v.classValues.Load(); cv != nil {
+		return *cv
+	}
 	m := make(map[string]*Val, len(v.Class))
 	for name, c := range v.Class {
 		if c != nil {
 			m[name] = c.LocalValue
 		}
 	}
+	v.classValues.Store(&m)
 	return m
 }
 

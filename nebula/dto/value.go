@@ -1,21 +1,15 @@
 package dto
 
 import (
-	"encoding/base64"
 	"fmt"
 	"maps"
-	"net/url"
 	"reflect"
 	"regexp"
-	"runtime"
-	"strconv"
 	"strings"
 	"sync"
-	"time"
 
-	"github.com/cjxpj/nebula/appfiles"
 	"github.com/cjxpj/nebula/debugLog"
-	"github.com/cjxpj/nebula/utils"
+	"github.com/iancoleman/orderedmap"
 )
 
 // 词库变量
@@ -36,10 +30,70 @@ func NewDicVal() *DicVal {
 
 // value变量
 type Val struct {
-	objlock sync.Map
-	obj     sync.Map
+	mu  sync.RWMutex
+	obj map[string]any
+	// num 整数变量独立存储：int/int64 等整数类型直存 int64，避免存入 any 时的装箱分配。
+	// 同一键在同一时刻只会出现在 obj 或 num 其中一个。
+	num     map[string]int64
+	objlock map[string]bool
+	// slots 无锁变量槽：普通变量名经全局驻留（internVar）映射到槽号，按槽号直取，
+	// 免去 map 哈希与每键加锁。仅局部变量（P）热路径使用，与 obj/num 并行维护（槽优先）。
+	slots []slotCell
 	// Class 变量表：类名 -> 类变量，供 %类名.变量% 解析
 	Class map[string]*Val `json:"-"`
+}
+
+// slotCell 变量槽单元：isInt 为 true 时存 int64（免装箱），否则存 any；present 表示是否已赋值。
+type slotCell struct {
+	present bool
+	isInt   bool
+	i       int64
+	v       any
+}
+
+// newSlotCell 依据值类型构造槽单元（整数直存 int64，其余存 any）。
+func newSlotCell(val any) slotCell {
+	if n, ok := toInt64Val(val); ok {
+		return slotCell{present: true, isInt: true, i: n}
+	}
+	return slotCell{present: true, v: val}
+}
+
+// maxInt64Uint 以 uint64 表示的最大 int64，用于 uint/uint64 转 int64 时的溢出判断。
+const maxInt64Uint = uint64(1<<63 - 1)
+
+// toInt64Val 若值为整数类型且可无损表示为 int64，则返回其 int64 表示。
+// 超出 int64 范围的 uint/uint64 返回 false（保持原值存于 obj，避免溢出取负）。
+func toInt64Val(val any) (int64, bool) {
+	switch n := val.(type) {
+	case int:
+		return int64(n), true
+	case int8:
+		return int64(n), true
+	case int16:
+		return int64(n), true
+	case int32:
+		return int64(n), true
+	case int64:
+		return n, true
+	case uint:
+		if uint64(n) > maxInt64Uint {
+			return 0, false
+		}
+		return int64(n), true
+	case uint8:
+		return int64(n), true
+	case uint16:
+		return int64(n), true
+	case uint32:
+		return int64(n), true
+	case uint64:
+		if n > maxInt64Uint {
+			return 0, false
+		}
+		return int64(n), true
+	}
+	return 0, false
 }
 
 // 回收词库变量
@@ -50,23 +104,35 @@ func (v *DicVal) Close() {
 
 // 回收变量
 func (v *Val) Close() {
-	v.objlock.Range(func(key, value any) bool {
-		v.obj.Delete(key)
-		return true
-	})
+	v.mu.Lock()
+	for k := range v.objlock {
+		delete(v.obj, k)
+		delete(v.num, k)
+		v.slotClearKey(k)
+	}
+	v.mu.Unlock()
 }
 
 // 线程变量
 var GV *Val = NewVal()
 
-// ClearThreadVars 清空线程变量，保留系统内部变量（键名以 _ 开头）
+// ClearThreadVars 清空线程变量，保留系统内部变量（键名以 _ 开头）。
+// 同时清空对应无锁槽，避免 get 槽优先读返回残留旧值。
 func ClearThreadVars() {
-	GV.obj.Range(func(key, _ any) bool {
-		if k, ok := key.(string); ok && !strings.HasPrefix(k, "_") {
-			GV.obj.Delete(key)
+	GV.mu.Lock()
+	for k := range GV.obj {
+		if !strings.HasPrefix(k, "_") {
+			delete(GV.obj, k)
+			GV.slotClearKey(k)
 		}
-		return true
-	})
+	}
+	for k := range GV.num {
+		if !strings.HasPrefix(k, "_") {
+			delete(GV.num, k)
+			GV.slotClearKey(k)
+		}
+	}
+	GV.mu.Unlock()
 }
 
 // SetThreadVar 设置线程变量（键名以 _ 开头为系统内部变量，不允许修改）
@@ -82,12 +148,307 @@ func DeleteThreadVar(key string) {
 	if strings.HasPrefix(key, "_") {
 		return
 	}
-	GV.obj.Delete(key)
+	GV.mu.Lock()
+	delete(GV.obj, key)
+	delete(GV.num, key)
+	GV.slotClearKey(key)
+	GV.mu.Unlock()
 }
 
 // NewVal 初始化 Val 对象
 func NewVal() *Val {
-	return &Val{}
+	return &Val{
+		obj:     make(map[string]any),
+		num:     make(map[string]int64),
+		objlock: make(map[string]bool),
+	}
+}
+
+// deepCopyAny 深拷贝变量值：递归拷贝 map/slice/类实例，避免快照与主流程共享可变引用；
+// 基本类型与只读对象（函数框等）保持引用。
+func deepCopyAny(v any) any {
+	switch t := v.(type) {
+	case map[string]any:
+		m := make(map[string]any, len(t))
+		for k, val := range t {
+			m[k] = deepCopyAny(val)
+		}
+		return m
+	case []any:
+		s := make([]any, len(t))
+		for i, val := range t {
+			s[i] = deepCopyAny(val)
+		}
+		return s
+	case []map[string]any:
+		s := make([]map[string]any, len(t))
+		for i, val := range t {
+			m := make(map[string]any, len(val))
+			for k, vv := range val {
+				m[k] = deepCopyAny(vv)
+			}
+			s[i] = m
+		}
+		return s
+	case map[string]string:
+		m := make(map[string]string, len(t))
+		for k, val := range t {
+			m[k] = val
+		}
+		return m
+	case []string:
+		s := make([]string, len(t))
+		copy(s, t)
+		return s
+	case *orderedmap.OrderedMap:
+		if t == nil {
+			return nil
+		}
+		return deepCopyOrderedMap(t)
+	case orderedmap.OrderedMap:
+		return *deepCopyOrderedMap(&t)
+	case *DicClass:
+		if t == nil {
+			return nil
+		}
+		// 深拷贝实例成员变量（LocalValue），函数/类定义保持共享只读。
+		var lv *Val
+		if t.LocalValue != nil {
+			lv = t.LocalValue.Clone()
+		}
+		return &DicClass{
+			LocalValue: lv,
+			DicFuncs:   t.DicFuncs,
+			Fn:         t.Fn,
+		}
+	default:
+		return v
+	}
+}
+
+// deepCopyOrderedMap 深拷贝有序字典：保留键序、嵌套值与 escapeHTML 配置，
+// 避免快照与主流程共享底层 keys/values。
+func deepCopyOrderedMap(m *orderedmap.OrderedMap) *orderedmap.OrderedMap {
+	nm := orderedmap.New()
+	// escapeHTML 无 getter，用反射读取未导出字段以保留原配置。
+	if f := reflect.ValueOf(m).Elem().FieldByName("escapeHTML"); f.IsValid() && f.Kind() == reflect.Bool {
+		nm.SetEscapeHTML(f.Bool())
+	}
+	for _, k := range m.Keys() {
+		val, _ := m.Get(k)
+		nm.Set(k, deepCopyAny(val))
+	}
+	return nm
+}
+
+// Clone 深拷贝 Val（值快照）：异步块（#:）借用局部变量时使用，与主流程隔离。
+// Class 类变量表保持共享引用（类定义为全局只读）。
+func (v *Val) Clone() *Val {
+	v.mu.RLock()
+	obj := make(map[string]any, len(v.obj))
+	for k, val := range v.obj {
+		obj[k] = deepCopyAny(val)
+	}
+	num := make(map[string]int64, len(v.num))
+	maps.Copy(num, v.num)
+	objlock := make(map[string]bool, len(v.objlock))
+	maps.Copy(objlock, v.objlock)
+	slots := make([]slotCell, len(v.slots))
+	copy(slots, v.slots)
+	for i := range slots {
+		if slots[i].present && !slots[i].isInt {
+			slots[i].v = deepCopyAny(slots[i].v)
+		}
+	}
+	class := v.Class
+	v.mu.RUnlock()
+
+	return &Val{
+		obj:     obj,
+		num:     num,
+		objlock: objlock,
+		slots:   slots,
+		Class:   class,
+	}
+}
+
+// get 读取变量值。普通变量名优先查无锁槽（槽为最新写入源，字节码热路径 SlotSetInt64
+// 直写槽后 num/obj 尚未同步），未命中再查 num/obj 映射。槽始终不旧于 map，因此槽优先读语义正确。
+func (v *Val) get(key string) (any, bool) {
+	if isPlainVarName(key) {
+		if val, ok := v.slotGet(internVar(key)); ok {
+			return val, true
+		}
+	}
+	v.mu.RLock()
+	if n, ok := v.num[key]; ok {
+		v.mu.RUnlock()
+		return n, true
+	}
+	value, ok := v.obj[key]
+	v.mu.RUnlock()
+	return value, ok
+}
+
+// getInt64 读取整数变量值，未命中返回 false。用于免装箱的数值快速路径。
+// 普通变量名优先查无锁整数槽：槽存在且为整数直读；槽存在但非整数则按 GetInt64 语义
+// 返回未命中（不能落到 num 映射，否则可能读到直写槽前的旧整数）；槽不存在再查 num。
+func (v *Val) getInt64(key string) (int64, bool) {
+	if isPlainVarName(key) {
+		if val, ok := v.slotGet(internVar(key)); ok {
+			if n, isInt := toInt64Val(val); isInt {
+				return n, true
+			}
+			return 0, false
+		}
+	}
+	v.mu.RLock()
+	n, ok := v.num[key]
+	v.mu.RUnlock()
+	return n, ok
+}
+
+// growSlots 将槽数组扩容到至少 slot+1 长度。槽数组扩容极低频（仅首次出现新变量名时），
+// 用写锁保护扩容，热路径的 slotGet/slotSet 不再加锁。
+func (v *Val) growSlots(slot int32) {
+	if slot < int32(len(v.slots)) {
+		return
+	}
+	v.mu.Lock()
+	if slot >= int32(len(v.slots)) {
+		ns := make([]slotCell, slot+1)
+		copy(ns, v.slots)
+		v.slots = ns
+	}
+	v.mu.Unlock()
+}
+
+// slotGet 无锁读取变量槽（普通变量热路径）。slot 越界表示该变量从未在本 Val 赋值。
+func (v *Val) slotGet(slot int32) (any, bool) {
+	if slot < 0 || slot >= int32(len(v.slots)) {
+		return nil, false
+	}
+	c := v.slots[slot]
+	if !c.present {
+		return nil, false
+	}
+	if c.isInt {
+		return c.i, true
+	}
+	return c.v, true
+}
+
+// slotGetInt64 无锁读取整数变量槽，未命中返回 false。
+func (v *Val) slotGetInt64(slot int32) (int64, bool) {
+	if slot < 0 || slot >= int32(len(v.slots)) {
+		return 0, false
+	}
+	c := v.slots[slot]
+	if !c.present || !c.isInt {
+		return 0, false
+	}
+	return c.i, true
+}
+
+// SlotGetInt64 导出包装：供 dic 包编译期槽快速路径跨包无锁读取整数变量槽。
+func (v *Val) SlotGetInt64(slot int32) (int64, bool) {
+	return v.slotGetInt64(slot)
+}
+
+// SlotGet 导出包装：供 dic 包按槽号无锁读取任意类型变量值（热路径，未命中回退 map）。
+func (v *Val) SlotGet(slot int32) (any, bool) {
+	return v.slotGet(slot)
+}
+
+// SlotSetInt64 无锁写入整数变量槽（免装箱，不同步 num 映射）。
+// 供字节码热路径直写：槽为快速读源，num/obj 映射由调用方在块结束时调用 FlushSlotsToMap 统一同步，
+// 从而保证 num/obj 始终为权威存储（GetAll/Clone/Get 等冷路径不受影响）。
+func (v *Val) SlotSetInt64(slot int32, n int64) {
+	v.slotSetInt64(slot, n)
+}
+
+// FlushSlotsToMap 将本 Val 中所有已赋值槽同步回 num/obj 映射（单锁冷路径）。
+// 无锁热路径（SlotSetInt64 直写槽）在块结束时调用一次，保证 num/obj 权威且与槽一致。
+func (v *Val) FlushSlotsToMap() {
+	v.mu.Lock()
+	varSlotMu.RLock()
+	for slot := int32(0); slot < int32(len(v.slots)); slot++ {
+		c := v.slots[slot]
+		if !c.present || slot >= int32(len(varSlotNames)) {
+			continue
+		}
+		key := varSlotNames[slot]
+		if c.isInt {
+			v.num[key] = c.i
+			delete(v.obj, key)
+		} else {
+			v.writeUnsafe(key, c.v)
+		}
+	}
+	varSlotMu.RUnlock()
+	v.mu.Unlock()
+}
+
+// slotSet 无锁写入变量槽（按值类型直存 int64 或 any）。
+func (v *Val) slotSet(slot int32, val any) {
+	if slot < 0 {
+		return
+	}
+	v.growSlots(slot)
+	v.slots[slot] = newSlotCell(val)
+}
+
+// slotSetInt64 无锁写入整数变量槽（免装箱）。
+func (v *Val) slotSetInt64(slot int32, n int64) {
+	if slot < 0 {
+		return
+	}
+	v.growSlots(slot)
+	v.slots[slot] = slotCell{present: true, isInt: true, i: n}
+}
+
+// slotClearKey 清除指定普通变量名对应的槽（供仅写 map 的冷路径避免槽内残留旧值）。
+func (v *Val) slotClearKey(key string) {
+	if !isPlainVarName(key) {
+		return
+	}
+	s := internVar(key)
+	if s < int32(len(v.slots)) {
+		v.slots[s] = slotCell{}
+	}
+}
+
+// writeUnsafe 在已持有写锁时按值类型写入 num 或 obj（并清理另一侧），保证同一键只存于一处。
+func (v *Val) writeUnsafe(key string, val any) {
+	if n, ok := toInt64Val(val); ok {
+		v.num[key] = n
+		delete(v.obj, key)
+	} else {
+		v.obj[key] = val
+		delete(v.num, key)
+	}
+}
+
+// set 写入变量值（带写锁，不检查锁定状态，供 __ 前缀线程变量等内部路径使用）。
+// 写穿透到无锁槽，维持「槽始终不旧于 map」的不变量，保证 get 槽优先读正确。
+func (v *Val) set(key string, val any) {
+	v.mu.Lock()
+	v.writeUnsafe(key, val)
+	v.mu.Unlock()
+	if isPlainVarName(key) {
+		v.slotSet(internVar(key), val)
+	}
+}
+
+// setInt64 写入整数变量值（带写锁，不检查锁定状态）。
+func (v *Val) setInt64(key string, val int64) {
+	v.mu.Lock()
+	v.num[key] = val
+	delete(v.obj, key)
+	v.mu.Unlock()
+	if isPlainVarName(key) {
+		v.slotSetInt64(internVar(key), val)
+	}
 }
 
 // 生成参数跟括号
@@ -156,16 +517,16 @@ func (v *DicVal) GetAll() map[string]any {
 // Get 返回指定键的值
 func (v *Val) Get(key string) any {
 	if name, ok := strings.CutPrefix(key, "__"); ok && name != "" {
-		value, _ := GV.obj.Load(name)
+		value, _ := GV.get(name)
 		return value
 	}
-	value, _ := v.obj.Load(key)
+	value, _ := v.get(key)
 	return value
 }
 
 // GetStr 返回指定键的值
 func (v *Val) GetStr(key string) string {
-	value, _ := v.obj.Load(key)
+	value, _ := v.get(key)
 	if value, ok := value.(string); ok {
 		return value
 	}
@@ -174,16 +535,19 @@ func (v *Val) GetStr(key string) string {
 
 // GetINT 返回指定键的值
 func (v *Val) GetINT(key string) int {
-	value, _ := v.obj.Load(key)
-	if value, ok := value.(int); ok {
-		return value
+	value, _ := v.get(key)
+	switch n := value.(type) {
+	case int:
+		return n
+	case int64:
+		return int(n)
 	}
 	return 0
 }
 
 // GetObj 返回指定键的值
 func (v *Val) GetObj(key string) map[string]any {
-	value, _ := v.obj.Load(key)
+	value, _ := v.get(key)
 	if value, ok := value.(map[string]any); ok {
 		return value
 	}
@@ -192,21 +556,27 @@ func (v *Val) GetObj(key string) map[string]any {
 
 // GetAll 返回全部对象
 func (v *Val) GetAll() map[string]any {
-	all := make(map[string]any)
-	v.obj.Range(func(key, value any) bool {
-		if k, ok := key.(string); ok {
-			all[k] = value
-		}
-		return true
-	})
+	v.mu.RLock()
+	all := make(map[string]any, len(v.obj)+len(v.num))
+	for k, value := range v.obj {
+		all[k] = value
+	}
+	for k, n := range v.num {
+		all[k] = n
+	}
+	v.mu.RUnlock()
 	return all
 }
 
 // NewObj 添加新对象
 func (v *Val) NewObj(val map[string]any) {
+	v.mu.Lock()
 	for k, newVal := range val {
-		v.obj.Store(k, newVal)
+		v.writeUnsafe(k, newVal)
 	}
+	// 批量覆盖后清空槽，避免残留旧值（冷路径）
+	v.slots = nil
+	v.mu.Unlock()
 }
 
 // 新建词库对象
@@ -219,103 +589,192 @@ func (dv *DicVal) NewDicVal(v *Val) *DicVal {
 
 // 覆盖obj
 func (v *Val) AddObjs(key string, mapV []map[string]any) {
-	value, _ := v.obj.Load(key)
+	v.mu.Lock()
+	value := v.obj[key]
 	var obj []map[string]any
 	if m, ok := value.([]map[string]any); ok {
 		obj = m
 	}
 	obj = append(obj, mapV...)
-	v.obj.Store(key, obj)
+	v.obj[key] = obj
+	delete(v.num, key)
+	v.mu.Unlock()
+	v.slotClearKey(key)
 }
 
 // Reset 重新设置对象
 func (v *Val) Reset(val map[string]any) *Val {
-	v.obj = sync.Map{}
+	v.mu.Lock()
+	v.obj = make(map[string]any, len(val))
+	v.num = make(map[string]int64, len(val))
 	for k, newVal := range val {
-		v.obj.Store(k, newVal)
+		v.writeUnsafe(k, newVal)
 	}
+	// 清空槽，避免残留旧值导致槽优先读返回过期数据
+	v.slots = nil
+	v.mu.Unlock()
 	return v
 }
 
 // SetObj 设置指定键的值，如果操作成功返回 true，否则返回 false
 func (v *Val) SetObj(key string, objkey string, val any) bool {
-	value, _ := v.obj.Load(key)
+	v.mu.Lock()
+	value := v.obj[key]
 	if m, ok := value.(map[string]any); ok {
 		m[objkey] = val
-		v.obj.Store(key, m)
+		v.obj[key] = m
+		v.mu.Unlock()
 		return true
 	}
+	v.mu.Unlock()
 	return false
 }
 
 // SetLock 设置指定键的锁定状态
 func (v *Val) SetLock(key string, val bool) *Val {
-	v.objlock.Store(key, val)
+	v.mu.Lock()
+	v.objlock[key] = val
+	v.mu.Unlock()
+	if val {
+		v.slotClearKey(key)
+	}
 	return v
 }
 
 // Set 设置指定键的值，只有在键未被锁定时才设置
 func (v *Val) Set(key string, val any) *Val {
 	if name, ok := strings.CutPrefix(key, "__"); ok && name != "" {
-		GV.obj.Store(name, val)
+		GV.set(name, val)
 		return v
 	}
-	value, ok := v.objlock.Load(key)
-	isLocked, typeOk := value.(bool)
-	if !ok || (ok && !typeOk) || (ok && !isLocked) {
-		v.obj.Store(key, val)
+	locked := true
+	v.mu.Lock()
+	if len(v.objlock) == 0 || !v.objlock[key] {
+		v.writeUnsafe(key, val)
+		locked = false
+	}
+	v.mu.Unlock()
+	// 写穿透：普通变量名同步写槽（无锁），保证槽优先读命中且 map 仍为权威（GetAll/Add 等依赖）
+	if !locked && isPlainVarName(key) {
+		v.slotSet(internVar(key), val)
 	}
 	return v
 }
 
+// SetInt64 设置整数变量值（直存 int64 免装箱），只有在键未被锁定时才设置。
+func (v *Val) SetInt64(key string, val int64) *Val {
+	if name, ok := strings.CutPrefix(key, "__"); ok && name != "" {
+		GV.setInt64(name, val)
+		return v
+	}
+	locked := true
+	v.mu.Lock()
+	if len(v.objlock) == 0 || !v.objlock[key] {
+		v.num[key] = val
+		delete(v.obj, key)
+		locked = false
+	}
+	v.mu.Unlock()
+	if !locked && isPlainVarName(key) {
+		v.slotSetInt64(internVar(key), val)
+	}
+	return v
+}
+
+// GetInt64 读取整数变量值（直读 int64 免装箱），未命中返回 false。
+func (v *Val) GetInt64(key string) (int64, bool) {
+	if name, ok := strings.CutPrefix(key, "__"); ok && name != "" {
+		return GV.getInt64(name)
+	}
+	return v.getInt64(key)
+}
+
 // Add 将值添加到指定键的值后面
 func (v *Val) Add(key string, val any) {
-	value, _ := v.obj.Load(key)
-	if existingVal, ok := value.(string); ok {
+	v.mu.Lock()
+	if existingVal, ok := v.obj[key].(string); ok {
 		if newVal, ok := val.(string); ok {
-			v.obj.Store(key, existingVal+newVal)
+			v.obj[key] = existingVal + newVal
 		} else {
-			v.obj.Store(key, val)
+			v.writeUnsafe(key, val)
 		}
 	} else {
-		v.obj.Store(key, val)
+		v.writeUnsafe(key, val)
 	}
+	v.mu.Unlock()
+	v.slotClearKey(key)
 }
 
 // HeaderAdd 将值添加到指定键的值前面
 func (v *Val) HeaderAdd(key string, val any) {
-	value, _ := v.obj.Load(key)
-	if existingVal, ok := value.(string); ok {
+	v.mu.Lock()
+	if existingVal, ok := v.obj[key].(string); ok {
 		if newVal, ok := val.(string); ok {
-			v.obj.Store(key, newVal+existingVal)
+			v.obj[key] = newVal + existingVal
 		} else {
-			v.obj.Store(key, val)
+			v.writeUnsafe(key, val)
 		}
 	} else {
-		v.obj.Store(key, val)
+		v.writeUnsafe(key, val)
 	}
+	v.mu.Unlock()
+	v.slotClearKey(key)
 }
 
 // 获取变量值，优先从 P，再从 G
 func (v *DicVal) GetVal(key string) (any, bool) {
 	if name, ok := strings.CutPrefix(key, "__"); ok && name != "" {
-		return GV.obj.Load(name)
+		return GV.get(name)
 	}
-	value, ok := v.P.obj.Load(key)
+	value, ok := v.P.get(key)
 	if !ok && v.G != nil {
-		value, ok = v.G.obj.Load(key)
+		value, ok = v.G.get(key)
 	}
 	return value, ok
+}
+
+// GetInt64 读取整数变量值（优先从 P，再从 G），未命中返回 false。用于免装箱的数值快速路径。
+func (v *DicVal) GetInt64(key string) (int64, bool) {
+	if name, ok := strings.CutPrefix(key, "__"); ok && name != "" {
+		return GV.getInt64(name)
+	}
+	n, ok := v.P.getInt64(key)
+	if !ok && v.G != nil {
+		n, ok = v.G.getInt64(key)
+	}
+	return n, ok
+}
+
+// GetSlotInt64 无锁按槽号读取整数变量（优先从 P，再从 G），未命中返回 false。编译期槽快速路径。
+func (v *DicVal) GetSlotInt64(slot int32) (int64, bool) {
+	if n, ok := v.P.slotGetInt64(slot); ok {
+		return n, true
+	}
+	if v.G != nil {
+		return v.G.slotGetInt64(slot)
+	}
+	return 0, false
+}
+
+// GetSlot 无锁按槽号读取变量（优先从 P，再从 G），未命中返回 false。编译期槽快速路径。
+func (v *DicVal) GetSlot(slot int32) (any, bool) {
+	if val, ok := v.P.slotGet(slot); ok {
+		return val, true
+	}
+	if v.G != nil {
+		return v.G.slotGet(slot)
+	}
+	return nil, false
 }
 
 // 获取变量值，优先从 P，再从 G
 func (v *Val) GetVal(vv *Val, key string) (any, bool) {
 	if name, ok := strings.CutPrefix(key, "__"); ok && name != "" {
-		return GV.obj.Load(name)
+		return GV.get(name)
 	}
-	value, ok := v.obj.Load(key)
+	value, ok := v.get(key)
 	if !ok && vv != nil {
-		value, ok = vv.obj.Load(key)
+		value, ok = vv.get(key)
 	}
 	return value, ok
 }
@@ -330,317 +789,9 @@ func (v *Val) Text(vv *Val, content any) any {
 	if !ok {
 		return content
 	}
-	result := replaceProcessedContent(str, "%", "%", func(val string) any {
-		// url编码
-		if strings.HasPrefix(val, "URL编码@") {
-			if value, ok := v.GetVal(vv, val[10:]); ok {
-				if strValue, isString := value.(string); isString {
-					return url.QueryEscape(strValue)
-				}
-			}
-			return ""
-		}
-		// B64编码
-		if strings.HasPrefix(val, "B64编码@") {
-			if value, ok := v.GetVal(vv, val[10:]); ok {
-				if strValue, isString := value.(string); isString {
-					return base64.StdEncoding.EncodeToString([]byte(strValue))
-				}
-			}
-			return ""
-		}
-		// url解码
-		if strings.HasPrefix(val, "URL@") {
-			if value, ok := v.GetVal(vv, val[4:]); ok {
-				if strValue, isString := value.(string); isString {
-					decoded, err := url.QueryUnescape(strValue)
-					if err != nil {
-						return strValue
-					}
-					return decoded
-				}
-			}
-			return ""
-		}
-		// B64解码
-		if strings.HasPrefix(val, "B64@") {
-			if value, ok := v.GetVal(vv, val[4:]); ok {
-				if strValue, isString := value.(string); isString {
-					decoded, err := base64.StdEncoding.DecodeString(strValue)
-					if err != nil {
-						return ""
-					}
-					return string(decoded)
-				}
-			}
-			return ""
-		}
-
-		// 类型
-		if strings.HasPrefix(val, "TYPE@") {
-			if value, ok := v.GetVal(vv, val[5:]); ok {
-				return reflect.TypeOf(value).String()
-			}
-			return ""
-		}
-
-		if strings.HasPrefix(val, "@") {
-			list := strings.Split(val[1:], ".")
-			if len(list) > 1 {
-				// 先取第一个变量
-				value, _ := v.GetVal(vv, list[0])
-				switch valueStr := value.(type) {
-				case string:
-					if j := utils.IsJSONResult(valueStr); j != nil {
-						res := j
-						for _, key := range list[1:] {
-							switch curr := res.(type) {
-							case map[string]any:
-								if v, ok := curr[key]; ok {
-									res = v
-								} else {
-									// 不存在键返回
-									return ""
-								}
-							case []any:
-								// 尝试把 key 转成索引
-								idx, err := strconv.Atoi(key)
-								if err != nil || idx < 0 || idx >= len(curr) {
-									// 不存在键返回
-									return ""
-								}
-								res = curr[idx]
-							default:
-								// 遇到不可再下探的类型
-								return utils.AnyToString(res)
-							}
-						}
-						return utils.AnyToString(res)
-					}
-				case map[string]any:
-					var res any = valueStr
-					for _, key := range list[1:] {
-						if v, ok := res.(map[string]any); ok {
-							if val, ok := v[key]; ok {
-								res = val
-							} else {
-								// 不存在键返回
-								return ""
-							}
-						}
-					}
-					return utils.AnyToString(res)
-				}
-			}
-		}
-
-		if strings.HasPrefix(val, "!") {
-			value, _ := v.GetVal(vv, val[1:])
-			if strValue, isString := value.(string); isString {
-				switch strValue {
-				case "true":
-					return "false"
-				case "false":
-					return "true"
-				case "1":
-					return "0"
-				case "0":
-					return "1"
-				}
-				return strValue
-			}
-			return ""
-		}
-
-		switch val {
-		case "时间":
-			return time.Now()
-		case "时间戳":
-			return strconv.FormatInt(time.Now().Unix(), 10)
-		case "毫秒时间戳":
-			return strconv.FormatInt(time.Now().UnixNano()/1e6, 10)
-		case "微秒时间戳":
-			return strconv.FormatInt(time.Now().UnixNano()/1e3, 10)
-		case "纳秒时间戳":
-			return strconv.FormatInt(time.Now().UnixNano(), 10)
-		case "空格":
-			return " "
-		case "换行":
-			return "\n"
-		case "系统":
-			return runtime.GOOS
-		case "版本":
-			return appfiles.Version
-		}
-
-		value, valueOk := v.GetVal(vv, val)
-		if valueOk {
-			strValue, isString := value.(string)
-			if isString {
-				return strValue
-			} else {
-				return value
-			}
-		}
-
-		if strings.HasPrefix(val, "时间") {
-			getstr := val[6:]
-			replacements := map[string]string{
-				"yyyy":   "2006",
-				"MM":     "01",
-				"dd":     "02",
-				"hh":     "03",
-				"HH":     "15",
-				"mm":     "04",
-				"ss":     "05",
-				"Mon":    "Mon",
-				"Monday": "Monday",
-			}
-			for key, value := range replacements {
-				getstr = strings.ReplaceAll(getstr, key, value)
-			}
-			return time.Now().Format(getstr)
-		}
-
-		if strings.HasPrefix(val, "随机数") {
-			lval := val[9:]
-			if dashIndex := strings.Index(lval, "-"); dashIndex != -1 {
-				minStr := lval[:dashIndex]
-				maxStr := lval[dashIndex+1:]
-				if min, err := strconv.Atoi(minStr); err == nil {
-					if max, err := strconv.Atoi(maxStr); err == nil {
-						rN := utils.RandNum(min, max)
-						if rN == min-1 {
-							return ""
-						}
-						return strconv.Itoa(rN)
-					}
-				}
-			}
-		}
-
-		if getstr, ok := strings.CutPrefix(val, "val"); ok && getstr != "" {
-			switch getstr {
-			case "0":
-				return "$"
-			case "1":
-				return "%"
-			case "2":
-				return ":"
-			case "3":
-				return " "
-			case "4":
-				return "\t"
-			case "5":
-				return "\n"
-			case "6":
-				return ";"
-			case "7":
-				return "["
-			case "8":
-				return "]"
-			case "9":
-				return "\r\n"
-			case "10":
-				return "\r"
-			}
-		}
-
-		// Class 变量：%类名.变量% / %变量.变量%（变量值为类名或实例）
-		if dot := strings.Index(val, "."); dot > 0 {
-			key := val[dot+1:]
-			className := val[:dot]
-
-			classMap := v.Class
-			if classMap == nil && vv != nil {
-				classMap = vv.Class
-			}
-
-			var cv *Val
-			if className == "自己" {
-				switch c := v.Get("Class").(type) {
-				case string:
-					if c != "" && classMap != nil {
-						cv = classMap[c]
-					}
-				case *DicClass:
-					cv = c.LocalValue
-				}
-			} else if classMap != nil {
-				cv = classMap[className]
-			}
-
-			// 变量间接：className 是变量，值为类名或实例
-			if cv == nil {
-				if value, ok := v.GetVal(vv, className); ok {
-					switch inst := value.(type) {
-					case string:
-						if inst != "" && inst != className && classMap != nil {
-							cv = classMap[inst]
-						}
-					case *DicClass:
-						cv = inst.LocalValue
-					}
-				}
-			}
-
-			if cv != nil {
-				if value, ok := cv.GetVal(nil, key); ok {
-					if strValue, isString := value.(string); isString {
-						return strValue
-					}
-					return value
-				}
-			}
-
-			if classMap != nil {
-				return ""
-			}
-		}
-
-		return "%" + val + "%"
-	})
-
-	return result
-}
-
-// replaceProcessedContent 接受一个字符串、开始和结束的子串，以及一个处理函数作为参数
-func replaceProcessedContent(str, strStart, strEnd string, process func(string) any) any {
-	// 快速路径：不含起始标记时直接返回原字符串，避免 Builder 往返复制
-	if !strings.Contains(str, strStart) {
+	// 无 % 的纯文本原样返回，跳过模板缓存查找与分段渲染（最常见输出路径）
+	if !strings.Contains(str, "%") {
 		return str
 	}
-	var result strings.Builder
-	start := 0
-
-	for {
-		openIndex := strings.Index(str[start:], strStart)
-		if openIndex == -1 {
-			break
-		}
-		openIndex += start
-
-		closeIndex := strings.Index(str[openIndex+len(strStart):], strEnd)
-		if closeIndex == -1 {
-			break
-		}
-		closeIndex += openIndex + len(strStart)
-
-		result.WriteString(str[start:openIndex])
-
-		content := str[openIndex+len(strStart) : closeIndex]
-		processedContent := process(content)
-
-		if resStr, ok := processedContent.(string); ok {
-			result.WriteString(resStr)
-		} else {
-			return processedContent
-		}
-
-		start = closeIndex + len(strEnd)
-	}
-
-	result.WriteString(str[start:])
-
-	return result.String()
+	return v.renderVarSegments(vv, getVarSegments(str))
 }

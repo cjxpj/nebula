@@ -1,9 +1,11 @@
 package qqbot
 
 import (
+	"encoding/base64"
 	"fmt"
 	"regexp"
 	"strings"
+	"sync"
 
 	qqbot_msg "github.com/cjxpj/nebula/bot/qqbot/msg"
 	"github.com/cjxpj/nebula/utils"
@@ -135,25 +137,76 @@ func stripReplyTags(s string) (string, []string, string) {
 
 		var data string
 		var err error
-		if strings.HasPrefix(src, "http://") || strings.HasPrefix(src, "https://") {
+		switch {
+		case strings.HasPrefix(src, "data:"):
+			// 沙箱场景 $IMG 1$ 返回的是 data URL，直接解码为图片原始字节
+			data, err = dataURLBytes(src)
+		case strings.HasPrefix(src, "http://") || strings.HasPrefix(src, "https://"):
 			data, err = utils.Get(src)
-		} else {
+		default:
 			data, err = utils.NewFileQueue(src).ReadFile()
 		}
-		if err == nil {
+		if err == nil && data != "" {
 			imgs = append(imgs, data)
 		}
 	}
 
-	return s, imgs, atMsgID
+	// 去掉首尾空白：±img=/±atMsg= 标记移除后可能残留空格/换行，
+	// 纯空白视为空消息，交由上层「空消息不发送」判断拦截。
+	return strings.TrimSpace(s), imgs, atMsgID
 }
 
-// refIdxOf 从群消息场景的 ext 中提取引用索引（形如 "msg_idx=REFIDX_xxx"），无则返回空串
-func refIdxOf(scene qqbot_msg.GroupMessageScene) string {
+// dataURLBytes 把 data URL（如 data:image/png;base64,xxx）解码为图片原始字节。
+// 沙箱场景下 $IMG 1$ 返回的附件 URL 是 data URL，需此处解码后才能作为图片发送。
+func dataURLBytes(s string) (string, error) {
+	meta, data, ok := strings.Cut(strings.TrimPrefix(s, "data:"), ",")
+	if !ok || data == "" {
+		return "", fmt.Errorf("无效的 data URL")
+	}
+	if strings.Contains(meta, ";base64") {
+		raw, err := base64.StdEncoding.DecodeString(data)
+		if err != nil {
+			return "", err
+		}
+		return string(raw), nil
+	}
+	return data, nil
+}
+
+// extValue 从群消息场景的 ext 中提取指定 key 的值（key=value 格式，如 msg_idx= / ref_msg_idx=），无则返回空串
+func extValue(scene qqbot_msg.GroupMessageScene, key string) string {
+	prefix := key + "="
 	for _, ext := range scene.Ext {
-		if strings.HasPrefix(ext, "msg_idx=") {
-			return strings.TrimPrefix(ext, "msg_idx=")
+		if v, ok := strings.CutPrefix(ext, prefix); ok {
+			return v
 		}
 	}
 	return ""
+}
+
+// msgRefIdxMap 记录「消息ID → 引用索引(msg_idx)」的映射，
+// 用于把词库 ±atMsg=消息ID± 中的消息 ID 还原为引用回复所需的引用索引（回复ID）。
+var msgRefIdxMap sync.Map
+
+// storeMsgRefIdx 记录一条消息的 ID 与其引用索引（msg_idx）的对应关系。
+func storeMsgRefIdx(msgID, refIdx string) {
+	if msgID == "" || refIdx == "" {
+		return
+	}
+	msgRefIdxMap.Store(msgID, refIdx)
+}
+
+// resolveAtMsgRefID 把 ±atMsg=消息ID± 中的值还原为引用回复所需的引用索引（回复ID）：
+// 优先按消息ID在映射中查找对应引用索引；查找不到时原样返回，
+// 此时该值本身已是引用索引（如 msg_idx/ref_idx）。
+func resolveAtMsgRefID(atMsgID string) string {
+	if atMsgID == "" {
+		return ""
+	}
+	if v, ok := msgRefIdxMap.Load(atMsgID); ok {
+		if s, ok := v.(string); ok && s != "" {
+			return s
+		}
+	}
+	return atMsgID
 }

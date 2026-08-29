@@ -6,8 +6,10 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/cjxpj/nebula/dic/funcs"
 	dic_api "github.com/cjxpj/nebula/dic/api"
 	dic_dto "github.com/cjxpj/nebula/dic/dto"
+	"github.com/cjxpj/nebula/dto"
 )
 
 // TestFuncParamRule 验证 [函数|参数规则] 语法：按函数名精确匹配 + 参数数量校验，不使用正则。
@@ -84,6 +86,46 @@ func TestFuncParamRuleQuoted(t *testing.T) {
 	D := dic_dto.NewDic("t.n", funcDef+`$fixed "甲 乙"$`)
 	if got := dic_api.Api.DicRun(D, "Main"); got != "ok" {
 		t.Errorf("引用参数计数错误，期望 ok，实际 %q", got)
+	}
+}
+
+// TestFuncCallFunc 验证 [函数] 定义内可调用其他 [函数]（函数调用函数）。
+func TestFuncCallFunc(t *testing.T) {
+	chdirToAppWin()
+
+	const funcDef = "\n[函数]a\n$b$\n\n[函数]b\nok\n\nMain\n"
+	D := dic_dto.NewDic("t.n", funcDef+"$a$")
+	if got := dic_api.Api.DicRun(D, "Main"); got != "ok" {
+		t.Errorf("函数调用函数失败，期望 ok，实际 %q", got)
+	}
+}
+
+// TestFuncRecursion 验证 [函数] 可递归调用自身，且参数中的 [算术] 表达式（如 [%参数1%+1]）会先求值。
+func TestFuncRecursion(t *testing.T) {
+	chdirToAppWin()
+
+	const funcDef = "\n[f|1]xh\n%参数1%\\r\n如果:%参数1%<10\n$xh [%参数1%+1]$\n\nMain\n$xh 0$\n"
+	D := dic_dto.NewDic("t.n", funcDef)
+	got := dic_api.Api.DicRun(D, "Main")
+	want := "0\n1\n2\n3\n4\n5\n6\n7\n8\n9\n10\n"
+	if got != want {
+		t.Errorf("递归调用自身失败，期望 %q，实际 %q", want, got)
+	}
+}
+
+// TestFuncBuiltinConflict 验证 [函数] 定义与系统内置函数重名时，调用报错（禁止覆盖）。
+func TestFuncBuiltinConflict(t *testing.T) {
+	chdirToAppWin()
+
+	if err := funcs.Register("测试内置函数冲突", "0", func(d *dto.DicInputs) (any, error) { return "内置", nil }); err != nil {
+		t.Skipf("内置函数已存在：%v", err)
+	}
+	defer funcs.Unregister("测试内置函数冲突")
+
+	const funcDef = "\n[函数]测试内置函数冲突\n自定义\n\nMain\n"
+	D := dic_dto.NewDic("t.n", funcDef+"$测试内置函数冲突$")
+	if got := dic_api.Api.DicRun(D, "Main"); !strings.Contains(got, "禁止覆盖系统内置函数") {
+		t.Errorf("期望报错禁止覆盖内置函数，实际 %q", got)
 	}
 }
 
@@ -235,5 +277,127 @@ Main
 	got := dic_api.Api.DicRun(D, "Main")
 	if got != "0结束" {
 		t.Errorf("嵌套循环内 >终止遍历 未生效，期望 0结束，实际 %q", got)
+	}
+}
+
+// TestForEachTerminateJSON 回归测试：遍历 JSON 对象时，遍历体内的 >终止遍历 / >终止循环 应正确跳出。
+func TestForEachTerminateJSON(t *testing.T) {
+	chdirToAppWin()
+
+	cases := []struct {
+		name string
+		body string
+		want string
+	}{
+		{
+			"JSON对象遍历直接终止遍历",
+			"遍历>i,ii={\"a\":1,\"b\":2,\"c\":3}\n%i%\n>终止遍历\n<遍历\n结束",
+			"a结束",
+		},
+		{
+			"JSON对象遍历嵌套循环终止遍历",
+			"遍历>i,ii={\"a\":1,\"b\":2,\"c\":3}\n循环>x=2\n%i%\n>终止遍历\n<循环\n<遍历\n结束",
+			"a结束",
+		},
+		{
+			"循环嵌套JSON对象遍历终止循环",
+			"循环>x=3\n遍历>j,jj={\"a\":1,\"b\":2}\n%j%\n>终止循环\n<遍历\nX\n<循环\n结束",
+			"a结束",
+		},
+	}
+
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			D := dic_dto.NewDic("t.n", "Main\n"+c.body)
+			got := dic_api.Api.DicRun(D, "Main")
+			if got != c.want {
+				t.Errorf("%s 未生效，期望 %q，实际 %q", c.name, c.want, got)
+			}
+		})
+	}
+}
+
+// TestNestedForEachTerminateAfterInner 回归测试：嵌套遍历时，内层遍历框结束后，
+// 外层遍历体中的 >终止遍历 仍应生效（内层遍历框清理不得重置外层遍历体的 ForEach.IsFor 标记）。
+func TestNestedForEachTerminateAfterInner(t *testing.T) {
+	chdirToAppWin()
+
+	cases := []struct {
+		name string
+		body string
+		want string
+	}{
+		{
+			"内层遍历后如果冒号终止遍历",
+			"遍历>i,值=[1,2,3,4]\n外%i%,\n遍历>ii,值2=[1,2,3,4]\n内%ii%,\n<遍历\n如果:%i%==2\n>终止遍历\n如果尾\n<遍历\n结束",
+			"外0,内0,内1,内2,内3,外1,内0,内1,内2,内3,外2,内0,内1,内2,内3,结束",
+		},
+		{
+			"内层遍历后如果大于终止遍历",
+			"遍历>i,值=[1,2,3,4]\n外%i%,\n遍历>ii,值2=[1,2,3,4]\n内%ii%,\n<遍历\n如果>%i%==2\n>终止遍历\n<如果\n<遍历\n结束",
+			"外0,内0,内1,内2,内3,外1,内0,内1,内2,内3,外2,内0,内1,内2,内3,结束",
+		},
+	}
+
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			D := dic_dto.NewDic("t.n", "Main\n"+c.body)
+			got := dic_api.Api.DicRun(D, "Main")
+			if got != c.want {
+				t.Errorf("%s 未生效，期望 %q，实际 %q", c.name, c.want, got)
+			}
+		})
+	}
+}
+
+// TestNestedTerminateControls 回归测试：各类框体嵌套时，终止指令应只作用于当前最内层对应框体。
+func TestNestedTerminateControls(t *testing.T) {
+	chdirToAppWin()
+
+	cases := []struct {
+		name string
+		body string
+		want string
+	}{
+		{
+			"循环嵌套循环内层终止循环",
+			"循环>a=2\nA%a%\n循环>b=2\nB%b%\n>终止循环\n<循环\nX\n<循环\n结束",
+			"A1B1XA2B1X结束",
+		},
+		{
+			"遍历嵌套遍历内层终止遍历",
+			"遍历>i,ii=[\"a\",\"b\"]\n外%i%\n遍历>j,jj=[\"1\",\"2\"]\n内%j%\n>终止遍历\n<遍历\nX\n<遍历\n结束",
+			"外0内0X外1内0X结束",
+		},
+		{
+			"如果大于嵌套遍历终止遍历",
+			"遍历>i,ii=[\"a\",\"b\",\"c\"]\n%i%\n如果>%i%==0\n>终止遍历\n<如果\n<遍历\n结束",
+			"0结束",
+		},
+		{
+			"如果大于嵌套JSON对象遍历终止遍历",
+			"遍历>i,ii={\"a\":1,\"b\":2,\"c\":3}\n%i%\n如果>%i%==a\n>终止遍历\n<如果\n<遍历\n结束",
+			"a结束",
+		},
+		{
+			"如果大于嵌套循环终止循环",
+			"循环>x=3\n%x%\n如果>%x%==2\n>终止循环\n<如果\nX\n<循环\n结束",
+			"1X2结束",
+		},
+		{
+			"循环嵌套遍历终止循环数组",
+			"循环>x=2\n遍历>j,jj=[\"a\",\"b\"]\n%j%\n>终止循环\n<遍历\nX\n<循环\n结束",
+			"0结束",
+		},
+	}
+
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			D := dic_dto.NewDic("t.n", "Main\n"+c.body)
+			got := dic_api.Api.DicRun(D, "Main")
+			if got != c.want {
+				t.Errorf("%s 未生效，期望 %q，实际 %q", c.name, c.want, got)
+			}
+		})
 	}
 }

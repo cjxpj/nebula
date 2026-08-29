@@ -29,6 +29,8 @@ type QQBot struct {
 	TokenMu sync.Mutex
 	// 调试打印
 	Debug bool
+	// 沙箱模式：非 nil 时发送动作改为捕获到该捕获器，不真正发往 QQ
+	Sandbox *SandboxCapture
 }
 
 // AccessTokenResponse 表示 access_token 响应

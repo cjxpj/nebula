@@ -204,7 +204,11 @@ func Funcs(d *dic_dto.DicFunc, dic_i *utils.DicInputs) (any, error) {
 	} else {
 		text := strings.Join(dic_i.StringList(), " ")
 		// 局部函数
-		if str, Tstr, tparts, errRule, ok := run.RunFunc(d.Dic.DicFuncs["函数"], dic_i.String(0), dic_i.Len()); ok {
+		if str, Tstr, tparts, errRule, ok := run.RunFuncIndexed(d.Dic.GetFuncIndex(), dic_i.String(0), dic_i.Len()); ok {
+			// 系统内置函数禁止覆盖：同名 [函数] 定义调用时直接报错。
+			if _, isBuiltin := funcs.GetFunc(dic_i.String(0)); isBuiltin {
+				return handleFuncError(d, dic_i.String(0), fmt.Errorf("禁止覆盖系统内置函数：%s", dic_i.String(0)), captureErr), nil
+			}
 			funcv := dto.NewVal()
 			give, ok := d.Val.P.Get("_继承_").(string)
 			if ok && give != "" {
@@ -218,14 +222,13 @@ func Funcs(d *dic_dto.DicFunc, dic_i *utils.DicInputs) (any, error) {
 			}
 			funcv.Set("触发", Tstr)
 			funcv.Set("触发词", text)
-			dto.ValRunTrigger(text, Tstr, d.Val.NewDicVal(funcv), d.Val)
+			// 参数需先求值 [算术]（如 [%参数1%+1]）与 %变量%，再拆分写入 参数N，保证递归/传参语义正确
+			dto.ValRunTrigger(utils.AnyToString(count.RunCountText(d.Val, text)), Tstr, d.Val.NewDicVal(funcv), d.Val)
 			RunDic := dic_dto.NewRunDicEntry().
 				CloseTrigger().
 				SetGlobal_v(d.Val.G).
 				Set_v(funcv).
-				SetDic_v(d.Dic).
-				WithRecursionDepth(d.RecursionDepth)
-			RunDic.ClearDicFuncs()
+				SetDic_v(d.Dic)
 
 			resRunDic := dic_api.Api.DicRunLine(RunDic, str)
 			if captureErr && RunDic.Sys_v.Stop.Load() {
@@ -268,8 +271,7 @@ func Funcs(d *dic_dto.DicFunc, dic_i *utils.DicInputs) (any, error) {
 				resDics := dic_dto.NewRunDicEntry().
 					SetGlobal_v(d.Val.G).
 					Set_v(funcv).
-					SetDic_v(d.Dic).
-					WithRecursionDepth(d.RecursionDepth)
+					SetDic_v(d.Dic)
 				resDics.LineNums = f.LineNums
 				return dic_api.Api.DicRunLine(resDics, f.Content), nil
 			}
@@ -291,7 +293,9 @@ func Funcs(d *dic_dto.DicFunc, dic_i *utils.DicInputs) (any, error) {
 		if !inputs.LenOk(fnInfo.L) {
 			return handleFuncError(d, dic_i.String(0), fmt.Errorf("参数数量错误(需要%s，实际%d)", fnInfo.L, inputs.Len()), captureErr), nil
 		}
-		res, err := fnInfo.Fn(dto.NewDicInputsWithOutput(d.Dic, d.Val, &inputs, d.Output))
+		di := dto.NewDicInputsWithOutput(d.Dic, d.Val, &inputs, d.Output)
+		di.Raw = dic_i
+		res, err := fnInfo.Fn(di)
 		if err != nil {
 			return handleFuncError(d, dic_i.String(0), err, captureErr), nil
 		}
@@ -341,7 +345,7 @@ func newClassInstance(d *dic_dto.DicFunc, dic_i *utils.DicInputs) (any, error) {
 	}
 
 	// 执行构造函数 [函数:类名]new
-	if str, Tstr, _, _, ok := run.RunFunc(classData.DicFuncs["函数"], "new", 0); ok {
+	if str, Tstr, _, _, ok := run.RunFuncIndexed(classData.GetFuncIndex(), "new", 0); ok {
 		funcv := dto.NewVal().
 			Set("触发", Tstr).
 			Set("触发词", "new").
@@ -351,9 +355,7 @@ func newClassInstance(d *dic_dto.DicFunc, dic_i *utils.DicInputs) (any, error) {
 			CloseTrigger().
 			SetGlobal_v(d.Val.G).
 			Set_v(funcv).
-			SetDic_v(d.Dic).
-			WithRecursionDepth(d.RecursionDepth)
-		RunDic.ClearDicFuncs()
+			SetDic_v(d.Dic)
 		d.Output.Add(dic_api.Api.DicRunLine(RunDic, str))
 	}
 
@@ -377,9 +379,7 @@ func runClassMethod(d *dic_dto.DicFunc, classData *dto.DicClass, methodArgs []st
 			CloseTrigger().
 			SetGlobal_v(d.Val.G).
 			Set_v(funcv).
-			SetDic_v(d.Dic).
-			WithRecursionDepth(d.RecursionDepth)
-		RunDic.ClearDicFuncs()
+			SetDic_v(d.Dic)
 		res := dic_api.Api.DicRunLine(RunDic, str)
 		if captureErr && RunDic.Sys_v.Stop.Load() {
 			d.Val.P.Set("报错", res)
@@ -413,7 +413,7 @@ func runClassMethod(d *dic_dto.DicFunc, classData *dto.DicClass, methodArgs []st
 	}
 
 	TStr := strings.Join(methodArgs, " ")
-	str, Tstr, _, errRule, ok := run.RunFunc(classData.DicFuncs["函数"], methodArgs[0], len(methodArgs)-1)
+	str, Tstr, _, errRule, ok := run.RunFuncIndexed(classData.GetFuncIndex(), methodArgs[0], len(methodArgs)-1)
 	if !ok {
 		if errRule != "" {
 			return handleFuncError(d, methodArgs[0], fmt.Errorf("参数数量错误(需要%s，实际%d)", errRule, len(methodArgs)-1), captureErr), true
@@ -429,9 +429,7 @@ func runClassMethod(d *dic_dto.DicFunc, classData *dto.DicClass, methodArgs []st
 		CloseTrigger().
 		SetGlobal_v(d.Val.G).
 		Set_v(funcv).
-		SetDic_v(d.Dic).
-		WithRecursionDepth(d.RecursionDepth)
-	RunDic.ClearDicFuncs()
+		SetDic_v(d.Dic)
 	res := dic_api.Api.DicRunLine(RunDic, str)
 	if captureErr && RunDic.Sys_v.Stop.Load() {
 		d.Val.P.Set("报错", res)
