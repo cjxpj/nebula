@@ -130,6 +130,7 @@ func loadConfig() {
 		TLSMode:             HTTP_Config.Key("TLS方式").MustString("file"),
 		TLSDomains:          HTTP_Config.Key("TLS域名").String(),
 		TLSEmail:            HTTP_Config.Key("TLS邮箱").String(),
+		Domain:              HTTP_Config.Key("绑定域名").String(),
 	}
 	// 启动时同步全局调试开关，控制词库缓存等调试信息打印
 	debugLog.SetDebug(dto.ServerConfig.Router.Debug)

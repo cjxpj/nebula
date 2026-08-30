@@ -45,6 +45,7 @@ type ServerHTTP struct {
 	TLSMode    string
 	TLSDomains string // acme 域名列表（逗号分隔）
 	TLSEmail   string // acme 邮箱（可选）
+	Domain     string // 绑定域名（可选）：对外访问地址使用的域名，留空则回退到监听地址
 }
 
 type OPUI struct {

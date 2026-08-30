@@ -59,6 +59,7 @@ type HttpOpUiConfig_server struct {
 	TLSMode    string `json:"tls_mode"`
 	TLSDomains string `json:"tls_domains"` // acme 域名列表（逗号分隔）
 	TLSEmail   string `json:"tls_email"`   // acme 邮箱（可选）
+	Domain     string `json:"domain"`      // 绑定域名（可选）
 	OS         string `json:"os"`          // 服务器操作系统（windows/linux/darwin），用于前端判断是否显示系统证书库
 }
 
@@ -3069,9 +3070,10 @@ func opuiHandleApi(w http.ResponseWriter, r *http.Request) {
 		j.TLSMode = d.Key("TLS方式").MustString("file")
 		j.TLSDomains = d.Key("TLS域名").String()
 		j.TLSEmail = d.Key("TLS邮箱").String()
+		j.Domain = d.Key("绑定域名").String()
 		j.OS = runtime.GOOS
 		if r, err := json.Marshal(j); err != nil {
-			w.Write([]byte(`{"server":"","cors":false,"cors_origins":"","temp_cleanup_interval":60,"tls":false,"cert_file":"","key_file":"","debug":false,"tls_mode":"file","tls_domains":"","tls_email":"","os":"` + runtime.GOOS + `"}`))
+			w.Write([]byte(`{"server":"","cors":false,"cors_origins":"","temp_cleanup_interval":60,"tls":false,"cert_file":"","key_file":"","debug":false,"tls_mode":"file","tls_domains":"","tls_email":"","domain":"","os":"` + runtime.GOOS + `"}`))
 		} else {
 			w.Write(r)
 		}
@@ -3110,6 +3112,7 @@ func opuiHandleApi(w http.ResponseWriter, r *http.Request) {
 		d.Key("TLS方式").SetValue(j.TLSMode)
 		d.Key("TLS域名").SetValue(j.TLSDomains)
 		d.Key("TLS邮箱").SetValue(j.TLSEmail)
+		d.Key("绑定域名").SetValue(j.Domain)
 		if err := ff.SaveIni(f); err != nil {
 			utils.ErrorStop("系统配置保存失败")
 		}
@@ -3123,6 +3126,7 @@ func opuiHandleApi(w http.ResponseWriter, r *http.Request) {
 		dto.ServerConfig.Router.TLSMode = j.TLSMode
 		dto.ServerConfig.Router.TLSDomains = j.TLSDomains
 		dto.ServerConfig.Router.TLSEmail = j.TLSEmail
+		dto.ServerConfig.Router.Domain = j.Domain
 		debugLog.SetDebug(j.Debug)
 		// 更新监听地址并热重启 HTTP 服务器（HTTPS 开关/证书/地址变化即时生效）
 		if needRestart {
