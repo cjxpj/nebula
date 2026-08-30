@@ -379,6 +379,8 @@ func (c *compiler) compileBlock(b *ast.Block) {
 	switch b.OpenKind {
 	case ast.BlockIf:
 		c.compileIf(b)
+	case ast.BlockMatch:
+		c.compileMatch(b)
 	case ast.BlockFor:
 		c.compileFor(b)
 	case ast.BlockText:
@@ -600,6 +602,101 @@ func (c *compiler) compileIf(b *ast.Block) {
 	c.blocks = c.blocks[:len(c.blocks)-1]
 	for _, idx := range top.skips {
 		c.instrs[idx].Arg = end
+	}
+}
+
+// matchCaseValue 识别匹配框的 case 行（如果是:值），返回去掉前缀（及可选前导 >）后的 case 值；非 case 行返回 ok=false。
+func matchCaseValue(text string) (string, bool) {
+	t := strings.TrimPrefix(text, ">")
+	if strings.HasPrefix(t, "如果是:") && len(t) > len("如果是:") {
+		return t[len("如果是:"):], true
+	}
+	return "", false
+}
+
+// isMatchDefault 识别匹配框的默认分支（如果不是，允许可选前导 >）。
+func isMatchDefault(text string) bool {
+	return text == "如果不是" || text == ">如果不是"
+}
+
+// splitMatchBranches 按 case 行（如果是:值）/ 如果不是 把匹配框的子节点切成分支。cond 为空表示默认分支（如果不是）。
+func splitMatchBranches(children []ast.Node) []branch {
+	var branches []branch
+	var cur *branch
+	for _, n := range children {
+		if s, ok := n.(*ast.Stmt); ok {
+			if isMatchDefault(s.Text) {
+				branches = append(branches, branch{})
+				cur = &branches[len(branches)-1]
+				continue
+			}
+			if val, ok := matchCaseValue(s.Text); ok {
+				branches = append(branches, branch{cond: val})
+				cur = &branches[len(branches)-1]
+				continue
+			}
+		}
+		if cur == nil {
+			// 未出现任何 case 就出现正文：视为默认分支。
+			branches = append(branches, branch{})
+			cur = &branches[len(branches)-1]
+		}
+		cur.body = append(cur.body, n)
+	}
+	return branches
+}
+
+// compileMatch 编译 匹配>表达式 ... <匹配 框为值匹配分支：
+//   - OpSwitch 一次性求值主体并入匹配值栈；
+//   - 每个 case 编译为 OpSwitchCase（与栈顶值相等则进入其正文，否则跳到下一分支）；
+//   - 命中分支执行完 OpJump 跳到匹配框末尾（OpSwitchPop），不穿透；
+//   - 如果不是 为默认分支（无 OpSwitchCase，作为最终落点）；
+//   - >跳过 复用判断块的语义（跳到匹配框末尾）。
+func (c *compiler) compileMatch(b *ast.Block) {
+	subject := strings.TrimPrefix(b.Open, "匹配>")
+	branches := splitMatchBranches(b.Children)
+
+	c.blocks = append(c.blocks, blockCtx{kind: blockIf})
+
+	c.emit(Instr{Op: OpSwitch, Text: subject})
+
+	var cases []int // OpSwitchCase 指令下标
+	var endJumps []int
+	defaultStart := -1
+
+	for _, br := range branches {
+		if br.cond == "" {
+			defaultStart = len(c.instrs)
+			c.compileNodes(br.body)
+			continue
+		}
+		cases = append(cases, c.emit(Instr{Op: OpSwitchCase, Text: br.cond}))
+		c.compileNodes(br.body)
+		endJumps = append(endJumps, c.emit(Instr{Op: OpJump}))
+	}
+
+	popPc := c.emit(Instr{Op: OpSwitchPop})
+
+	// 回填未命中跳转：第 i 个 case 未命中 → 下一 case 的 OpSwitchCase；最后一个 → 默认正文 / OpSwitchPop。
+	for i, pc := range cases {
+		target := popPc
+		if i+1 < len(cases) {
+			target = cases[i+1]
+		} else if defaultStart >= 0 {
+			target = defaultStart
+		}
+		c.instrs[pc].Arg = target
+	}
+	// 回填命中后的结束跳转 → OpSwitchPop。
+	for _, j := range endJumps {
+		c.instrs[j].Arg = popPc
+	}
+
+	// 回填 >跳过 → 匹配框末尾。
+	top := c.blocks[len(c.blocks)-1]
+	c.blocks = c.blocks[:len(c.blocks)-1]
+	for _, idx := range top.skips {
+		c.instrs[idx].Arg = popPc
 	}
 }
 

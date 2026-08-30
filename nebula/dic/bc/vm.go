@@ -14,6 +14,8 @@ type Runtime interface {
 	Output() string
 	// Cond 求值条件表达式真假。
 	Cond(expr string) bool
+	// Resolve 求值表达式（%变量%/$函数$/[算术] 等）为字符串，供 匹配> 框一次性求值主体与 case 值。
+	Resolve(expr string) string
 	// JumpRelOffset 求值 跳行 偏移表达式（可为 %变量%/字面量），返回解析后的整数与是否解析成功。
 	// 语义与解释器 >跳行 一致：偏移经 %变量% 插值后按整数解析，解析失败视为未命中（不跳转）。
 	JumpRelOffset(expr string) (int, bool)
@@ -85,6 +87,7 @@ func Run(instrs []Instr, rt Runtime) string {
 		i       int    // 当前值/游标
 	}
 	var frames []frame
+	var switchVals []string
 
 	for pc := 0; pc < len(instrs); pc++ {
 		in := instrs[pc]
@@ -239,6 +242,16 @@ func Run(instrs []Instr, rt Runtime) string {
 			if rt.Stop() {
 				return rt.Output()
 			}
+		case OpSwitch:
+			// 求值匹配主体一次并压栈，后续 case 只与栈顶值做相等比较。
+			switchVals = append(switchVals, rt.Resolve(in.Text))
+		case OpSwitchCase:
+			// 与栈顶匹配值不相等则跳到下一分支（Arg 指向下一 case/默认正文/OpSwitchPop）。
+			if switchVals[len(switchVals)-1] != rt.Resolve(in.Text) {
+				pc = in.Arg - 1
+			}
+		case OpSwitchPop:
+			switchVals = switchVals[:len(switchVals)-1]
 		}
 	}
 	return rt.Output()

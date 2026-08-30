@@ -21,8 +21,20 @@ import (
 )
 
 // 词库路由
-func dicWebRouter(w http.ResponseWriter, r *http.Request) {
+func dicWebRouter(w http.ResponseWriter, r *http.Request, router *dto.ServerHTTP) {
 	s := dto.ServerConfig
+
+	// 当前服务器的路由词库文件与网站根目录（映射目录）
+	routerFilePath := dto.DefaultRouterFile
+	webRoot := dto.DefaultWebRoot
+	if router != nil {
+		if router.RouterFile != "" {
+			routerFilePath = router.RouterFile
+		}
+		if router.WebRoot != "" {
+			webRoot = router.WebRoot
+		}
+	}
 
 	// 运行结果
 	var RunData string
@@ -110,8 +122,8 @@ func dicWebRouter(w http.ResponseWriter, r *http.Request) {
 	}
 	responseJSON := string(resS)
 
-	routerFile := utils.NewFileQueue("private/system/router.n")
-	if !routerFile.FileExists() {
+	routerFile := utils.NewFileQueue(routerFilePath)
+	if routerFilePath == dto.DefaultRouterFile && !routerFile.FileExists() {
 		if data, e := appfiles.GetFile("dic/system/router.n"); e == nil {
 			routerFile.WriteFileByte(data)
 		} else {
@@ -124,13 +136,14 @@ func dicWebRouter(w http.ResponseWriter, r *http.Request) {
 		Set("响应状态", "200").
 		Set("输出头部", "{}").
 		Set("COOKIE", "[]").
-		Set("访问数据", string(responseJSON))
+		Set("访问数据", string(responseJSON)).
+		Set("网站根目录", webRoot)
 
 	// 请求指针
 	globalV.Set("_请求数据_", r)
 	globalV.Set("_响应数据_", w)
 
-	dic, err := dic_dto.NewDicFile("private/system/router.n")
+	dic, err := dic_dto.NewDicFile(routerFilePath)
 	if err != nil {
 		utils.Error("读取路由词库出错")
 		return

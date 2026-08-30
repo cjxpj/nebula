@@ -34,6 +34,9 @@ const (
 	OpValChainBlock         // 执行 变量:>>> 框：Text 为开启行（含变量名），Lines 为内容行（逐行 runValSet 写回）
 	OpValTextBlock          // 执行 变量:""" / 变量:''' 框：Text 为开启行（含变量名），Lines 为内容行，Arg 0=插值 1=原样
 	OpNodeJsBlock           // 执行 --js ... --end 框：Lines 为 JS 内容行，Line 为关闭行行号（报错定位）
+	OpSwitch                // 匹配> 框入口：Text 为匹配主体表达式，求值一次后压入匹配值栈
+	OpSwitchCase            // 匹配分支：Text 为 case 值表达式，与栈顶匹配值不相等则跳转 Arg（下一 case/默认正文/OpSwitchPop）
+	OpSwitchPop             // 匹配框末尾：弹出匹配值栈顶
 )
 
 // Instr 一条字节码指令。

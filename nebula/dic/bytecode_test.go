@@ -123,6 +123,10 @@ var golden = map[string]string{
 	"跳行未命中":          "跳过后",
 	"跳行负数偏移循环":       "12345ok",
 	"循环中断":           "1尾",
+	"匹配命中":           "二",
+	"匹配走否则":          "其他",
+	"匹配跳过":           "一尾",
+	"匹配嵌套":           "内二",
 }
 
 // assertEquivalent 以字节码 VM 输出比对 golden 基准。
@@ -235,6 +239,46 @@ func TestEquivNested(t *testing.T) {
 		"<循环",
 		"<循环",
 	}, nil)
+}
+
+func TestEquivSwitchMatch(t *testing.T) {
+	assertEquivalent(t, "匹配命中", []string{
+		"匹配>%x%",
+		"如果是:1", "一",
+		"如果是:2", "二",
+		"如果是:3", "三",
+		"如果不是", "其他",
+		"<匹配",
+	}, func(p *dto.Val) { p.Set("x", "2") })
+}
+
+func TestEquivSwitchDefault(t *testing.T) {
+	assertEquivalent(t, "匹配走否则", []string{
+		"匹配>%x%",
+		"如果是:1", "一",
+		"如果是:2", "二",
+		"如果不是", "其他",
+		"<匹配",
+	}, func(p *dto.Val) { p.Set("x", "9") })
+}
+
+func TestEquivSwitchSkip(t *testing.T) {
+	assertEquivalent(t, "匹配跳过", []string{
+		"匹配>%x%",
+		"如果是:1", "一", ">跳过", "二",
+		"如果不是", "其他",
+		"<匹配",
+		"尾",
+	}, func(p *dto.Val) { p.Set("x", "1") })
+}
+
+func TestEquivSwitchNested(t *testing.T) {
+	assertEquivalent(t, "匹配嵌套", []string{
+		"匹配>%x%",
+		"如果是:1", "匹配>%y%", "如果是:2", "内二", "<匹配",
+		"如果不是", "其他",
+		"<匹配",
+	}, func(p *dto.Val) { p.Set("x", "1"); p.Set("y", "2") })
 }
 
 func TestEquivTextBlock(t *testing.T) {

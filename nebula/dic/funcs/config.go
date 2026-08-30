@@ -246,18 +246,19 @@ func isYamlFile(path string) bool {
 }
 
 // 设置跨域 词库函数：$设置跨域 开关 [白名单]$
-// 热开关全局 HTTP 服务器的跨域：立即更新内存配置并持久化到 system.ini，无需重启。
+// 热开关主服务器的跨域：立即更新内存配置并持久化到 system.ini，无需重启。
 // 开关：true/false；白名单可省略，省略时保持原值。
 func setServerCors(d *dto.DicInputs) (any, error) {
 	if d.Inputs.Len() < 1 {
 		return nil, fmt.Errorf("参数不足：$设置跨域 开关 [白名单]$")
 	}
-	if dto.ServerConfig.Router == nil {
+	primary := dto.ServerConfig.Primary()
+	if primary == nil {
 		return nil, fmt.Errorf("设置跨域：HTTP 服务器配置尚未初始化")
 	}
 
 	cors := d.Inputs.Bool(1)
-	dto.ServerConfig.Router.Cors = cors
+	primary.Cors = cors
 
 	// 持久化，避免重启后丢失
 	file := utils.NewFile()
@@ -270,7 +271,7 @@ func setServerCors(d *dto.DicInputs) (any, error) {
 	sec.Key("跨域").SetValue(strconv.FormatBool(cors))
 	if d.Inputs.LenOk(2) {
 		origin := d.Inputs.String(2)
-		dto.ServerConfig.Router.CorsOrigins = origin
+		primary.CorsOrigins = origin
 		sec.Key("跨域白名单").SetValue(origin)
 	}
 	if err := file.SaveIni(iniFile); err != nil {

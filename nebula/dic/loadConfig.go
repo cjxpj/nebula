@@ -19,6 +19,7 @@ import (
 	"github.com/cjxpj/nebula/run"
 	dic_server "github.com/cjxpj/nebula/server"
 	"github.com/cjxpj/nebula/utils"
+	ini "gopkg.in/ini.v1"
 )
 
 func Start() string {
@@ -50,7 +51,7 @@ func Start() string {
 	}
 	infoDic.SetGlobal_v(GV)
 
-	res := dic_server.Start(dto.ServerConfig.Router.Http.Addr)
+	res := dic_server.Start(dto.ServerConfig.Primary().Http.Addr)
 	// 遍历res，收集最后一个非空返回值作为启动页
 	var startupResult string
 	for _, t := range res {
@@ -112,28 +113,26 @@ func loadConfig() {
 	}
 
 	HTTP_Config := httpData.Section("HTTP")
-	infoServerPath := HTTP_Config.Key("server").String()
-	corsOk, _ := HTTP_Config.Key("跨域").Bool()
-	tlsOk, _ := HTTP_Config.Key("TLS").Bool()
-	dto.ServerConfig.Router = &dto.ServerHTTP{
-		Http: &http.Server{
-			Addr:    infoServerPath,
-			Handler: http.HandlerFunc(webRun),
-		},
-		Cors:                corsOk,
-		CorsOrigins:         HTTP_Config.Key("跨域白名单").String(),
-		TempCleanupInterval: HTTP_Config.Key("临时读写清理周期").MustInt(60),
-		TLS:                 tlsOk,
-		CertFile:            HTTP_Config.Key("TLS证书文件").String(),
-		KeyFile:             HTTP_Config.Key("TLS密钥文件").String(),
-		Debug:               HTTP_Config.Key("调试").MustBool(false),
-		TLSMode:             HTTP_Config.Key("TLS方式").MustString("file"),
-		TLSDomains:          HTTP_Config.Key("TLS域名").String(),
-		TLSEmail:            HTTP_Config.Key("TLS邮箱").String(),
-		Domain:              HTTP_Config.Key("绑定域名").String(),
-	}
+
+	// 全局共享配置：调试 / 临时读写清理周期（只读 [HTTP] 段）
+	dto.ServerConfig.Debug = HTTP_Config.Key("调试").MustBool(false)
+	dto.ServerConfig.TempCleanupInterval = HTTP_Config.Key("临时读写清理周期").MustInt(60)
 	// 启动时同步全局调试开关，控制词库缓存等调试信息打印
-	debugLog.SetDebug(dto.ServerConfig.Router.Debug)
+	debugLog.SetDebug(dto.ServerConfig.Debug)
+
+	// 多开 HTTP 服务器：遍历 [HTTP]、[HTTP2]、[HTTP3]... 段，每台服务器独立配置跨域/路由词库/映射目录
+	routers := make([]*dto.ServerHTTP, 0)
+	for _, sec := range httpData.Sections() {
+		name := sec.Name()
+		if name != "HTTP" && !strings.HasPrefix(name, "HTTP") {
+			continue
+		}
+		routers = append(routers, newServerRouter(sec))
+	}
+	if len(routers) == 0 {
+		routers = append(routers, newServerRouter(HTTP_Config))
+	}
+	dto.ServerConfig.Routers = routers
 
 	opUi := httpData.Section("管理面板")
 	if ok, _ := opUi.Key("启用").Bool(); ok {
@@ -245,9 +244,11 @@ func loadConfig() {
 	if ok, _ := Ngrok_Config.Key("启用").Bool(); ok {
 		ngrokUrl := Ngrok_Config.Key("访问链接").String()
 		authToken := Ngrok_Config.Key("密钥").String()
+		serverAddr := Ngrok_Config.Key("服务器").String()
 		dto.ServerConfig.Ngrok = &dto.NgrokConfig{
-			Addr:  ngrokUrl,
-			Token: authToken,
+			Addr:       ngrokUrl,
+			Token:      authToken,
+			ServerAddr: serverAddr,
 		}
 	}
 
@@ -277,15 +278,11 @@ func loadConfig() {
 		secludedbot.Start(dto.ServerConfig.SecludedBot.Addr, dto.ServerConfig.SecludedBot.Token)
 	}
 
-	// 启动时检查 FRP 是否启用，若启用则自动连接
-	FRP_Config := httpData.Section("FRP")
-	if ok, _ := FRP_Config.Key("启用").Bool(); ok {
-		serverAddr := strings.TrimSpace(FRP_Config.Key("服务端地址").String())
-		token := strings.TrimSpace(FRP_Config.Key("令牌").String())
-		if debug := FRP_Config.Key("调试").MustBool(false); debug {
-			dic_server.SetFrpDebug(true)
+	// 启动时逐台连接 BeerWebFrp（每个服务器独立穿透）
+	for _, router := range dto.ServerConfig.Routers {
+		if router != nil && router.FrpOpen {
+			dic_server.StartServerFrp(router)
 		}
-		dic_server.ConnectFrp(serverAddr, token)
 	}
 
 	// 启动时检查 FTP 是否启用，若启用则自动启动
@@ -342,4 +339,66 @@ func loadConfig() {
 	// 启动内置云工具服务端
 	dic_server.StartCloudToolServer()
 
+}
+
+// splitDomains 将换行/逗号分隔的域名拆分为去空白、去空项后的列表
+func splitDomains(s string) []string {
+	out := make([]string, 0)
+	for _, line := range strings.Split(s, "\n") {
+		for _, d := range strings.Split(line, ",") {
+			if d = strings.TrimSpace(d); d != "" {
+				out = append(out, d)
+			}
+		}
+	}
+	return out
+}
+
+// newServerRouter 根据 ini 段构建一个 HTTP 服务器（含独立 handler）
+func newServerRouter(sec *ini.Section) *dto.ServerHTTP {
+	tlsOk, _ := sec.Key("TLS").Bool()
+
+	webRoot := sec.Key("映射目录").String()
+	if webRoot == "" {
+		webRoot = dto.DefaultWebRoot
+	}
+	routerFile := sec.Key("路由词库").String()
+	if routerFile == "" {
+		routerFile = dto.DefaultRouterFile
+	}
+	cors, _ := sec.Key("跨域").Bool()
+
+	// BeerWebFrp 穿透（每个服务器独立），地址统一规范为 ws/wss
+	frpAddr := strings.TrimSpace(sec.Key("Frp服务端地址").String())
+	if after, ok := strings.CutPrefix(frpAddr, "https://"); ok {
+		frpAddr = "wss://" + after
+	} else if after, ok := strings.CutPrefix(frpAddr, "http://"); ok {
+		frpAddr = "ws://" + after
+	}
+
+	router := &dto.ServerHTTP{
+		Http: &http.Server{
+			Addr: sec.Key("server").String(),
+		},
+		Enabled:      sec.Key("启用").MustBool(true),
+		Domains:      splitDomains(sec.Key("绑定域名").String()),
+		WebRoot:      webRoot,
+		RouterFile:   routerFile,
+		Cors:         cors,
+		CorsOrigins:  sec.Key("跨域白名单").String(),
+		TLS:          tlsOk,
+		CertFile:     sec.Key("TLS证书文件").String(),
+		KeyFile:      sec.Key("TLS密钥文件").String(),
+		TLSMode:      sec.Key("TLS方式").MustString("file"),
+		TLSDomains:   sec.Key("TLS域名").String(),
+		TLSEmail:     sec.Key("TLS邮箱").String(),
+		FrpOpen:      sec.Key("Frp启用").MustBool(false),
+		FrpServerAddr: frpAddr,
+		FrpToken:     sec.Key("Frp令牌").String(),
+		FrpDebug:     sec.Key("Frp调试").MustBool(false),
+	}
+	if dto.WebHandlerFactory != nil {
+		router.Http.Handler = dto.WebHandlerFactory(router)
+	}
+	return router
 }

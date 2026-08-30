@@ -91,6 +91,24 @@ func (m *mockRT) Cond(expr string) bool {
 
 func (m *mockRT) SetVarInt(n string, v int) { m.vars[n] = strconv.Itoa(v) }
 func (m *mockRT) GetVar(n string) string    { return m.vars[n] }
+
+// Resolve 模拟表达式求值：%var% 插值，其余原样返回。
+func (m *mockRT) Resolve(expr string) string {
+	var b strings.Builder
+	for i := 0; i < len(expr); {
+		if expr[i] == '%' {
+			if j := strings.IndexByte(expr[i+1:], '%'); j >= 0 {
+				b.WriteString(m.vars[expr[i+1:i+1+j]])
+				i += j + 2
+				continue
+			}
+		}
+		b.WriteByte(expr[i])
+		i++
+	}
+	return b.String()
+}
+
 func (m *mockRT) LoopCount(expr string) int {
 	if n, err := strconv.Atoi(m.vars[expr]); err == nil {
 		return n
@@ -289,6 +307,59 @@ func TestIfElseIfElse(t *testing.T) {
 	out := Run(Compile(nodes), rt)
 	if out != "B\n" {
 		t.Fatalf("输出 = %q, 期望 %q", out, "B\n")
+	}
+}
+
+func TestSwitchMatch(t *testing.T) {
+	rt := newMockRT()
+	rt.vars["x"] = "2"
+	nodes := ast.ParseBody([]string{"匹配>%x%", "如果是:1", "一", "如果是:2", "二", "如果是:3", "三", "如果不是", "其他", "<匹配"}, nil)
+	out := Run(Compile(nodes), rt)
+	if out != "二\n" {
+		t.Fatalf("输出 = %q, 期望 %q", out, "二\n")
+	}
+}
+
+func TestSwitchDefault(t *testing.T) {
+	rt := newMockRT()
+	rt.vars["x"] = "9"
+	nodes := ast.ParseBody([]string{"匹配>%x%", "如果是:1", "一", "如果是:2", "二", "如果不是", "其他", "<匹配"}, nil)
+	out := Run(Compile(nodes), rt)
+	if out != "其他\n" {
+		t.Fatalf("输出 = %q, 期望 %q", out, "其他\n")
+	}
+}
+
+func TestSwitchNoFallthrough(t *testing.T) {
+	// 命中第一个 case 后跳出，不再匹配后续同值 case（不穿透）
+	rt := newMockRT()
+	rt.vars["x"] = "1"
+	nodes := ast.ParseBody([]string{"匹配>%x%", "如果是:1", "一", "如果是:1", "再一", "如果不是", "其他", "<匹配"}, nil)
+	out := Run(Compile(nodes), rt)
+	if out != "一\n" {
+		t.Fatalf("输出 = %q, 期望 %q", out, "一\n")
+	}
+}
+
+func TestSwitchSkip(t *testing.T) {
+	// >跳过 跳出匹配框，后续语句（二/否则）不执行，框后继续
+	rt := newMockRT()
+	rt.vars["x"] = "1"
+	nodes := ast.ParseBody([]string{"匹配>%x%", "如果是:1", "一", ">跳过", "二", "如果不是", "其他", "<匹配", "尾"}, nil)
+	out := Run(Compile(nodes), rt)
+	if out != "一\n尾\n" {
+		t.Fatalf("输出 = %q, 期望 %q", out, "一\n尾\n")
+	}
+}
+
+func TestSwitchNested(t *testing.T) {
+	rt := newMockRT()
+	rt.vars["x"] = "1"
+	rt.vars["y"] = "2"
+	nodes := ast.ParseBody([]string{"匹配>%x%", "如果是:1", "匹配>%y%", "如果是:2", "内二", "<匹配", "如果不是", "其他", "<匹配"}, nil)
+	out := Run(Compile(nodes), rt)
+	if out != "内二\n" {
+		t.Fatalf("输出 = %q, 期望 %q", out, "内二\n")
 	}
 }
 

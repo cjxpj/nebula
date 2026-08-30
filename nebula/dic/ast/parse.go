@@ -13,6 +13,8 @@ func blockOpen(line string) (BlockKind, bool) {
 		return BlockFunc, true
 	case len(line) > 7 && strings.HasPrefix(line, "如果>"):
 		return BlockIf, true
+	case len(line) > 7 && strings.HasPrefix(line, "匹配>"):
+		return BlockMatch, true
 	case strings.HasPrefix(line, "判断循环>") && len(line) > len("判断循环>"):
 		return BlockFor, true
 	case strings.HasPrefix(line, "循环>"):
@@ -61,6 +63,8 @@ func blockClose(line string) (BlockKind, bool) {
 		return BlockFunc, true
 	case "<如果":
 		return BlockIf, true
+	case "<匹配":
+		return BlockMatch, true
 	case "<循环":
 		return BlockFor, true
 	case "<遍历":

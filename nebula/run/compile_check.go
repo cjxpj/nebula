@@ -57,6 +57,7 @@ type blockKind uint8
 const (
 	blkFunc blockKind = iota // 函数> ... <函数
 	blkIf                    // 如果> ... <如果
+	blkMatch                 // 匹配> ... <匹配
 	blkFor                   // 循环> ... <循环
 	blkForEach               // 遍历> ... <遍历
 	blkText                  // 文本>/纯文本> ... <文本
@@ -77,6 +78,8 @@ func blockKindOpen(k blockKind) string {
 		return "函数>"
 	case blkIf:
 		return "如果>"
+	case blkMatch:
+		return "匹配>"
 	case blkFor:
 		return "循环>"
 	case blkForEach:
@@ -98,6 +101,8 @@ func blockOpen(line string) (blockKind, bool) {
 		return blkFunc, true
 	case len(line) > 7 && strings.HasPrefix(line, "如果>"):
 		return blkIf, true
+	case len(line) > 7 && strings.HasPrefix(line, "匹配>"):
+		return blkMatch, true
 	case strings.HasPrefix(line, "判断循环>") && len(line) > len("判断循环>"):
 		return blkFor, true
 	case strings.HasPrefix(line, "循环>"):
@@ -125,6 +130,8 @@ func blockClose(line string) (blockKind, bool) {
 		return blkFunc, true
 	case "<如果":
 		return blkIf, true
+	case "<匹配":
+		return blkMatch, true
 	case "<循环":
 		return blkFor, true
 	case "<遍历":

@@ -5,7 +5,9 @@ import (
 	"bytes"
 	"context"
 	"crypto/md5"
+	"database/sql"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -46,21 +48,75 @@ type HttpOpUiData struct {
 	Data json.RawMessage `json:"data"`
 }
 
+// HttpOpUiConfig_server 单个 HTTP 服务器配置（多开）
 type HttpOpUiConfig_server struct {
-	Server              string `json:"server"`
-	CORS                bool   `json:"cors"`
-	CORSOrigins         string `json:"cors_origins"`
-	TempCleanupInterval int    `json:"temp_cleanup_interval"`
-	TLS                 bool   `json:"tls"`
-	CertFile            string `json:"cert_file"`
-	KeyFile             string `json:"key_file"`
-	Debug               bool   `json:"debug"` // 调试开关：控制打印词库缓存等调试信息
-	// TLSMode 证书来源：file（手动路径）/ self（自签名）/ upload（上传）/ system（系统证书库）/ acme（Let's Encrypt）
-	TLSMode    string `json:"tls_mode"`
-	TLSDomains string `json:"tls_domains"` // acme 域名列表（逗号分隔）
-	TLSEmail   string `json:"tls_email"`   // acme 邮箱（可选）
-	Domain     string `json:"domain"`      // 绑定域名（可选）
-	OS         string `json:"os"`          // 服务器操作系统（windows/linux/darwin），用于前端判断是否显示系统证书库
+	Server      string `json:"server"`          // 监听地址，如 0.0.0.0:8080
+	Enabled     bool   `json:"enabled"`         // 是否启用（实时开关）
+	TLS         bool   `json:"tls"`             // 是否启用 HTTPS
+	CertFile    string `json:"cert_file"`       // 证书文件路径
+	KeyFile     string `json:"key_file"`        // 密钥文件路径
+	TLSMode     string `json:"tls_mode"`        // file/self/upload/system/acme
+	TLSDomains  string `json:"tls_domains"`     // acme 域名列表（逗号分隔）
+	TLSEmail    string `json:"tls_email"`       // acme 邮箱（可选）
+	Domains     string `json:"domains"`         // 绑定域名（换行分隔多个）
+	WebRoot     string `json:"web_root"`        // 映射目录（网站根目录）
+	RouterFile  string `json:"router_file"`     // 路由词库文件（.n）
+	Remark      string `json:"remark"`          // 备注（仅用于列表展示）
+	Cors        bool   `json:"cors"`            // 跨域开关
+	CorsOrigins string `json:"cors_origins"`    // 跨域白名单
+	FrpOpen     bool   `json:"frp_open"`        // 是否启用 BeerWebFrp 穿透
+	FrpAddr     string `json:"frp_server_addr"` // BeerWebFrp 服务端地址（ws/wss）
+	FrpToken    string `json:"frp_token"`       // BeerWebFrp 隧道密钥
+	FrpDebug    bool   `json:"frp_debug"`       // BeerWebFrp 调试日志
+}
+
+// HttpOpUiConfig_serverGlobal 全局共享配置（所有服务器共用）
+type HttpOpUiConfig_serverGlobal struct {
+	Debug               bool `json:"debug"` // 调试开关：控制打印词库缓存等调试信息
+	TempCleanupInterval int  `json:"temp_cleanup_interval"`
+}
+
+// HttpOpUiConfig_servers 服务器列表 + 全局配置
+type HttpOpUiConfig_servers struct {
+	Servers []HttpOpUiConfig_server     `json:"servers"`
+	Global  HttpOpUiConfig_serverGlobal `json:"global"`
+	OS      string                      `json:"os"` // 服务器操作系统（windows/linux/darwin）
+}
+
+// splitServerDomains 将换行/逗号分隔的域名拆分为去空白、去空项后的列表
+func splitServerDomains(s string) []string {
+	out := make([]string, 0)
+	for _, line := range strings.Split(s, "\n") {
+		for _, d := range strings.Split(line, ",") {
+			if d = strings.TrimSpace(d); d != "" {
+				out = append(out, d)
+			}
+		}
+	}
+	return out
+}
+
+// serversNeedRestart 判断服务器配置变化是否需要热重启 HTTP 服务器（监听地址/证书/ACME 变化才需要）
+func serversNeedRestart(old []*dto.ServerHTTP, new []HttpOpUiConfig_server) bool {
+	if len(old) != len(new) {
+		return true
+	}
+	for i, s := range new {
+		o := old[i]
+		if o == nil || o.Http == nil {
+			return true
+		}
+		if o.Http.Addr != s.Server ||
+			o.TLS != s.TLS ||
+			o.TLSMode != s.TLSMode ||
+			o.CertFile != s.CertFile ||
+			o.KeyFile != s.KeyFile ||
+			o.TLSDomains != s.TLSDomains ||
+			o.TLSEmail != s.TLSEmail {
+			return true
+		}
+	}
+	return false
 }
 
 type HttpOpUiWebSocketItem struct {
@@ -71,16 +127,10 @@ type HttpOpUiWebSocketItem struct {
 }
 
 type HttpOpUiConfig_ngrok struct {
-	Open   bool   `json:"open"`
-	Token  string `json:"token"`
-	Domain string `json:"domain"`
-}
-
-type HttpOpUiConfig_frp struct {
 	Open       bool   `json:"open"`
-	ServerAddr string `json:"server_addr"`
 	Token      string `json:"token"`
-	Debug      bool   `json:"debug"`
+	Domain     string `json:"domain"`
+	ServerAddr string `json:"server_addr"` // 要转发的本地 HTTP 服务器监听地址（空则主服务器）
 }
 
 type HttpOpUiConfig_opui struct {
@@ -384,8 +434,8 @@ func broadcastCloudToolOffline() {
 func cloudToolSelfAddr() string {
 	host := "127.0.0.1"
 	port := "8080"
-	if dto.ServerConfig.Router != nil && dto.ServerConfig.Router.Http != nil {
-		if addr := dto.ServerConfig.Router.Http.Addr; addr != "" {
+	if primary := dto.ServerConfig.Primary(); primary != nil && primary.Http != nil {
+		if addr := primary.Http.Addr; addr != "" {
 			if i := strings.LastIndex(addr, ":"); i != -1 {
 				port = addr[i+1:]
 			}
@@ -1318,6 +1368,10 @@ type frpCon struct {
 	wch    chan writeJob // 写队列
 	ctx    context.Context
 	cancel context.CancelFunc
+	// localAddr 该隧道转发到的本地 HTTP 地址（每个服务器独立）
+	localAddr string
+	// debug 调试日志开关（每个服务器独立）
+	debug bool
 }
 
 // writeJob 一次写任务
@@ -1328,9 +1382,6 @@ type writeJob struct {
 
 // BeerWebFrp WebSocket 连接管理
 var (
-	frpConn       *frpCon
-	frpMutex      sync.Mutex
-	frpCancel     context.CancelFunc
 	frpHTTPClient = &http.Client{
 		// 超时需小于 BeerWebFrp 服务端 proxyRequestTimeout(90s)，避免服务端先超时导致 502
 		Timeout: 85 * time.Second,
@@ -1340,7 +1391,10 @@ var (
 			return http.ErrUseLastResponse
 		},
 	}
-	frpDebug bool
+
+	// frpRuntimes 每个服务器的 BeerWebFrp 隧道取消上下文（key 为服务器指针）
+	frpRuntimesMu sync.Mutex
+	frpRuntimes   = make(map[*dto.ServerHTTP]context.CancelFunc)
 
 	// FTP 服务管理
 	ftpListener    net.Listener
@@ -1366,12 +1420,8 @@ var (
 // 因此用 mu 串行化对本地 WS 连接的所有写入。
 type frpWsStream struct {
 	conn *websocket.Conn
+	fc   *frpCon // 所属的 FRP 连接（用于按连接清理流）
 	mu   sync.Mutex
-}
-
-// SetFrpDebug 设置 FRP 调试开关
-func SetFrpDebug(debug bool) {
-	frpDebug = debug
 }
 
 // printFrpLink 打印 BeerWebFrp 隧道访问链接。
@@ -1392,30 +1442,81 @@ func printFrpLink(link string) {
 	fmt.Printf("BeerWebFrp启动成功 %s\n", link)
 }
 
-// ConnectFrp 连接到 BeerWebFrp 服务端
-func ConnectFrp(serverAddr, token string) {
-	serverAddr = strings.TrimSpace(serverAddr)
-	token = strings.TrimSpace(token)
-	if frpDebug {
-		debugLog.Infof("[FRP] ConnectFrp 被调用, serverAddr=%s, token长度=%d", serverAddr, len(token))
+// frpLocalAddr 将监听地址转换为可回连的本地回环地址（0.0.0.0 / [::] / 空主机 → 127.0.0.1）
+func frpLocalAddr(addr string) string {
+	host, port, err := net.SplitHostPort(addr)
+	if err != nil {
+		return addr
+	}
+	if host == "" || host == "0.0.0.0" || host == "::" {
+		host = "127.0.0.1"
+	}
+	return net.JoinHostPort(host, port)
+}
+
+// StartServerFrp 启动单个服务器的 BeerWebFrp 隧道（若已存在则先停止旧的）
+func StartServerFrp(server *dto.ServerHTTP) {
+	if server == nil {
+		return
+	}
+	StopServerFrp(server)
+
+	addr := strings.TrimSpace(server.FrpServerAddr)
+	token := strings.TrimSpace(server.FrpToken)
+
+	if server.FrpDebug {
+		debugLog.Infof("[FRP] 启动隧道, server=%s, addr=%s, token长度=%d (空则匿名)", server.Http.Addr, addr, len(token))
 	}
 
-	frpMutex.Lock()
-	if frpCancel != nil {
-		if frpDebug {
-			debugLog.Infof("[FRP] 取消已有连接上下文")
+	if !server.FrpOpen || addr == "" {
+		if server.FrpDebug {
+			debugLog.Infof("[FRP] 跳过启动: open=%v, addr为空=%v", server.FrpOpen, addr == "")
 		}
-		frpCancel()
+		return
 	}
-	ctx, cancel := context.WithCancel(context.Background())
-	frpCancel = cancel
-	frpMutex.Unlock()
 
-	go runFrpConn(ctx, serverAddr, token)
+	ctx, cancel := context.WithCancel(context.Background())
+	frpRuntimesMu.Lock()
+	frpRuntimes[server] = cancel
+	frpRuntimesMu.Unlock()
+
+	go runFrpConn(ctx, addr, token, frpLocalAddr(server.Http.Addr), server.FrpDebug)
+}
+
+// StopServerFrp 停止单个服务器的 BeerWebFrp 隧道
+func StopServerFrp(server *dto.ServerHTTP) {
+	if server == nil {
+		return
+	}
+	frpRuntimesMu.Lock()
+	cancel := frpRuntimes[server]
+	delete(frpRuntimes, server)
+	frpRuntimesMu.Unlock()
+	if cancel != nil {
+		cancel()
+	}
+}
+
+// ReconnectAllFrp 停止所有服务器的 BeerWebFrp 隧道，再逐台启动已启用的服务器
+func ReconnectAllFrp(servers []*dto.ServerHTTP) {
+	frpRuntimesMu.Lock()
+	for _, cancel := range frpRuntimes {
+		if cancel != nil {
+			cancel()
+		}
+	}
+	frpRuntimes = make(map[*dto.ServerHTTP]context.CancelFunc)
+	frpRuntimesMu.Unlock()
+
+	closeAllFrpWsStreams()
+
+	for _, s := range servers {
+		StartServerFrp(s)
+	}
 }
 
 // runFrpConn 管理单条 FRP WebSocket 连接的生命周期，断线自动重连
-func runFrpConn(ctx context.Context, serverAddr, token string) {
+func runFrpConn(ctx context.Context, serverAddr, token, localAddr string, debug bool) {
 	const readTimeout = 300 * time.Second // 读超时需大于服务端 pongWait，防止慢带宽下大文件写入时读超时断开
 
 	for {
@@ -1432,7 +1533,7 @@ func runFrpConn(ctx context.Context, serverAddr, token string) {
 		}
 		conn, httpResp, err := dialer.Dial(wsURL, nil)
 		if err != nil {
-			if frpDebug {
+			if debug {
 				if httpResp != nil {
 					debugLog.Infof("[FRP] 连接失败: %v (HTTP %d), 5秒后重连", err, httpResp.StatusCode)
 				} else {
@@ -1447,9 +1548,15 @@ func runFrpConn(ctx context.Context, serverAddr, token string) {
 			continue
 		}
 
-		// 握手
-		if err := conn.WriteJSON(map[string]string{"token": token}); err != nil {
-			if frpDebug {
+		// 握手：token 为空时走匿名连接（服务端创建临时隧道）
+		handshake := map[string]any{}
+		if token == "" {
+			handshake["anonymous"] = true
+		} else {
+			handshake["token"] = token
+		}
+		if err := conn.WriteJSON(handshake); err != nil {
+			if debug {
 				debugLog.Infof("[FRP] 握手发送失败: %v", err)
 			}
 			conn.Close()
@@ -1467,7 +1574,7 @@ func runFrpConn(ctx context.Context, serverAddr, token string) {
 			Link    string `json:"link"`
 		}
 		if err := conn.ReadJSON(&hs); err != nil {
-			if frpDebug {
+			if debug {
 				debugLog.Infof("[FRP] 握手响应读取失败: %v", err)
 			}
 			conn.Close()
@@ -1479,7 +1586,7 @@ func runFrpConn(ctx context.Context, serverAddr, token string) {
 			continue
 		}
 		if hs.Error != "" {
-			if frpDebug {
+			if debug {
 				debugLog.Infof("[FRP] 握手失败: %s", hs.Error)
 			}
 			conn.Close()
@@ -1490,25 +1597,24 @@ func runFrpConn(ctx context.Context, serverAddr, token string) {
 			}
 			continue
 		}
-		if frpDebug {
+		if debug {
 			debugLog.Infof("[FRP] 握手成功, link=%s", hs.Link)
 		}
 		// 打印隧道访问链接（经启动词库 start.n 格式化输出，如 “BeerWebFrp：<链接>”）
 		printFrpLink(hs.Link)
 
-		// 注册到连接池，启动异步写入器
+		// 构建连接对象并启动异步写入器
 		fc := &frpCon{
-			conn: conn,
-			wch:  make(chan writeJob, 64),
+			conn:      conn,
+			wch:       make(chan writeJob, 64),
+			localAddr: localAddr,
+			debug:     debug,
 		}
 		fc.ctx, fc.cancel = context.WithCancel(ctx)
-		frpMutex.Lock()
-		frpConn = fc
-		frpMutex.Unlock()
 
 		go fc.writer()
 
-		if frpDebug {
+		if debug {
 			debugLog.Infof("[FRP] 连接已注册，进入代理模式")
 		}
 
@@ -1544,7 +1650,7 @@ func runFrpConn(ctx context.Context, serverAddr, token string) {
 		for {
 			var msg frpWSMessage
 			if err := conn.ReadJSON(&msg); err != nil {
-				if frpDebug {
+				if debug {
 					debugLog.Infof("[FRP] 读取消息失败(连接断开): %v", err)
 				}
 				break
@@ -1558,22 +1664,22 @@ func runFrpConn(ctx context.Context, serverAddr, token string) {
 
 			switch msg.Type {
 			case "ws":
-				if frpDebug {
+				if debug {
 					debugLog.Infof("[FRP] 收到WS代理请求: %s (id=%s)", msg.Path, msg.ID)
 				}
 				go handleFrpWsProxy(fc, &msg)
 			case "ws_frame":
-				if frpDebug {
+				if debug {
 					debugLog.Infof("[FRP] 收到WS数据帧 (id=%s)", msg.ID)
 				}
-				go handleFrpWsFrame(&msg)
+				go handleFrpWsFrame(fc, &msg)
 			case "ws_close":
-				if frpDebug {
+				if debug {
 					debugLog.Infof("[FRP] 收到WS关闭通知 (id=%s)", msg.ID)
 				}
-				go handleFrpWsClose(&msg)
+				go handleFrpWsClose(fc, &msg)
 			default:
-				if frpDebug {
+				if debug {
 					debugLog.Infof("[FRP] 收到HTTP代理请求: %s %s (id=%s)", msg.Method, msg.Path, msg.ID)
 				}
 				go handleFrpProxyRequest(fc, &msg)
@@ -1583,15 +1689,9 @@ func runFrpConn(ctx context.Context, serverAddr, token string) {
 		// 清理：取消 writer，停止 Ping，断开残留的本地 WS 代理流（避免重连后旧流残留）
 		fc.cancel()
 		close(pingDone)
-		closeAllFrpWsStreams()
+		closeFrpWsStreams(fc)
 
-		frpMutex.Lock()
-		if frpConn == fc {
-			frpConn = nil
-		}
-		frpMutex.Unlock()
-
-		if frpDebug {
+		if debug {
 			debugLog.Infof("[FRP] 连接断开, 5秒后重连")
 		}
 
@@ -1606,6 +1706,7 @@ func runFrpConn(ctx context.Context, serverAddr, token string) {
 // writer 异步写 goroutine，从队列取数据按带宽自适应发送
 func (fc *frpCon) writer() {
 	defer fc.conn.Close()
+	debug := fc.debug
 	for {
 		select {
 		case job := <-fc.wch:
@@ -1622,7 +1723,7 @@ func (fc *frpCon) writer() {
 				job.done <- err
 			}
 			if err != nil {
-				if frpDebug {
+				if debug {
 					debugLog.Infof("[FRP] writer 写出错: %v，排空队列退出", err)
 				}
 				for {
@@ -1701,6 +1802,7 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI','Microsoft YaHei',s
 // handleFrpProxyRequest 处理来自 BeerWebFrp 服务端的代理请求
 // 将请求转发到本地 HTTP 服务器，并返回响应。大响应（>1MB）使用分块流式传输
 func handleFrpProxyRequest(fc *frpCon, msg *frpWSMessage) {
+	debug := fc.debug
 	var (
 		respStatusCode int
 		respHeaders    map[string]string
@@ -1725,7 +1827,7 @@ func handleFrpProxyRequest(fc *frpCon, msg *frpWSMessage) {
 		select {
 		case fc.wch <- writeJob{data: data}:
 		default:
-			if frpDebug {
+			if debug {
 				debugLog.Infof("[FRP] 写队列满，丢弃响应 (id=%s)", msg.ID)
 			}
 		}
@@ -1735,18 +1837,16 @@ func handleFrpProxyRequest(fc *frpCon, msg *frpWSMessage) {
 	respHeaders = map[string]string{"Content-Type": "text/html; charset=utf-8"}
 	respBody = []byte("backend server not available")
 
-	if dto.ServerConfig.Router == nil || dto.ServerConfig.Router.Http == nil {
-		if frpDebug {
-			debugLog.Infof("[FRP] 代理请求: Router.Http为空，返回502 (id=%s)", msg.ID)
+	if fc == nil || fc.localAddr == "" {
+		if debug {
+			debugLog.Infof("[FRP] 代理请求: 本地地址为空，返回502 (id=%s)", msg.ID)
 		}
 		return
 	}
 
-	// 构造本地 HTTP 地址
-	localAddr := strings.Replace(dto.ServerConfig.Router.Http.Addr, "0.0.0.0", "127.0.0.1", 1)
-	targetURL := "http://" + localAddr + msg.Path
+	targetURL := "http://" + fc.localAddr + msg.Path
 
-	if frpDebug {
+	if debug {
 		debugLog.Infof("[FRP] 转发请求: %s %s -> %s (body长度=%d, headers数=%d)", msg.Method, msg.Path, targetURL, len(msg.Body), len(msg.Headers))
 	}
 
@@ -1758,7 +1858,7 @@ func handleFrpProxyRequest(fc *frpCon, msg *frpWSMessage) {
 
 	req, err := http.NewRequest(msg.Method, targetURL, bodyReader)
 	if err != nil {
-		if frpDebug {
+		if debug {
 			debugLog.Infof("[FRP] 代理请求: 构造请求失败 (id=%s): %v", msg.ID, err)
 		}
 		respBody = []byte("proxy build request error: " + err.Error())
@@ -1775,7 +1875,7 @@ func handleFrpProxyRequest(fc *frpCon, msg *frpWSMessage) {
 	// 发起本地 HTTP 请求
 	httpResp, err := frpHTTPClient.Do(req)
 	if err != nil {
-		if frpDebug {
+		if debug {
 			debugLog.Infof("[FRP] 代理请求: 本地请求失败 (id=%s): %v", msg.ID, err)
 		}
 		if errors.Is(err, context.DeadlineExceeded) {
@@ -1807,7 +1907,7 @@ func handleFrpProxyRequest(fc *frpCon, msg *frpWSMessage) {
 	// 读取响应体
 	respBody, err = io.ReadAll(httpResp.Body)
 	if err != nil {
-		if frpDebug {
+		if debug {
 			debugLog.Infof("[FRP] 代理请求: 读取响应体失败 (id=%s): %v", msg.ID, err)
 		}
 		respStatusCode = 502
@@ -1817,7 +1917,7 @@ func handleFrpProxyRequest(fc *frpCon, msg *frpWSMessage) {
 
 	respStatusCode = httpResp.StatusCode
 
-	if frpDebug {
+	if debug {
 		debugLog.Infof("[FRP] 代理请求完成: id=%s, status=%d, 响应体长度=%d", msg.ID, httpResp.StatusCode, len(respBody))
 	}
 
@@ -1843,7 +1943,7 @@ func handleFrpProxyRequest(fc *frpCon, msg *frpWSMessage) {
 	default:
 		// 起始消息都发不出去，回退为单条响应（由 defer 兜底），避免服务端挂起等待
 		sent = false
-		if frpDebug {
+		if debug {
 			debugLog.Infof("[FRP] 写队列满，回退单条响应 (id=%s)", msg.ID)
 		}
 		return
@@ -1865,7 +1965,7 @@ func handleFrpProxyRequest(fc *frpCon, msg *frpWSMessage) {
 		case fc.wch <- writeJob{data: chunkData}:
 		default:
 			// 队列满：补发一个 final 空块结束服务端流式管道，避免服务端挂起直到超时
-			if frpDebug {
+			if debug {
 				debugLog.Infof("[FRP] 写队列满，发送结束块 (id=%s)", msg.ID)
 			}
 			if finalData, err := json.Marshal(frpWSChunk{Type: "http_chunk", ID: msg.ID, Final: true}); err == nil {
@@ -1885,17 +1985,17 @@ func handleFrpProxyRequest(fc *frpCon, msg *frpWSMessage) {
 // handleFrpWsProxy 处理 BeerWebFrp 的 WebSocket 代理请求
 // 收到 type:"ws" 消息后，连接本地 WebSocket 服务并双向转发数据帧
 func handleFrpWsProxy(fc *frpCon, msg *frpWSMessage) {
+	debug := fc.debug
 	streamID := msg.ID
 
-	if dto.ServerConfig.Router == nil || dto.ServerConfig.Router.Http == nil {
+	if fc == nil || fc.localAddr == "" {
 		sendFrpWsStatus(fc, streamID, -1)
 		return
 	}
 
-	localAddr := strings.Replace(dto.ServerConfig.Router.Http.Addr, "0.0.0.0", "127.0.0.1", 1)
-	wsURL := "ws://" + localAddr + msg.Path
+	wsURL := "ws://" + fc.localAddr + msg.Path
 
-	if frpDebug {
+	if debug {
 		debugLog.Infof("[FRP] WS代理: 连接本地WS %s (id=%s)", wsURL, streamID)
 	}
 
@@ -1909,20 +2009,20 @@ func handleFrpWsProxy(fc *frpCon, msg *frpWSMessage) {
 	}
 	localConn, _, err := websocket.DefaultDialer.Dial(wsURL, wsHeaders)
 	if err != nil {
-		if frpDebug {
+		if debug {
 			debugLog.Infof("[FRP] WS代理: 本地WS连接失败 (id=%s): %v", streamID, err)
 		}
 		sendFrpWsStatus(fc, streamID, -1)
 		return
 	}
 
-	// 注册流
-	st := &frpWsStream{conn: localConn}
+	// 注册流（记录所属连接，便于按连接清理）
+	st := &frpWsStream{conn: localConn, fc: fc}
 	frpWsStreamsMu.Lock()
 	frpWsStreams[streamID] = st
 	frpWsStreamsMu.Unlock()
 
-	if frpDebug {
+	if debug {
 		debugLog.Infof("[FRP] WS代理: 本地WS连接成功 (id=%s)", streamID)
 	}
 
@@ -1941,7 +2041,7 @@ func handleFrpWsProxy(fc *frpCon, msg *frpWSMessage) {
 		for {
 			_, frame, err := localConn.ReadMessage()
 			if err != nil {
-				if frpDebug {
+				if debug {
 					debugLog.Infof("[FRP] WS代理: 本地WS读取关闭 (id=%s): %v", streamID, err)
 				}
 				sendFrpWsStatus(fc, streamID, -1)
@@ -1954,7 +2054,8 @@ func handleFrpWsProxy(fc *frpCon, msg *frpWSMessage) {
 
 // handleFrpWsFrame 处理来自 BeerWebFrp 的 ws_frame 消息
 // Base64 解码 body 后写入本地 WS 连接
-func handleFrpWsFrame(msg *frpWSMessage) {
+func handleFrpWsFrame(fc *frpCon, msg *frpWSMessage) {
+	debug := fc.debug
 	streamID := msg.ID
 
 	frpWsStreamsMu.Lock()
@@ -1962,7 +2063,7 @@ func handleFrpWsFrame(msg *frpWSMessage) {
 	frpWsStreamsMu.Unlock()
 
 	if !ok {
-		if frpDebug {
+		if debug {
 			debugLog.Infof("[FRP] WS代理: 收到ws_frame但流不存在 (id=%s)", streamID)
 		}
 		return
@@ -1972,14 +2073,15 @@ func handleFrpWsFrame(msg *frpWSMessage) {
 	st.mu.Lock()
 	err := st.conn.WriteMessage(websocket.BinaryMessage, msg.Body)
 	st.mu.Unlock()
-	if err != nil && frpDebug {
+	if err != nil && debug {
 		debugLog.Infof("[FRP] WS代理: 写入本地WS失败 (id=%s): %v", streamID, err)
 	}
 }
 
 // handleFrpWsClose 处理来自 BeerWebFrp 的 ws_close 消息
 // 关闭本地 WS 连接并清理流
-func handleFrpWsClose(msg *frpWSMessage) {
+func handleFrpWsClose(fc *frpCon, msg *frpWSMessage) {
+	debug := fc.debug
 	streamID := msg.ID
 
 	frpWsStreamsMu.Lock()
@@ -1990,7 +2092,7 @@ func handleFrpWsClose(msg *frpWSMessage) {
 	frpWsStreamsMu.Unlock()
 
 	if ok && st != nil {
-		if frpDebug {
+		if debug {
 			debugLog.Infof("[FRP] WS代理: 关闭本地WS流 (id=%s)", streamID)
 		}
 		st.mu.Lock()
@@ -2001,6 +2103,7 @@ func handleFrpWsClose(msg *frpWSMessage) {
 
 // sendFrpWsFrame 向服务端发送 WS 数据帧响应（同步等待写入结果）
 func sendFrpWsFrame(fc *frpCon, streamID string, frame []byte) {
+	debug := fc.debug
 	data, _ := json.Marshal(frpWSResponse{
 		ID:         streamID,
 		StatusCode: 0,
@@ -2012,14 +2115,14 @@ func sendFrpWsFrame(fc *frpCon, streamID string, frame []byte) {
 	case fc.wch <- writeJob{data: data, done: done}:
 		select {
 		case err := <-done:
-			if err != nil && frpDebug {
+			if err != nil && debug {
 				debugLog.Infof("[FRP] WS代理: 发送数据帧失败 (id=%s): %v", streamID, err)
 			}
 		case <-time.After(10 * time.Second):
 			// 连接已断开且写队列无人消费，放弃等待，避免 goroutine 泄漏
 		}
 	default:
-		if frpDebug {
+		if debug {
 			debugLog.Infof("[FRP] WS代理: 发送数据帧失败（写队列满） (id=%s)", streamID)
 		}
 	}
@@ -2027,7 +2130,8 @@ func sendFrpWsFrame(fc *frpCon, streamID string, frame []byte) {
 
 // sendFrpWsStatus 向服务端发送 WS 状态通知（同步等待写入结果）
 func sendFrpWsStatus(fc *frpCon, streamID string, statusCode int) {
-	if frpDebug {
+	debug := fc.debug
+	if debug {
 		debugLog.Infof("[FRP] WS代理: 发送状态通知 streamID=%s, statusCode=%d", streamID, statusCode)
 	}
 	data, _ := json.Marshal(frpWSResponse{
@@ -2046,46 +2150,33 @@ func sendFrpWsStatus(fc *frpCon, streamID string, statusCode int) {
 	}
 }
 
-// closeAllFrpWsStreams 断开所有本地 WS 代理连接
-func closeAllFrpWsStreams() {
+// closeFrpWsStreams 断开指定 FRP 连接的本地 WS 代理流（fc 为 nil 时断开全部）
+func closeFrpWsStreams(fc *frpCon) {
+	debug := false
+	if fc != nil {
+		debug = fc.debug
+	}
 	frpWsStreamsMu.Lock()
 	defer frpWsStreamsMu.Unlock()
-	if frpDebug && len(frpWsStreams) > 0 {
-		debugLog.Infof("[FRP] WS代理: 清理%d个本地WS流", len(frpWsStreams))
-	}
+	n := 0
 	for id, st := range frpWsStreams {
+		if fc != nil && st.fc != fc {
+			continue
+		}
 		st.mu.Lock()
 		st.conn.Close()
 		st.mu.Unlock()
 		delete(frpWsStreams, id)
+		n++
+	}
+	if debug && n > 0 {
+		debugLog.Infof("[FRP] WS代理: 清理%d个本地WS流", n)
 	}
 }
 
-// DisconnectFrp 断开所有 BeerWebFrp 连接
-func DisconnectFrp() {
-	if frpDebug {
-		debugLog.Infof("[FRP] DisconnectFrp 被调用, 断开所有连接")
-	}
-
-	frpMutex.Lock()
-	defer frpMutex.Unlock()
-
-	if frpCancel != nil {
-		frpCancel()
-		frpCancel = nil
-	}
-
-	// 关闭连接
-	if frpConn != nil {
-		frpConn.cancel()
-		frpConn = nil
-	}
-
-	closeAllFrpWsStreams()
-
-	if frpDebug {
-		debugLog.Infof("[FRP] DisconnectFrp 完成")
-	}
+// closeAllFrpWsStreams 断开所有本地 WS 代理连接
+func closeAllFrpWsStreams() {
+	closeFrpWsStreams(nil)
 }
 
 // StartFtp 启动 FTP 服务并打印局域网链接
@@ -2276,10 +2367,6 @@ type HttpOpUiConfig_secluded struct {
 	Address string `json:"address"`
 	Token   string `json:"token"`
 	Debug   bool   `json:"debug"`
-}
-
-type HttpOpUiConfig_EncryptDic struct {
-	Text string `json:"text"`
 }
 
 type HttpOpUiConfig_install struct {
@@ -2787,6 +2874,259 @@ func checkFilePath(path string) bool {
 	return clean != "." && clean != ".." && !strings.HasPrefix(clean, "../")
 }
 
+// openSqliteOpui 打开应用目录下的 SQLite 数据库文件（modernc 纯 Go 驱动），
+// 设置忙碌等待与单连接，避免与词库写入并发时出现 database is locked
+func openSqliteOpui(full string) (*sql.DB, error) {
+	db, err := sql.Open("sqlite", full)
+	if err != nil {
+		return nil, err
+	}
+	db.SetMaxOpenConns(1)
+	db.SetMaxIdleConns(1)
+	if _, err := db.Exec("PRAGMA busy_timeout=5000"); err != nil {
+		db.Close()
+		return nil, err
+	}
+	return db, nil
+}
+
+// opuiOpenSqlite 校验相对路径并打开应用目录下的 SQLite 数据库，失败时写出错误响应并返回 nil
+func opuiOpenSqlite(w http.ResponseWriter, path string) *sql.DB {
+	if !checkFilePath(path) {
+		http.Error(w, `{"status":"error","error":"文件路径不合法"}`, http.StatusBadRequest)
+		return nil
+	}
+	full := filepath.Join(utils.GetAppDir(), filepath.FromSlash(path))
+	db, err := openSqliteOpui(full)
+	if err != nil {
+		http.Error(w, `{"status":"error","error":"数据库打开失败: `+err.Error()+`"}`, http.StatusBadRequest)
+		return nil
+	}
+	return db
+}
+
+// sqliteCellValue 将 SQLite 扫描值转换为可 JSON 序列化的展示值：
+// BLOB 可打印时按文本展示，否则转 hex；时间转为固定格式字符串
+func sqliteCellValue(v any) any {
+	switch t := v.(type) {
+	case nil:
+		return nil
+	case []byte:
+		if utf8.Valid(t) {
+			return string(t)
+		}
+		return "0x" + hex.EncodeToString(t)
+	case time.Time:
+		return t.Format("2006-01-02 15:04:05")
+	default:
+		return v
+	}
+}
+
+// isSimpleIdent 校验 SQLite 标识符（表名/列名）仅为字母数字下划线，
+// 用于内联编辑时安全拼接 UPDATE 语句，避免 SQL 注入
+func isSimpleIdent(s string) bool {
+	if s == "" || len(s) > 128 {
+		return false
+	}
+	for _, r := range s {
+		if !(r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || r >= '0' && r <= '9' || r == '_') {
+			return false
+		}
+	}
+	return true
+}
+
+// stripLeadingSQLComments 去掉 SQL 开头的注释与空白，用于准确判断是否为查询语句，
+// 避免带注释（如 "-- 说明\nSELECT ..."）的查询被误判为写语句而丢弃结果
+func stripLeadingSQLComments(s string) string {
+	s = strings.TrimSpace(s)
+	for {
+		if strings.HasPrefix(s, "--") {
+			if i := strings.IndexByte(s, '\n'); i >= 0 {
+				s = strings.TrimSpace(s[i+1:])
+				continue
+			}
+			return ""
+		}
+		if strings.HasPrefix(s, "/*") {
+			if i := strings.Index(s, "*/"); i >= 0 {
+				s = strings.TrimSpace(s[i+2:])
+				continue
+			}
+			return ""
+		}
+		return s
+	}
+}
+
+// sqlAggRe 匹配聚合函数调用（要求函数名前为标识符边界，避免误伤 my_count() 等自定义函数）
+var sqlAggRe = regexp.MustCompile(`(?i)(^|[^A-Za-z0-9_])(COUNT|SUM|AVG|MIN|MAX|TOTAL|GROUP_CONCAT)\s*\(`)
+
+// isIdentByte 判断字节是否为 SQL 标识符字符（字母/数字/下划线）
+func isIdentByte(c byte) bool {
+	return c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' || c >= '0' && c <= '9' || c == '_'
+}
+
+// findTopLevelKeyword 在跳过字符串、引号标识符、方括号标识符、注释与括号嵌套的前提下，
+// 定位首个位于最外层的关键词（不区分大小写），返回其字节偏移，未找到返回 -1
+func findTopLevelKeyword(s, kw string) int {
+	depth := 0
+	for i := 0; i < len(s); {
+		c := s[i]
+		switch c {
+		case '\'', '"', '`':
+			// 跳过字符串/引号标识符，处理双写转义
+			q := c
+			i++
+			for i < len(s) {
+				if s[i] == q {
+					if q == '\'' && i+1 < len(s) && s[i+1] == '\'' {
+						i += 2
+						continue
+					}
+					i++
+					break
+				}
+				i++
+			}
+		case '[':
+			if j := strings.IndexByte(s[i+1:], ']'); j >= 0 {
+				i += j + 2
+			} else {
+				i++
+			}
+		case '(':
+			depth++
+			i++
+		case ')':
+			depth--
+			i++
+		case '-':
+			if i+1 < len(s) && s[i+1] == '-' {
+				for i < len(s) && s[i] != '\n' {
+					i++
+				}
+			} else {
+				i++
+			}
+		case '/':
+			if i+1 < len(s) && s[i+1] == '*' {
+				i += 2
+				for i+1 < len(s) && !(s[i] == '*' && s[i+1] == '/') {
+					i++
+				}
+				i += 2
+			} else {
+				i++
+			}
+		default:
+			if depth == 0 && i+len(kw) <= len(s) {
+				beforeOK := i == 0 || !isIdentByte(s[i-1])
+				afterOK := i+len(kw) >= len(s) || !isIdentByte(s[i+len(kw)])
+				if beforeOK && afterOK && strings.EqualFold(s[i:i+len(kw)], kw) {
+					return i
+				}
+			}
+			i++
+		}
+	}
+	return -1
+}
+
+// extractLeadingIdent 提取字符串开头的第一个标识符（支持裸标识符及引号/反引号/方括号包裹），
+// 用于读取 FROM 子句中的表名
+func extractLeadingIdent(s string) string {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return ""
+	}
+	switch s[0] {
+	case '"', '`':
+		q := s[0]
+		for i := 1; i < len(s); i++ {
+			if s[i] == q {
+				if i+1 < len(s) && s[i+1] == q {
+					i++
+					continue
+				}
+				return s[1:i]
+			}
+		}
+		return ""
+	case '[':
+		if i := strings.IndexByte(s[1:], ']'); i >= 0 {
+			return s[1 : 1+i]
+		}
+		return ""
+	default:
+		i := 0
+		for i < len(s) && isIdentByte(s[i]) {
+			i++
+		}
+		return s[:i]
+	}
+}
+
+// detectEditableTable 判断 SQL 是否为可安全附加 rowid 的「单表 SELECT」并返回表名。
+// 多表连接、分组、去重、联合、聚合等无法精确定位行的查询返回空。
+func detectEditableTable(sql string) (string, bool) {
+	s := stripLeadingSQLComments(sql)
+	upper := strings.ToUpper(s)
+	if !strings.HasPrefix(upper, "SELECT") {
+		return "", false
+	}
+	if sqlAggRe.MatchString(upper) ||
+		strings.Contains(upper, " JOIN ") ||
+		strings.Contains(upper, " GROUP BY") ||
+		strings.Contains(upper, " HAVING") ||
+		strings.Contains(upper, " UNION ") ||
+		strings.Contains(upper, " DISTINCT") {
+		return "", false
+	}
+	from := findTopLevelKeyword(s, "FROM")
+	if from < 0 {
+		return "", false
+	}
+	table := extractLeadingIdent(s[from+len("FROM"):])
+	if table == "" || !isSimpleIdent(table) {
+		return "", false
+	}
+	return table, true
+}
+
+// prependRowid 在 SELECT（及可选 DISTINCT/ALL 修饰符）之后插入 rowid 别名列，
+// 供内联编辑按 rowid 精确定位行
+func prependRowid(sql string) string {
+	from := findTopLevelKeyword(sql, "FROM")
+	head := strings.TrimSpace(sql[:from])
+	tail := " " + strings.TrimSpace(sql[from:])
+	pos := len("SELECT")
+	rest := strings.TrimLeft(head[pos:], " \t")
+	pos += len(head[pos:]) - len(rest)
+	up := strings.ToUpper(rest)
+	for _, kw := range []string{"DISTINCT", "ALL"} {
+		if strings.HasPrefix(up, kw) && (len(rest) == len(kw) || !isIdentByte(rest[len(kw)])) {
+			pos += len(kw)
+			break
+		}
+	}
+	return head[:pos] + ` rowid AS "_nbid",` + head[pos:] + tail
+}
+
+// isRowidTable 判断给定表名是否为可编辑的 rowid 表（排除视图与 WITHOUT ROWID 表）
+func isRowidTable(db *sql.DB, name string) bool {
+	var typ string
+	var ddl *string
+	if err := db.QueryRow(`SELECT type, sql FROM sqlite_master WHERE name = ?`, name).Scan(&typ, &ddl); err != nil {
+		return false
+	}
+	if typ != "table" {
+		return false
+	}
+	return ddl == nil || !strings.Contains(strings.ToLower(*ddl), "without rowid")
+}
+
 // copyPath 递归复制文件或目录，目标路径不存在时创建并保留原权限
 func copyPath(src, dst string) error {
 	info, err := os.Stat(src)
@@ -3051,94 +3391,232 @@ func opuiHandleApi(w http.ResponseWriter, r *http.Request) {
 	}
 
 	switch h.Type {
-	case "get_server":
+	case "get_servers":
 		ff := utils.NewFileQueue(dto.CONFIG_SYSTEM_PATH)
 		f, err := ff.LoadIni()
 		if err != nil {
 			utils.ErrorStop("系统配置不存在")
 		}
-		d := f.Section("HTTP")
-		var j HttpOpUiConfig_server
-		j.Server = d.Key("server").String()
-		j.CORS = d.Key("跨域").MustBool(false)
-		j.CORSOrigins = d.Key("跨域白名单").String()
-		j.TempCleanupInterval = d.Key("临时读写清理周期").MustInt(60)
-		j.TLS = d.Key("TLS").MustBool(false)
-		j.CertFile = d.Key("TLS证书文件").String()
-		j.KeyFile = d.Key("TLS密钥文件").String()
-		j.Debug = d.Key("调试").MustBool(false)
-		j.TLSMode = d.Key("TLS方式").MustString("file")
-		j.TLSDomains = d.Key("TLS域名").String()
-		j.TLSEmail = d.Key("TLS邮箱").String()
-		j.Domain = d.Key("绑定域名").String()
+		var j HttpOpUiConfig_servers
 		j.OS = runtime.GOOS
+
+		// 全局配置（[HTTP] 段共用：调试 / 临时读写清理周期）
+		httpSec := f.Section("HTTP")
+		j.Global.Debug = httpSec.Key("调试").MustBool(false)
+		j.Global.TempCleanupInterval = httpSec.Key("临时读写清理周期").MustInt(60)
+
+		// 遍历所有 HTTP 段（HTTP / HTTP2 / HTTP3...）
+		j.Servers = make([]HttpOpUiConfig_server, 0)
+		for _, sec := range f.Sections() {
+			name := sec.Name()
+			if name != "HTTP" && !strings.HasPrefix(name, "HTTP") {
+				continue
+			}
+			webRoot := sec.Key("映射目录").String()
+			if webRoot == "" {
+				webRoot = dto.DefaultWebRoot
+			}
+			routerFile := sec.Key("路由词库").String()
+			if routerFile == "" {
+				routerFile = dto.DefaultRouterFile
+			}
+			j.Servers = append(j.Servers, HttpOpUiConfig_server{
+				Server:      sec.Key("server").String(),
+				Enabled:     sec.Key("启用").MustBool(true),
+				TLS:         sec.Key("TLS").MustBool(false),
+				CertFile:    sec.Key("TLS证书文件").String(),
+				KeyFile:     sec.Key("TLS密钥文件").String(),
+				TLSMode:     sec.Key("TLS方式").MustString("file"),
+				TLSDomains:  sec.Key("TLS域名").String(),
+				TLSEmail:    sec.Key("TLS邮箱").String(),
+				Domains:     sec.Key("绑定域名").String(),
+				WebRoot:     webRoot,
+				RouterFile:  routerFile,
+				Remark:      sec.Key("备注").String(),
+				Cors:        sec.Key("跨域").MustBool(false),
+				CorsOrigins: sec.Key("跨域白名单").String(),
+				FrpOpen:     sec.Key("Frp启用").MustBool(false),
+				FrpAddr:     sec.Key("Frp服务端地址").String(),
+				FrpToken:    sec.Key("Frp令牌").String(),
+				FrpDebug:    sec.Key("Frp调试").MustBool(false),
+			})
+		}
+		if len(j.Servers) == 0 {
+			j.Servers = append(j.Servers, HttpOpUiConfig_server{
+				Server:     "",
+				Enabled:    true,
+				TLSMode:    "file",
+				WebRoot:    dto.DefaultWebRoot,
+				RouterFile: dto.DefaultRouterFile,
+			})
+		}
 		if r, err := json.Marshal(j); err != nil {
-			w.Write([]byte(`{"server":"","cors":false,"cors_origins":"","temp_cleanup_interval":60,"tls":false,"cert_file":"","key_file":"","debug":false,"tls_mode":"file","tls_domains":"","tls_email":"","domain":"","os":"` + runtime.GOOS + `"}`))
+			w.Write([]byte(`{"servers":[],"global":{"debug":false,"temp_cleanup_interval":60},"os":"` + runtime.GOOS + `"}`))
 		} else {
 			w.Write(r)
 		}
 		return
 
-	case "save_server":
-		var j HttpOpUiConfig_server
+	case "save_servers":
+		var j HttpOpUiConfig_servers
 		if err := json.Unmarshal(h.Data, &j); err != nil {
 			http.Error(w, `{"status":"error","error":"invalid json"}`, http.StatusBadRequest)
 			return
 		}
+		if len(j.Servers) == 0 {
+			w.Write([]byte(`{"status":"error","error":"至少需要一个服务器配置"}`))
+			return
+		}
+
+		// 判断是否需要热重启 HTTP 服务器（无需重启进程）
+		needRestart := serversNeedRestart(dto.ServerConfig.Routers, j.Servers)
+
 		ff := utils.NewFileQueue(dto.CONFIG_SYSTEM_PATH)
 		f, err := ff.LoadIni()
 		if err != nil {
 			utils.ErrorStop("系统配置不存在")
 		}
-		// 记录旧 HTTP 配置，判断是否需要热重启 HTTP 服务器（无需重启进程）
-		router := dto.ServerConfig.Router
-		needRestart := router == nil || router.Http == nil ||
-			router.Http.Addr != j.Server ||
-			router.TLS != j.TLS ||
-			router.TLSMode != j.TLSMode ||
-			router.CertFile != j.CertFile ||
-			router.KeyFile != j.KeyFile ||
-			router.TLSDomains != j.TLSDomains ||
-			router.TLSEmail != j.TLSEmail
-		d := f.Section("HTTP")
-		d.Key("server").SetValue(j.Server)
-		d.Key("跨域").SetValue(strconv.FormatBool(j.CORS))
-		d.Key("跨域白名单").SetValue(j.CORSOrigins)
-		d.Key("临时读写清理周期").SetValue(strconv.Itoa(j.TempCleanupInterval))
-		d.Key("TLS").SetValue(strconv.FormatBool(j.TLS))
-		d.Key("TLS证书文件").SetValue(j.CertFile)
-		d.Key("TLS密钥文件").SetValue(j.KeyFile)
-		d.Key("调试").SetValue(strconv.FormatBool(j.Debug))
-		d.Key("TLS方式").SetValue(j.TLSMode)
-		d.Key("TLS域名").SetValue(j.TLSDomains)
-		d.Key("TLS邮箱").SetValue(j.TLSEmail)
-		d.Key("绑定域名").SetValue(j.Domain)
+
+		// 删除所有现有 HTTP 段（HTTP / HTTP2 / HTTP3...）
+		httpSections := make([]string, 0)
+		for _, sec := range f.Sections() {
+			name := sec.Name()
+			if name == "HTTP" || strings.HasPrefix(name, "HTTP") {
+				httpSections = append(httpSections, name)
+			}
+		}
+		for _, name := range httpSections {
+			f.DeleteSection(name)
+		}
+
+		// 重建各服务器段
+		for i, s := range j.Servers {
+			name := "HTTP"
+			if i > 0 {
+				name = fmt.Sprintf("HTTP%d", i+1)
+			}
+			sec := f.Section(name)
+			sec.Key("server").SetValue(s.Server)
+			sec.Key("启用").SetValue(strconv.FormatBool(s.Enabled))
+			sec.Key("TLS").SetValue(strconv.FormatBool(s.TLS))
+			sec.Key("TLS证书文件").SetValue(s.CertFile)
+			sec.Key("TLS密钥文件").SetValue(s.KeyFile)
+			sec.Key("TLS方式").SetValue(s.TLSMode)
+			sec.Key("TLS域名").SetValue(s.TLSDomains)
+			sec.Key("TLS邮箱").SetValue(s.TLSEmail)
+			sec.Key("绑定域名").SetValue(s.Domains)
+			sec.Key("映射目录").SetValue(s.WebRoot)
+			sec.Key("路由词库").SetValue(s.RouterFile)
+			sec.Key("备注").SetValue(s.Remark)
+			sec.Key("跨域").SetValue(strconv.FormatBool(s.Cors))
+			sec.Key("跨域白名单").SetValue(s.CorsOrigins)
+			// BeerWebFrp 穿透（每个服务器独立），地址统一规范为 ws/wss
+			frpAddr := strings.TrimSpace(s.FrpAddr)
+			if after, ok := strings.CutPrefix(frpAddr, "https://"); ok {
+				frpAddr = "wss://" + after
+			} else if after, ok := strings.CutPrefix(frpAddr, "http://"); ok {
+				frpAddr = "ws://" + after
+			}
+			sec.Key("Frp启用").SetValue(strconv.FormatBool(s.FrpOpen))
+			sec.Key("Frp服务端地址").SetValue(frpAddr)
+			sec.Key("Frp令牌").SetValue(s.FrpToken)
+			sec.Key("Frp调试").SetValue(strconv.FormatBool(s.FrpDebug))
+		}
+
+		// 全局配置写入 [HTTP] 段
+		httpSec := f.Section("HTTP")
+		httpSec.Key("调试").SetValue(strconv.FormatBool(j.Global.Debug))
+		httpSec.Key("临时读写清理周期").SetValue(strconv.Itoa(j.Global.TempCleanupInterval))
+
 		if err := ff.SaveIni(f); err != nil {
 			utils.ErrorStop("系统配置保存失败")
 		}
-		dto.ServerConfig.Router.Cors = j.CORS
-		dto.ServerConfig.Router.CorsOrigins = j.CORSOrigins
-		dto.ServerConfig.Router.TempCleanupInterval = j.TempCleanupInterval
-		dto.ServerConfig.Router.TLS = j.TLS
-		dto.ServerConfig.Router.CertFile = j.CertFile
-		dto.ServerConfig.Router.KeyFile = j.KeyFile
-		dto.ServerConfig.Router.Debug = j.Debug
-		dto.ServerConfig.Router.TLSMode = j.TLSMode
-		dto.ServerConfig.Router.TLSDomains = j.TLSDomains
-		dto.ServerConfig.Router.TLSEmail = j.TLSEmail
-		dto.ServerConfig.Router.Domain = j.Domain
-		debugLog.SetDebug(j.Debug)
-		// 更新监听地址并热重启 HTTP 服务器（HTTPS 开关/证书/地址变化即时生效）
-		if needRestart {
-			if router != nil && router.Http != nil {
-				router.Http.Addr = j.Server
+
+		// 更新内存全局配置
+		dto.ServerConfig.Debug = j.Global.Debug
+		dto.ServerConfig.TempCleanupInterval = j.Global.TempCleanupInterval
+		debugLog.SetDebug(j.Global.Debug)
+
+		// 更新内存 Routers 模型（每服务器独立 handler）
+		// 复用旧的 ServerHTTP 指针，使已运行 handler 闭包能立即感知跨域/路由词库/映射目录等非重启型配置变化
+		oldRouters := dto.ServerConfig.Routers
+		newRouters := make([]*dto.ServerHTTP, 0, len(j.Servers))
+		for i, s := range j.Servers {
+			var router *dto.ServerHTTP
+			if i < len(oldRouters) && oldRouters[i] != nil {
+				router = oldRouters[i]
+			} else {
+				router = &dto.ServerHTTP{Http: &http.Server{}}
+				if dto.WebHandlerFactory != nil {
+					router.Http.Handler = dto.WebHandlerFactory(router)
+				}
 			}
+			router.Http.Addr = s.Server
+			router.Enabled = s.Enabled
+			router.Domains = splitServerDomains(s.Domains)
+			router.WebRoot = s.WebRoot
+			router.RouterFile = s.RouterFile
+			router.Cors = s.Cors
+			router.CorsOrigins = s.CorsOrigins
+			router.TLS = s.TLS
+			router.CertFile = s.CertFile
+			router.KeyFile = s.KeyFile
+			router.TLSMode = s.TLSMode
+			router.TLSDomains = s.TLSDomains
+			router.TLSEmail = s.TLSEmail
+			router.FrpOpen = s.FrpOpen
+			router.FrpServerAddr = s.FrpAddr
+			router.FrpToken = s.FrpToken
+			router.FrpDebug = s.FrpDebug
+			newRouters = append(newRouters, router)
+		}
+		dto.ServerConfig.Routers = newRouters
+
+		// 逐台重建 BeerWebFrp 隧道（每个服务器独立穿透）
+		ReconnectAllFrp(newRouters)
+
+		if needRestart {
 			if err := RestartHTTPServer(); err != nil {
 				w.Write([]byte(`{"status":"error","error":` + strconvQuote("HTTPS 配置热更新失败: "+err.Error()) + `}`))
 				return
 			}
 		}
-		// 处理配置请求
+		w.Write([]byte(`{"status":"ok"}`))
+		return
+
+	case "toggle_server":
+		var req struct {
+			Index int  `json:"index"`
+			Open  bool `json:"open"`
+		}
+		if err := json.Unmarshal(h.Data, &req); err != nil {
+			http.Error(w, `{"status":"error","error":"invalid json"}`, http.StatusBadRequest)
+			return
+		}
+		routers := dto.ServerConfig.Routers
+		if req.Index < 0 || req.Index >= len(routers) || routers[req.Index] == nil {
+			w.Write([]byte(`{"status":"error","error":"服务器不存在"}`))
+			return
+		}
+		// 实时开关：直接修改运行中的服务器指针，无需重启
+		routers[req.Index].Enabled = req.Open
+
+		// 持久化到对应 HTTP 段（HTTP / HTTP2 / HTTP3...）
+		ff := utils.NewFileQueue(dto.CONFIG_SYSTEM_PATH)
+		f, err := ff.LoadIni()
+		if err != nil {
+			w.Write([]byte(`{"status":"error","error":"读取系统配置失败"}`))
+			return
+		}
+		name := "HTTP"
+		if req.Index > 0 {
+			name = fmt.Sprintf("HTTP%d", req.Index+1)
+		}
+		f.Section(name).Key("启用").SetValue(strconv.FormatBool(req.Open))
+		if err := ff.SaveIni(f); err != nil {
+			w.Write([]byte(`{"status":"error","error":"保存系统配置失败"}`))
+			return
+		}
 		w.Write([]byte(`{"status":"ok"}`))
 		return
 
@@ -4087,6 +4565,7 @@ func opuiHandleApi(w http.ResponseWriter, r *http.Request) {
 		j.Open = d.Key("启用").MustBool(false)
 		j.Token = d.Key("密钥").String()
 		j.Domain = d.Key("访问链接").String()
+		j.ServerAddr = d.Key("服务器").String()
 		r, _ := json.Marshal(j)
 		w.Write(r)
 		return
@@ -4106,8 +4585,30 @@ func opuiHandleApi(w http.ResponseWriter, r *http.Request) {
 		d.Key("启用").SetValue(strconv.FormatBool(j.Open))
 		d.Key("密钥").SetValue(j.Token)
 		d.Key("访问链接").SetValue(j.Domain)
+		d.Key("服务器").SetValue(j.ServerAddr)
 		ff.SaveIni(f)
-		w.Write([]byte(`{"status":"ok"}`))
+
+		// 保存即生效：按启用状态启停隧道（服务器地址变更时先停旧隧道再重连）
+		if j.Open {
+			if dto.ServerConfig.NgrokListener != nil || dto.ServerConfig.NgrokCancel != nil {
+				StopNgrok()
+			}
+			dto.ServerConfig.Ngrok = &dto.NgrokConfig{
+				Addr:       j.Domain,
+				Token:      j.Token,
+				ServerAddr: j.ServerAddr,
+			}
+			url, err := StartNgrok(j.Token, j.Domain)
+			if err != nil {
+				w.Write([]byte(`{"status":"error","error":"` + err.Error() + `"}`))
+				return
+			}
+			w.Write([]byte(`{"status":"ok","url":"` + url + `"}`))
+		} else {
+			StopNgrok()
+			dto.ServerConfig.Ngrok = nil
+			w.Write([]byte(`{"status":"ok"}`))
+		}
 		return
 
 	case "toggle_ngrok":
@@ -4130,9 +4631,11 @@ func opuiHandleApi(w http.ResponseWriter, r *http.Request) {
 		if j.Open {
 			token := d.Key("密钥").String()
 			domain := d.Key("访问链接").String()
+			serverAddr := d.Key("服务器").String()
 			dto.ServerConfig.Ngrok = &dto.NgrokConfig{
-				Addr:  domain,
-				Token: token,
+				Addr:       domain,
+				Token:      token,
+				ServerAddr: serverAddr,
 			}
 			url, err := StartNgrok(token, domain)
 			if err != nil {
@@ -4143,59 +4646,6 @@ func opuiHandleApi(w http.ResponseWriter, r *http.Request) {
 		} else {
 			StopNgrok()
 			dto.ServerConfig.Ngrok = nil
-			w.Write([]byte(`{"status":"ok"}`))
-		}
-		return
-
-	case "get_frp":
-		ff := utils.NewFileQueue(dto.CONFIG_SYSTEM_PATH)
-		f, err := ff.LoadIni()
-		if err != nil {
-			utils.ErrorStop("系统配置不存在")
-		}
-		d := f.Section("FRP")
-		var j HttpOpUiConfig_frp
-		j.Open = d.Key("启用").MustBool(false)
-		j.ServerAddr = d.Key("服务端地址").String()
-		j.Token = d.Key("令牌").String()
-		j.Debug = d.Key("调试").MustBool(false)
-		r, _ := json.Marshal(j)
-		w.Write(r)
-		return
-
-	case "save_frp":
-		var j HttpOpUiConfig_frp
-		if err := json.Unmarshal(h.Data, &j); err != nil {
-			http.Error(w, `{"status":"error","error":"invalid json"}`, http.StatusBadRequest)
-			return
-		}
-		// 自动将 http/https 转换为 ws/wss
-		if after, ok := strings.CutPrefix(j.ServerAddr, "https://"); ok {
-			j.ServerAddr = "wss://" + after
-		} else if after, ok := strings.CutPrefix(j.ServerAddr, "http://"); ok {
-			j.ServerAddr = "ws://" + after
-		}
-		ff := utils.NewFileQueue(dto.CONFIG_SYSTEM_PATH)
-		f, err := ff.LoadIni()
-		if err != nil {
-			utils.ErrorStop("系统配置不存在")
-		}
-		d := f.Section("FRP")
-		d.Key("启用").SetValue(strconv.FormatBool(j.Open))
-		d.Key("服务端地址").SetValue(j.ServerAddr)
-		d.Key("令牌").SetValue(j.Token)
-		d.Key("调试").SetValue(strconv.FormatBool(j.Debug))
-		ff.SaveIni(f)
-
-		frpDebug = j.Debug
-
-		if j.Open {
-			// 开启：建立 WebSocket 连接
-			ConnectFrp(j.ServerAddr, j.Token)
-			w.Write([]byte(`{"status":"ok"}`))
-		} else {
-			// 关闭：断开连接
-			DisconnectFrp()
 			w.Write([]byte(`{"status":"ok"}`))
 		}
 		return
@@ -4756,23 +5206,42 @@ func opuiHandleApi(w http.ResponseWriter, r *http.Request) {
 		w.Write([]byte(`{"status":"ok"}`))
 		return
 
-	case "encrypt_dic":
-		var j HttpOpUiConfig_EncryptDic
+	case "dic_encrypt_file":
+		// 生成加密词库：读取 .n 词库文件，加密后在原目录生成同名 .bak 文件
+		var j struct {
+			Path string `json:"path"`
+		}
 		if err := json.Unmarshal(h.Data, &j); err != nil {
 			http.Error(w, `{"status":"error","error":"invalid json"}`, http.StatusBadRequest)
 			return
 		}
-		encodeDic, err := utils.Encrypt(j.Text, appfiles.Key)
+		if !checkFilePath(j.Path) {
+			http.Error(w, `{"status":"error","error":"文件路径不合法"}`, http.StatusBadRequest)
+			return
+		}
+		src := filepath.Join(utils.GetAppDir(), filepath.FromSlash(j.Path))
+		data, err := os.ReadFile(src)
+		if err != nil {
+			http.Error(w, `{"status":"error","error":"文件读取失败: `+err.Error()+`"}`, http.StatusBadRequest)
+			return
+		}
+		encodeDic, err := utils.Encrypt(string(data), appfiles.Key)
 		if err != nil {
 			http.Error(w, `{"status":"error","error":"加密失败"}`, http.StatusBadRequest)
 			return
 		}
+		dst := j.Path + ".bak"
+		full := filepath.Join(utils.GetAppDir(), filepath.FromSlash(dst))
+		if err := os.WriteFile(full, []byte("// "+appfiles.Version+"\n"+encodeDic), 0o644); err != nil {
+			http.Error(w, `{"status":"error","error":"文件写入失败: `+err.Error()+`"}`, http.StatusBadRequest)
+			return
+		}
 		var rj struct {
 			Status string `json:"status"`
-			Text   string `json:"text"`
+			Path   string `json:"path"`
 		}
 		rj.Status = "ok"
-		rj.Text = encodeDic
+		rj.Path = dst
 		r, _ := json.Marshal(rj)
 		w.Write(r)
 		return
@@ -5558,6 +6027,172 @@ func opuiHandleApi(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		jsonResp, _ := json.Marshal(map[string]any{"status": "ok"})
+		w.Write(jsonResp)
+		return
+
+	case "file_db_tables":
+		// 文件管理：列出 SQLite 数据库中的表/视图及建表语句
+		var j struct {
+			Path string `json:"path"`
+		}
+		if err := json.Unmarshal(h.Data, &j); err != nil {
+			http.Error(w, `{"status":"error","error":"invalid json"}`, http.StatusBadRequest)
+			return
+		}
+		db := opuiOpenSqlite(w, j.Path)
+		if db == nil {
+			return
+		}
+		defer db.Close()
+		rows, err := db.Query(`SELECT name, type, sql FROM sqlite_master WHERE type IN ('table','view') AND name NOT LIKE 'sqlite_%' ORDER BY name`)
+		if err != nil {
+			http.Error(w, `{"status":"error","error":"数据库读取失败: `+err.Error()+`"}`, http.StatusBadRequest)
+			return
+		}
+		defer rows.Close()
+		tables := make([]map[string]string, 0)
+		for rows.Next() {
+			var name, typ string
+			var sqlText *string
+			if err := rows.Scan(&name, &typ, &sqlText); err != nil {
+				continue
+			}
+			createSQL := ""
+			if sqlText != nil {
+				createSQL = *sqlText
+			}
+			tables = append(tables, map[string]string{"name": name, "type": typ, "sql": createSQL})
+		}
+		jsonResp, _ := json.Marshal(map[string]any{"status": "ok", "tables": tables})
+		w.Write(jsonResp)
+		return
+
+	case "file_db_query":
+		// 文件管理：对 SQLite 数据库执行 SQL（SELECT/WITH/PRAGMA 返回表格，其余为执行语句）
+		var j struct {
+			Path string `json:"path"`
+			Sql  string `json:"sql"`
+		}
+		if err := json.Unmarshal(h.Data, &j); err != nil {
+			http.Error(w, `{"status":"error","error":"invalid json"}`, http.StatusBadRequest)
+			return
+		}
+		db := opuiOpenSqlite(w, j.Path)
+		if db == nil {
+			return
+		}
+		defer db.Close()
+		trimmed := strings.ToUpper(stripLeadingSQLComments(j.Sql))
+		isQuery := strings.HasPrefix(trimmed, "SELECT") || strings.HasPrefix(trimmed, "WITH") ||
+			strings.HasPrefix(trimmed, "PRAGMA") || strings.HasPrefix(trimmed, "EXPLAIN") ||
+			strings.HasPrefix(trimmed, "VALUES") || strings.Contains(trimmed, " RETURNING ")
+		if !isQuery {
+			res, err := db.Exec(j.Sql)
+			if err != nil {
+				jsonResp, _ := json.Marshal(map[string]any{"status": "ok", "error": err.Error()})
+				w.Write(jsonResp)
+				return
+			}
+			affected, _ := res.RowsAffected()
+			id, _ := res.LastInsertId()
+			jsonResp, _ := json.Marshal(map[string]any{"status": "ok", "rows_affected": affected, "last_insert_id": id})
+			w.Write(jsonResp)
+			return
+		}
+		// 查询路径：单表 SELECT 且为 rowid 表时自动前置 rowid，使结果支持内联编辑
+		execSQL := j.Sql
+		editable := false
+		table := ""
+		if t, ok := detectEditableTable(j.Sql); ok && isRowidTable(db, t) {
+			execSQL = prependRowid(j.Sql)
+			editable = true
+			table = t
+		}
+		rows, err := db.Query(execSQL)
+		if err != nil {
+			// 改写后的查询失败则回退原始查询（只读）
+			if execSQL != j.Sql {
+				rows, err = db.Query(j.Sql)
+				editable = false
+				table = ""
+			}
+			if err != nil {
+				jsonResp, _ := json.Marshal(map[string]any{"status": "ok", "error": err.Error()})
+				w.Write(jsonResp)
+				return
+			}
+		}
+		defer rows.Close()
+		columns, _ := rows.Columns()
+		out := make([][]any, 0)
+		for rows.Next() {
+			// 结果行数上限，避免大表拖垮前端
+			if len(out) >= 1000 {
+				break
+			}
+			vals := make([]any, len(columns))
+			ptrs := make([]any, len(columns))
+			for i := range vals {
+				ptrs[i] = &vals[i]
+			}
+			if err := rows.Scan(ptrs...); err != nil {
+				continue
+			}
+			row := make([]any, len(columns))
+			for i, v := range vals {
+				row[i] = sqliteCellValue(v)
+			}
+			out = append(out, row)
+		}
+		jsonResp, _ := json.Marshal(map[string]any{
+			"status": "ok", "columns": columns, "rows": out,
+			"editable": editable, "table": table,
+		})
+		w.Write(jsonResp)
+		return
+
+	case "file_db_update_cell":
+		// 文件管理：内联编辑表格单元格（通过 rowid 定位行，仅限简单标识符表/列）
+		var j struct {
+			Path   string `json:"path"`
+			Table  string `json:"table"`
+			Rowid  int64  `json:"rowid"`
+			Column string `json:"column"`
+			Value  any    `json:"value"`
+		}
+		if err := json.Unmarshal(h.Data, &j); err != nil {
+			http.Error(w, `{"status":"error","error":"invalid json"}`, http.StatusBadRequest)
+			return
+		}
+		if !isSimpleIdent(j.Table) || !isSimpleIdent(j.Column) {
+			http.Error(w, `{"status":"error","error":"参数不合法"}`, http.StatusBadRequest)
+			return
+		}
+		db := opuiOpenSqlite(w, j.Path)
+		if db == nil {
+			return
+		}
+		defer db.Close()
+		// 值绑定：空字符串视为 NULL；其余原样按字符串绑定，交由 SQLite 列类型亲和性自动转换，
+		// 避免后端强转数字导致 TEXT 列前导零（如 "007"）被截断
+		var bind any
+		if s, ok := j.Value.(string); ok {
+			bind = s
+			if s == "" {
+				bind = nil
+			}
+		} else {
+			bind = j.Value
+		}
+		updateSQL := fmt.Sprintf(`UPDATE "%s" SET "%s" = ? WHERE rowid = ?`, j.Table, j.Column)
+		res, err := db.Exec(updateSQL, bind, j.Rowid)
+		if err != nil {
+			jsonResp, _ := json.Marshal(map[string]any{"status": "ok", "error": err.Error()})
+			w.Write(jsonResp)
+			return
+		}
+		affected, _ := res.RowsAffected()
+		jsonResp, _ := json.Marshal(map[string]any{"status": "ok", "rows_affected": affected})
 		w.Write(jsonResp)
 		return
 

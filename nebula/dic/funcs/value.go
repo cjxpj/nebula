@@ -18,8 +18,8 @@ var (
 func getTempStore() *cache.Cache {
 	tempOnce.Do(func() {
 		interval := 60
-		if dto.ServerConfig.Router != nil && dto.ServerConfig.Router.TempCleanupInterval > 0 {
-			interval = dto.ServerConfig.Router.TempCleanupInterval
+		if dto.ServerConfig.TempCleanupInterval > 0 {
+			interval = dto.ServerConfig.TempCleanupInterval
 		}
 		tempStore = cache.New(cache.NoExpiration, time.Duration(interval)*time.Second)
 	})

@@ -30,6 +30,7 @@ type BlockKind uint8
 const (
 	BlockFunc BlockKind = iota // 函数> ... <函数
 	BlockIf                     // 如果> ... <如果
+	BlockMatch                  // 匹配> ... <匹配
 	BlockFor                    // 循环> ... <循环
 	BlockForEach                // 遍历> ... <遍历
 	BlockText                   // 文本>/纯文本> ... <文本
@@ -48,6 +49,8 @@ func (k BlockKind) String() string {
 		return "函数"
 	case BlockIf:
 		return "如果"
+	case BlockMatch:
+		return "匹配"
 	case BlockFor:
 		return "循环"
 	case BlockForEach:

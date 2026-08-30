@@ -18,6 +18,16 @@ import (
 
 // ==============Server================
 
+// 默认路由词库文件与默认网站根目录
+const (
+	DefaultRouterFile = "private/system/router.n"
+	DefaultWebRoot    = "public"
+)
+
+// WebHandlerFactory 构建单个 HTTP 服务器的处理器。由 dic 包在初始化时注入，
+// 供 dic 与 dic_server 两处（loadConfig 与 save_servers）统一创建每服务器独立 handler。
+var WebHandlerFactory func(router *ServerHTTP) http.Handler
+
 // WS连接
 type ServerRouterWebSocket struct {
 	// 是否开启
@@ -33,19 +43,35 @@ type ServerRouterWebSocket struct {
 }
 
 type ServerHTTP struct {
-	Http                *http.Server
-	Cors                bool
-	CorsOrigins         string
-	TempCleanupInterval int
-	TLS                 bool
-	CertFile            string
-	KeyFile             string
-	Debug               bool
+	Http *http.Server
+	// Enabled 是否启用该服务器（实时开关，关闭后仅保留管理面板/机器人等内置入口）
+	Enabled bool
+	// Domains 绑定域名（多个，换行分隔），留空则用监听地址访问
+	Domains []string
+	// WebRoot 映射目录（网站根目录）：该服务器路由词库从中提供静态/网页/词库文件，留空默认 public
+	WebRoot string
+	// RouterFile 路由词库文件（.n）：该服务器使用的路由词库，留空默认 private/system/router.n
+	RouterFile string
+	// Cors 跨域开关
+	Cors bool
+	// CorsOrigins 跨域白名单
+	CorsOrigins string
+	TLS         bool
+	// 证书文件/密钥文件路径（相对 private/https 或绝对路径）
+	CertFile string
+	KeyFile  string
 	// TLSMode 证书来源：file（手动路径）/ self（自签名）/ upload（上传）/ system（系统证书库）/ acme（Let's Encrypt）
 	TLSMode    string
 	TLSDomains string // acme 域名列表（逗号分隔）
 	TLSEmail   string // acme 邮箱（可选）
-	Domain     string // 绑定域名（可选）：对外访问地址使用的域名，留空则回退到监听地址
+	// FrpOpen 是否启用 BeerWebFrp 穿透（每个服务器独立）
+	FrpOpen bool
+	// FrpServerAddr BeerWebFrp 服务端 WebSocket 地址（ws:// 或 wss://）
+	FrpServerAddr string
+	// FrpToken BeerWebFrp 隧道密钥
+	FrpToken string
+	// FrpDebug BeerWebFrp 调试日志
+	FrpDebug bool
 }
 
 type OPUI struct {
@@ -76,8 +102,12 @@ type CloudTool struct {
 }
 
 type ServerConfigInfo struct {
-	// HTTP地址
-	Router *ServerHTTP
+	// Routers 多开 HTTP 服务器列表
+	Routers []*ServerHTTP
+	// Debug 全局调试开关：控制打印词库缓存等调试信息
+	Debug bool
+	// TempCleanupInterval 全局临时读写清理周期（秒）
+	TempCleanupInterval int
 	// OPUI
 	OPUI *OPUI
 	// 内置云工具
@@ -101,6 +131,14 @@ type ServerConfigInfo struct {
 	NgrokListener net.Listener
 	// Ngrok 取消上下文（运行时启停用）
 	NgrokCancel context.CancelFunc
+}
+
+// Primary 返回第一个 HTTP 服务器（主服务器），未配置时返回 nil
+func (s *ServerConfigInfo) Primary() *ServerHTTP {
+	if len(s.Routers) == 0 {
+		return nil
+	}
+	return s.Routers[0]
 }
 
 // AddWs 添加或更新一个正在监听的 WS 服务
@@ -142,6 +180,8 @@ type NgrokConfig struct {
 	Addr string
 	// Token
 	Token string
+	// ServerAddr 要转发的本地 HTTP 服务器监听地址（空则转发到主服务器 Primary）
+	ServerAddr string
 }
 
 type HTTPRequestInfo struct {

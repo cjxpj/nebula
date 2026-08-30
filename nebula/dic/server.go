@@ -36,8 +36,20 @@ func setCORS(w http.ResponseWriter, r *http.Request, origin string) bool {
 	return false
 }
 
+// init 注入服务器处理器工厂，供 loadConfig 与 save_servers 统一构建每服务器独立 handler
+func init() {
+	dto.WebHandlerFactory = newWebHandler
+}
+
+// newWebHandler 构建单个 HTTP 服务器的处理器（每服务器独立，携带该服务器配置）
+func newWebHandler(router *dto.ServerHTTP) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		webRun(w, r, router)
+	})
+}
+
 // 路由
-func webRun(w http.ResponseWriter, r *http.Request) {
+func webRun(w http.ResponseWriter, r *http.Request, router *dto.ServerHTTP) {
 
 	// IP黑名单 + 防火墙词库拦截
 	if dic_server.CheckFirewall(w, r) {
@@ -66,8 +78,7 @@ func webRun(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// 全局跨域
-	router := s.Router
+	// 当前服务器跨域（每服务器单独配置）
 	if router != nil && router.Cors {
 		origin := router.CorsOrigins
 		if origin == "" {
@@ -104,5 +115,13 @@ func webRun(w http.ResponseWriter, r *http.Request) {
 		yunhubot.BotMessage(w, r)
 		return
 	}
-	dicWebRouter(w, r)
+
+	// 当前服务器已关闭（实时开关）：管理面板/机器人/云工具等内置入口仍可访问，仅关闭对外网站路由
+	if router != nil && !router.Enabled {
+		w.WriteHeader(http.StatusServiceUnavailable)
+		w.Write([]byte("该服务器已关闭"))
+		return
+	}
+
+	dicWebRouter(w, r, router)
 }

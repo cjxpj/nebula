@@ -255,6 +255,12 @@ func (a *dicRuntime) Cond(expr string) bool {
 	return Pd(a.funcV, expr)
 }
 
+// Resolve 求值表达式为字符串（%变量%/$函数$/[算术] 等），供 匹配> 框一次性求值主体与 case 值。
+// 与 LoopCount/loopBound 的表达式求值路径一致。
+func (a *dicRuntime) Resolve(expr string) string {
+	return utils.AnyToString(Runs(a.funcV, utils.AnyToString(count.RunCountText(a.r.Val, expr))))
+}
+
 // JumpRelOffset 求值 跳行 偏移表达式，语义与解释器 >跳行 一致：
 // 偏移经 r.Val.Text（%变量% 插值）后按整数解析，解析失败返回 ok=false（未命中，不跳转）。
 func (a *dicRuntime) JumpRelOffset(expr string) (int, bool) {
