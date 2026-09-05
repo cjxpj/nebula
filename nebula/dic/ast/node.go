@@ -28,7 +28,7 @@ type Node interface {
 type BlockKind uint8
 
 const (
-	BlockFunc BlockKind = iota // 函数> ... <函数
+	BlockFunc BlockKind = iota // 变量:函数> / 变量:执行函数> ... <函数
 	BlockIf                     // 如果> ... <如果
 	BlockMatch                  // 匹配> ... <匹配
 	BlockFor                    // 循环> ... <循环
@@ -99,7 +99,7 @@ type Block struct {
 	// 整段委托给原解释器执行，保证语义等价。
 	Raw []string
 	// RawLineNums 与 Raw 平行，记录每行对应的原始文件行号（1-based，缺失回退正文下标）。
-	// 供 函数> 框存储 FuncBox.LineNums，保持调用函数框时的报错定位与解释器一致。
+	// 供 变量:函数> 框存储 FuncBox.LineNums，保持调用函数框时的报错定位与解释器一致。
 	RawLineNums []int
 
 	depth    int // 仅新建 JSON 框使用：括号平衡深度

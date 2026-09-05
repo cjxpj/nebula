@@ -144,6 +144,41 @@ func installNapCatBot(destDir string, qq string, output *[]string, progressFn fu
 	return nil
 }
 
+// installGo 下载并解压 Go 工具链（词库编译环境），用于把词库编译为独立可执行文件。
+// destDir 为扩展根目录（private/extensions），Go zip 自带 go/ 顶层目录，
+// 解压后工具链位于 destDir/go（go.exe 位于 destDir/go/bin/go.exe）。
+func installGo(destDir string, output *[]string, progressFn func(float64)) error {
+	urls := []string{
+		"https://golang.google.cn/dl/go1.27.0.windows-amd64.zip",
+		"https://go.dev/dl/go1.27.0.windows-amd64.zip",
+	}
+
+	zipPath := utils.NewFileQueue("go_download.zip")
+	defer zipPath.DeleteFile() // 确保下载文件最终被删除
+
+	if output != nil {
+		*output = append(*output, "正在分段下载 Go 工具链 ...")
+	}
+	if err := zipPath.DownloadWithMirrors(urls, 0, true, progressFn); err != nil { // 0 = 自动线程数
+		return fmt.Errorf("下载失败: %w", err)
+	}
+
+	if output != nil {
+		*output = append(*output, "下载完成，正在解压...")
+	}
+	if err := os.MkdirAll(destDir, 0755); err != nil {
+		return fmt.Errorf("创建目录失败: %w", err)
+	}
+	if !zipPath.UnZip(destDir) {
+		return fmt.Errorf("解压失败")
+	}
+
+	if output != nil {
+		*output = append(*output, "✅ Go 工具链安装成功，路径："+filepath.Join(destDir, "go"))
+	}
+	return nil
+}
+
 func installPython(destDir string, output *[]string, progressFn func(float64)) error {
 	urls := []string{
 		"https://registry.npmmirror.com/-/binary/python/3.12.8/python-3.12.8-embed-amd64.zip",

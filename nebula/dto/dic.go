@@ -14,7 +14,7 @@ type RunState uint8
 
 const (
 	StateNormal     RunState = iota // 普通行处理
-	StateFunc                       // 函数框     函数> ... <函数
+	StateFunc                       // 函数框     变量:函数> ... <函数
 	StateForEach                    // 遍历框     遍历> ... <遍历
 	StateFor                        // 循环框     循环> ... <循环
 	StateIf                         // 判断框     如果> ... <如果
@@ -221,6 +221,14 @@ type BuildValue struct {
 	MyFunc       map[string]DicFunc     `json:"自定义函数"`
 	BotImports   []string               `json:"bot引入"`
 	Warnings     []BuildWarning         `json:"警告,omitempty"` // 编译警告（如循环引入），供前端调试面板展示
+	// Resources 编译期资源变量（//@资源 变量名:路径 读入的文件内容），运行时注入到局部变量表。
+	// 值为 string（文本）或 []byte（.n 词库自动编译的 gob 字节）。
+	Resources map[string]any `json:"资源,omitempty"`
+	// OnceResources 一次性资源变量名集合（//@一次性资源 变量名:路径）：内容存于 Resources，
+	// 标记在此集合中的变量读取一次后即销毁。
+	OnceResources map[string]bool `json:"一次性资源,omitempty"`
+	// Deps 所有依赖文件（含主文件、#引入、//@资源）路径 -> 内容 sha256，用于编译缓存与打包指纹的确定性失效校验。非序列化。
+	Deps map[string]string `json:"-"`
 	// InHeader 运行时标记：当前是否正在执行词库头部（供 $重定向触发词$ 等仅在头部生效的功能判断）。
 	InHeader bool `json:"-"`
 	// funcIndex 函数名 -> 词条索引（触发词去掉 -> 后缀后作为键），惰性构建；MergeFuncs 追加后失效重建。非序列化。
@@ -379,12 +387,30 @@ func (v *BuildValue) ResolveClassData(class any) *DicClass {
 	return nil
 }
 
+// ApplyResources 将编译期资源变量写入局部变量表（P），供头部与正文引用。
+// 资源由 //@资源 指令在编译期读入并随编译结果缓存，运行时在头部执行前注入。
+// 一次性资源（//@一次性资源）以 SetOnce 注入，读取一次后即销毁。
+func (v *BuildValue) ApplyResources(val *DicVal) {
+	if val == nil || val.P == nil {
+		return
+	}
+	for name, content := range v.Resources {
+		if v.OnceResources[name] {
+			val.P.SetOnce(name, content)
+		} else {
+			val.P.Set(name, content)
+		}
+	}
+}
+
 // 关闭回收
 func (v *BuildValue) Close() {
 	v.DicFuncs = nil
 	v.Class = nil
 	v.Dic = nil
 	v.Head = nil
+	v.Resources = nil
+	v.OnceResources = nil
 }
 
 // BotFuncsRegistry bot函数注册表，由各bot包在init()中自行注册，避免循环依赖

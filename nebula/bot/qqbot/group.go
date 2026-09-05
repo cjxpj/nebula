@@ -71,6 +71,7 @@ func popMDKeyboard(d *dto.DicInputs) (int, *qqbot_msg.Keyboard) {
 // 格式: [样式数字]label[|data]  尾部 \r 表示该按钮后换行
 // 开头 [数字] 设置样式（如 [0]~[3]），默认 0
 // data 以 http 开头自动为链接(type=0)，以 # 开头自动为回调(type=1)，否则为指令(type=2)
+// #[取消文案|确认文案]提示  生成回调按钮并附带 modal 二次确认弹窗，[] 后的文本同时作为 label/data/content
 func parseTextButtons(d *dto.DicInputs, start, l int) *qqbot_msg.Keyboard {
 	var rows []*qqbot_msg.KeyboardRow
 	var curButtons []*qqbot_msg.Button
@@ -87,6 +88,21 @@ func parseTextButtons(d *dto.DicInputs, start, l int) *qqbot_msg.Keyboard {
 				if v, err := strconv.Atoi(s[1:end]); err == nil {
 					style = v
 					s = strings.TrimSpace(s[end+1:])
+				}
+			}
+		}
+		// #[取消文案|确认文案]提示 → 回调按钮 + modal 二次确认弹窗
+		var modal *qqbot_msg.ButtonModal
+		if strings.HasPrefix(s, "#[") {
+			if end := strings.Index(s, "]"); end > 2 {
+				if cancel, confirm, ok := strings.Cut(s[2:end], "|"); ok {
+					content := strings.TrimSpace(s[end+1:])
+					modal = &qqbot_msg.ButtonModal{
+						Content:     content,
+						ConfirmText: strings.TrimSpace(confirm),
+						CancelText:  strings.TrimSpace(cancel),
+					}
+					s = content
 				}
 			}
 		}
@@ -119,7 +135,9 @@ func parseTextButtons(d *dto.DicInputs, start, l int) *qqbot_msg.Keyboard {
 			label = string([]rune(label)[:10])
 		}
 		// 根据 data 前缀自动判断类型
-		if strings.HasPrefix(btnData, "http://") || strings.HasPrefix(btnData, "https://") {
+		if modal != nil {
+			btnType = 1 // 回调（modal 二次确认仅回调按钮支持）
+		} else if strings.HasPrefix(btnData, "http://") || strings.HasPrefix(btnData, "https://") {
 			btnType = 0 // 链接
 		} else if strings.HasPrefix(btnData, "#") {
 			btnType = 1 // 回调
@@ -148,6 +166,7 @@ func parseTextButtons(d *dto.DicInputs, start, l int) *qqbot_msg.Keyboard {
 			Type:       btnType,
 			Permission: &qqbot_msg.ButtonPermission{Type: 2},
 			Data:       btnData,
+			Modal:      modal,
 		}
 		curButtons = append(curButtons, &qqbot_msg.Button{
 			ID:         fmt.Sprintf("btn_%d", i-1),

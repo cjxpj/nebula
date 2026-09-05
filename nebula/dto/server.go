@@ -24,10 +24,6 @@ const (
 	DefaultWebRoot    = "public"
 )
 
-// WebHandlerFactory 构建单个 HTTP 服务器的处理器。由 dic 包在初始化时注入，
-// 供 dic 与 dic_server 两处（loadConfig 与 save_servers）统一创建每服务器独立 handler。
-var WebHandlerFactory func(router *ServerHTTP) http.Handler
-
 // WS连接
 type ServerRouterWebSocket struct {
 	// 是否开启
@@ -42,38 +38,6 @@ type ServerRouterWebSocket struct {
 	Conn *websocket.Upgrader
 }
 
-type ServerHTTP struct {
-	Http *http.Server
-	// Enabled 是否启用该服务器（实时开关，关闭后仅保留管理面板/机器人等内置入口）
-	Enabled bool
-	// Domains 绑定域名（多个，换行分隔），留空则用监听地址访问
-	Domains []string
-	// WebRoot 映射目录（网站根目录）：该服务器路由词库从中提供静态/网页/词库文件，留空默认 public
-	WebRoot string
-	// RouterFile 路由词库文件（.n）：该服务器使用的路由词库，留空默认 private/system/router.n
-	RouterFile string
-	// Cors 跨域开关
-	Cors bool
-	// CorsOrigins 跨域白名单
-	CorsOrigins string
-	TLS         bool
-	// 证书文件/密钥文件路径（相对 private/https 或绝对路径）
-	CertFile string
-	KeyFile  string
-	// TLSMode 证书来源：file（手动路径）/ self（自签名）/ upload（上传）/ system（系统证书库）/ acme（Let's Encrypt）
-	TLSMode    string
-	TLSDomains string // acme 域名列表（逗号分隔）
-	TLSEmail   string // acme 邮箱（可选）
-	// FrpOpen 是否启用 BeerWebFrp 穿透（每个服务器独立）
-	FrpOpen bool
-	// FrpServerAddr BeerWebFrp 服务端 WebSocket 地址（ws:// 或 wss://）
-	FrpServerAddr string
-	// FrpToken BeerWebFrp 隧道密钥
-	FrpToken string
-	// FrpDebug BeerWebFrp 调试日志
-	FrpDebug bool
-}
-
 type OPUI struct {
 	// 地址
 	Addr string
@@ -83,7 +47,7 @@ type OPUI struct {
 	Cors bool
 }
 
-// CloudTool 内置云工具服务端配置（system.ini [云工具服务端] 节）。
+// CloudTool 内置云工具服务端配置（config.yaml [云工具服务端] 节）。
 type CloudTool struct {
 	// 是否开启
 	Open bool
@@ -102,12 +66,12 @@ type CloudTool struct {
 }
 
 type ServerConfigInfo struct {
-	// Routers 多开 HTTP 服务器列表
-	Routers []*ServerHTTP
 	// Debug 全局调试开关：控制打印词库缓存等调试信息
 	Debug bool
 	// TempCleanupInterval 全局临时读写清理周期（秒）
 	TempCleanupInterval int
+	// DicCache 是否启用词库编译磁盘缓存（private/.dic_cache），默认关闭
+	DicCache bool
 	// OPUI
 	OPUI *OPUI
 	// 内置云工具
@@ -131,14 +95,6 @@ type ServerConfigInfo struct {
 	NgrokListener net.Listener
 	// Ngrok 取消上下文（运行时启停用）
 	NgrokCancel context.CancelFunc
-}
-
-// Primary 返回第一个 HTTP 服务器（主服务器），未配置时返回 nil
-func (s *ServerConfigInfo) Primary() *ServerHTTP {
-	if len(s.Routers) == 0 {
-		return nil
-	}
-	return s.Routers[0]
 }
 
 // AddWs 添加或更新一个正在监听的 WS 服务
@@ -180,7 +136,7 @@ type NgrokConfig struct {
 	Addr string
 	// Token
 	Token string
-	// ServerAddr 要转发的本地 HTTP 服务器监听地址（空则转发到主服务器 Primary）
+	// ServerAddr 要转发的本地 HTTP 服务器监听地址（空则转发到核心服务器）
 	ServerAddr string
 }
 
@@ -207,4 +163,140 @@ type SetCookie struct {
 	Path     string `json:"路径"`
 	HttpOnly bool   `json:"禁止JS"`
 	MaxAge   int    `json:"存活"`
+}
+
+// ==============函数启动的服务器================
+
+// FuncServerInfo 由字典函数「服务器」启动的轻量 HTTP 词库服务器状态。
+// Update/Close 为 dic 包注入的操作句柄，不参与 JSON 序列化。
+type FuncServerInfo struct {
+	Addr    string `json:"addr"`     // 监听地址（含端口）
+	Cors    bool   `json:"cors"`     // 跨域开关
+	DicData string `json:"dic_data"` // 词库源码文本
+	Core    bool   `json:"core"`     // 是否核心服务器（由注册表 coreAddr 派生，供前端展示）
+	// HTTPS（TLS）配置
+	TLS      bool   `json:"tls"`       // 是否启用 HTTPS
+	CertFile string `json:"cert_file"` // 证书文件路径（相对 private/https 或绝对路径）
+	KeyFile  string `json:"key_file"`  // 密钥文件路径
+	// BeerFrp 穿透配置
+	FrpOpen       bool   `json:"frp_open"`        // 是否启用 BeerWebFrp 穿透
+	FrpServerAddr string `json:"frp_server_addr"` // BeerWebFrp 服务端地址（ws/wss）
+	FrpToken      string `json:"frp_token"`       // BeerWebFrp 隧道密钥
+	FrpDebug      bool   `json:"frp_debug"`       // BeerWebFrp 调试日志
+
+	Handler http.Handler                     `json:"-"` // 请求处理器（供 Ngrok 等转发复用）
+	Update  func(upd FuncServerUpdate) error `json:"-"`
+	Close   func()                           `json:"-"`
+}
+
+// FuncServerUpdate 前端编辑函数服务器时提交的增量更新（指针字段为 nil 表示不修改）。
+type FuncServerUpdate struct {
+	Cors          *bool   `json:"cors"`
+	TLS           *bool   `json:"tls"`
+	CertFile      *string `json:"cert_file"`
+	KeyFile       *string `json:"key_file"`
+	FrpOpen       *bool   `json:"frp_open"`
+	FrpServerAddr *string `json:"frp_server_addr"`
+	FrpToken      *string `json:"frp_token"`
+	FrpDebug      *bool   `json:"frp_debug"`
+}
+
+// FuncServerRegistry 函数启动的服务器注册表（按监听地址索引，同名地址同时只会有一个存活实例）。
+type FuncServerRegistry struct {
+	mu       sync.Mutex
+	mp       map[string]*FuncServerInfo
+	coreAddr string // 核心服务器监听地址，空串表示无核心服务器
+}
+
+// FuncServers 全局函数服务器注册表，供前端查询/编辑。
+var FuncServers = &FuncServerRegistry{mp: make(map[string]*FuncServerInfo)}
+
+// Add 添加或更新一个函数服务器。核心身份不在此自动指定，须由词库显式调用「服务器.设置核心服务器」标记。
+func (r *FuncServerRegistry) Add(s *FuncServerInfo) {
+	if s == nil {
+		return
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.mp[s.Addr] = s
+}
+
+// SetCore 将指定地址的服务器标记为核心服务器。返回是否设置成功。
+// 核心地址单独记录在 coreAddr 字段中，取出即判断，无需遍历各服务器条目。
+func (r *FuncServerRegistry) SetCore(addr string) bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if _, ok := r.mp[addr]; !ok {
+		return false
+	}
+	r.coreAddr = addr
+	return true
+}
+
+// CoreAddr 返回当前核心服务器地址，无核心服务器时返回空串。
+func (r *FuncServerRegistry) CoreAddr() string {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.coreAddr
+}
+
+// Remove 移除指定地址的函数服务器；若移除的是核心服务器则同时清空核心地址。
+func (r *FuncServerRegistry) Remove(addr string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	delete(r.mp, addr)
+	if r.coreAddr == addr {
+		r.coreAddr = ""
+	}
+}
+
+// Get 返回指定地址的函数服务器，不存在时返回 nil。
+func (r *FuncServerRegistry) Get(addr string) *FuncServerInfo {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.mp[addr]
+}
+
+// UpdateData 同步指定服务器的词库源码快照。
+func (r *FuncServerRegistry) UpdateData(addr, dicData string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if e, ok := r.mp[addr]; ok {
+		e.DicData = dicData
+	}
+}
+
+// UpdateCors 同步指定服务器的跨域开关快照。
+func (r *FuncServerRegistry) UpdateCors(addr string, cors bool) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if e, ok := r.mp[addr]; ok {
+		e.Cors = cors
+	}
+}
+
+// Apply 对指定地址的服务器快照执行一次修改（用于同步运行中服务器的可编辑配置）。
+func (r *FuncServerRegistry) Apply(addr string, fn func(*FuncServerInfo)) {
+	if fn == nil {
+		return
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if e, ok := r.mp[addr]; ok {
+		fn(e)
+	}
+}
+
+// Snapshot 返回当前全部函数服务器快照（按地址排序），Core 字段按 coreAddr 动态派生。
+func (r *FuncServerRegistry) Snapshot() []FuncServerInfo {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	list := make([]FuncServerInfo, 0, len(r.mp))
+	for a, e := range r.mp {
+		c := *e
+		c.Core = a == r.coreAddr
+		list = append(list, c)
+	}
+	sort.Slice(list, func(i, j int) bool { return list[i].Addr < list[j].Addr })
+	return list
 }

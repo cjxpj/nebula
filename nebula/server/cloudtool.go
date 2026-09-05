@@ -527,7 +527,7 @@ func CloudToolClearAccounts() (int, int, error) {
 	return len(toDelete), kept, nil
 }
 
-// CloudToolAddWhitelist 把账号加入服务端白名单并即时生效（写回 system.ini 并同步内存配置）。
+// CloudToolAddWhitelist 把账号加入服务端白名单并即时生效（写回 config.yaml 并同步内存配置）。
 // 返回操作后该账号是否在白名单内。
 func CloudToolAddWhitelist(username string) (bool, error) {
 	return cloudToolSetWhitelist(username, true)
@@ -540,7 +540,7 @@ func CloudToolRemoveWhitelist(username string) (bool, error) {
 }
 
 // cloudToolSetWhitelist 把账号加入（add=true）或移出（add=false）服务端白名单，
-// 写回 system.ini 的 [云工具服务端] 白名单并同步内存配置，立即生效。
+// 写回 config.yaml 的 [云工具服务端] 白名单并同步内存配置，立即生效。
 // 返回操作后该账号是否在白名单内。
 func cloudToolSetWhitelist(username string, add bool) (bool, error) {
 	username = strings.TrimSpace(username)
@@ -551,12 +551,11 @@ func cloudToolSetWhitelist(username string, add bool) (bool, error) {
 		return false, errors.New(cloudUsernameRuleErr)
 	}
 
-	ff := utils.NewFileQueue(dto.CONFIG_SYSTEM_PATH)
-	f, err := ff.LoadIni()
+	cfg, err := dto.LoadConfigFile()
 	if err != nil {
 		return false, errors.New("系统配置不存在")
 	}
-	d := f.Section("云工具服务端")
+	d := cfg.Section("云工具服务端")
 	current := d.Key("白名单").String()
 	in := CloudToolSplitWhitelist(current)[username]
 	if in == add {
@@ -576,7 +575,7 @@ func cloudToolSetWhitelist(username string, add bool) (bool, error) {
 		out = append(out, username)
 	}
 	d.Key("白名单").SetValue(strings.Join(out, ","))
-	if err := ff.SaveIni(f); err != nil {
+	if err := cfg.Save(); err != nil {
 		return in, err
 	}
 

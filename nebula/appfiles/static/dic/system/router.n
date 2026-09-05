@@ -1,4 +1,13 @@
 
+[系统]首页
+$读配置 system.ini 管理面板 访问路径$
+
+[Ngrok]启动 https?://.+
+NgrokUrl：%参数1%
+
+[BeerWebFrp]启动 https?://.+
+BeerWebFrp：%参数1%
+
 .* #{
 访问路径:%括号0%
 路径尾巴:$取后字符 1 %访问路径%$

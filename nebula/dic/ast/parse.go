@@ -9,8 +9,6 @@ import (
 // blockOpen 识别「框开启」行，语义与 run 包编译检查的 blockOpen 保持一致。
 func blockOpen(line string) (BlockKind, bool) {
 	switch {
-	case strings.HasPrefix(line, "函数>"):
-		return BlockFunc, true
 	case len(line) > 7 && strings.HasPrefix(line, "如果>"):
 		return BlockIf, true
 	case len(line) > 7 && strings.HasPrefix(line, "匹配>"):
@@ -33,13 +31,27 @@ func blockOpen(line string) (BlockKind, bool) {
 		return BlockJson, true
 	case line == "--js":
 		return BlockNodeJs, true
+	case line == "#:>>>":
+		return BlockValChain, true
+	case strings.HasPrefix(line, "#:执行函数>"):
+		return BlockFunc, true
 	}
 	// 变量: 开头的赋值框（vType 6，后缀决定框类型）：
 	//   { / [   → 多行 JSON 赋值（变量名不含 -> 路径，避免与 a->b:{ 单行 JSON 路径赋值混淆）
 	//   >>>     → 连续执行框（与单行链式 a>>>b 区分）
 	//   """     → 赋值文本框（内容 %变量% 插值）
 	//   '''     → 赋值文本框（内容原样）
+	//   函数> / 执行函数> → 函数框（存储 / 立即执行）
 	if vt, vp, vs := build.ValTextTest(line); vt == 6 {
+		// 变量:函数> / 变量:执行函数> 开头的函数框（赋予值形式）。
+		if vp != "" {
+			switch {
+			case strings.HasPrefix(vs, "执行函数>"):
+				return BlockFunc, true
+			case strings.HasPrefix(vs, "函数>"):
+				return BlockFunc, true
+			}
+		}
 		switch vs {
 		case "{", "[":
 			if !strings.Contains(vp, "->") {

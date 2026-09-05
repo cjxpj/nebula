@@ -26,7 +26,8 @@ const (
 	OpTextBlock             // 执行 文本>/纯文本> 框：Text 为开启行，Lines 为内容行，Arg 0=文本(变量插值) 1=纯文本(原样)
 	OpJsonBlock             // 执行 JSON> 框：Text 为开启行，Lines 为内容行（key=value 设置键值）
 	OpNewJsonBlock          // 执行 JSON>{ / JSON>[ 框：Text 为开启行，Lines 为内容行（原样 JSON 文本累积）
-	OpFuncBlock             // 执行 函数> 框：Text 为开启行，Lines 为内容行，LineNums 为内容行行号
+	OpFuncBlock             // 执行 变量:函数> 框：Text 为开启行，Lines 为内容行，LineNums 为内容行行号
+	OpExecFuncBlock         // 执行 变量:执行函数> 框：立即执行内容并把返回内容写入变量，Text 为开启行
 	OpForEachInit           // 遍历> 框入口：Text 为开启行（遍历>k,v=表达式），求值遍历源并入帧，End 为空遍历跳转目标（OpForEachPop）
 	OpForEachEnd            // 遍历> 框末尾：递增游标，未到末尾则跳回 Arg（循环体起始 PC）
 	OpForEachPop            // 弹出遍历帧（正常退出与 break 的汇聚点）
@@ -48,8 +49,8 @@ type Instr struct {
 	Expr  string   // OpLoopDyn 使用：循环次数运行时表达式（%变量%/$函数$ 等）；OpLoopRange 使用：动态 "起~止" 表达式；OpJumpRel 使用：偏移表达式（可为 %变量%）
 	End   int      // OpLoop/OpLoopDyn/OpLoopRange/OpForEachInit 使用：循环退出目标 PC（OpLoopPop/OpForEachPop），用于 0 次循环跳过循环体；OpBreak 使用：截断后的帧深度
 	Line  int      // OpLine/OpAssign 使用：语句真实源文件行号（1-based，0 表示未知），用于运行时报错定位；OpNodeJsBlock 使用：关闭行行号
-	Lines []string // 各类框指令使用：内容行（OpTextBlock/OpJsonBlock/OpNewJsonBlock/OpFuncBlock/OpVarNewJsonBlock/OpValChainBlock/OpValTextBlock/OpNodeJsBlock）
-	// OpFuncBlock 使用：内容行对应的原始文件行号（与 Lines 平行，1-based）。
+	Lines []string // 各类框指令使用：内容行（OpTextBlock/OpJsonBlock/OpNewJsonBlock/OpFuncBlock/OpExecFuncBlock/OpVarNewJsonBlock/OpValChainBlock/OpValTextBlock/OpNodeJsBlock）
+	// OpFuncBlock/OpExecFuncBlock 使用：内容行对应的原始文件行号（与 Lines 平行，1-based）。
 	LineNums []int
 	// OpAssign 使用：结构化赋值信息（Text 仍保留原始行文本，供运行时防御性回退）。
 	VType  int8

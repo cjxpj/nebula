@@ -7,6 +7,7 @@ import (
 	"regexp"
 	"strings"
 	"sync"
+	"sync/atomic"
 
 	"github.com/cjxpj/nebula/debugLog"
 	"github.com/iancoleman/orderedmap"
@@ -36,6 +37,11 @@ type Val struct {
 	// 同一键在同一时刻只会出现在 obj 或 num 其中一个。
 	num     map[string]int64
 	objlock map[string]bool
+	// once 一次性变量表：键 -> 是否一次性（//@一次性资源，读取后销毁）。
+	// 由 SetOnce 登记，get 命中后消费并删除该键。
+	once map[string]bool
+	// hasOnce 标记本 Val 是否存在一次性变量，供 get 快速路径分流（无一次性变量走原快路径）。
+	hasOnce atomic.Bool
 	// slots 无锁变量槽：普通变量名经全局驻留（internVar）映射到槽号，按槽号直取，
 	// 免去 map 哈希与每键加锁。仅局部变量（P）热路径使用，与 obj/num 并行维护（槽优先）。
 	slots []slotCell
@@ -253,6 +259,9 @@ func (v *Val) Clone() *Val {
 	maps.Copy(num, v.num)
 	objlock := make(map[string]bool, len(v.objlock))
 	maps.Copy(objlock, v.objlock)
+	once := make(map[string]bool, len(v.once))
+	maps.Copy(once, v.once)
+	hasOnce := v.hasOnce.Load()
 	slots := make([]slotCell, len(v.slots))
 	copy(slots, v.slots)
 	for i := range slots {
@@ -263,18 +272,30 @@ func (v *Val) Clone() *Val {
 	class := v.Class
 	v.mu.RUnlock()
 
-	return &Val{
+	nv := &Val{
 		obj:     obj,
 		num:     num,
 		objlock: objlock,
+		once:    once,
 		slots:   slots,
 		Class:   class,
 	}
+	nv.hasOnce.Store(hasOnce)
+	return nv
 }
 
 // get 读取变量值。普通变量名优先查无锁槽（槽为最新写入源，字节码热路径 SlotSetInt64
 // 直写槽后 num/obj 尚未同步），未命中再查 num/obj 映射。槽始终不旧于 map，因此槽优先读语义正确。
+// 存在一次性变量（hasOnce）时走 getOnce：命中一次性键后销毁该键。
 func (v *Val) get(key string) (any, bool) {
+	if v.hasOnce.Load() {
+		return v.getOnce(key)
+	}
+	return v.getFast(key)
+}
+
+// getFast 无一次性变量的快速读取路径（原 get 逻辑，读锁）。
+func (v *Val) getFast(key string) (any, bool) {
 	if isPlainVarName(key) {
 		if val, ok := v.slotGet(internVar(key)); ok {
 			return val, true
@@ -287,6 +308,37 @@ func (v *Val) get(key string) (any, bool) {
 	}
 	value, ok := v.obj[key]
 	v.mu.RUnlock()
+	return value, ok
+}
+
+// getOnce 存在一次性变量时的读取路径：普通键走快速读，一次性键命中后销毁。
+func (v *Val) getOnce(key string) (any, bool) {
+	if isPlainVarName(key) {
+		if val, ok := v.slotGet(internVar(key)); ok {
+			return val, true
+		}
+	}
+	v.mu.Lock()
+	if n, ok := v.num[key]; ok {
+		if v.once[key] {
+			delete(v.num, key)
+			delete(v.once, key)
+			v.mu.Unlock()
+			v.slotClearKey(key)
+			return n, true
+		}
+		v.mu.Unlock()
+		return n, true
+	}
+	value, ok := v.obj[key]
+	if ok && v.once[key] {
+		delete(v.obj, key)
+		delete(v.once, key)
+		v.mu.Unlock()
+		v.slotClearKey(key)
+		return value, true
+	}
+	v.mu.Unlock()
 	return value, ok
 }
 
@@ -658,6 +710,22 @@ func (v *Val) Set(key string, val any) *Val {
 	if !locked && isPlainVarName(key) {
 		v.slotSet(internVar(key), val)
 	}
+	return v
+}
+
+// SetOnce 设置一次性变量（//@一次性资源）：写入后仅在首次读取时返回，读取后即销毁。
+// 不写无锁槽，使 %变量% 读取回退到 map 路径并触发 getOnce 消费语义。
+func (v *Val) SetOnce(key string, val any) *Val {
+	v.mu.Lock()
+	v.writeUnsafe(key, val)
+	if v.once == nil {
+		v.once = make(map[string]bool)
+	}
+	v.once[key] = true
+	v.mu.Unlock()
+	v.hasOnce.Store(true)
+	// 清槽，避免槽快路径直接命中返回而绕过一次性销毁语义
+	v.slotClearKey(key)
 	return v
 }
 

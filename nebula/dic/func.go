@@ -3,7 +3,6 @@ package dic
 import (
 	"errors"
 	"fmt"
-	"regexp"
 	"strings"
 
 	"github.com/cjxpj/nebula/count"
@@ -259,22 +258,21 @@ func Funcs(d *dic_dto.DicFunc, dic_i *utils.DicInputs) (any, error) {
 		Tstr := dic_i.StringAfter(1)
 		funcName = funcName[1 : len(funcName)-1]
 		if f, ok := d.Val.P.Get(funcName).(*dto.FuncBox); ok && f != nil {
-			matches := []string{}
-			if f.Trigger != "" {
-				matches = regexp.MustCompile("^" + f.Trigger + "$").FindStringSubmatch(Tstr)
+			// 无参调用时使用默认参数，否则使用调用方传入的参数。
+			arg := Tstr
+			if arg == "" {
+				arg = f.Default
 			}
-			if len(matches) > 0 || f.Trigger == "" {
-				funcv := dto.NewVal().
-					Reset(d.Val.P.GetAll()).
-					Set("触发", f.Trigger).
-					Set("触发词", Tstr)
-				resDics := dic_dto.NewRunDicEntry().
-					SetGlobal_v(d.Val.G).
-					Set_v(funcv).
-					SetDic_v(d.Dic)
-				resDics.LineNums = f.LineNums
-				return dic_api.Api.DicRunLine(resDics, f.Content), nil
-			}
+			funcv := dto.NewVal().
+				Reset(d.Val.P.GetAll()).
+				Set("触发", f.Default).
+				Set("触发词", arg)
+			resDics := dic_dto.NewRunDicEntry().
+				SetGlobal_v(d.Val.G).
+				Set_v(funcv).
+				SetDic_v(d.Dic)
+			resDics.LineNums = f.LineNums
+			return dic_api.Api.DicRunLine(resDics, f.Content), nil
 		}
 	}
 

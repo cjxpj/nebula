@@ -19,14 +19,17 @@ import (
 	"sync/atomic"
 	"syscall"
 
+	"github.com/cjxpj/nebula/appfiles"
 	"github.com/cjxpj/nebula/dic"
 	"github.com/cjxpj/nebula/dic/funcs"
 	"github.com/cjxpj/nebula/dto"
+	"github.com/cjxpj/nebula/extloader"
 	"github.com/cjxpj/nebula/utils"
 )
 
 func main() {
 	ctx, cancel := context.WithCancel(context.Background())
+	defer extloader.CloseAll()
 	defer cancel()
 	defer ShutdownPython()
 
@@ -60,9 +63,65 @@ func main() {
 		return output, err
 	})
 
-	dic.Start()
-	<-ctx.Done()
-	fmt.Println("主程序退出")
+	args := os.Args
+	argsLen := len(args)
+
+	if argsLen == 1 {
+		// 启动
+		dic.Start()
+		<-ctx.Done()
+		fmt.Println("主程序退出")
+		return
+	}
+
+	switch args[1] {
+	case "-help":
+		fmt.Println("-help               		（显示帮助）")
+		fmt.Println("-v                  		（显示版本）")
+		fmt.Println("-run <文件>         		（执行指定词库文件）")
+		fmt.Println("-check <文件>       		（预编译检测，输出警告与报错）")
+	case "-v":
+		fmt.Print(appfiles.Version)
+		return
+	case "-run":
+		if argsLen < 3 {
+			fmt.Println("用法：-run <词库文件路径>")
+			return
+		}
+		res, err := dic.RunFile(args[2])
+		if err != nil {
+			fmt.Println("执行失败:", err)
+			return
+		}
+		if res != "" {
+			fmt.Println(res)
+		}
+		return
+	case "-check":
+		if argsLen < 3 {
+			fmt.Println("用法：-check <词库文件路径>")
+			return
+		}
+		warns, errs, err := dic.CheckFile(args[2])
+		if err != nil {
+			fmt.Println("检测失败:", err)
+			return
+		}
+		if len(errs) == 0 && len(warns) == 0 {
+			fmt.Println("检测通过：无警告，无报错")
+			return
+		}
+		for _, e := range errs {
+			fmt.Printf("[错误] 第 %d 行：%s\n", e.Line, e.Text)
+		}
+		for _, w := range warns {
+			fmt.Printf("[警告] 第 %d 行：%s\n", w.Line, w.Text)
+		}
+		return
+	default:
+		fmt.Println("未知命令")
+		return
+	}
 }
 
 // openBrowser 用系统默认浏览器打开指定 URL

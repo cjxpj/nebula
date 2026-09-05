@@ -47,10 +47,14 @@ type Runtime interface {
 	// NewJsonBlock 执行 JSON>{ / JSON>[ 框：text 为开启行（"JSON>{" 或 "JSON>["），
 	// lines 为内容行（原样 JSON 文本累积）。返回应追加到最终输出的文本。
 	NewJsonBlock(text string, lines []string) string
-	// FuncBlock 执行 函数> 框：text 为开启行（函数>变量名 或 函数>变量名=触发），
+	// FuncBlock 执行 变量:函数> 框：text 为开启行（变量:函数> 或 变量:函数>默认参数），
 	// lines 为内容行，lineNums 为内容行对应的原始文件行号。
-	// 变量名非空时存储 FuncBox（返回空）；变量名为空时以新局部变量执行内容并返回输出。
+	// 将内容存入 FuncBox 赋给变量（返回空）。
 	FuncBlock(text string, lines []string, lineNums []int) string
+	// ExecFuncBlock 执行 变量:执行函数> 框：text 为开启行（变量:执行函数> 或 变量:执行函数>默认参数），
+	// lines 为内容行，lineNums 为内容行对应的原始文件行号。
+	// 立即以新局部作用域执行内容，并把返回内容写入变量（返回空）。
+	ExecFuncBlock(text string, lines []string, lineNums []int) string
 	// ForEachInit 求值 遍历> 框的遍历源并准备迭代：text 为开启行（遍历>k,v=表达式 或 遍历>k）。
 	// depth 为该遍历帧在 VM 帧栈中的下标（用于嵌套遍历时隔离各层迭代状态）。
 	// 运行时内部按 depth 记录键值变量名与物化的迭代项；返回迭代项数量（0 表示无迭代）。
@@ -199,6 +203,11 @@ func Run(instrs []Instr, rt Runtime) string {
 			}
 		case OpFuncBlock:
 			rt.Append(rt.FuncBlock(in.Text, in.Lines, in.LineNums))
+			if rt.Stop() {
+				return rt.Output()
+			}
+		case OpExecFuncBlock:
+			rt.Append(rt.ExecFuncBlock(in.Text, in.Lines, in.LineNums))
 			if rt.Stop() {
 				return rt.Output()
 			}

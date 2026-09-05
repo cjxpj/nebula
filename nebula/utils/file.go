@@ -233,8 +233,9 @@ func (fq *FileQueue) GetDirSize() (int64, error) {
 
 // WriteToFile 向文件写入数据
 func (fq *FileQueue) WriteToFile(data string) {
-	fileMutex.Lock()
-	defer fileMutex.Unlock()
+	l := fileLock(fq.FileName)
+	l.Lock()
+	defer l.Unlock()
 
 	// 检查文件夹是否存在，不存在则创建
 	dir := filepath.Dir(fq.FileName)
@@ -260,8 +261,9 @@ func (fq *FileQueue) WriteToFile(data string) {
 }
 
 func (fq *FileQueue) Download(url string) bool {
-	fileMutex.Lock()
-	defer fileMutex.Unlock()
+	l := fileLock(fq.FileName)
+	l.Lock()
+	defer l.Unlock()
 
 	// 确保目标文件夹存在
 	dir := filepath.Dir(fq.FileName)
@@ -853,8 +855,9 @@ func (fq *FileQueue) UnZip(dest string) bool {
 
 // DeleteFile 删除文件，并返回是否成功删除
 func (fq *FileQueue) DeleteFile() bool {
-	fileMutex.Lock()
-	defer fileMutex.Unlock()
+	l := fileLock(fq.FileName)
+	l.Lock()
+	defer l.Unlock()
 
 	// 检查文件夹是否存在
 	if p, err := os.Stat(fq.FileName); os.IsNotExist(err) || p.IsDir() {
@@ -871,8 +874,9 @@ func (fq *FileQueue) DeleteFile() bool {
 
 // 删除文件夹
 func (fq *FileQueue) DeleteFolder() bool {
-	fileMutex.Lock()
-	defer fileMutex.Unlock()
+	l := fileLock(fq.FileName)
+	l.Lock()
+	defer l.Unlock()
 
 	// 检查文件夹是否存在
 	if p, err := os.Stat(fq.FileName); os.IsNotExist(err) || !p.IsDir() {
@@ -888,8 +892,9 @@ func (fq *FileQueue) DeleteFolder() bool {
 
 // AppendToFile 向文件追加数据
 func (fq *FileQueue) AppendToFile(data string) {
-	fileMutex.Lock()
-	defer fileMutex.Unlock()
+	l := fileLock(fq.FileName)
+	l.Lock()
+	defer l.Unlock()
 
 	// 检查文件夹是否存在，不存在则创建
 	dir := filepath.Dir(fq.FileName)
@@ -931,8 +936,9 @@ func (fq *FileQueue) AppendToFile(data string) {
 
 // 读取图片
 func (fq *FileQueue) ReadImage() (image.Image, error) {
-	fileMutex.RLock()
-	defer fileMutex.RUnlock()
+	l := fileLock(fq.FileName)
+	l.RLock()
+	defer l.RUnlock()
 
 	file, err := os.Open(fq.FileName)
 	if err != nil {
@@ -950,8 +956,9 @@ func (fq *FileQueue) ReadImage() (image.Image, error) {
 
 // ReadFile 完整从文件读取数据
 func (fq *FileQueue) ReadFile() (string, error) {
-	fileMutex.RLock()
-	defer fileMutex.RUnlock()
+	l := fileLock(fq.FileName)
+	l.RLock()
+	defer l.RUnlock()
 
 	file, err := os.Open(fq.FileName)
 	if err != nil {
@@ -1021,8 +1028,9 @@ func (fq *FileQueue) ReadFileExt() string {
 
 // 加载ini
 func (fq *FileQueue) LoadIni() (*ini.File, error) {
-	fileMutex.RLock()
-	defer fileMutex.RUnlock()
+	l := fileLock(fq.FileName)
+	l.RLock()
+	defer l.RUnlock()
 
 	file, err := ini.Load(fq.FileName)
 	if err != nil {
@@ -1033,16 +1041,18 @@ func (fq *FileQueue) LoadIni() (*ini.File, error) {
 
 // 保存ini
 func (fq *FileQueue) SaveIni(file *ini.File) error {
-	fileMutex.Lock()
-	defer fileMutex.Unlock()
+	l := fileLock(fq.FileName)
+	l.Lock()
+	defer l.Unlock()
 
 	return file.SaveTo(fq.FileName)
 }
 
 // 加载yaml
 func (fq *FileQueue) LoadYaml() (map[string]any, error) {
-	fileMutex.RLock()
-	defer fileMutex.RUnlock()
+	l := fileLock(fq.FileName)
+	l.RLock()
+	defer l.RUnlock()
 
 	data, err := os.ReadFile(fq.FileName)
 	if err != nil {
@@ -1059,8 +1069,9 @@ func (fq *FileQueue) LoadYaml() (map[string]any, error) {
 
 // 保存yaml
 func (fq *FileQueue) SaveYaml(data map[string]any) error {
-	fileMutex.Lock()
-	defer fileMutex.Unlock()
+	l := fileLock(fq.FileName)
+	l.Lock()
+	defer l.Unlock()
 
 	// 检查文件夹是否存在，不存在则创建
 	dir := filepath.Dir(fq.FileName)
@@ -1103,8 +1114,9 @@ func SplitLines(data []byte) []string {
 // ReadFromFileLines 读取文件并按行切分，返回所有行（行尾的 \n 与 \r 已被移除）。
 // 采用一次性读入 + strings.Split 切分，行切片共享同一块底层数据，避免逐行分配，兼顾速度与内存。
 func (fq *FileQueue) ReadFromFileLines() ([]string, error) {
-	fileMutex.RLock()
-	defer fileMutex.RUnlock()
+	l := fileLock(fq.FileName)
+	l.RLock()
+	defer l.RUnlock()
 
 	data, err := os.ReadFile(fq.FileName)
 	if err != nil {
@@ -1124,8 +1136,9 @@ func (fq *FileQueue) ReadFromFile() (string, error) {
 
 // Copy 复制文件或文件夹
 func (fq *FileQueue) Copy(newName string) bool {
-	fileMutex.Lock() // 使用写锁，确保线程安全
-	defer fileMutex.Unlock()
+	l := fileLock(fq.FileName) // 使用写锁，确保线程安全
+	l.Lock()
+	defer l.Unlock()
 
 	// 新文件名
 	newPath := NewFileQueue(newName).FileName
@@ -1211,8 +1224,9 @@ func CopyDir(srcDir, dstDir string) error {
 
 // 文件重命名
 func (fq *FileQueue) Rename(newName string) bool {
-	fileMutex.Lock() // 使用写锁，确保线程安全
-	defer fileMutex.Unlock()
+	l := fileLock(fq.FileName) // 使用写锁，确保线程安全
+	l.Lock()
+	defer l.Unlock()
 
 	// 获取原文件所在目录
 	dir := filepath.Dir(fq.FileName)
@@ -1232,8 +1246,9 @@ func (fq *FileQueue) Rename(newName string) bool {
 
 // MoveFile 将文件移动到目标目录（同一分区内）
 func (fq *FileQueue) MoveFile(targetDir string) bool {
-	fileMutex.Lock()
-	defer fileMutex.Unlock()
+	l := fileLock(fq.FileName)
+	l.Lock()
+	defer l.Unlock()
 
 	// 构造目标路径，保持文件名不变
 	newPath := filepath.Join(targetDir, filepath.Base(fq.FileName))
@@ -1259,8 +1274,9 @@ func (fq *FileQueue) GetFileName() (string, error) {
 
 // ReadFileByte 从文件完整读取数据并返回字节切片
 func (fq *FileQueue) ReadFileByte() ([]byte, error) {
-	fileMutex.RLock()
-	defer fileMutex.RUnlock()
+	l := fileLock(fq.FileName)
+	l.RLock()
+	defer l.RUnlock()
 
 	file, err := os.ReadFile(fq.FileName)
 	if err != nil {
@@ -1272,8 +1288,9 @@ func (fq *FileQueue) ReadFileByte() ([]byte, error) {
 
 // WriteFileByte 向文件写入数据
 func (fq *FileQueue) WriteFileByte(data []byte) {
-	fileMutex.Lock()
-	defer fileMutex.Unlock()
+	l := fileLock(fq.FileName)
+	l.Lock()
+	defer l.Unlock()
 
 	// 检查文件夹是否存在，不存在则创建
 	dir := filepath.Dir(fq.FileName)
@@ -1445,8 +1462,9 @@ func CreateFolderIfNotExists(folderName string) bool {
 
 // GetLineCount 获取文件行数（高效版本）
 func (fq *FileQueue) GetLineCount() (int, error) {
-	fileMutex.Lock()
-	defer fileMutex.Unlock()
+	l := fileLock(fq.FileName)
+	l.Lock()
+	defer l.Unlock()
 
 	file, err := os.Open(fq.FileName)
 	if err != nil {
@@ -1467,8 +1485,9 @@ func (fq *FileQueue) GetLineCount() (int, error) {
 
 // 从文件中随机读取一行（单次扫描，高性能版本）
 func (fq *FileQueue) ReadFileRandomLine() (string, error) {
-	fileMutex.Lock()
-	defer fileMutex.Unlock()
+	l := fileLock(fq.FileName)
+	l.Lock()
+	defer l.Unlock()
 
 	file, err := os.Open(fq.FileName)
 	if err != nil {
@@ -1497,8 +1516,9 @@ func (fq *FileQueue) ReadFileRandomLine() (string, error) {
 
 // ReadLines 从指定行开始读取指定数量的行（高效流式版）
 func (fq *FileQueue) ReadLines(start, count int) ([]string, error) {
-	fileMutex.Lock()
-	defer fileMutex.Unlock()
+	l := fileLock(fq.FileName)
+	l.Lock()
+	defer l.Unlock()
 
 	if start < 0 || count <= 0 {
 		return nil, errors.New("参数无效")

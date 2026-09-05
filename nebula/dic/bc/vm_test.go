@@ -168,9 +168,14 @@ func (m *mockRT) NewJsonBlock(text string, lines []string) string {
 	return "NEWJSON:" + strings.Join(lines, "|")
 }
 
-// FuncBlock 模拟 函数> 框（仅验证字节码控制流，不做真实函数框语义）。
+// FuncBlock 模拟 变量:函数> 框（仅验证字节码控制流，不做真实函数框语义）。
 func (m *mockRT) FuncBlock(text string, lines []string, lineNums []int) string {
 	return "FUNC:" + strings.Join(lines, "|")
+}
+
+// ExecFuncBlock 模拟 变量:执行函数> 框（仅验证字节码控制流，不做真实函数框语义）。
+func (m *mockRT) ExecFuncBlock(text string, lines []string, lineNums []int) string {
+	return "EXECFUNC:" + strings.Join(lines, "|")
 }
 
 // ForEachInit 模拟 遍历> 框入口：解析 `遍历>k,v=[...]`，物化数组项，按帧深度隔离。
@@ -495,9 +500,23 @@ func TestForEachBreakForCross(t *testing.T) {
 }
 
 func TestFuncBlock(t *testing.T) {
-	out := runBody(t, []string{"函数>foo", "a", "b", "<函数"})
+	out := runBody(t, []string{"foo:函数>", "a", "b", "<函数"})
 	if out != "FUNC:a|b" {
 		t.Fatalf("输出 = %q, 期望 %q", out, "FUNC:a|b")
+	}
+}
+
+func TestExecFuncBlock(t *testing.T) {
+	out := runBody(t, []string{"foo:执行函数>", "a", "b", "<函数"})
+	if out != "EXECFUNC:a|b" {
+		t.Fatalf("输出 = %q, 期望 %q", out, "EXECFUNC:a|b")
+	}
+}
+
+func TestExecFuncBlockAsyncHash(t *testing.T) {
+	out := runBody(t, []string{"#:执行函数>", "a", "b", "<函数"})
+	if out != "EXECFUNC:a|b" {
+		t.Fatalf("输出 = %q, 期望 %q", out, "EXECFUNC:a|b")
 	}
 }
 

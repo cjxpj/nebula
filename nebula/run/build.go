@@ -5,6 +5,8 @@ import (
 	"crypto/sha256"
 	"encoding/gob"
 	"encoding/hex"
+	"errors"
+	"fmt"
 	"maps"
 	"os"
 	pathpkg "path"
@@ -502,6 +504,75 @@ func parseImportLine(line string) (varName, target string, ok bool) {
 	return "", "", false
 }
 
+// resolveResourcePath 将 //@资源 的文件路径解析为「相对应用数据目录」的路径：
+// 相对路径基于应用数据目录（private/）解析（与 #引入= 一致），绝对路径原样返回。
+// 返回路径统一带 private/ 前缀（后续经 utils.NewFileQueue 读取时补应用数据主目录）。
+func resolveResourcePath(rel string) string {
+	if filepath.IsAbs(rel) {
+		return rel
+	}
+	rel = filepath.ToSlash(rel)
+	if !strings.HasPrefix(rel, "private/") {
+		rel = "private/" + rel
+	}
+	return filepath.FromSlash(rel)
+}
+
+// compileDicResource 将 .n 词库资源编译并序列化为 gob 字节，供 //@资源 匹配 .n 后缀时自动编译。
+// 含自定义函数（bot 注入）无法序列化时返回 nil，调用方回退按原始文本存入。
+func compileDicResource(dicPath string, raw []byte) []byte {
+	lines := utils.SplitLines(raw)
+	// 单行密文：整块解密后重新切分（与 NewDicFile 一致）
+	if len(lines) == 1 {
+		if str, err := utils.Decrypt(utils.RemoveComments(lines[0]), appfiles.Key); err == nil {
+			lines = utils.SplitLines([]byte(str))
+			raw = []byte(str)
+		}
+	}
+	split := BuildDicLinesWithRaw(dicPath, lines, raw)
+	b, err := MarshalBuildValue(split)
+	if err != nil {
+		return nil
+	}
+	return b
+}
+
+// parseResourceVar 解析「变量名:文件路径」形式的资源声明行（多行 //@资源 块内使用）。
+func parseResourceVar(line string) (name, rel string, ok bool) {
+	t := strings.TrimSpace(line)
+	idx := strings.IndexByte(t, ':')
+	if idx <= 0 {
+		return "", "", false
+	}
+	name = strings.TrimSpace(t[:idx])
+	rel = strings.TrimSpace(t[idx+1:])
+	if name == "" || rel == "" {
+		return "", "", false
+	}
+	return name, rel, true
+}
+
+// loadResource 读取并登记一个资源：.n 自动编译为 gob 字节 / 文本两种形式。
+func loadResource(name, rel string, resources map[string]any, stack *importStack, lineNo int) {
+	abs := resolveResourcePath(rel)
+	data, err := utils.NewFileQueue(abs).ReadFileByte()
+	if err != nil {
+		stack.addError(lineNo, "资源文件读取失败："+err.Error())
+		return
+	}
+	if strings.HasSuffix(rel, ".n") {
+		if b := compileDicResource(abs, data); b != nil {
+			resources[name] = b
+		} else {
+			resources[name] = string(data)
+		}
+	} else {
+		resources[name] = string(data)
+	}
+	// 记录资源文件内容 hash，供磁盘编译缓存失效校验
+	stack.deps[abs] = dicHashBytes(data)
+}
+
 // isBlankOrComment 判断一行是否为空白或注释行（用于头部/正文分隔）。
 // //@ 开头的指令不算注释，它们是有实际作用的编译指令。
 func isBlankOrComment(line string) bool {
@@ -558,7 +629,7 @@ func (s *importStack) addError(line int, text string) {
 }
 
 // dicCacheVersion 磁盘编译缓存格式版本，结构变化时递增以淘汰旧缓存。
-const dicCacheVersion = 4
+const dicCacheVersion = 5
 
 // dicCacheEntry 词库编译结果的磁盘缓存结构（gob 序列化）。
 // 只缓存可序列化词条；含 bot 注入（MyFunc 非空）的词库不落缓存，故无需序列化 Go 函数。
@@ -568,13 +639,15 @@ type dicCacheEntry struct {
 	Deps map[string]string
 
 	// BuildValue 可序列化部分
-	Head         []string
-	HeadLineNums []int
-	Dic          []*dto.BuildDic
-	DicFuncs     map[string][]*dto.BuildDic
-	ClassFuncs   map[string]map[string][]*dto.BuildDic
-	BotImports   []string
-	Warnings     []dto.BuildWarning
+	Head          []string
+	HeadLineNums  []int
+	Dic           []*dto.BuildDic
+	DicFuncs      map[string][]*dto.BuildDic
+	ClassFuncs    map[string]map[string][]*dto.BuildDic
+	BotImports    []string
+	Warnings      []dto.BuildWarning
+	Resources     map[string]any
+	OnceResources map[string]bool
 }
 
 // dicHash 计算字符串的 sha256 十六进制摘要。
@@ -628,14 +701,17 @@ func classFuncsOf(class map[string]*dto.DicClass) map[string]map[string][]*dto.B
 // 缓存仅覆盖无 bot 注入的词库，故 MyFunc 与各 Class.Fn 均为空，直接用 NewDicClass 初始化。
 func rebuildBuildValue(e *dicCacheEntry) *dto.BuildValue {
 	result := &dto.BuildValue{
-		Head:         e.Head,
-		HeadLineNums: e.HeadLineNums,
-		Dic:          e.Dic,
-		DicFuncs:     e.DicFuncs,
-		Class:        make(map[string]*dto.DicClass),
-		MyFunc:       make(map[string]dto.DicFunc),
-		BotImports:   e.BotImports,
-		Warnings:     e.Warnings,
+		Head:          e.Head,
+		HeadLineNums:  e.HeadLineNums,
+		Dic:           e.Dic,
+		DicFuncs:      e.DicFuncs,
+		Class:         make(map[string]*dto.DicClass),
+		MyFunc:        make(map[string]dto.DicFunc),
+		BotImports:    e.BotImports,
+		Warnings:      e.Warnings,
+		Resources:     e.Resources,
+		OnceResources: e.OnceResources,
+		Deps:          e.Deps,
 	}
 	for name, funcs := range e.ClassFuncs {
 		cls := dto.NewDicClass()
@@ -643,6 +719,51 @@ func rebuildBuildValue(e *dicCacheEntry) *dto.BuildValue {
 		result.Class[name] = cls
 	}
 	return result
+}
+
+// MarshalBuildValue 将编译产物序列化为 gob 字节，供打包进独立可执行文件。
+// 仅纯本地词库（MyFunc 与各 Class.Fn 均为空）可序列化；含 bot 注入的自定义函数无法序列化。
+func MarshalBuildValue(v *dto.BuildValue) ([]byte, error) {
+	if v == nil {
+		return nil, errors.New("编译产物为空")
+	}
+	if len(v.MyFunc) != 0 {
+		return nil, errors.New("词库含自定义函数（bot 注入），暂不支持打包为可执行文件")
+	}
+	for name, c := range v.Class {
+		if c != nil && len(c.Fn) != 0 {
+			return nil, fmt.Errorf("类 %q 含自定义方法，暂不支持打包为可执行文件", name)
+		}
+	}
+	e := &dicCacheEntry{
+		Version:       dicCacheVersion,
+		Head:          v.Head,
+		HeadLineNums:  v.HeadLineNums,
+		Dic:           v.Dic,
+		DicFuncs:      v.DicFuncs,
+		ClassFuncs:    classFuncsOf(v.Class),
+		BotImports:    v.BotImports,
+		Warnings:      v.Warnings,
+		Resources:     v.Resources,
+		OnceResources: v.OnceResources,
+	}
+	var buf bytes.Buffer
+	if err := gob.NewEncoder(&buf).Encode(e); err != nil {
+		return nil, fmt.Errorf("序列化编译产物失败: %w", err)
+	}
+	return buf.Bytes(), nil
+}
+
+// UnmarshalBuildValue 反序列化编译产物并重建 BuildValue（MyFunc 与 Class.Fn 为空）。
+func UnmarshalBuildValue(data []byte) (*dto.BuildValue, error) {
+	var e dicCacheEntry
+	if err := gob.NewDecoder(bytes.NewReader(data)).Decode(&e); err != nil {
+		return nil, fmt.Errorf("解码编译产物失败: %w", err)
+	}
+	if e.Version != dicCacheVersion {
+		return nil, fmt.Errorf("编译产物版本不匹配：期望 %d，实际 %d", dicCacheVersion, e.Version)
+	}
+	return rebuildBuildValue(&e), nil
 }
 
 // dicCacheMu 保护磁盘缓存写入，避免并发写坏缓存文件。
@@ -903,24 +1024,32 @@ func buildDicWithHashMode(dicPath string, lines []string, mainHash string, write
 	stack.push(dicPath)
 	stack.deps[dicPath] = mainHash
 
-	if cached := loadDicCache(dicPath, mainHash); cached != nil {
-		return cached
+	// 词库编译缓存由服务器配置开关控制（默认关闭），关闭时跳过读写
+	cacheEnabled := dto.ServerConfig.DicCache
+
+	if cacheEnabled {
+		if cached := loadDicCache(dicPath, mainHash); cached != nil {
+			return cached
+		}
 	}
 
 	result := buildDic(dicPath, lines, stack)
+	result.Deps = stack.deps
 
 	// 含 bot 注入的词库（MyFunc 非空）不落缓存，避免序列化 Go 函数；其余词库写缓存加速后续加载。
-	if writeCache && len(result.MyFunc) == 0 {
+	if writeCache && cacheEnabled && len(result.MyFunc) == 0 {
 		saveDicCache(dicPath, &dicCacheEntry{
-			Version:      dicCacheVersion,
-			Deps:         stack.deps,
-			Head:         result.Head,
-			HeadLineNums: result.HeadLineNums,
-			Dic:          result.Dic,
-			DicFuncs:     result.DicFuncs,
-			ClassFuncs:   classFuncsOf(result.Class),
-			BotImports:   result.BotImports,
-			Warnings:     result.Warnings,
+			Version:       dicCacheVersion,
+			Deps:          stack.deps,
+			Head:          result.Head,
+			HeadLineNums:  result.HeadLineNums,
+			Dic:           result.Dic,
+			DicFuncs:      result.DicFuncs,
+			ClassFuncs:    classFuncsOf(result.Class),
+			BotImports:    result.BotImports,
+			Warnings:      result.Warnings,
+			Resources:     result.Resources,
+			OnceResources: result.OnceResources,
 		})
 	}
 
@@ -996,6 +1125,16 @@ func buildDic(dicPath string, lines []string, stack *importStack) *dto.BuildValu
 
 		// 自定义函数（含bot注入）
 		myFunc map[string]dto.DicFunc = make(map[string]dto.DicFunc)
+
+		// 编译期资源变量（//@资源 变量名:路径）
+		resources map[string]any = make(map[string]any)
+
+		// 一次性资源变量名集合（//@一次性资源 变量名:路径），内容仍存 resources
+		onceResources map[string]bool = make(map[string]bool)
+
+		// 多行 //@资源 / //@一次性资源 块：指令单独一行后，后续「变量名:路径」行逐个声明资源，遇空行/注释结束
+		resourceBlock bool
+		resourceOnce  bool
 	)
 
 	// 头部区域：文件开头到第一个空行（或注释行）之间为头部（#引入= 与初始化语句），
@@ -1046,6 +1185,21 @@ func buildDic(dicPath string, lines []string, stack *importStack) *dto.BuildValu
 			continue
 		}
 
+		// 多行 //@资源 / //@一次性资源 块：指令单独一行后，后续「变量名:路径」行逐个声明资源，遇空行/注释/正文结束
+		if resourceBlock {
+			if line == "" || strings.HasPrefix(line, "//") {
+				resourceBlock = false
+			} else if name, rel, ok := parseResourceVar(line); ok {
+				loadResource(name, rel, resources, stack, dic_i+1)
+				if resourceOnce {
+					onceResources[name] = true
+				}
+				continue
+			} else {
+				resourceBlock = false
+			}
+		}
+
 		if lineLen > 2 && line[:2] == "//" {
 			switch line {
 			case "//@关闭缩进":
@@ -1058,6 +1212,16 @@ func buildDic(dicPath string, lines []string, stack *importStack) *dto.BuildValu
 			}
 			if lineLen > 13 && line[:13] == "//@函数头=" {
 				fHeaderName = line[13:]
+			}
+			if strings.TrimSpace(line) == "//@资源" {
+				// //@资源 单独一行：开启多行资源块，后续「变量名:路径」行逐个声明资源
+				resourceBlock = true
+				resourceOnce = false
+			}
+			if strings.TrimSpace(line) == "//@一次性资源" {
+				// //@一次性资源 单独一行：开启多行一次性资源块，读取一次后销毁
+				resourceBlock = true
+				resourceOnce = true
 			}
 			// 普通 // 注释（非 @ 指令）：收集为函数上方的说明，并视作空行分隔头部与正文
 			if !strings.HasPrefix(line, "//@") {
@@ -1224,12 +1388,14 @@ func buildDic(dicPath string, lines []string, stack *importStack) *dto.BuildValu
 
 	}
 	result := &dto.BuildValue{
-		Head:         runheadtext,
-		HeadLineNums: runheadLineNums,
-		Dic:          dicText,
-		DicFuncs:     chajianText,
-		Class:        classText,
-		MyFunc:       myFunc,
+		Head:          runheadtext,
+		HeadLineNums:  runheadLineNums,
+		Dic:           dicText,
+		DicFuncs:      chajianText,
+		Class:         classText,
+		MyFunc:        myFunc,
+		Resources:     resources,
+		OnceResources: onceResources,
 	}
 
 	// 编译期静态检查：框配对/嵌套、触发词正则语法、函数参数数量。

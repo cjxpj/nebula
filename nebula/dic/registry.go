@@ -23,6 +23,10 @@ func init() {
 		f{Name: "WS断开", L: "1", Fn: wsClose},
 		f{Name: "WS发送", L: "2", Fn: wsSend},
 		f{Name: "创建WS", L: "2|3", Fn: wsCreate},
+		f{Name: "创建服务器", L: "2", Fn: createServer},
+		f{Name: "编译词库", L: "1", Fn: compileDic},
+		f{Name: "核心服务器", L: "0", Fn: coreServer},
+		f{Name: "设置Ngrok", L: "0|1|2|3|4", Fn: setNgrok},
 		f{Name: "读词库", L: "1|2|3", Fn: readDicFile},
 		f{Name: "写词库", L: "1|2|3", Fn: writeDicFile},
 	)

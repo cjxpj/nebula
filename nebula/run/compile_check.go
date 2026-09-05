@@ -55,14 +55,14 @@ func allBuildDics(v *dto.BuildValue) []*dto.BuildDic {
 type blockKind uint8
 
 const (
-	blkFunc blockKind = iota // 函数> ... <函数
-	blkIf                    // 如果> ... <如果
-	blkMatch                 // 匹配> ... <匹配
-	blkFor                   // 循环> ... <循环
-	blkForEach               // 遍历> ... <遍历
-	blkText                  // 文本>/纯文本> ... <文本
-	blkJson                  // JSON> ... <JSON
-	blkNewJson               // JSON>{ / JSON>[ ... 平衡括号
+	blkFunc    blockKind = iota // 函数> ... <函数
+	blkIf                       // 如果> ... <如果
+	blkMatch                    // 匹配> ... <匹配
+	blkFor                      // 循环> ... <循环
+	blkForEach                  // 遍历> ... <遍历
+	blkText                     // 文本>/纯文本> ... <文本
+	blkJson                     // JSON> ... <JSON
+	blkNewJson                  // JSON>{ / JSON>[ ... 平衡括号
 )
 
 // blockFrame 栈中的一帧。
@@ -75,7 +75,7 @@ type blockFrame struct {
 func blockKindOpen(k blockKind) string {
 	switch k {
 	case blkFunc:
-		return "函数>"
+		return "函数框"
 	case blkIf:
 		return "如果>"
 	case blkMatch:
@@ -97,8 +97,6 @@ func blockKindOpen(k blockKind) string {
 // blockOpen 识别「框开启」行，返回框类型与是否开启；语义与 vm.go 的 classifyLine/op 分发一致。
 func blockOpen(line string) (blockKind, bool) {
 	switch {
-	case strings.HasPrefix(line, "函数>"):
-		return blkFunc, true
 	case len(line) > 7 && strings.HasPrefix(line, "如果>"):
 		return blkIf, true
 	case len(line) > 7 && strings.HasPrefix(line, "匹配>"):
@@ -119,6 +117,14 @@ func blockOpen(line string) (blockKind, bool) {
 		return blkNewJson, true
 	case strings.HasPrefix(line, "JSON>"):
 		return blkJson, true
+	case strings.HasPrefix(line, "#:执行函数>"):
+		return blkFunc, true
+	}
+	// 变量:函数> / 变量:执行函数> 开头的函数框（赋予值形式）。
+	if vt, vp, vs := build.ValTextTest(line); vt == 6 && vp != "" {
+		if strings.HasPrefix(vs, "函数>") || strings.HasPrefix(vs, "执行函数>") {
+			return blkFunc, true
+		}
 	}
 	return 0, false
 }
@@ -329,20 +335,58 @@ func checkUndefinedVars(v *dto.BuildValue, stack *importStack) {
 
 	// 头部初始化语句：顺序检查并累积赋值，结果作为所有词条正文的初始已定义变量。
 	headDefined := make(map[string]bool)
-	for i, line := range v.Head {
-		ln := 0
-		if i < len(v.HeadLineNums) {
-			ln = v.HeadLineNums[i]
-		}
-		checkUndefinedVarsLine(line, ln, headDefined, stack)
-		collectAssignedVars(line, headDefined)
-		collectBlockVars(line, headDefined)
-		collectFuncOutVarsFromLine(line, funcOutVars, headDefined)
+	// 编译期资源变量（//@资源 / //@一次性资源）在运行时注入局部变量表，视为已定义，避免误报「变量不存在」。
+	for name := range v.Resources {
+		headDefined[name] = true
 	}
+	checkUndefinedVarsLines(v.Head, v.HeadLineNums, headDefined, funcOutVars, stack)
 
 	for _, e := range allBuildDics(v) {
 		checkUndefinedVarsEntry(e, headDefined, funcOutVars, stack)
 	}
+}
+
+// checkUndefinedVarsLines 顺序检查行序列中的变量引用并累积赋值变量到 defined。
+// 原样文本框（纯文本>/变量:”'）内的内容不做 %变量% 插值，跳过引用检查与赋值收集。
+func checkUndefinedVarsLines(lines []string, lineNums []int, defined map[string]bool, funcOutVars map[string]map[string]bool, stack *importStack) {
+	var rawClosers []string
+	for i, line := range lines {
+		ln := 0
+		if i < len(lineNums) {
+			ln = lineNums[i]
+		}
+		// 关闭原样文本框
+		if n := len(rawClosers); n > 0 && line == rawClosers[n-1] {
+			rawClosers = rawClosers[:n-1]
+			continue
+		}
+		closer, isRawOpen := rawTextCloser(line)
+		// 原样文本框内容行：原样输出，跳过引用检查与赋值收集
+		if !isRawOpen && len(rawClosers) > 0 {
+			continue
+		}
+		checkUndefinedVarsLine(line, ln, defined, stack)
+		collectAssignedVars(line, defined)
+		collectBlockVars(line, defined)
+		collectFuncOutVarsFromLine(line, funcOutVars, defined)
+		if isRawOpen {
+			rawClosers = append(rawClosers, closer)
+		}
+	}
+}
+
+// rawTextCloser 判断行是否为「原样文本」框的开启行（内容不做 %变量% 插值），
+// 返回其关闭标记；非开启行返回 ok=false。
+//   - 纯文本> ... <文本：内容原样输出
+//   - 变量:”' ... ”'：内容原样赋值
+func rawTextCloser(line string) (closer string, ok bool) {
+	if strings.HasPrefix(line, "纯文本>") {
+		return "<文本", true
+	}
+	if vt, _, vs := build.ValTextTest(line); vt == 6 && vs == `'''` {
+		return `'''`, true
+	}
+	return "", false
 }
 
 // checkUndefinedVarsEntry 顺序检查单个词条正文里的变量引用：
@@ -355,16 +399,7 @@ func checkUndefinedVarsEntry(e *dto.BuildDic, headDefined map[string]bool, funcO
 	for k := range headDefined {
 		defined[k] = true
 	}
-	for i, line := range e.Text {
-		ln := 0
-		if i < len(e.LineNums) {
-			ln = e.LineNums[i]
-		}
-		checkUndefinedVarsLine(line, ln, defined, stack)
-		collectAssignedVars(line, defined)
-		collectBlockVars(line, defined)
-		collectFuncOutVarsFromLine(line, funcOutVars, defined)
-	}
+	checkUndefinedVarsLines(e.Text, e.LineNums, defined, funcOutVars, stack)
 }
 
 // checkUndefinedVarsLine 检查单行里的变量引用；同一行内重复引用去重。
@@ -484,7 +519,8 @@ func collectAssignedVars(line string, defined map[string]bool) {
 }
 
 // collectBlockVars 收集块开启行声明的变量：
-// 循环>变量、遍历>k,v、函数>变量名、文本>/纯文本>变量=...（赋值目标）。
+// 循环>变量、遍历>k,v、文本>/纯文本>变量=...（赋值目标）。
+// 函数框（变量:函数>）由 collectAssignedVars 以赋值形式收集变量名。
 func collectBlockVars(line string, defined map[string]bool) {
 	var rest string
 	isTextBlock := false
@@ -495,8 +531,6 @@ func collectBlockVars(line string, defined map[string]bool) {
 	case strings.HasPrefix(line, "文本>"):
 		rest = line[len("文本>"):]
 		isTextBlock = true
-	case strings.HasPrefix(line, "函数>"):
-		rest = line[len("函数>"):]
 	case strings.HasPrefix(line, "循环>"):
 		rest = line[len("循环>"):]
 	case strings.HasPrefix(line, "遍历>"):

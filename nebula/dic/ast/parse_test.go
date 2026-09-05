@@ -4,7 +4,7 @@ import "testing"
 
 func TestParseEntry_NestedBlocks(t *testing.T) {
 	body := []string{
-		"函数>foo",
+		"foo:函数>",
 		"输出一行",
 		"如果>条件",
 		"$函数 1$",

@@ -215,6 +215,9 @@ func (m *dicImpl) DicRunPrivateVal(D *dic_dto.Dic, trigger string, v *dto.DicVal
 		SetDic(D.Data)
 	dicRun.Dic.MyFunc = D.MyFunc
 
+	// 注入编译期资源变量（//@资源），供内部函数引用
+	D.Data.ApplyResources(D.Val)
+
 	return m.DicRunLine(dicRun, GetDic)
 
 }
@@ -247,6 +250,9 @@ func (m *dicImpl) DicRunEventVal(D *dic_dto.Dic, event string, trigger string, v
 		SetV(D.Val).
 		SetDic(D.Data)
 	dicRun.Dic.MyFunc = D.MyFunc
+
+	// 注入编译期资源变量（//@资源），供特殊事件引用
+	D.Data.ApplyResources(D.Val)
 
 	return m.DicRunLine(dicRun, GetDic)
 
@@ -294,6 +300,9 @@ func (m *dicImpl) DicRun(D *dic_dto.Dic, trigger string) string {
 		SetDic(D.Data)
 	dicRun.Dic.MyFunc = D.MyFunc
 
+	// 注入编译期资源变量（//@资源），供头部与正文引用
+	D.Data.ApplyResources(D.Val)
+
 	// 设置头部行号映射
 	dicRun.LineNums = D.Data.HeadLineNums
 	D.Data.InHeader = true
@@ -340,6 +349,9 @@ func (m *dicImpl) DicRunTimeout(D *dic_dto.Dic, trigger string, timeout time.Dur
 		SetV(D.Val).
 		SetDic(D.Data)
 	dicRun.Dic.MyFunc = D.MyFunc
+
+	// 注入编译期资源变量（//@资源），供头部与正文引用
+	D.Data.ApplyResources(D.Val)
 
 	type runResult struct {
 		text string

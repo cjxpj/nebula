@@ -34,10 +34,11 @@ var golden = map[string]string{
 	"嵌套循环":           "1,11,22,12,2",
 	"文本框":            "helloworld",
 	"文本框变量插值":        "前值后",
-	"函数框内联执行":        "hi",
-	"函数框内联带触发":       "你好",
 	"函数框存储调用":        "你好",
-	"函数框触发词匹配":       "命中$%foo% 再见$",
+	"函数框默认参数":        "0",
+	"函数框默认参数留空":      "0",
+	"函数框立即执行":        "hi",
+	"函数框立即执行带触发":     "你好",
 	"嵌套函数框":          "外",
 	"遍历":             "0:a1:b",
 	"判断否则如果":         "二",
@@ -292,43 +293,62 @@ func TestEquivTextBlockInterp(t *testing.T) {
 	})
 }
 
-func TestEquivFuncInline(t *testing.T) {
-	// 裸 函数> 内联执行（新作用域执行内容并输出）
-	assertEquivalent(t, "函数框内联执行", []string{"函数>", "hi", "<函数"}, nil)
-}
-
-func TestEquivFuncInlineTrigger(t *testing.T) {
-	// 函数>触发词 内联执行（值名留空），新作用域「触发」设为触发词
-	assertEquivalent(t, "函数框内联带触发", []string{"函数>=你好", "%触发%", "<函数"}, nil)
-}
-
 func TestEquivFuncBoxStore(t *testing.T) {
-	// 函数>变量名 存储函数框，经 $%变量名% 参数$ 调用
+	// 变量:函数> 存储函数框，经 $%变量名% 参数$ 调用
 	assertEquivalent(t, "函数框存储调用", []string{
-		"函数>foo",
+		"foo:函数>",
 		"你好",
 		"<函数",
 		"$%foo% 世界$",
 	}, nil)
 }
 
-func TestEquivFuncBoxTrigger(t *testing.T) {
-	// 函数>变量名=触发 存储带触发词的函数框：匹配则执行，不匹配则原样回显
-	assertEquivalent(t, "函数框触发词匹配", []string{
-		"函数>foo=你好",
-		"命中",
+func TestEquivFuncBoxDefaultParam(t *testing.T) {
+	// 变量:函数>0 显式默认参数，$%foo%$ 无参调用时以默认参数作为触发词
+	assertEquivalent(t, "函数框默认参数", []string{
+		"foo:函数>0",
+		"%触发词%",
 		"<函数",
-		"$%foo% 你好$",
-		"$%foo% 再见$",
+		"$%foo%$",
+	}, nil)
+}
+
+func TestEquivFuncBoxDefaultParamEmpty(t *testing.T) {
+	// 变量:函数> 留空默认 0，$%foo%$ 无参调用时触发词为 "0"
+	assertEquivalent(t, "函数框默认参数留空", []string{
+		"foo:函数>",
+		"%触发词%",
+		"<函数",
+		"$%foo%$",
+	}, nil)
+}
+
+func TestEquivExecFuncBlock(t *testing.T) {
+	// 变量:执行函数> 立即执行内容并把返回内容写入变量
+	assertEquivalent(t, "函数框立即执行", []string{
+		"foo:执行函数>",
+		"hi",
+		"<函数",
+		"%foo%",
+	}, nil)
+}
+
+func TestEquivExecFuncBlockTrigger(t *testing.T) {
+	// 变量:执行函数>触发词 立即执行，新作用域「触发」设为触发词，返回内容写入变量
+	assertEquivalent(t, "函数框立即执行带触发", []string{
+		"foo:执行函数>你好",
+		"%触发%",
+		"<函数",
+		"%foo%",
 	}, nil)
 }
 
 func TestEquivNestedFuncBox(t *testing.T) {
 	// 嵌套函数框：外层内容含内层函数框原始行，整体存储后调用执行
 	assertEquivalent(t, "嵌套函数框", []string{
-		"函数>outer",
+		"outer:函数>",
 		"外",
-		"函数>inner",
+		"inner:函数>",
 		"内",
 		"<函数",
 		"<函数",

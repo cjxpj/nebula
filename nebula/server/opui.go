@@ -5,18 +5,19 @@ import (
 	"bytes"
 	"context"
 	"crypto/md5"
+	"crypto/sha256"
 	"database/sql"
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"mime"
 	"net"
 	"net/http"
 	"net/url"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"reflect"
 	"regexp"
@@ -38,6 +39,7 @@ import (
 	dic_dto "github.com/cjxpj/nebula/dic/dto"
 	dic_funcs "github.com/cjxpj/nebula/dic/funcs"
 	"github.com/cjxpj/nebula/dto"
+	"github.com/cjxpj/nebula/run"
 	"github.com/cjxpj/nebula/utils"
 	"github.com/gomarkdown/markdown"
 	"github.com/gorilla/websocket"
@@ -48,89 +50,20 @@ type HttpOpUiData struct {
 	Data json.RawMessage `json:"data"`
 }
 
-// HttpOpUiConfig_server 单个 HTTP 服务器配置（多开）
-type HttpOpUiConfig_server struct {
-	Server      string `json:"server"`          // 监听地址，如 0.0.0.0:8080
-	Enabled     bool   `json:"enabled"`         // 是否启用（实时开关）
-	TLS         bool   `json:"tls"`             // 是否启用 HTTPS
-	CertFile    string `json:"cert_file"`       // 证书文件路径
-	KeyFile     string `json:"key_file"`        // 密钥文件路径
-	TLSMode     string `json:"tls_mode"`        // file/self/upload/system/acme
-	TLSDomains  string `json:"tls_domains"`     // acme 域名列表（逗号分隔）
-	TLSEmail    string `json:"tls_email"`       // acme 邮箱（可选）
-	Domains     string `json:"domains"`         // 绑定域名（换行分隔多个）
-	WebRoot     string `json:"web_root"`        // 映射目录（网站根目录）
-	RouterFile  string `json:"router_file"`     // 路由词库文件（.n）
-	Remark      string `json:"remark"`          // 备注（仅用于列表展示）
-	Cors        bool   `json:"cors"`            // 跨域开关
-	CorsOrigins string `json:"cors_origins"`    // 跨域白名单
-	FrpOpen     bool   `json:"frp_open"`        // 是否启用 BeerWebFrp 穿透
-	FrpAddr     string `json:"frp_server_addr"` // BeerWebFrp 服务端地址（ws/wss）
-	FrpToken    string `json:"frp_token"`       // BeerWebFrp 隧道密钥
-	FrpDebug    bool   `json:"frp_debug"`       // BeerWebFrp 调试日志
-}
-
-// HttpOpUiConfig_serverGlobal 全局共享配置（所有服务器共用）
-type HttpOpUiConfig_serverGlobal struct {
-	Debug               bool `json:"debug"` // 调试开关：控制打印词库缓存等调试信息
-	TempCleanupInterval int  `json:"temp_cleanup_interval"`
-}
-
-// HttpOpUiConfig_servers 服务器列表 + 全局配置
-type HttpOpUiConfig_servers struct {
-	Servers []HttpOpUiConfig_server     `json:"servers"`
-	Global  HttpOpUiConfig_serverGlobal `json:"global"`
-	OS      string                      `json:"os"` // 服务器操作系统（windows/linux/darwin）
-}
-
-// splitServerDomains 将换行/逗号分隔的域名拆分为去空白、去空项后的列表
-func splitServerDomains(s string) []string {
-	out := make([]string, 0)
-	for _, line := range strings.Split(s, "\n") {
-		for _, d := range strings.Split(line, ",") {
-			if d = strings.TrimSpace(d); d != "" {
-				out = append(out, d)
-			}
-		}
-	}
-	return out
-}
-
-// serversNeedRestart 判断服务器配置变化是否需要热重启 HTTP 服务器（监听地址/证书/ACME 变化才需要）
-func serversNeedRestart(old []*dto.ServerHTTP, new []HttpOpUiConfig_server) bool {
-	if len(old) != len(new) {
-		return true
-	}
-	for i, s := range new {
-		o := old[i]
-		if o == nil || o.Http == nil {
-			return true
-		}
-		if o.Http.Addr != s.Server ||
-			o.TLS != s.TLS ||
-			o.TLSMode != s.TLSMode ||
-			o.CertFile != s.CertFile ||
-			o.KeyFile != s.KeyFile ||
-			o.TLSDomains != s.TLSDomains ||
-			o.TLSEmail != s.TLSEmail {
-			return true
-		}
-	}
-	return false
-}
-
 type HttpOpUiWebSocketItem struct {
 	Addr     string `json:"addr"`
 	Cors     bool   `json:"cors"`
 	Open     bool   `json:"open"`
 	Closable bool   `json:"closable"`
+	// ServerAddr 所属（承载）服务器地址：WebSocket 由核心服务器响应，无核心服务器时为空
+	ServerAddr string `json:"server_addr"`
 }
 
 type HttpOpUiConfig_ngrok struct {
 	Open       bool   `json:"open"`
 	Token      string `json:"token"`
 	Domain     string `json:"domain"`
-	ServerAddr string `json:"server_addr"` // 要转发的本地 HTTP 服务器监听地址（空则主服务器）
+	ServerAddr string `json:"server_addr"` // 要转发的本地 HTTP 服务器监听地址（空则核心服务器）
 }
 
 type HttpOpUiConfig_opui struct {
@@ -430,15 +363,13 @@ func broadcastCloudToolOffline() {
 }
 
 // cloudToolSelfAddr 返回本机内置云工具服务端的 WebSocket 地址（默认连接自己）。
-// 地址 = ws://127.0.0.1:{HTTP端口}/{云工具服务端访问路径}。
+// 地址 = ws://127.0.0.1:{核心服务器端口}/{云工具服务端访问路径}。
 func cloudToolSelfAddr() string {
 	host := "127.0.0.1"
 	port := "8080"
-	if primary := dto.ServerConfig.Primary(); primary != nil && primary.Http != nil {
-		if addr := primary.Http.Addr; addr != "" {
-			if i := strings.LastIndex(addr, ":"); i != -1 {
-				port = addr[i+1:]
-			}
+	if addr := dto.FuncServers.CoreAddr(); addr != "" {
+		if i := strings.LastIndex(addr, ":"); i != -1 {
+			port = addr[i+1:]
 		}
 	}
 	path := "/cloudtool"
@@ -448,14 +379,13 @@ func cloudToolSelfAddr() string {
 	return "ws://" + host + ":" + port + path
 }
 
-// cloudToolAddr 读取 system.ini 中 [云工具] 连接地址，未配置时默认连接本机内置云工具服务端。
+// cloudToolAddr 读取合并配置中 [云工具] 连接地址，未配置时默认连接本机内置云工具服务端。
 func cloudToolAddr() string {
-	ff := utils.NewFileQueue(dto.CONFIG_SYSTEM_PATH)
-	f, err := ff.LoadIni()
+	cfg, err := dto.LoadConfigFile()
 	if err != nil {
 		return cloudToolSelfAddr()
 	}
-	addr := strings.TrimSpace(f.Section("云工具").Key("连接地址").String())
+	addr := strings.TrimSpace(cfg.Section("云工具").Key("连接地址").String())
 	if addr == "" {
 		return cloudToolSelfAddr()
 	}
@@ -946,12 +876,11 @@ func StartCloudTool() {
 	// 注入状态查询回调，供字典函数 $云工具状态$ 判断是否已连接
 	dto.CloudToolConnected = cloudToolConnected
 
-	ff := utils.NewFileQueue(dto.CONFIG_SYSTEM_PATH)
-	f, err := ff.LoadIni()
+	cfg, err := dto.LoadConfigFile()
 	if err != nil {
 		return
 	}
-	cloudToolDebug = f.Section("云工具").Key("调试").MustBool(false)
+	cloudToolDebug = cfg.Section("云工具").Key("调试").MustBool(false)
 
 	username, token := cloudToolSavedAuth()
 	if username != "" && token != "" {
@@ -1289,13 +1218,12 @@ func CheckFirewall(w http.ResponseWriter, r *http.Request) bool {
 	}
 
 	// 防火墙词库检查
-	ff := utils.NewFileQueue(dto.CONFIG_SYSTEM_PATH)
-	cf, err := ff.LoadIni()
+	cfg, err := dto.LoadConfigFile()
 	if err != nil {
 		return false
 	}
-	fwSec := cf.Section("防火墙")
-	if fwSec == nil || !fwSec.Key("启用").MustBool(false) {
+	fwSec := cfg.Section("防火墙")
+	if !fwSec.Key("启用").MustBool(false) {
 		return false
 	}
 	dicPath := fwSec.Key("词库").String()
@@ -1329,73 +1257,8 @@ func CheckFirewall(w http.ResponseWriter, r *http.Request) bool {
 	return false
 }
 
-// BeerWebFrp 协议消息类型
-type frpWSMessage struct {
-	ID      string            `json:"id"`
-	Type    string            `json:"type"` // "http"(默认)、"ws"、"ws_frame"、"ws_close"
-	Method  string            `json:"method"`
-	Path    string            `json:"path"`
-	Headers map[string]string `json:"headers"`
-	Body    []byte            `json:"body"`
-}
-
-type frpWSResponse struct {
-	ID         string            `json:"id"`
-	StatusCode int               `json:"status_code"`
-	Headers    map[string]string `json:"headers"`
-	Body       []byte            `json:"body,omitempty"`
-}
-
-// frpWSResponseStart 分块流式响应的起始消息（状态码+响应头）
-type frpWSResponseStart struct {
-	Type       string            `json:"type"`
-	ID         string            `json:"id"`
-	StatusCode int               `json:"status_code"`
-	Headers    map[string]string `json:"headers,omitempty"`
-}
-
-// frpWSChunk 分块流式响应的数据块
-type frpWSChunk struct {
-	Type  string `json:"type"`
-	ID    string `json:"id"`
-	Chunk []byte `json:"chunk"`
-	Final bool   `json:"final"`
-}
-
-// frpCon 单条 FRP WebSocket 连接，写队列模式实现异步发送
-type frpCon struct {
-	conn   *websocket.Conn
-	wch    chan writeJob // 写队列
-	ctx    context.Context
-	cancel context.CancelFunc
-	// localAddr 该隧道转发到的本地 HTTP 地址（每个服务器独立）
-	localAddr string
-	// debug 调试日志开关（每个服务器独立）
-	debug bool
-}
-
-// writeJob 一次写任务
-type writeJob struct {
-	data []byte
-	done chan error // nil = 异步（HTTP响应），非nil = 同步（WS帧/状态等结果）
-}
-
-// BeerWebFrp WebSocket 连接管理
+// FTP / SFTP 服务管理
 var (
-	frpHTTPClient = &http.Client{
-		// 超时需小于 BeerWebFrp 服务端 proxyRequestTimeout(90s)，避免服务端先超时导致 502
-		Timeout: 85 * time.Second,
-		// 不自动跟随重定向：3xx 及 Location 必须原样回传隧道服务端，
-		// 由服务端改写 Location（如 "/" -> "/token/"）以适配隧道域名
-		CheckRedirect: func(req *http.Request, via []*http.Request) error {
-			return http.ErrUseLastResponse
-		},
-	}
-
-	// frpRuntimes 每个服务器的 BeerWebFrp 隧道取消上下文（key 为服务器指针）
-	frpRuntimesMu sync.Mutex
-	frpRuntimes   = make(map[*dto.ServerHTTP]context.CancelFunc)
-
 	// FTP 服务管理
 	ftpListener    net.Listener
 	ftpCancel      context.CancelFunc
@@ -1409,775 +1272,7 @@ var (
 	sftpCancel   context.CancelFunc
 	sftpUser     string // 配置的用户名
 	sftpPass     string // 配置的密码
-
-	// BeerWebFrp WS 代理流映射表
-	frpWsStreams   = make(map[string]*frpWsStream) // streamID -> 本地 WS 流
-	frpWsStreamsMu sync.Mutex
 )
-
-// frpWsStream 一条本地 WebSocket 代理流。
-// gorilla/websocket 不允许多个 goroutine 并发调用 WriteMessage，
-// 因此用 mu 串行化对本地 WS 连接的所有写入。
-type frpWsStream struct {
-	conn *websocket.Conn
-	fc   *frpCon // 所属的 FRP 连接（用于按连接清理流）
-	mu   sync.Mutex
-}
-
-// printFrpLink 打印 BeerWebFrp 隧道访问链接。
-// 与 Ngrok 一致，将链接作为特殊触发 [BeerWebFrp] 交给启动词库 start.n
-// 匹配并格式化输出（默认输出 “BeerWebFrp：<链接>”），支持用户自定义启动词库。
-func printFrpLink(link string) {
-	if link == "" {
-		return
-	}
-	if dic, err := dic_dto.RunDic("private/system/start.n"); err == nil && dic != nil {
-		defer dic.Close()
-		if out := dic_api.Api.DicRunEvent(dic, "BeerWebFrp", "启动 "+link); out != "" {
-			fmt.Printf("%v\n", out)
-			return
-		}
-	}
-	// 词库不可用时直接打印原始链接
-	fmt.Printf("BeerWebFrp启动成功 %s\n", link)
-}
-
-// frpLocalAddr 将监听地址转换为可回连的本地回环地址（0.0.0.0 / [::] / 空主机 → 127.0.0.1）
-func frpLocalAddr(addr string) string {
-	host, port, err := net.SplitHostPort(addr)
-	if err != nil {
-		return addr
-	}
-	if host == "" || host == "0.0.0.0" || host == "::" {
-		host = "127.0.0.1"
-	}
-	return net.JoinHostPort(host, port)
-}
-
-// StartServerFrp 启动单个服务器的 BeerWebFrp 隧道（若已存在则先停止旧的）
-func StartServerFrp(server *dto.ServerHTTP) {
-	if server == nil {
-		return
-	}
-	StopServerFrp(server)
-
-	addr := strings.TrimSpace(server.FrpServerAddr)
-	token := strings.TrimSpace(server.FrpToken)
-
-	if server.FrpDebug {
-		debugLog.Infof("[FRP] 启动隧道, server=%s, addr=%s, token长度=%d (空则匿名)", server.Http.Addr, addr, len(token))
-	}
-
-	if !server.FrpOpen || addr == "" {
-		if server.FrpDebug {
-			debugLog.Infof("[FRP] 跳过启动: open=%v, addr为空=%v", server.FrpOpen, addr == "")
-		}
-		return
-	}
-
-	ctx, cancel := context.WithCancel(context.Background())
-	frpRuntimesMu.Lock()
-	frpRuntimes[server] = cancel
-	frpRuntimesMu.Unlock()
-
-	go runFrpConn(ctx, addr, token, frpLocalAddr(server.Http.Addr), server.FrpDebug)
-}
-
-// StopServerFrp 停止单个服务器的 BeerWebFrp 隧道
-func StopServerFrp(server *dto.ServerHTTP) {
-	if server == nil {
-		return
-	}
-	frpRuntimesMu.Lock()
-	cancel := frpRuntimes[server]
-	delete(frpRuntimes, server)
-	frpRuntimesMu.Unlock()
-	if cancel != nil {
-		cancel()
-	}
-}
-
-// ReconnectAllFrp 停止所有服务器的 BeerWebFrp 隧道，再逐台启动已启用的服务器
-func ReconnectAllFrp(servers []*dto.ServerHTTP) {
-	frpRuntimesMu.Lock()
-	for _, cancel := range frpRuntimes {
-		if cancel != nil {
-			cancel()
-		}
-	}
-	frpRuntimes = make(map[*dto.ServerHTTP]context.CancelFunc)
-	frpRuntimesMu.Unlock()
-
-	closeAllFrpWsStreams()
-
-	for _, s := range servers {
-		StartServerFrp(s)
-	}
-}
-
-// runFrpConn 管理单条 FRP WebSocket 连接的生命周期，断线自动重连
-func runFrpConn(ctx context.Context, serverAddr, token, localAddr string, debug bool) {
-	const readTimeout = 300 * time.Second // 读超时需大于服务端 pongWait，防止慢带宽下大文件写入时读超时断开
-
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		default:
-		}
-
-		wsURL := strings.TrimRight(serverAddr, "/") + "/api/ws"
-		dialer := websocket.Dialer{
-			EnableCompression: true,
-			HandshakeTimeout:  10 * time.Second,
-		}
-		conn, httpResp, err := dialer.Dial(wsURL, nil)
-		if err != nil {
-			if debug {
-				if httpResp != nil {
-					debugLog.Infof("[FRP] 连接失败: %v (HTTP %d), 5秒后重连", err, httpResp.StatusCode)
-				} else {
-					debugLog.Infof("[FRP] 连接失败: %v, 5秒后重连 (请确认 BeerWebFrp 服务端已启动)", err)
-				}
-			}
-			select {
-			case <-ctx.Done():
-				return
-			case <-time.After(5 * time.Second):
-			}
-			continue
-		}
-
-		// 握手：token 为空时走匿名连接（服务端创建临时隧道）
-		handshake := map[string]any{}
-		if token == "" {
-			handshake["anonymous"] = true
-		} else {
-			handshake["token"] = token
-		}
-		if err := conn.WriteJSON(handshake); err != nil {
-			if debug {
-				debugLog.Infof("[FRP] 握手发送失败: %v", err)
-			}
-			conn.Close()
-			select {
-			case <-ctx.Done():
-				return
-			case <-time.After(5 * time.Second):
-			}
-			continue
-		}
-
-		var hs struct {
-			Message string `json:"message"`
-			Error   string `json:"error"`
-			Link    string `json:"link"`
-		}
-		if err := conn.ReadJSON(&hs); err != nil {
-			if debug {
-				debugLog.Infof("[FRP] 握手响应读取失败: %v", err)
-			}
-			conn.Close()
-			select {
-			case <-ctx.Done():
-				return
-			case <-time.After(5 * time.Second):
-			}
-			continue
-		}
-		if hs.Error != "" {
-			if debug {
-				debugLog.Infof("[FRP] 握手失败: %s", hs.Error)
-			}
-			conn.Close()
-			select {
-			case <-ctx.Done():
-				return
-			case <-time.After(5 * time.Second):
-			}
-			continue
-		}
-		if debug {
-			debugLog.Infof("[FRP] 握手成功, link=%s", hs.Link)
-		}
-		// 打印隧道访问链接（经启动词库 start.n 格式化输出，如 “BeerWebFrp：<链接>”）
-		printFrpLink(hs.Link)
-
-		// 构建连接对象并启动异步写入器
-		fc := &frpCon{
-			conn:      conn,
-			wch:       make(chan writeJob, 64),
-			localAddr: localAddr,
-			debug:     debug,
-		}
-		fc.ctx, fc.cancel = context.WithCancel(ctx)
-
-		go fc.writer()
-
-		if debug {
-			debugLog.Infof("[FRP] 连接已注册，进入代理模式")
-		}
-
-		// 设置保活
-		conn.SetReadDeadline(time.Now().Add(readTimeout))
-		conn.SetPingHandler(func(appData string) error {
-			conn.SetReadDeadline(time.Now().Add(readTimeout))
-			return conn.WriteControl(websocket.PongMessage, []byte(appData), time.Now().Add(10*time.Second))
-		})
-		// Pong 回调：客户端发 Ping 后服务端回复 Pong 时触发，重置读超时防止空闲断连
-		conn.SetPongHandler(func(appData string) error {
-			conn.SetReadDeadline(time.Now().Add(readTimeout))
-			return nil
-		})
-
-		pingDone := make(chan struct{})
-		go func() {
-			ticker := time.NewTicker(50 * time.Second)
-			defer ticker.Stop()
-			for {
-				select {
-				case <-ticker.C:
-					if err := conn.WriteControl(websocket.PingMessage, nil, time.Now().Add(10*time.Second)); err != nil {
-						return
-					}
-				case <-pingDone:
-					return
-				}
-			}
-		}()
-
-		// 读取代理请求
-		for {
-			var msg frpWSMessage
-			if err := conn.ReadJSON(&msg); err != nil {
-				if debug {
-					debugLog.Infof("[FRP] 读取消息失败(连接断开): %v", err)
-				}
-				break
-			}
-			if msg.ID == "" {
-				continue
-			}
-
-			// 每次成功读取后重置读超时，配合 Ping 保活防止空闲断连
-			conn.SetReadDeadline(time.Now().Add(readTimeout))
-
-			switch msg.Type {
-			case "ws":
-				if debug {
-					debugLog.Infof("[FRP] 收到WS代理请求: %s (id=%s)", msg.Path, msg.ID)
-				}
-				go handleFrpWsProxy(fc, &msg)
-			case "ws_frame":
-				if debug {
-					debugLog.Infof("[FRP] 收到WS数据帧 (id=%s)", msg.ID)
-				}
-				go handleFrpWsFrame(fc, &msg)
-			case "ws_close":
-				if debug {
-					debugLog.Infof("[FRP] 收到WS关闭通知 (id=%s)", msg.ID)
-				}
-				go handleFrpWsClose(fc, &msg)
-			default:
-				if debug {
-					debugLog.Infof("[FRP] 收到HTTP代理请求: %s %s (id=%s)", msg.Method, msg.Path, msg.ID)
-				}
-				go handleFrpProxyRequest(fc, &msg)
-			}
-		}
-
-		// 清理：取消 writer，停止 Ping，断开残留的本地 WS 代理流（避免重连后旧流残留）
-		fc.cancel()
-		close(pingDone)
-		closeFrpWsStreams(fc)
-
-		if debug {
-			debugLog.Infof("[FRP] 连接断开, 5秒后重连")
-		}
-
-		select {
-		case <-ctx.Done():
-			return
-		case <-time.After(5 * time.Second):
-		}
-	}
-}
-
-// writer 异步写 goroutine，从队列取数据按带宽自适应发送
-func (fc *frpCon) writer() {
-	defer fc.conn.Close()
-	debug := fc.debug
-	for {
-		select {
-		case job := <-fc.wch:
-			writeTimeout := 60 * time.Second
-			dataLen := len(job.data)
-			if dataLen > 0 {
-				// 按实际数据量计算：每 25KB 增加 1s，支持极低带宽（如 17KB/s 传 2.7MB）
-				writeTimeout = max(time.Duration(60+dataLen/25600)*time.Second, 60*time.Second)
-				writeTimeout = min(writeTimeout, 10*time.Minute)
-			}
-			fc.conn.SetWriteDeadline(time.Now().Add(writeTimeout))
-			err := fc.conn.WriteMessage(websocket.TextMessage, job.data)
-			if job.done != nil {
-				job.done <- err
-			}
-			if err != nil {
-				if debug {
-					debugLog.Infof("[FRP] writer 写出错: %v，排空队列退出", err)
-				}
-				for {
-					select {
-					case job := <-fc.wch:
-						if job.done != nil {
-							job.done <- err
-						}
-					default:
-						return
-					}
-				}
-			}
-		case <-fc.ctx.Done():
-			for {
-				select {
-				case job := <-fc.wch:
-					if job.done != nil {
-						job.done <- fc.ctx.Err()
-					}
-				default:
-					return
-				}
-			}
-		}
-	}
-}
-
-// proxyTimeoutHTML 当本地请求超时时返回的提示页面
-const proxyTimeoutHTML = `<!DOCTYPE html>
-<html lang="zh-CN">
-<head>
-<meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>504 响应超时</title>
-<style>
-*{margin:0;padding:0;box-sizing:border-box}
-body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI','Microsoft YaHei',sans-serif;background:#0f172a;color:#e2e8f0;display:flex;align-items:center;justify-content:center;min-height:100vh}
-.card{background:#1e293b;border:1px solid #334155;border-radius:20px;padding:48px 40px;max-width:560px;width:90%;text-align:center;box-shadow:0 25px 60px rgba(0,0,0,.4);animation:fadeUp .5s ease-out}
-.icon-wrap{width:80px;height:80px;margin:0 auto 20px;background:linear-gradient(135deg,#f59e0b,#ef4444);border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:36px;animation:pulse 2s ease-in-out infinite}
-.error-code{font-size:28px;font-weight:800;background:linear-gradient(135deg,#f59e0b,#ef4444);background-clip:text;-webkit-background-clip:text;-webkit-text-fill-color:transparent;margin-bottom:8px}
-.error-title{font-size:22px;font-weight:700;color:#f1f5f9;margin-bottom:12px}
-.divider{width:60px;height:3px;background:linear-gradient(90deg,#f59e0b,#ef4444);border-radius:2px;margin:0 auto 24px}
-.error-sub{font-size:14px;color:#94a3b8;line-height:1.8;margin-bottom:20px}
-.error-sub span{color:#f59e0b;font-weight:600}
-.bw-info{background:#0f172a;border:1px solid #334155;border-radius:12px;padding:16px 20px;margin-bottom:20px;display:flex;align-items:center;gap:12px}
-.bw-icon{font-size:24px;flex-shrink:0}
-.bw-text{font-size:13px;color:#94a3b8;line-height:1.7;text-align:left}
-.bw-text strong{color:#f1f5f9}
-.hint{font-size:13px;color:#64748b;line-height:1.8}
-@keyframes fadeUp{0%{opacity:0;transform:translateY(20px)}100%{opacity:1;transform:translateY(0)}}
-@keyframes pulse{0%,100%{opacity:1;transform:scale(1)}50%{opacity:.6;transform:scale(1.08)}}
-</style>
-</head>
-<body>
-<div class="card">
-  <div class="icon-wrap">⏳</div>
-  <div class="error-code">504</div>
-  <div class="error-title">响应超时</div>
-  <div class="divider"></div>
-  <p class="error-sub">
-    本地服务处理请求超时，<span>未能及时返回响应</span>。
-  </p>
-  <div class="bw-info">
-    <div class="bw-icon">📶</div>
-    <div class="bw-text">
-      <strong>请检查本地服务状态</strong><br>
-      隧道客户端已收到请求，但本地后端服务未能在规定时间内响应。请确认后端服务运行正常，或适当增加超时时间。
-    </div>
-  </div>
-  <p class="hint">请稍后刷新重试</p>
-</div>
-</body>
-</html>`
-
-// handleFrpProxyRequest 处理来自 BeerWebFrp 服务端的代理请求
-// 将请求转发到本地 HTTP 服务器，并返回响应。大响应（>1MB）使用分块流式传输
-func handleFrpProxyRequest(fc *frpCon, msg *frpWSMessage) {
-	debug := fc.debug
-	var (
-		respStatusCode int
-		respHeaders    map[string]string
-		respBody       []byte
-		sent           bool // 是否已由流式模式处理
-	)
-
-	defer func() {
-		if sent {
-			return
-		}
-		// 发送错误响应（单条消息）
-		resp := frpWSResponse{
-			ID:         msg.ID,
-			StatusCode: respStatusCode,
-			Headers:    respHeaders,
-		}
-		if respBody != nil {
-			resp.Body = respBody
-		}
-		data, _ := json.Marshal(resp)
-		select {
-		case fc.wch <- writeJob{data: data}:
-		default:
-			if debug {
-				debugLog.Infof("[FRP] 写队列满，丢弃响应 (id=%s)", msg.ID)
-			}
-		}
-	}()
-
-	respStatusCode = 502
-	respHeaders = map[string]string{"Content-Type": "text/html; charset=utf-8"}
-	respBody = []byte("backend server not available")
-
-	if fc == nil || fc.localAddr == "" {
-		if debug {
-			debugLog.Infof("[FRP] 代理请求: 本地地址为空，返回502 (id=%s)", msg.ID)
-		}
-		return
-	}
-
-	targetURL := "http://" + fc.localAddr + msg.Path
-
-	if debug {
-		debugLog.Infof("[FRP] 转发请求: %s %s -> %s (body长度=%d, headers数=%d)", msg.Method, msg.Path, targetURL, len(msg.Body), len(msg.Headers))
-	}
-
-	var bodyReader io.Reader
-	if len(msg.Body) > 0 {
-		bodyReader = bytes.NewReader(msg.Body)
-	}
-	// 注：服务端 Body 已是 []byte，JSON 反序列化时自动 base64 解码
-
-	req, err := http.NewRequest(msg.Method, targetURL, bodyReader)
-	if err != nil {
-		if debug {
-			debugLog.Infof("[FRP] 代理请求: 构造请求失败 (id=%s): %v", msg.ID, err)
-		}
-		respBody = []byte("proxy build request error: " + err.Error())
-		return
-	}
-
-	// 转发原始请求头（含 X-Real-Ip、X-Forwarded-For）
-	if msg.Headers != nil {
-		for k, v := range msg.Headers {
-			req.Header.Set(k, v)
-		}
-	}
-
-	// 发起本地 HTTP 请求
-	httpResp, err := frpHTTPClient.Do(req)
-	if err != nil {
-		if debug {
-			debugLog.Infof("[FRP] 代理请求: 本地请求失败 (id=%s): %v", msg.ID, err)
-		}
-		if errors.Is(err, context.DeadlineExceeded) {
-			respStatusCode = 504
-			respBody = []byte(proxyTimeoutHTML)
-			return
-		}
-		respBody = []byte("proxy request error: " + err.Error())
-		return
-	}
-	defer httpResp.Body.Close()
-
-	// 收集响应头（过滤局域网敏感信息）
-	stripHeaders := map[string]bool{
-		"Server": true, "X-Powered-By": true,
-		"X-Forwarded-For": true, "X-Forwarded-Proto": true,
-		"X-Forwarded-Host": true, "X-Forwarded-Port": true,
-		"X-Real-Ip": true, "X-Real-Port": true,
-		"X-Runtime": true, "Via": true,
-	}
-	respHeaders = make(map[string]string)
-	for k, v := range httpResp.Header {
-		if stripHeaders[k] {
-			continue
-		}
-		respHeaders[k] = strings.Join(v, ", ")
-	}
-
-	// 读取响应体
-	respBody, err = io.ReadAll(httpResp.Body)
-	if err != nil {
-		if debug {
-			debugLog.Infof("[FRP] 代理请求: 读取响应体失败 (id=%s): %v", msg.ID, err)
-		}
-		respStatusCode = 502
-		respBody = []byte("proxy read body error: " + err.Error())
-		return
-	}
-
-	respStatusCode = httpResp.StatusCode
-
-	if debug {
-		debugLog.Infof("[FRP] 代理请求完成: id=%s, status=%d, 响应体长度=%d", msg.ID, httpResp.StatusCode, len(respBody))
-	}
-
-	// 小响应（≤1MB）：单条消息
-	const chunkThreshold = 1 << 20
-	if len(respBody) <= chunkThreshold {
-		return // defer 会发送
-	}
-
-	// 大响应（>1MB）：分块流式传输
-	sent = true
-
-	// 1. 发送 http_response_start
-	start := frpWSResponseStart{
-		Type:       "http_response_start",
-		ID:         msg.ID,
-		StatusCode: respStatusCode,
-		Headers:    respHeaders,
-	}
-	startData, _ := json.Marshal(start)
-	select {
-	case fc.wch <- writeJob{data: startData}:
-	default:
-		// 起始消息都发不出去，回退为单条响应（由 defer 兜底），避免服务端挂起等待
-		sent = false
-		if debug {
-			debugLog.Infof("[FRP] 写队列满，回退单条响应 (id=%s)", msg.ID)
-		}
-		return
-	}
-
-	// 2. 分块发送 body（64KB/块）
-	const chunkSize = 64 << 10
-	for offset := 0; offset < len(respBody); offset += chunkSize {
-		end := offset + chunkSize
-		end = min(end, len(respBody))
-		chunk := frpWSChunk{
-			Type:  "http_chunk",
-			ID:    msg.ID,
-			Chunk: respBody[offset:end],
-			Final: end == len(respBody),
-		}
-		chunkData, _ := json.Marshal(chunk)
-		select {
-		case fc.wch <- writeJob{data: chunkData}:
-		default:
-			// 队列满：补发一个 final 空块结束服务端流式管道，避免服务端挂起直到超时
-			if debug {
-				debugLog.Infof("[FRP] 写队列满，发送结束块 (id=%s)", msg.ID)
-			}
-			if finalData, err := json.Marshal(frpWSChunk{Type: "http_chunk", ID: msg.ID, Final: true}); err == nil {
-				select {
-				case fc.wch <- writeJob{data: finalData}:
-				default:
-				}
-			}
-			return
-		}
-	}
-
-	// 清理 defer 不需要的数据
-	respBody = nil
-}
-
-// handleFrpWsProxy 处理 BeerWebFrp 的 WebSocket 代理请求
-// 收到 type:"ws" 消息后，连接本地 WebSocket 服务并双向转发数据帧
-func handleFrpWsProxy(fc *frpCon, msg *frpWSMessage) {
-	debug := fc.debug
-	streamID := msg.ID
-
-	if fc == nil || fc.localAddr == "" {
-		sendFrpWsStatus(fc, streamID, -1)
-		return
-	}
-
-	wsURL := "ws://" + fc.localAddr + msg.Path
-
-	if debug {
-		debugLog.Infof("[FRP] WS代理: 连接本地WS %s (id=%s)", wsURL, streamID)
-	}
-
-	// 转换请求头为 http.Header 格式
-	var wsHeaders http.Header
-	if len(msg.Headers) > 0 {
-		wsHeaders = make(http.Header, len(msg.Headers))
-		for k, v := range msg.Headers {
-			wsHeaders.Set(k, v)
-		}
-	}
-	localConn, _, err := websocket.DefaultDialer.Dial(wsURL, wsHeaders)
-	if err != nil {
-		if debug {
-			debugLog.Infof("[FRP] WS代理: 本地WS连接失败 (id=%s): %v", streamID, err)
-		}
-		sendFrpWsStatus(fc, streamID, -1)
-		return
-	}
-
-	// 注册流（记录所属连接，便于按连接清理）
-	st := &frpWsStream{conn: localConn, fc: fc}
-	frpWsStreamsMu.Lock()
-	frpWsStreams[streamID] = st
-	frpWsStreamsMu.Unlock()
-
-	if debug {
-		debugLog.Infof("[FRP] WS代理: 本地WS连接成功 (id=%s)", streamID)
-	}
-
-	// 本地 → 服务端：读取本地 WS 消息并回传
-	go func() {
-		defer func() {
-			// 先关闭连接（短暂加锁），再清理 map，避免 st.mu → frpWsStreamsMu
-			// 与 handleFrpWsClose 的 frpWsStreamsMu → st.mu 形成死锁。
-			st.mu.Lock()
-			localConn.Close()
-			st.mu.Unlock()
-			frpWsStreamsMu.Lock()
-			delete(frpWsStreams, streamID)
-			frpWsStreamsMu.Unlock()
-		}()
-		for {
-			_, frame, err := localConn.ReadMessage()
-			if err != nil {
-				if debug {
-					debugLog.Infof("[FRP] WS代理: 本地WS读取关闭 (id=%s): %v", streamID, err)
-				}
-				sendFrpWsStatus(fc, streamID, -1)
-				return
-			}
-			sendFrpWsFrame(fc, streamID, frame)
-		}
-	}()
-}
-
-// handleFrpWsFrame 处理来自 BeerWebFrp 的 ws_frame 消息
-// Base64 解码 body 后写入本地 WS 连接
-func handleFrpWsFrame(fc *frpCon, msg *frpWSMessage) {
-	debug := fc.debug
-	streamID := msg.ID
-
-	frpWsStreamsMu.Lock()
-	st, ok := frpWsStreams[streamID]
-	frpWsStreamsMu.Unlock()
-
-	if !ok {
-		if debug {
-			debugLog.Infof("[FRP] WS代理: 收到ws_frame但流不存在 (id=%s)", streamID)
-		}
-		return
-	}
-
-	// 加锁串行化写入，避免多帧并发写导致 gorilla 连接数据竞争
-	st.mu.Lock()
-	err := st.conn.WriteMessage(websocket.BinaryMessage, msg.Body)
-	st.mu.Unlock()
-	if err != nil && debug {
-		debugLog.Infof("[FRP] WS代理: 写入本地WS失败 (id=%s): %v", streamID, err)
-	}
-}
-
-// handleFrpWsClose 处理来自 BeerWebFrp 的 ws_close 消息
-// 关闭本地 WS 连接并清理流
-func handleFrpWsClose(fc *frpCon, msg *frpWSMessage) {
-	debug := fc.debug
-	streamID := msg.ID
-
-	frpWsStreamsMu.Lock()
-	st, ok := frpWsStreams[streamID]
-	if ok {
-		delete(frpWsStreams, streamID)
-	}
-	frpWsStreamsMu.Unlock()
-
-	if ok && st != nil {
-		if debug {
-			debugLog.Infof("[FRP] WS代理: 关闭本地WS流 (id=%s)", streamID)
-		}
-		st.mu.Lock()
-		st.conn.Close()
-		st.mu.Unlock()
-	}
-}
-
-// sendFrpWsFrame 向服务端发送 WS 数据帧响应（同步等待写入结果）
-func sendFrpWsFrame(fc *frpCon, streamID string, frame []byte) {
-	debug := fc.debug
-	data, _ := json.Marshal(frpWSResponse{
-		ID:         streamID,
-		StatusCode: 0,
-		Headers:    map[string]string{},
-		Body:       frame,
-	})
-	done := make(chan error, 1)
-	select {
-	case fc.wch <- writeJob{data: data, done: done}:
-		select {
-		case err := <-done:
-			if err != nil && debug {
-				debugLog.Infof("[FRP] WS代理: 发送数据帧失败 (id=%s): %v", streamID, err)
-			}
-		case <-time.After(10 * time.Second):
-			// 连接已断开且写队列无人消费，放弃等待，避免 goroutine 泄漏
-		}
-	default:
-		if debug {
-			debugLog.Infof("[FRP] WS代理: 发送数据帧失败（写队列满） (id=%s)", streamID)
-		}
-	}
-}
-
-// sendFrpWsStatus 向服务端发送 WS 状态通知（同步等待写入结果）
-func sendFrpWsStatus(fc *frpCon, streamID string, statusCode int) {
-	debug := fc.debug
-	if debug {
-		debugLog.Infof("[FRP] WS代理: 发送状态通知 streamID=%s, statusCode=%d", streamID, statusCode)
-	}
-	data, _ := json.Marshal(frpWSResponse{
-		ID:         streamID,
-		StatusCode: statusCode,
-	})
-	done := make(chan error, 1)
-	select {
-	case fc.wch <- writeJob{data: data, done: done}:
-		select {
-		case <-done:
-		case <-time.After(10 * time.Second):
-			// 连接已断开且写队列无人消费，放弃等待，避免 goroutine 泄漏
-		}
-	default:
-	}
-}
-
-// closeFrpWsStreams 断开指定 FRP 连接的本地 WS 代理流（fc 为 nil 时断开全部）
-func closeFrpWsStreams(fc *frpCon) {
-	debug := false
-	if fc != nil {
-		debug = fc.debug
-	}
-	frpWsStreamsMu.Lock()
-	defer frpWsStreamsMu.Unlock()
-	n := 0
-	for id, st := range frpWsStreams {
-		if fc != nil && st.fc != fc {
-			continue
-		}
-		st.mu.Lock()
-		st.conn.Close()
-		st.mu.Unlock()
-		delete(frpWsStreams, id)
-		n++
-	}
-	if debug && n > 0 {
-		debugLog.Infof("[FRP] WS代理: 清理%d个本地WS流", n)
-	}
-}
-
-// closeAllFrpWsStreams 断开所有本地 WS 代理连接
-func closeAllFrpWsStreams() {
-	closeFrpWsStreams(nil)
-}
 
 // StartFtp 启动 FTP 服务并打印局域网链接
 func StartFtp(port int, debug bool, username, password string, tlsEnabled bool, pasvPortStart, pasvPortEnd int) {
@@ -2494,12 +1589,11 @@ func opuiCheckKey(r *http.Request, hType string) bool {
 	if hType == "check_opui_key" || hType == "get_opui" || hType == "get_bg" {
 		return true // 密钥校验和查询配置状态免鉴权
 	}
-	ff := utils.NewFileQueue(dto.CONFIG_SYSTEM_PATH)
-	f, err := ff.LoadIni()
+	cfg, err := dto.LoadConfigFile()
 	if err != nil {
 		return false
 	}
-	storedKey := f.Section("管理面板").Key("密钥").String()
+	storedKey := cfg.Section("管理面板").Key("密钥").String()
 	if storedKey == "" {
 		return true // 未配置密钥，放行
 	}
@@ -2778,19 +1872,14 @@ func parseOutputSegments(output string) []map[string]string {
 	return segments
 }
 
-// loadDicDebugDefaults 读取 system.ini 中 [词库调试] 节的配置（运行配置的唯一存储位置）
+// loadDicDebugDefaults 读取合并配置中 [词库调试] 节的配置（运行配置的唯一存储位置）
 func loadDicDebugDefaults() map[string]any {
 	def := map[string]any{}
-	file := utils.NewFile()
-	file.SetPath("private/system/system.ini")
-	if !file.FileExists() {
-		return def
-	}
-	ini, err := file.LoadIni()
+	cfg, err := dto.LoadConfigFile()
 	if err != nil {
 		return def
 	}
-	sec := ini.Section("词库调试")
+	sec := cfg.Section("词库调试")
 	if v := sec.Key("默认词库").String(); v != "" {
 		def["path"] = v
 	}
@@ -2872,6 +1961,379 @@ func checkFilePath(path string) bool {
 	}
 	clean := filepath.ToSlash(filepath.Clean(path))
 	return clean != "." && clean != ".." && !strings.HasPrefix(clean, "../")
+}
+
+// nebulaSrcRoot 探测 Nebula 源码根目录（含 go.work 的目录）。
+// 优先读取环境变量 NEBULA_SRC；开发模式下（未 -trimpath）从当前源文件反推。
+func nebulaSrcRoot() (string, error) {
+	if s := strings.TrimSpace(os.Getenv("NEBULA_SRC")); s != "" {
+		if fi, err := os.Stat(filepath.Join(s, "go.work")); err == nil && !fi.IsDir() {
+			return filepath.Clean(s), nil
+		}
+	}
+	if _, file, _, ok := runtime.Caller(0); ok && file != "" {
+		// 忽略 trimpath 编译得到的模块路径（如 github.com/cjxpj/nebula/server/opui.go）
+		if !strings.HasPrefix(file, "github.com/") {
+			dir := filepath.Dir(file) // server
+			dir = filepath.Dir(dir)   // nebula
+			dir = filepath.Dir(dir)   // 源码根
+			if fi, err := os.Stat(filepath.Join(dir, "go.work")); err == nil && !fi.IsDir() {
+				return filepath.Clean(dir), nil
+			}
+		}
+	}
+	return "", errors.New("未找到 Nebula 源码目录（需含 go.work），请设置环境变量 NEBULA_SRC 指向源码根目录后重试")
+}
+
+// buildTask 词库打包任务的运行状态（异步执行，前端按 taskId 轮询）。
+type buildTask struct {
+	mu        sync.Mutex
+	done      bool
+	output    string // 产物绝对路径
+	log       string // 构建日志
+	err       string // 构建错误
+	runOutput string // 运行输出（触发词非空时）
+	runErr    string // 运行错误
+}
+
+// finish 写入任务结果并标记完成。
+func (t *buildTask) finish(output, log, err, runOutput, runErr string) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.output = output
+	t.log = log
+	t.err = err
+	t.runOutput = runOutput
+	t.runErr = runErr
+	t.done = true
+}
+
+// snapshot 返回任务的当前状态快照。
+func (t *buildTask) snapshot() (done bool, output, log, err, runOutput, runErr string) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return t.done, t.output, t.log, t.err, t.runOutput, t.runErr
+}
+
+// buildTasks 词库打包任务表（taskId -> *buildTask）。
+var buildTasks sync.Map
+
+// dicExecMainTemplate 生成嵌入「已编译词库产物」的独立可执行程序入口源码（纯 Go，无需引擎源码）。
+// 原理：把预编译的 nebula.dll（C ABI 动态库）与词库编译产物（compiled.gob）一起嵌入 exe，
+// 运行时释放 dll 后通过 syscall 动态加载，调用导出函数 RunCompiled(data, len, trigger) 执行，
+// 运行时不再重新编译、不读取 #引入 依赖文件与 //@资源 资源文件。
+func dicExecMainTemplate() string {
+	return "//go:build windows\n\n" +
+		"package main\n\n" +
+		"import (\n" +
+		"\t_ \"embed\"\n" +
+		"\t\"fmt\"\n" +
+		"\t\"os\"\n" +
+		"\t\"path/filepath\"\n" +
+		"\t\"syscall\"\n" +
+		"\t\"unsafe\"\n" +
+		")\n\n" +
+		"//go:embed nebula.dll\n" +
+		"var dllData []byte\n\n" +
+		"// compiledData 打包进可执行文件的词库编译产物（gob 字节）。\n" +
+		"//go:embed compiled.gob\n" +
+		"var compiledData []byte\n\n" +
+		"func main() {\n" +
+		"\ttmpDir, err := os.MkdirTemp(\"\", \"nebula-dic-*\")\n" +
+		"\tif err != nil {\n" +
+		"\t\tfmt.Fprintln(os.Stderr, \"创建临时目录失败:\", err)\n" +
+		"\t\tos.Exit(1)\n" +
+		"\t}\n" +
+		"\tdefer os.RemoveAll(tmpDir)\n\n" +
+		"\tdllPath := filepath.Join(tmpDir, \"nebula.dll\")\n" +
+		"\tif err := os.WriteFile(dllPath, dllData, 0o644); err != nil {\n" +
+		"\t\tfmt.Fprintln(os.Stderr, \"释放 nebula.dll 失败:\", err)\n" +
+		"\t\tos.Exit(1)\n" +
+		"\t}\n\n" +
+		"\tdll, err := syscall.LoadLibrary(dllPath)\n" +
+		"\tif err != nil {\n" +
+		"\t\tfmt.Fprintln(os.Stderr, \"加载 nebula.dll 失败:\", err)\n" +
+		"\t\tos.Exit(1)\n" +
+		"\t}\n" +
+		"\t// 不调用 FreeLibrary：Go c-shared 库的独立 runtime 无法安全卸载，卸载会在\n" +
+		"\t// 进程退出时触发访问冲突（0xc0000005）。dll 随进程退出由操作系统回收。\n\n" +
+		"\trunCompiled, err := syscall.GetProcAddress(dll, \"RunCompiled\")\n" +
+		"\tif err != nil {\n" +
+		"\t\tfmt.Fprintln(os.Stderr, \"未找到导出函数 RunCompiled:\", err)\n" +
+		"\t\tos.Exit(1)\n" +
+		"\t}\n" +
+		"\tfreeStr, err := syscall.GetProcAddress(dll, \"FreeString\")\n" +
+		"\tif err != nil {\n" +
+		"\t\tfmt.Fprintln(os.Stderr, \"未找到导出函数 FreeString:\", err)\n" +
+		"\t\tos.Exit(1)\n" +
+		"\t}\n\n" +
+		"\tvar dataPtr uintptr\n" +
+		"\tif len(compiledData) > 0 {\n" +
+		"\t\tdataPtr = uintptr(unsafe.Pointer(&compiledData[0]))\n" +
+		"\t}\n" +
+		"\ttrigB := append([]byte(\"Main\"), 0)\n\n" +
+		"\tr, _, callErr := syscall.SyscallN(\n" +
+		"\t\trunCompiled,\n" +
+		"\t\tdataPtr,\n" +
+		"\t\tuintptr(len(compiledData)),\n" +
+		"\t\tuintptr(unsafe.Pointer(&trigB[0])),\n" +
+		"\t)\n" +
+		"\tif callErr != 0 {\n" +
+		"\t\tfmt.Fprintln(os.Stderr, \"调用 RunCompiled 失败:\", callErr)\n" +
+		"\t\tos.Exit(1)\n" +
+		"\t}\n" +
+		"\tif r == 0 {\n" +
+		"\t\tfmt.Fprintln(os.Stderr, \"RunCompiled 返回空指针\")\n" +
+		"\t\tos.Exit(1)\n" +
+		"\t}\n\n" +
+		"\tresult := cString(r)\n" +
+		"\t_, _, _ = syscall.SyscallN(freeStr, r)\n\n" +
+		"\tfmt.Println(result)\n" +
+		"}\n\n" +
+		"// cString 读取以 NUL 结尾的 C 字符串（UTF-8）。\n" +
+		"func cString(p uintptr) string {\n" +
+		"\tif p == 0 {\n" +
+		"\t\treturn \"\"\n" +
+		"\t}\n" +
+		"\tvar buf []byte\n" +
+		"\tfor {\n" +
+		"\t\tb := *(*byte)(unsafe.Pointer(p))\n" +
+		"\t\tif b == 0 {\n" +
+		"\t\t\tbreak\n" +
+		"\t\t}\n" +
+		"\t\tbuf = append(buf, b)\n" +
+		"\t\tp++\n" +
+		"\t}\n" +
+		"\treturn string(buf)\n" +
+		"}\n"
+}
+
+// locateNebulaDLL 查找预编译的 nebula.dll（Windows x64 动态库）。
+// 查找顺序：环境变量 NEBULA_DLL → 应用数据目录 private/build/dist/nebula.dll
+// → 源码根 dist/sdk/windows-amd64/nebula.dll → 当前发布版本下载。
+func locateNebulaDLL() (string, error) {
+	if s := strings.TrimSpace(os.Getenv("NEBULA_DLL")); s != "" {
+		if fi, err := os.Stat(s); err == nil && !fi.IsDir() {
+			return s, nil
+		}
+	}
+	if appDLL, err := filepath.Abs(filepath.Join(utils.GetAppDir(), "private", "build", "dist", "nebula.dll")); err == nil {
+		if fi, err := os.Stat(appDLL); err == nil && !fi.IsDir() {
+			return appDLL, nil
+		}
+	}
+	if src, err := nebulaSrcRoot(); err == nil {
+		sdkDLL := filepath.Join(src, "dist", "sdk", "windows-amd64", "nebula.dll")
+		if fi, err := os.Stat(sdkDLL); err == nil && !fi.IsDir() {
+			return sdkDLL, nil
+		}
+	}
+	// 本地找不到时，从当前发布版本下载 nebula.dll（扩展下载）。
+	return downloadNebulaDLL()
+}
+
+// pickNebulaDLL 从 release assets 中选出 nebula.dll（Windows x64 SDK 动态库）的下载地址。
+func pickNebulaDLL(assets []struct {
+	Name               string `json:"name"`
+	BrowserDownloadURL string `json:"browser_download_url"`
+}) (downURL string, ok bool) {
+	// 1) 精确匹配 nebula.dll
+	for _, a := range assets {
+		if strings.EqualFold(a.Name, "nebula.dll") {
+			return a.BrowserDownloadURL, true
+		}
+	}
+	// 2) 模糊匹配：.dll 且含 windows/amd64/x64 关键词
+	for _, a := range assets {
+		lower := strings.ToLower(a.Name)
+		if strings.HasSuffix(lower, ".dll") &&
+			(strings.Contains(lower, "windows") || strings.Contains(lower, "amd64") || strings.Contains(lower, "x64")) {
+			return a.BrowserDownloadURL, true
+		}
+	}
+	// 3) 兜底：以 nebula 开头且以 .dll 结尾
+	for _, a := range assets {
+		lower := strings.ToLower(a.Name)
+		if strings.HasPrefix(lower, "nebula") && strings.HasSuffix(lower, ".dll") {
+			return a.BrowserDownloadURL, true
+		}
+	}
+	return "", false
+}
+
+// downloadNebulaDLL 从当前发布版本下载 nebula.dll（Gitee 优先，回退 GitHub），
+// 保存到 private/build/dist/nebula.dll，返回绝对路径。
+func downloadNebulaDLL() (string, error) {
+	client := &http.Client{Timeout: 15 * time.Second}
+	var downURL string
+	for _, u := range []string{
+		"https://gitee.com/api/v5/repos/cjxpj/nebula/releases/latest",
+		"https://api.github.com/repos/cjxpj/nebula/releases/latest",
+	} {
+		_, _, _, assets := fetchReleaseAssets(client, u)
+		if u2, ok := pickNebulaDLL(assets); ok {
+			downURL = u2
+			break
+		}
+	}
+	if downURL == "" {
+		return "", errors.New("发布版本中未找到 nebula.dll，请先在发布版本上传 SDK 产物")
+	}
+
+	destDir, err := filepath.Abs(filepath.Join(utils.GetAppDir(), "private", "build", "dist"))
+	if err != nil {
+		return "", err
+	}
+	if err := os.MkdirAll(destDir, 0o755); err != nil {
+		return "", fmt.Errorf("创建产物目录失败: %w", err)
+	}
+	destPath := filepath.Join(destDir, "nebula.dll")
+
+	// 已存在且非空则直接复用，避免重复下载。
+	if fi, err := os.Stat(destPath); err == nil && fi.Size() > 0 {
+		return destPath, nil
+	}
+
+	if err := utils.NewFileQueue(destPath).DownloadWithMirrors([]string{downURL}, 0, true, nil); err != nil {
+		return "", fmt.Errorf("下载 nebula.dll 失败: %w", err)
+	}
+	return destPath, nil
+}
+
+// findGoExe 定位 Go 工具链可执行文件：优先使用「扩展部署」下载的词库编译环境
+// （private/extensions/go/bin/go.exe），否则回退到 PATH 中的 go。
+func findGoExe() (string, error) {
+	if extGo := filepath.Join(utils.GetAppDir(), "private", "extensions", "go", "bin", "go.exe"); fileExists(extGo) {
+		return extGo, nil
+	}
+	if p, err := exec.LookPath("go"); err == nil && p != "" {
+		return p, nil
+	}
+	return "", errors.New("未检测到 Go 工具链，请先在「扩展部署」下载词库编译环境，或安装 Go 并加入 PATH")
+}
+
+// buildDicBundle 把指定词库与预编译 nebula.dll 一起打包为独立可执行文件。
+// 加载器为纯 Go（仅依赖标准库），无需引擎源码；运行时从内嵌 dll 动态加载引擎。
+// 返回产物绝对路径与构建日志。
+func buildDicBundle(dicPath, goos, goarch string) (outPath, logText string, err error) {
+	// 仅支持 Windows（nebula.dll 为 windows-amd64，加载器使用 syscall.LoadLibrary）
+	if goos != "windows" {
+		return "", "", errors.New("仅支持 Windows 平台打包")
+	}
+	dllPath, err := locateNebulaDLL()
+	if err != nil {
+		return "", "", err
+	}
+	goExe, err := findGoExe()
+	if err != nil {
+		return "", "", err
+	}
+	content, err := utils.NewFileQueue(dicPath).ReadFromFile()
+	if err != nil {
+		return "", "", fmt.Errorf("词库读取失败: %w", err)
+	}
+
+	// 打包前先编译词库：此时 #引入 依赖文件与 //@资源 资源文件均在磁盘上，可直接读入；
+	// 编译产物序列化为 gob 后嵌入 exe，运行时反序列化执行，不再重新编译或读取外部文件。
+	buildValue := run.BuildDic(dicPath, content)
+	gobData, err := run.MarshalBuildValue(buildValue)
+	if err != nil {
+		return "", "", err
+	}
+
+	// 读取 nebula.dll（参与打包指纹，dll 更新时需重新打包）
+	dllData, err := os.ReadFile(dllPath)
+	if err != nil {
+		return "", "", fmt.Errorf("读取 nebula.dll 失败: %w", err)
+	}
+
+	// 产物输出到应用数据目录 private/build/dist/，与词库 private/build/dic/ 分开。
+	appBuildDir, err := filepath.Abs(filepath.Join(utils.GetAppDir(), "private", "build", "dist"))
+	if err != nil {
+		return "", "", fmt.Errorf("解析产物目录失败: %w", err)
+	}
+	if err := os.MkdirAll(appBuildDir, 0o755); err != nil {
+		return "", "", fmt.Errorf("创建产物目录失败: %w", err)
+	}
+	outPath = filepath.Join(appBuildDir, "nebula-dic.exe")
+
+	// 打包指纹 = sha256(所有依赖文件内容 hash + nebula.dll)：词库（含 #引入 / //@资源）与 dll 均无变化时，
+	// 直接复用已有产物，跳过耗时的 go build。依赖 hash 来自编译期记录（Deps，含主文件与全部依赖文件），
+	// 按路径排序后拼接，保证相同输入得到稳定指纹（gob 的 map 序列化顺序不稳定，不能用作指纹）。
+	fpHash := sha256.New()
+	deps := buildValue.Deps
+	depsPaths := make([]string, 0, len(deps))
+	for p := range deps {
+		depsPaths = append(depsPaths, p)
+	}
+	sort.Strings(depsPaths)
+	for _, p := range depsPaths {
+		fpHash.Write([]byte(p))
+		fpHash.Write([]byte{0})
+		fpHash.Write([]byte(deps[p]))
+		fpHash.Write([]byte{0})
+	}
+	fpHash.Write(dllData)
+	fingerprint := hex.EncodeToString(fpHash.Sum(nil))
+	cachePath := filepath.Join(appBuildDir, "nebula-dic.exe.sha256")
+	if old, rerr := os.ReadFile(cachePath); rerr == nil && strings.TrimSpace(string(old)) == fingerprint {
+		if fi, serr := os.Stat(outPath); serr == nil && fi.Size() > 0 {
+			return outPath, "缓存命中，未重新编译，直接运行已有产物", nil
+		}
+	}
+
+	// 临时构建目录（独立 module，仅依赖标准库 + 内嵌 nebula.dll / compiled.gob）
+	buildDir, err := os.MkdirTemp("", "nebula-dic-build-*")
+	if err != nil {
+		return "", "", fmt.Errorf("创建构建目录失败: %w", err)
+	}
+	defer os.RemoveAll(buildDir)
+
+	if err := os.WriteFile(filepath.Join(buildDir, "main.go"), []byte(dicExecMainTemplate()), 0o644); err != nil {
+		return "", "", fmt.Errorf("写入 main.go 失败: %w", err)
+	}
+	if err := os.WriteFile(filepath.Join(buildDir, "compiled.gob"), gobData, 0o644); err != nil {
+		return "", "", fmt.Errorf("写入 compiled.gob 失败: %w", err)
+	}
+	if err := os.WriteFile(filepath.Join(buildDir, "go.mod"), []byte("module nebuladic\n\ngo 1.18\n"), 0o644); err != nil {
+		return "", "", fmt.Errorf("写入 go.mod 失败: %w", err)
+	}
+	if err := os.WriteFile(filepath.Join(buildDir, "nebula.dll"), dllData, 0o644); err != nil {
+		return "", "", fmt.Errorf("复制 nebula.dll 失败: %w", err)
+	}
+
+	cmd := exec.Command(goExe, "build", "-trimpath", "-ldflags", "-s -w", "-o", outPath, ".")
+	cmd.Dir = buildDir
+	// GOWORK=off 保证临时目录作为独立 module 构建，不受外层 go.work 影响。
+	cmd.Env = append(os.Environ(), "CGO_ENABLED=0", "GOOS=windows", "GOARCH=amd64", "GOWORK=off")
+	combined, err := cmd.CombinedOutput()
+	logText = string(combined)
+	if err != nil {
+		return "", logText, fmt.Errorf("go build 失败: %v", err)
+	}
+
+	// 记录本次打包指纹，供下次编译做缓存命中判断。
+	_ = os.WriteFile(cachePath, []byte(fingerprint), 0o644)
+
+	return outPath, logText, nil
+}
+
+// runDicBundle 运行已打包的可执行文件，传入触发词并捕获标准输出/错误（限时 60 秒）。
+// 返回标准输出与标准错误（进程异常退出时错误信息并入标准错误）。
+func runDicBundle(exePath, trigger string) (stdout, stderr string) {
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, exePath, trigger)
+	var outBuf, errBuf bytes.Buffer
+	cmd.Stdout = &outBuf
+	cmd.Stderr = &errBuf
+	if err := cmd.Run(); err != nil {
+		if errBuf.Len() > 0 {
+			return outBuf.String(), errBuf.String()
+		}
+		return outBuf.String(), err.Error()
+	}
+	return outBuf.String(), errBuf.String()
 }
 
 // openSqliteOpui 打开应用目录下的 SQLite 数据库文件（modernc 纯 Go 驱动），
@@ -3260,10 +2722,9 @@ func OpUI(w http.ResponseWriter, r *http.Request, getpath string) {
 					}
 					valid := false
 					if json.Unmarshal(wsMsg.Data, &authReq) == nil && authReq.Key != "" {
-						ff := utils.NewFileQueue(dto.CONFIG_SYSTEM_PATH)
-						f, err := ff.LoadIni()
+						cfg, err := dto.LoadConfigFile()
 						if err == nil {
-							storedKey := f.Section("管理面板").Key("密钥").String()
+							storedKey := cfg.Section("管理面板").Key("密钥").String()
 							if storedKey == "" || storedKey == authReq.Key {
 								authenticatedKey = authReq.Key
 								valid = true
@@ -3380,9 +2841,9 @@ func opuiHandleApi(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// 扩展部署：php/ffmpeg/silk_v3/napcat 仅支持 Windows，python 全平台支持
+	// 扩展部署：php/ffmpeg/silk_v3/napcat/go 仅支持 Windows，python 全平台支持
 	switch h.Type {
-	case "install_php", "install_ffmpeg", "install_silk_v3", "install_napcat_bot":
+	case "install_php", "install_ffmpeg", "install_silk_v3", "install_napcat_bot", "install_go":
 		if runtime.GOOS != "windows" {
 			jsonResp, _ := json.Marshal(map[string]string{"status": "error", "error": "该组件仅支持 Windows 端"})
 			w.Write(jsonResp)
@@ -3391,232 +2852,46 @@ func opuiHandleApi(w http.ResponseWriter, r *http.Request) {
 	}
 
 	switch h.Type {
-	case "get_servers":
-		ff := utils.NewFileQueue(dto.CONFIG_SYSTEM_PATH)
-		f, err := ff.LoadIni()
-		if err != nil {
-			utils.ErrorStop("系统配置不存在")
-		}
-		var j HttpOpUiConfig_servers
-		j.OS = runtime.GOOS
-
-		// 全局配置（[HTTP] 段共用：调试 / 临时读写清理周期）
-		httpSec := f.Section("HTTP")
-		j.Global.Debug = httpSec.Key("调试").MustBool(false)
-		j.Global.TempCleanupInterval = httpSec.Key("临时读写清理周期").MustInt(60)
-
-		// 遍历所有 HTTP 段（HTTP / HTTP2 / HTTP3...）
-		j.Servers = make([]HttpOpUiConfig_server, 0)
-		for _, sec := range f.Sections() {
-			name := sec.Name()
-			if name != "HTTP" && !strings.HasPrefix(name, "HTTP") {
-				continue
-			}
-			webRoot := sec.Key("映射目录").String()
-			if webRoot == "" {
-				webRoot = dto.DefaultWebRoot
-			}
-			routerFile := sec.Key("路由词库").String()
-			if routerFile == "" {
-				routerFile = dto.DefaultRouterFile
-			}
-			j.Servers = append(j.Servers, HttpOpUiConfig_server{
-				Server:      sec.Key("server").String(),
-				Enabled:     sec.Key("启用").MustBool(true),
-				TLS:         sec.Key("TLS").MustBool(false),
-				CertFile:    sec.Key("TLS证书文件").String(),
-				KeyFile:     sec.Key("TLS密钥文件").String(),
-				TLSMode:     sec.Key("TLS方式").MustString("file"),
-				TLSDomains:  sec.Key("TLS域名").String(),
-				TLSEmail:    sec.Key("TLS邮箱").String(),
-				Domains:     sec.Key("绑定域名").String(),
-				WebRoot:     webRoot,
-				RouterFile:  routerFile,
-				Remark:      sec.Key("备注").String(),
-				Cors:        sec.Key("跨域").MustBool(false),
-				CorsOrigins: sec.Key("跨域白名单").String(),
-				FrpOpen:     sec.Key("Frp启用").MustBool(false),
-				FrpAddr:     sec.Key("Frp服务端地址").String(),
-				FrpToken:    sec.Key("Frp令牌").String(),
-				FrpDebug:    sec.Key("Frp调试").MustBool(false),
-			})
-		}
-		if len(j.Servers) == 0 {
-			j.Servers = append(j.Servers, HttpOpUiConfig_server{
-				Server:     "",
-				Enabled:    true,
-				TLSMode:    "file",
-				WebRoot:    dto.DefaultWebRoot,
-				RouterFile: dto.DefaultRouterFile,
-			})
-		}
-		if r, err := json.Marshal(j); err != nil {
-			w.Write([]byte(`{"servers":[],"global":{"debug":false,"temp_cleanup_interval":60},"os":"` + runtime.GOOS + `"}`))
-		} else {
-			w.Write(r)
-		}
+	case "get_func_servers":
+		res, _ := json.Marshal(map[string]any{"servers": dto.FuncServers.Snapshot()})
+		w.Write(res)
 		return
 
-	case "save_servers":
-		var j HttpOpUiConfig_servers
-		if err := json.Unmarshal(h.Data, &j); err != nil {
-			http.Error(w, `{"status":"error","error":"invalid json"}`, http.StatusBadRequest)
-			return
-		}
-		if len(j.Servers) == 0 {
-			w.Write([]byte(`{"status":"error","error":"至少需要一个服务器配置"}`))
-			return
-		}
-
-		// 判断是否需要热重启 HTTP 服务器（无需重启进程）
-		needRestart := serversNeedRestart(dto.ServerConfig.Routers, j.Servers)
-
-		ff := utils.NewFileQueue(dto.CONFIG_SYSTEM_PATH)
-		f, err := ff.LoadIni()
-		if err != nil {
-			utils.ErrorStop("系统配置不存在")
-		}
-
-		// 删除所有现有 HTTP 段（HTTP / HTTP2 / HTTP3...）
-		httpSections := make([]string, 0)
-		for _, sec := range f.Sections() {
-			name := sec.Name()
-			if name == "HTTP" || strings.HasPrefix(name, "HTTP") {
-				httpSections = append(httpSections, name)
-			}
-		}
-		for _, name := range httpSections {
-			f.DeleteSection(name)
-		}
-
-		// 重建各服务器段
-		for i, s := range j.Servers {
-			name := "HTTP"
-			if i > 0 {
-				name = fmt.Sprintf("HTTP%d", i+1)
-			}
-			sec := f.Section(name)
-			sec.Key("server").SetValue(s.Server)
-			sec.Key("启用").SetValue(strconv.FormatBool(s.Enabled))
-			sec.Key("TLS").SetValue(strconv.FormatBool(s.TLS))
-			sec.Key("TLS证书文件").SetValue(s.CertFile)
-			sec.Key("TLS密钥文件").SetValue(s.KeyFile)
-			sec.Key("TLS方式").SetValue(s.TLSMode)
-			sec.Key("TLS域名").SetValue(s.TLSDomains)
-			sec.Key("TLS邮箱").SetValue(s.TLSEmail)
-			sec.Key("绑定域名").SetValue(s.Domains)
-			sec.Key("映射目录").SetValue(s.WebRoot)
-			sec.Key("路由词库").SetValue(s.RouterFile)
-			sec.Key("备注").SetValue(s.Remark)
-			sec.Key("跨域").SetValue(strconv.FormatBool(s.Cors))
-			sec.Key("跨域白名单").SetValue(s.CorsOrigins)
-			// BeerWebFrp 穿透（每个服务器独立），地址统一规范为 ws/wss
-			frpAddr := strings.TrimSpace(s.FrpAddr)
-			if after, ok := strings.CutPrefix(frpAddr, "https://"); ok {
-				frpAddr = "wss://" + after
-			} else if after, ok := strings.CutPrefix(frpAddr, "http://"); ok {
-				frpAddr = "ws://" + after
-			}
-			sec.Key("Frp启用").SetValue(strconv.FormatBool(s.FrpOpen))
-			sec.Key("Frp服务端地址").SetValue(frpAddr)
-			sec.Key("Frp令牌").SetValue(s.FrpToken)
-			sec.Key("Frp调试").SetValue(strconv.FormatBool(s.FrpDebug))
-		}
-
-		// 全局配置写入 [HTTP] 段
-		httpSec := f.Section("HTTP")
-		httpSec.Key("调试").SetValue(strconv.FormatBool(j.Global.Debug))
-		httpSec.Key("临时读写清理周期").SetValue(strconv.Itoa(j.Global.TempCleanupInterval))
-
-		if err := ff.SaveIni(f); err != nil {
-			utils.ErrorStop("系统配置保存失败")
-		}
-
-		// 更新内存全局配置
-		dto.ServerConfig.Debug = j.Global.Debug
-		dto.ServerConfig.TempCleanupInterval = j.Global.TempCleanupInterval
-		debugLog.SetDebug(j.Global.Debug)
-
-		// 更新内存 Routers 模型（每服务器独立 handler）
-		// 复用旧的 ServerHTTP 指针，使已运行 handler 闭包能立即感知跨域/路由词库/映射目录等非重启型配置变化
-		oldRouters := dto.ServerConfig.Routers
-		newRouters := make([]*dto.ServerHTTP, 0, len(j.Servers))
-		for i, s := range j.Servers {
-			var router *dto.ServerHTTP
-			if i < len(oldRouters) && oldRouters[i] != nil {
-				router = oldRouters[i]
-			} else {
-				router = &dto.ServerHTTP{Http: &http.Server{}}
-				if dto.WebHandlerFactory != nil {
-					router.Http.Handler = dto.WebHandlerFactory(router)
-				}
-			}
-			router.Http.Addr = s.Server
-			router.Enabled = s.Enabled
-			router.Domains = splitServerDomains(s.Domains)
-			router.WebRoot = s.WebRoot
-			router.RouterFile = s.RouterFile
-			router.Cors = s.Cors
-			router.CorsOrigins = s.CorsOrigins
-			router.TLS = s.TLS
-			router.CertFile = s.CertFile
-			router.KeyFile = s.KeyFile
-			router.TLSMode = s.TLSMode
-			router.TLSDomains = s.TLSDomains
-			router.TLSEmail = s.TLSEmail
-			router.FrpOpen = s.FrpOpen
-			router.FrpServerAddr = s.FrpAddr
-			router.FrpToken = s.FrpToken
-			router.FrpDebug = s.FrpDebug
-			newRouters = append(newRouters, router)
-		}
-		dto.ServerConfig.Routers = newRouters
-
-		// 逐台重建 BeerWebFrp 隧道（每个服务器独立穿透）
-		ReconnectAllFrp(newRouters)
-
-		if needRestart {
-			if err := RestartHTTPServer(); err != nil {
-				w.Write([]byte(`{"status":"error","error":` + strconvQuote("HTTPS 配置热更新失败: "+err.Error()) + `}`))
-				return
-			}
-		}
-		w.Write([]byte(`{"status":"ok"}`))
-		return
-
-	case "toggle_server":
+	case "save_func_server":
 		var req struct {
-			Index int  `json:"index"`
-			Open  bool `json:"open"`
+			Addr string `json:"addr"`
+			dto.FuncServerUpdate
 		}
 		if err := json.Unmarshal(h.Data, &req); err != nil {
 			http.Error(w, `{"status":"error","error":"invalid json"}`, http.StatusBadRequest)
 			return
 		}
-		routers := dto.ServerConfig.Routers
-		if req.Index < 0 || req.Index >= len(routers) || routers[req.Index] == nil {
+		info := dto.FuncServers.Get(req.Addr)
+		if info == nil || info.Update == nil {
 			w.Write([]byte(`{"status":"error","error":"服务器不存在"}`))
 			return
 		}
-		// 实时开关：直接修改运行中的服务器指针，无需重启
-		routers[req.Index].Enabled = req.Open
+		if err := info.Update(req.FuncServerUpdate); err != nil {
+			w.Write([]byte(`{"status":"error","error":` + strconvQuote(err.Error()) + `}`))
+			return
+		}
+		w.Write([]byte(`{"status":"ok"}`))
+		return
 
-		// 持久化到对应 HTTP 段（HTTP / HTTP2 / HTTP3...）
-		ff := utils.NewFileQueue(dto.CONFIG_SYSTEM_PATH)
-		f, err := ff.LoadIni()
-		if err != nil {
-			w.Write([]byte(`{"status":"error","error":"读取系统配置失败"}`))
+	case "close_func_server":
+		var req struct {
+			Addr string `json:"addr"`
+		}
+		if err := json.Unmarshal(h.Data, &req); err != nil {
+			http.Error(w, `{"status":"error","error":"invalid json"}`, http.StatusBadRequest)
 			return
 		}
-		name := "HTTP"
-		if req.Index > 0 {
-			name = fmt.Sprintf("HTTP%d", req.Index+1)
-		}
-		f.Section(name).Key("启用").SetValue(strconv.FormatBool(req.Open))
-		if err := ff.SaveIni(f); err != nil {
-			w.Write([]byte(`{"status":"error","error":"保存系统配置失败"}`))
+		info := dto.FuncServers.Get(req.Addr)
+		if info == nil || info.Close == nil {
+			w.Write([]byte(`{"status":"error","error":"服务器不存在"}`))
 			return
 		}
+		info.Close()
 		w.Write([]byte(`{"status":"ok"}`))
 		return
 
@@ -3637,14 +2912,13 @@ func opuiHandleApi(w http.ResponseWriter, r *http.Request) {
 		return
 
 	case "get_opui":
-		ff := utils.NewFileQueue(dto.CONFIG_SYSTEM_PATH)
-		f, err := ff.LoadIni()
+		cfg, err := dto.LoadConfigFile()
 		if err != nil {
-			debugLog.Errorf("[OPUI] get_opui LoadIni failed: %v", err)
+			debugLog.Errorf("[OPUI] get_opui LoadConfigFile failed: %v", err)
 			w.Write([]byte(`{"open":false,"path":"","secret":"","cors":false}`))
 			return
 		}
-		d := f.Section("管理面板")
+		d := cfg.Section("管理面板")
 		var j HttpOpUiConfig_opui
 		j.Open = d.Key("启用").MustBool(false)
 		j.Path = d.Key("访问路径").String()
@@ -3665,17 +2939,16 @@ func opuiHandleApi(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, `{"status":"error","error":"invalid json"}`, http.StatusBadRequest)
 			return
 		}
-		ff := utils.NewFileQueue(dto.CONFIG_SYSTEM_PATH)
-		f, err := ff.LoadIni()
+		cfg, err := dto.LoadConfigFile()
 		if err != nil {
 			utils.ErrorStop("系统配置不存在")
 		}
-		d := f.Section("管理面板")
+		d := cfg.Section("管理面板")
 		d.Key("启用").SetValue(strconv.FormatBool(j.Open))
 		d.Key("访问路径").SetValue(j.Path)
 		d.Key("密钥").SetValue(j.Secret)
 		d.Key("跨域").SetValue(strconv.FormatBool(j.Cors))
-		ff.SaveIni(f)
+		cfg.Save()
 
 		if j.Open {
 			dto.ServerConfig.OPUI = &dto.OPUI{
@@ -3690,8 +2963,7 @@ func opuiHandleApi(w http.ResponseWriter, r *http.Request) {
 		return
 
 	case "get_cloud_tool":
-		ff := utils.NewFileQueue(dto.CONFIG_SYSTEM_PATH)
-		f, err := ff.LoadIni()
+		cfg, err := dto.LoadConfigFile()
 		if err != nil {
 			w.Write([]byte(`{"addr":"","connected":false,"debug":false}`))
 			return
@@ -3700,7 +2972,7 @@ func opuiHandleApi(w http.ResponseWriter, r *http.Request) {
 		j.Addr = cloudToolAddr()
 		j.Connected = cloudToolConnected()
 		j.Reconnecting = cloudToolReconnecting.Load()
-		j.Debug = f.Section("云工具").Key("调试").MustBool(false)
+		j.Debug = cfg.Section("云工具").Key("调试").MustBool(false)
 		j.OfflineNotify = cloudToolGetOfflineNotify()
 		j.MaxDevices = cloudToolGetMaxDevices()
 		j.Email = cloudToolGetEmail()
@@ -3817,17 +3089,16 @@ func opuiHandleApi(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, `{"status":"error","error":"invalid json"}`, http.StatusBadRequest)
 			return
 		}
-		ff := utils.NewFileQueue(dto.CONFIG_SYSTEM_PATH)
-		f, err := ff.LoadIni()
+		cfg, err := dto.LoadConfigFile()
 		if err != nil {
 			utils.ErrorStop("系统配置不存在")
 		}
 		newAddr := strings.TrimSpace(j.Addr)
-		oldAddr := strings.TrimSpace(f.Section("云工具").Key("连接地址").String())
-		f.Section("云工具").Key("连接地址").SetValue(newAddr)
-		f.Section("云工具").Key("调试").SetValue(strconv.FormatBool(j.Debug))
+		oldAddr := strings.TrimSpace(cfg.Section("云工具").Key("连接地址").String())
+		cfg.Section("云工具").Key("连接地址").SetValue(newAddr)
+		cfg.Section("云工具").Key("调试").SetValue(strconv.FormatBool(j.Debug))
 		cloudToolDebug = j.Debug
-		ff.SaveIni(f)
+		cfg.Save()
 		if newAddr != oldAddr {
 			// 地址变化：断开旧连接，等待下次登录/断线重连使用新地址
 			cloudToolSetWantConn(false)
@@ -3838,12 +3109,11 @@ func opuiHandleApi(w http.ResponseWriter, r *http.Request) {
 		return
 
 	case "get_cloudtool_server":
-		ff := utils.NewFileQueue(dto.CONFIG_SYSTEM_PATH)
-		f, err := ff.LoadIni()
+		cfg, err := dto.LoadConfigFile()
 		if err != nil {
 			utils.ErrorStop("系统配置不存在")
 		}
-		d := f.Section("云工具服务端")
+		d := cfg.Section("云工具服务端")
 		var j HttpOpUiConfig_cloudtool_server
 		j.Open = d.Key("启用").MustBool(false)
 		j.Addr = d.Key("访问路径").String()
@@ -3878,19 +3148,18 @@ func opuiHandleApi(w http.ResponseWriter, r *http.Request) {
 		if j.LogoutSec < 0 {
 			j.LogoutSec = 0
 		}
-		ff := utils.NewFileQueue(dto.CONFIG_SYSTEM_PATH)
-		f, err := ff.LoadIni()
+		cfg, err := dto.LoadConfigFile()
 		if err != nil {
 			utils.ErrorStop("系统配置不存在")
 		}
-		d := f.Section("云工具服务端")
+		d := cfg.Section("云工具服务端")
 		d.Key("启用").SetValue(strconv.FormatBool(j.Open))
 		d.Key("访问路径").SetValue(addr)
 		d.Key("任意账号注册").SetValue(strconv.FormatBool(j.AllowRegister))
 		d.Key("词库目录").SetValue(dicDir)
 		d.Key("断开注销时长").SetValue(strconv.Itoa(j.LogoutSec))
 		d.Key("调试").SetValue(strconv.FormatBool(j.Debug))
-		ff.SaveIni(f)
+		cfg.Save()
 
 		// 更新内存配置并即时生效（Open=false 时仅拒绝新连接）；白名单由白名单配置页单独管理，不在此覆盖
 		dto.ServerConfig.CloudTool = &dto.CloudTool{
@@ -4491,13 +3760,12 @@ func opuiHandleApi(w http.ResponseWriter, r *http.Request) {
 			w.Write([]byte(`{"valid":false}`))
 			return
 		}
-		ff := utils.NewFileQueue(dto.CONFIG_SYSTEM_PATH)
-		f, err := ff.LoadIni()
+		cfg, err := dto.LoadConfigFile()
 		if err != nil {
 			w.Write([]byte(`{"valid":false}`))
 			return
 		}
-		d := f.Section("管理面板")
+		d := cfg.Section("管理面板")
 		storedKey := d.Key("密钥").String()
 		clientIP := utils.GetClientIP(r)
 		if storedKey == "" || storedKey == j.Key {
@@ -4511,22 +3779,25 @@ func opuiHandleApi(w http.ResponseWriter, r *http.Request) {
 
 	case "get_websocket":
 		list := dto.ServerConfig.WsListSnapshot()
+		coreAddr := dto.FuncServers.CoreAddr()
 		items := make([]HttpOpUiWebSocketItem, 0, len(list)+1)
 		for _, ws := range list {
 			items = append(items, HttpOpUiWebSocketItem{
-				Addr:     ws.Addr,
-				Cors:     ws.Cors,
-				Open:     ws.Open,
-				Closable: true,
+				Addr:       ws.Addr,
+				Cors:       ws.Cors,
+				Open:       ws.Open,
+				Closable:   true,
+				ServerAddr: coreAddr,
 			})
 		}
 		// OPUI 本身也是一个 WebSocket 服务，纳入监听列表（但不可关闭，关闭等于关闭面板自身）
 		if opui := dto.ServerConfig.OPUI; opui != nil {
 			items = append(items, HttpOpUiWebSocketItem{
-				Addr:     opui.Addr,
-				Cors:     opui.Cors,
-				Open:     true,
-				Closable: false,
+				Addr:       opui.Addr,
+				Cors:       opui.Cors,
+				Open:       true,
+				Closable:   false,
+				ServerAddr: coreAddr,
 			})
 		}
 		r, _ := json.Marshal(map[string]any{"list": items})
@@ -4555,12 +3826,11 @@ func opuiHandleApi(w http.ResponseWriter, r *http.Request) {
 		return
 
 	case "get_ngrok":
-		ff := utils.NewFileQueue(dto.CONFIG_SYSTEM_PATH)
-		f, err := ff.LoadIni()
+		cfg, err := dto.LoadConfigFile()
 		if err != nil {
 			utils.ErrorStop("系统配置不存在")
 		}
-		d := f.Section("Ngrok")
+		d := cfg.Section("Ngrok")
 		var j HttpOpUiConfig_ngrok
 		j.Open = d.Key("启用").MustBool(false)
 		j.Token = d.Key("密钥").String()
@@ -4576,17 +3846,16 @@ func opuiHandleApi(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, `{"status":"error","error":"invalid json"}`, http.StatusBadRequest)
 			return
 		}
-		ff := utils.NewFileQueue(dto.CONFIG_SYSTEM_PATH)
-		f, err := ff.LoadIni()
+		cfg, err := dto.LoadConfigFile()
 		if err != nil {
 			utils.ErrorStop("系统配置不存在")
 		}
-		d := f.Section("Ngrok")
+		d := cfg.Section("Ngrok")
 		d.Key("启用").SetValue(strconv.FormatBool(j.Open))
 		d.Key("密钥").SetValue(j.Token)
 		d.Key("访问链接").SetValue(j.Domain)
 		d.Key("服务器").SetValue(j.ServerAddr)
-		ff.SaveIni(f)
+		cfg.Save()
 
 		// 保存即生效：按启用状态启停隧道（服务器地址变更时先停旧隧道再重连）
 		if j.Open {
@@ -4619,14 +3888,13 @@ func opuiHandleApi(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, `{"status":"error","error":"invalid json"}`, http.StatusBadRequest)
 			return
 		}
-		ff := utils.NewFileQueue(dto.CONFIG_SYSTEM_PATH)
-		f, err := ff.LoadIni()
+		cfg, err := dto.LoadConfigFile()
 		if err != nil {
 			utils.ErrorStop("系统配置不存在")
 		}
-		d := f.Section("Ngrok")
+		d := cfg.Section("Ngrok")
 		d.Key("启用").SetValue(strconv.FormatBool(j.Open))
-		ff.SaveIni(f)
+		cfg.Save()
 
 		if j.Open {
 			token := d.Key("密钥").String()
@@ -4651,12 +3919,11 @@ func opuiHandleApi(w http.ResponseWriter, r *http.Request) {
 		return
 
 	case "get_ftp":
-		ff := utils.NewFileQueue(dto.CONFIG_SYSTEM_PATH)
-		f, err := ff.LoadIni()
+		cfg, err := dto.LoadConfigFile()
 		if err != nil {
 			utils.ErrorStop("系统配置不存在")
 		}
-		d := f.Section("FTP")
+		d := cfg.Section("FTP")
 		var j HttpOpUiConfig_ftp
 		j.Open = d.Key("启用").MustBool(false)
 		j.Port = d.Key("端口").MustInt(21)
@@ -4685,12 +3952,11 @@ func opuiHandleApi(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, `{"status":"error","error":"起始端口不能大于结束端口"}`, http.StatusBadRequest)
 			return
 		}
-		ff := utils.NewFileQueue(dto.CONFIG_SYSTEM_PATH)
-		f, err := ff.LoadIni()
+		cfg, err := dto.LoadConfigFile()
 		if err != nil {
 			utils.ErrorStop("系统配置不存在")
 		}
-		d := f.Section("FTP")
+		d := cfg.Section("FTP")
 		d.Key("启用").SetValue(strconv.FormatBool(j.Open))
 		d.Key("端口").SetValue(strconv.Itoa(j.Port))
 		d.Key("用户名").SetValue(j.Username)
@@ -4699,7 +3965,7 @@ func opuiHandleApi(w http.ResponseWriter, r *http.Request) {
 		d.Key("TLS").SetValue(strconv.FormatBool(j.Tls))
 		d.Key("PASV端口起始").SetValue(strconv.Itoa(j.PasvPortStart))
 		d.Key("PASV端口结束").SetValue(strconv.Itoa(j.PasvPortEnd))
-		ff.SaveIni(f)
+		cfg.Save()
 
 		if j.Open {
 			StartFtp(j.Port, j.Debug, j.Username, j.Password, j.Tls, j.PasvPortStart, j.PasvPortEnd)
@@ -4711,12 +3977,11 @@ func opuiHandleApi(w http.ResponseWriter, r *http.Request) {
 		return
 
 	case "get_sftp":
-		ff := utils.NewFileQueue(dto.CONFIG_SYSTEM_PATH)
-		f, err := ff.LoadIni()
+		cfg, err := dto.LoadConfigFile()
 		if err != nil {
 			utils.ErrorStop("系统配置不存在")
 		}
-		d := f.Section("SFTP")
+		d := cfg.Section("SFTP")
 		var j HttpOpUiConfig_sftp
 		j.Open = d.Key("启用").MustBool(false)
 		j.Port = d.Key("端口").MustInt(22)
@@ -4733,18 +3998,17 @@ func opuiHandleApi(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, `{"status":"error","error":"invalid json"}`, http.StatusBadRequest)
 			return
 		}
-		ff := utils.NewFileQueue(dto.CONFIG_SYSTEM_PATH)
-		f, err := ff.LoadIni()
+		cfg, err := dto.LoadConfigFile()
 		if err != nil {
 			utils.ErrorStop("系统配置不存在")
 		}
-		d := f.Section("SFTP")
+		d := cfg.Section("SFTP")
 		d.Key("启用").SetValue(strconv.FormatBool(j.Open))
 		d.Key("端口").SetValue(strconv.Itoa(j.Port))
 		d.Key("用户名").SetValue(j.Username)
 		d.Key("密码").SetValue(j.Password)
 		d.Key("调试").SetValue(strconv.FormatBool(j.Debug))
-		ff.SaveIni(f)
+		cfg.Save()
 
 		if j.Open {
 			StartSftp(j.Port, j.Debug, j.Username, j.Password)
@@ -4756,16 +4020,14 @@ func opuiHandleApi(w http.ResponseWriter, r *http.Request) {
 		return
 
 	case "get_qq", "get_qq_list":
-		ff := utils.NewFileQueue(dto.CONFIG_PATH)
-		f, err := ff.LoadIni()
+		cfg, err := dto.LoadConfigFile()
 		if err != nil {
 			utils.ErrorStop("系统配置不存在")
 		}
 		var list HttpOpUiConfig_qq_list
-		for _, sec := range f.Sections() {
-			secName := sec.Name()
+		for _, secName := range cfg.Sections() {
 			if secName == "QQ" || (strings.HasPrefix(secName, "QQ") && len(secName) > 2) {
-				d := f.Section(secName)
+				d := cfg.Section(secName)
 				var j HttpOpUiConfig_qq
 				j.Open = d.Key("启用").MustBool(false)
 				j.Dic = d.Key("词库").String()
@@ -4815,24 +4077,22 @@ func opuiHandleApi(w http.ResponseWriter, r *http.Request) {
 		if sectionName == "" {
 			sectionName = "QQ"
 		}
-		ff := utils.NewFileQueue(dto.CONFIG_PATH)
-		f, err := ff.LoadIni()
+		cfg, err := dto.LoadConfigFile()
 		if err != nil {
 			utils.ErrorStop("系统配置不存在")
 		}
 		// 备注唯一性检查
 		if j.Config.Remark != "" {
-			for _, sec := range f.Sections() {
-				secName := sec.Name()
+			for _, secName := range cfg.Sections() {
 				if secName != sectionName && (secName == "QQ" || (strings.HasPrefix(secName, "QQ") && len(secName) > 2)) {
-					if f.Section(secName).Key("备注").String() == j.Config.Remark {
+					if cfg.Section(secName).Key("备注").String() == j.Config.Remark {
 						http.Error(w, `{"status":"error","error":"备注名已存在"}`, http.StatusConflict)
 						return
 					}
 				}
 			}
 		}
-		d := f.Section(sectionName)
+		d := cfg.Section(sectionName)
 		d.Key("启用").SetValue(strconv.FormatBool(j.Config.Open))
 		d.Key("词库").SetValue(j.Config.Dic)
 		d.Key("访问路径").SetValue(j.Config.Path)
@@ -4846,7 +4106,7 @@ func opuiHandleApi(w http.ResponseWriter, r *http.Request) {
 		d.Key("备注").SetValue(j.Config.Remark)
 		d.Key("Robot").SetValue(j.Config.Robot)
 		dto.LoadConfig_qq(d, sectionName)
-		ff.SaveIni(f)
+		cfg.Save()
 		w.Write([]byte(`{"status":"ok"}`))
 		return
 
@@ -4860,14 +4120,13 @@ func opuiHandleApi(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		// 更新配置文件
-		ff := utils.NewFileQueue(dto.CONFIG_PATH)
-		f, err := ff.LoadIni()
+		cfg, err := dto.LoadConfigFile()
 		if err != nil {
 			utils.ErrorStop("系统配置不存在")
 		}
-		d := f.Section(j.Section)
+		d := cfg.Section(j.Section)
 		d.Key("调试打印").SetValue(strconv.FormatBool(j.Debug))
-		ff.SaveIni(f)
+		cfg.Save()
 		// 仅更新运行中 bot 的 Debug 标志，不重连
 		if dto.ServerConfig.QQBots != nil {
 			if bot := dto.ServerConfig.QQBots[j.Section]; bot != nil {
@@ -4881,15 +4140,13 @@ func opuiHandleApi(w http.ResponseWriter, r *http.Request) {
 		return
 
 	case "add_qq":
-		ff := utils.NewFileQueue(dto.CONFIG_PATH)
-		f, err := ff.LoadIni()
+		cfg, err := dto.LoadConfigFile()
 		if err != nil {
 			utils.ErrorStop("系统配置不存在")
 		}
 		// 找到下一个可用的编号
 		maxNum := 0
-		for _, sec := range f.Sections() {
-			name := sec.Name()
+		for _, name := range cfg.Sections() {
 			if strings.HasPrefix(name, "QQ") {
 				if name == "QQ" {
 					if maxNum < 1 {
@@ -4905,7 +4162,7 @@ func opuiHandleApi(w http.ResponseWriter, r *http.Request) {
 		}
 		newNum := maxNum + 1
 		newSection := "QQ" + strconv.Itoa(newNum)
-		d := f.Section(newSection)
+		d := cfg.Section(newSection)
 		d.Key("启用").SetValue("false")
 		d.Key("词库").SetValue("private/bot/qq" + strconv.Itoa(newNum))
 		d.Key("访问路径").SetValue("qq-bot" + strconv.Itoa(newNum))
@@ -4918,7 +4175,7 @@ func opuiHandleApi(w http.ResponseWriter, r *http.Request) {
 		d.Key("监听码").SetValue("0")
 		d.Key("备注").SetValue("")
 		d.Key("Robot").SetValue("")
-		ff.SaveIni(f)
+		cfg.Save()
 		j := HttpOpUiConfig_qq_instance{
 			Section: newSection,
 			Config: HttpOpUiConfig_qq{
@@ -4952,17 +4209,16 @@ func opuiHandleApi(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, `{"status":"error","error":"section is empty"}`, http.StatusBadRequest)
 			return
 		}
-		ff := utils.NewFileQueue(dto.CONFIG_PATH)
-		f, err := ff.LoadIni()
+		cfg, err := dto.LoadConfigFile()
 		if err != nil {
 			utils.ErrorStop("系统配置不存在")
 		}
-		f.DeleteSection(j.Section)
+		cfg.DeleteSection(j.Section)
 		// 从运行中移除
 		if dto.ServerConfig.QQBots != nil {
 			delete(dto.ServerConfig.QQBots, j.Section)
 		}
-		ff.SaveIni(f)
+		cfg.Save()
 		w.Write([]byte(`{"status":"ok"}`))
 		return
 
@@ -5003,12 +4259,11 @@ func opuiHandleApi(w http.ResponseWriter, r *http.Request) {
 				http.Error(w, `{"status":"error","error":"dic或section不能为空"}`, http.StatusBadRequest)
 				return
 			}
-			ff := utils.NewFileQueue(dto.CONFIG_PATH)
-			f, err := ff.LoadIni()
+			cfg, err := dto.LoadConfigFile()
 			if err != nil {
 				utils.ErrorStop("系统配置不存在")
 			}
-			d := f.Section(j.Section)
+			d := cfg.Section(j.Section)
 			dicPath = d.Key("词库").String()
 			appid = d.Key("APPID").String()
 			secret = d.Key("密钥").String()
@@ -5045,12 +4300,11 @@ func opuiHandleApi(w http.ResponseWriter, r *http.Request) {
 		return
 
 	case "get_napcat":
-		ff := utils.NewFileQueue(dto.CONFIG_PATH)
-		f, err := ff.LoadIni()
+		cfg, err := dto.LoadConfigFile()
 		if err != nil {
 			utils.ErrorStop("系统配置不存在")
 		}
-		d := f.Section("NapCat")
+		d := cfg.Section("NapCat")
 		var j HttpOpUiConfig_napcat
 		j.Open = d.Key("启用").MustBool(false)
 		j.Dic = d.Key("词库").String()
@@ -5067,29 +4321,27 @@ func opuiHandleApi(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, `{"status":"error","error":"invalid json"}`, http.StatusBadRequest)
 			return
 		}
-		ff := utils.NewFileQueue(dto.CONFIG_PATH)
-		f, err := ff.LoadIni()
+		cfg, err := dto.LoadConfigFile()
 		if err != nil {
 			utils.ErrorStop("系统配置不存在")
 		}
-		d := f.Section("NapCat")
+		d := cfg.Section("NapCat")
 		d.Key("启用").SetValue(strconv.FormatBool(j.Open))
 		d.Key("词库").SetValue(j.Dic)
 		d.Key("访问路径").SetValue(j.Path)
 		d.Key("密钥").SetValue(j.Secret)
 		d.Key("发送消息接口").SetValue(j.Api)
 		dto.LoadConfig_napcat(d)
-		ff.SaveIni(f)
+		cfg.Save()
 		w.Write([]byte(`{"status":"ok"}`))
 		return
 
 	case "get_yunhu":
-		ff := utils.NewFileQueue(dto.CONFIG_PATH)
-		f, err := ff.LoadIni()
+		cfg, err := dto.LoadConfigFile()
 		if err != nil {
 			utils.ErrorStop("系统配置不存在")
 		}
-		d := f.Section("云湖")
+		d := cfg.Section("云湖")
 		var j HttpOpUiConfig_yunhu
 		j.Open = d.Key("启用").MustBool(false)
 		j.Dic = d.Key("词库").String()
@@ -5105,28 +4357,26 @@ func opuiHandleApi(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, `{"status":"error","error":"invalid json"}`, http.StatusBadRequest)
 			return
 		}
-		ff := utils.NewFileQueue(dto.CONFIG_PATH)
-		f, err := ff.LoadIni()
+		cfg, err := dto.LoadConfigFile()
 		if err != nil {
 			utils.ErrorStop("系统配置不存在")
 		}
-		d := f.Section("云湖")
+		d := cfg.Section("云湖")
 		d.Key("启用").SetValue(strconv.FormatBool(j.Open))
 		d.Key("词库").SetValue(j.Dic)
 		d.Key("访问路径").SetValue(j.Path)
 		d.Key("密钥").SetValue(j.Secret)
 		dto.LoadConfig_yunhu(d)
-		ff.SaveIni(f)
+		cfg.Save()
 		w.Write([]byte(`{"status":"ok"}`))
 		return
 
 	case "get_feishu":
-		ff := utils.NewFileQueue(dto.CONFIG_PATH)
-		f, err := ff.LoadIni()
+		cfg, err := dto.LoadConfigFile()
 		if err != nil {
 			utils.ErrorStop("系统配置不存在")
 		}
-		d := f.Section("飞书")
+		d := cfg.Section("飞书")
 		var j HttpOpUiConfig_feishu
 		j.Open = d.Key("启用").MustBool(false)
 		j.Dic = d.Key("词库").String()
@@ -5143,30 +4393,27 @@ func opuiHandleApi(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, `{"status":"error","error":"invalid json"}`, http.StatusBadRequest)
 			return
 		}
-		ff := utils.NewFileQueue(dto.CONFIG_PATH)
-		f, err := ff.LoadIni()
+		cfg, err := dto.LoadConfigFile()
 		if err != nil {
-
 			utils.ErrorStop("系统配置不存在")
 		}
-		d := f.Section("飞书")
+		d := cfg.Section("飞书")
 		d.Key("启用").SetValue(strconv.FormatBool(j.Open))
 		d.Key("词库").SetValue(j.Dic)
 		d.Key("访问路径").SetValue(j.Path)
 		d.Key("APPID").SetValue(j.Appid)
 		d.Key("密钥").SetValue(j.Secret)
 		dto.LoadConfig_feishu(d)
-		ff.SaveIni(f)
+		cfg.Save()
 		w.Write([]byte(`{"status":"ok"}`))
 		return
 
 	case "get_secluded":
-		ff := utils.NewFileQueue(dto.CONFIG_PATH)
-		f, err := ff.LoadIni()
+		cfg, err := dto.LoadConfigFile()
 		if err != nil {
 			utils.ErrorStop("系统配置不存在")
 		}
-		d := f.Section("Secluded")
+		d := cfg.Section("Secluded")
 		var j HttpOpUiConfig_secluded
 		j.Open = d.Key("启用").MustBool(false)
 		j.Dic = d.Key("词库").String()
@@ -5183,19 +4430,18 @@ func opuiHandleApi(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, `{"status":"error","error":"invalid json"}`, http.StatusBadRequest)
 			return
 		}
-		ff := utils.NewFileQueue(dto.CONFIG_PATH)
-		f, err := ff.LoadIni()
+		cfg, err := dto.LoadConfigFile()
 		if err != nil {
 			utils.ErrorStop("系统配置不存在")
 		}
-		d := f.Section("Secluded")
+		d := cfg.Section("Secluded")
 		d.Key("启用").SetValue(strconv.FormatBool(j.Open))
 		d.Key("词库").SetValue(j.Dic)
 		d.Key("对接地址").SetValue(j.Address)
 		d.Key("令牌").SetValue(j.Token)
 		d.Key("调试打印").SetValue(strconv.FormatBool(j.Debug))
 		dto.LoadConfig_secluded(d)
-		ff.SaveIni(f)
+		cfg.Save()
 		if j.Open {
 			if dto.ServerConfig.SecludedBot != nil && dto.ServerConfig.SecludedBot.Addr != "" {
 				secludedbot.Start(dto.ServerConfig.SecludedBot.Addr, dto.ServerConfig.SecludedBot.Token)
@@ -5486,6 +4732,50 @@ func opuiHandleApi(w http.ResponseWriter, r *http.Request) {
 		w.Write(jsonResp)
 		return
 
+	case "install_go":
+		appDir := utils.GetAppDir()
+		extDir := filepath.Join(appDir, "private", "extensions")
+		if fileExists(filepath.Join(extDir, "go", "bin", "go.exe")) {
+			resp := HttpOpUiInstallResponse{
+				Status: "ok",
+				Output: []string{"Go 工具链已安装"},
+			}
+			jsonResp, _ := json.Marshal(resp)
+			w.Write(jsonResp)
+			return
+		}
+		// 防止重复安装
+		if existingTask := findRunningTaskForComponent("go"); existingTask != nil {
+			jsonResp, _ := json.Marshal(map[string]string{"status": "ok", "task_id": existingTask.ID})
+			w.Write(jsonResp)
+			return
+		}
+		taskID := generateTaskID()
+		task := &InstallTask{
+			ID:        taskID,
+			Component: "go",
+			Status:    "running",
+			Progress:  0,
+		}
+		installTaskStore.Store(taskID, task)
+		go func() {
+			var output []string
+			progressFn := func(p float64) { task.setProgress(p) }
+			err := installGo(extDir, &output, progressFn)
+			for _, line := range output {
+				task.addOutput(line)
+			}
+			if task.IsCancelled() {
+				task.addOutput("⚠ 安装已取消")
+				task.finish(nil)
+				return
+			}
+			task.finish(err)
+		}()
+		jsonResp, _ := json.Marshal(map[string]string{"status": "ok", "task_id": taskID})
+		w.Write(jsonResp)
+		return
+
 	case "get_install_status":
 		appDir := utils.GetAppDir()
 		extDir := filepath.Join(appDir, "private", "extensions")
@@ -5495,6 +4785,7 @@ func opuiHandleApi(w http.ResponseWriter, r *http.Request) {
 			"napcat_bot": fileExists(filepath.Join(extDir, "NapCat.Shell", "launcher.bat")),
 			"ffmpeg":     utils.FindFfmpegExe(filepath.Join(extDir, "ffmpeg")) != "",
 			"silk_v3":    fileExists(filepath.Join(extDir, "silk_v3", "silk_v3_encoder.exe")),
+			"go":         fileExists(filepath.Join(extDir, "go", "bin", "go.exe")),
 		}
 		jsonResp, _ := json.Marshal(allStatus)
 		w.Write(jsonResp)
@@ -5570,6 +4861,8 @@ func opuiHandleApi(w http.ResponseWriter, r *http.Request) {
 			rmDir = filepath.Join(appDir, "private", "extensions", "silk_v3")
 		case "napcat_bot":
 			rmDir = filepath.Join(appDir, "private", "extensions", "NapCat.Shell")
+		case "go":
+			rmDir = filepath.Join(appDir, "private", "extensions", "go")
 		case "python":
 			// Linux 使用系统 python3，仅当存在内置扩展时才可删除
 			if runtime.GOOS != "windows" && !fileExists(filepath.Join(appDir, "private", "extensions", "python", "python3")) {
@@ -5615,6 +4908,52 @@ func opuiHandleApi(w http.ResponseWriter, r *http.Request) {
 		resp := map[string]string{"content": string(data)}
 		jsonResp, _ := json.Marshal(resp)
 		w.Write(jsonResp)
+		return
+
+	case "get_global_config":
+		cfg, err := dto.LoadConfigFile()
+		if err != nil {
+			jsonResp, _ := json.Marshal(map[string]any{"debug": false, "temp_cleanup_interval": 60, "dic_cache": false})
+			w.Write(jsonResp)
+			return
+		}
+		httpSec := cfg.Section("HTTP")
+		jsonResp, _ := json.Marshal(map[string]any{
+			"debug":                 httpSec.Key("调试").MustBool(false),
+			"temp_cleanup_interval": httpSec.Key("临时读写清理周期").MustInt(60),
+			"dic_cache":             httpSec.Key("词库编译缓存").MustBool(false),
+		})
+		w.Write(jsonResp)
+		return
+
+	case "save_global_config":
+		var j struct {
+			Debug               bool `json:"debug"`
+			TempCleanupInterval int  `json:"temp_cleanup_interval"`
+			DicCache            bool `json:"dic_cache"`
+		}
+		if err := json.Unmarshal(h.Data, &j); err != nil {
+			http.Error(w, `{"status":"error","error":"invalid json"}`, http.StatusBadRequest)
+			return
+		}
+		cfg, err := dto.LoadConfigFile()
+		if err != nil {
+			w.Write([]byte(`{"status":"error","error":"读取系统配置失败"}`))
+			return
+		}
+		httpSec := cfg.Section("HTTP")
+		httpSec.Key("调试").SetValue(strconv.FormatBool(j.Debug))
+		httpSec.Key("临时读写清理周期").SetValue(strconv.Itoa(j.TempCleanupInterval))
+		httpSec.Key("词库编译缓存").SetValue(strconv.FormatBool(j.DicCache))
+		if err := cfg.Save(); err != nil {
+			w.Write([]byte(`{"status":"error","error":"保存系统配置失败"}`))
+			return
+		}
+		dto.ServerConfig.Debug = j.Debug
+		dto.ServerConfig.TempCleanupInterval = j.TempCleanupInterval
+		dto.ServerConfig.DicCache = j.DicCache
+		debugLog.SetDebug(j.Debug)
+		w.Write([]byte(`{"status":"ok"}`))
 		return
 
 	case "get_autostart":
@@ -6617,7 +5956,7 @@ func opuiHandleApi(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, `{"status":"error","error":"invalid json"}`, http.StatusBadRequest)
 			return
 		}
-		// 词库路径留空时使用 system.ini 中 [词库调试] 默认词库
+		// 词库路径留空时使用合并配置中 [词库调试] 默认词库
 		if j.DicPath == "" {
 			if p, ok := loadDicDebugDefaults()["path"].(string); ok {
 				j.DicPath = p
@@ -6653,26 +5992,24 @@ func opuiHandleApi(w http.ResponseWriter, r *http.Request) {
 		return
 
 	case "get_dic_config":
-		// 读取词库调试运行配置（system.ini 的 [词库调试] 节）
+		// 读取词库调试运行配置（合并配置的 [词库调试] 节）
 		jsonResp, _ := json.Marshal(loadDicDebugDefaults())
 		w.Write(jsonResp)
 		return
 
 	case "save_dic_config":
-		// 保存词库调试运行配置到 system.ini 的 [词库调试] 节
+		// 保存词库调试运行配置到合并配置的 [词库调试] 节
 		var cfg map[string]any
 		if err := json.Unmarshal(h.Data, &cfg); err != nil {
 			http.Error(w, `{"status":"error","error":"invalid json"}`, http.StatusBadRequest)
 			return
 		}
-		file := utils.NewFile()
-		file.SetPath("private/system/system.ini")
-		iniFile, err := file.LoadIni()
+		cfgFile, err := dto.LoadConfigFile()
 		if err != nil {
-			http.Error(w, `{"status":"error","error":"读取 system.ini 失败"}`, http.StatusInternalServerError)
+			http.Error(w, `{"status":"error","error":"读取配置文件失败"}`, http.StatusInternalServerError)
 			return
 		}
-		sec := iniFile.Section("词库调试")
+		sec := cfgFile.Section("词库调试")
 		if v, ok := cfg["path"].(string); ok && v != "" {
 			sec.Key("默认词库").SetValue(v)
 		}
@@ -6715,8 +6052,8 @@ func opuiHandleApi(w http.ResponseWriter, r *http.Request) {
 				sec.Key("全局变量").SetValue(string(b))
 			}
 		}
-		if err := file.SaveIni(iniFile); err != nil {
-			http.Error(w, `{"status":"error","error":"写入 system.ini 失败: `+err.Error()+`"}`, http.StatusInternalServerError)
+		if err := cfgFile.Save(); err != nil {
+			http.Error(w, `{"status":"error","error":"写入配置文件失败: `+err.Error()+`"}`, http.StatusInternalServerError)
 			return
 		}
 		jsonResp, _ := json.Marshal(map[string]any{"status": "ok"})
@@ -6826,6 +6163,113 @@ func opuiHandleApi(w http.ResponseWriter, r *http.Request) {
 		if len(dic.Data.Warnings) > 0 {
 			resp["warnings"] = dic.Data.Warnings
 		}
+		jsonResp, _ := json.Marshal(resp)
+		w.Write(jsonResp)
+		return
+
+	case "dic_build":
+		// 词库打包：把指定词库嵌入引擎，编译为独立可执行文件。
+		// 依赖本机 Go 工具链与 Nebula 源码（开发机场景），源码目录可用环境变量 NEBULA_SRC 指定。
+		var j struct {
+			Path   string `json:"path"`
+			Target string `json:"target"` // exe（默认）；dll/so 暂未支持
+			GOOS   string `json:"goos"`   // 目标系统，默认当前系统
+			GOARCH string `json:"goarch"` // 目标架构，默认当前架构
+		}
+		if err := json.Unmarshal(h.Data, &j); err != nil {
+			http.Error(w, `{"status":"error","error":"invalid json"}`, http.StatusBadRequest)
+			return
+		}
+		if j.Path == "" {
+			http.Error(w, `{"status":"error","error":"词库路径不能为空"}`, http.StatusBadRequest)
+			return
+		}
+		if !checkDicPath(j.Path) {
+			http.Error(w, `{"status":"error","error":"词库路径不合法"}`, http.StatusBadRequest)
+			return
+		}
+		if runtime.GOOS != "windows" {
+			http.Error(w, `{"status":"error","error":"编译仅支持 Windows 平台"}`, http.StatusBadRequest)
+			return
+		}
+		if j.Target == "" {
+			j.Target = "exe"
+		}
+		if j.Target != "exe" {
+			http.Error(w, `{"status":"error","error":"暂仅支持 target=exe（打包为独立可执行文件）"}`, http.StatusBadRequest)
+			return
+		}
+		goos := j.GOOS
+		if goos == "" || goos != "windows" {
+			goos = "windows"
+		}
+		goarch := j.GOARCH
+		if goarch == "" {
+			goarch = runtime.GOARCH
+		}
+		// 打包耗时较长（首次编译需构建引擎依赖），异步执行，前端按 taskId 轮询进度。
+		taskID := strconv.FormatInt(time.Now().UnixNano(), 10)
+		task := &buildTask{}
+		buildTasks.Store(taskID, task)
+		go func() {
+			out, logText, err := buildDicBundle(j.Path, goos, goarch)
+			if err != nil {
+				task.finish("", logText, err.Error(), "", "")
+				return
+			}
+			task.finish(out, logText, "", "", "")
+		}()
+		resp := map[string]any{"status": "ok", "taskId": taskID}
+		jsonResp, _ := json.Marshal(resp)
+		w.Write(jsonResp)
+		return
+
+	case "dic_build_status":
+		// 查询词库打包任务进度（dic_build 异步任务）
+		var j struct {
+			TaskID string `json:"task_id"`
+		}
+		if err := json.Unmarshal(h.Data, &j); err != nil {
+			http.Error(w, `{"status":"error","error":"invalid json"}`, http.StatusBadRequest)
+			return
+		}
+		v, ok := buildTasks.Load(j.TaskID)
+		if !ok {
+			http.Error(w, `{"status":"error","error":"任务不存在或已过期"}`, http.StatusNotFound)
+			return
+		}
+		task := v.(*buildTask)
+		done, output, logText, errText, runOutput, runErr := task.snapshot()
+		resp := map[string]any{
+			"done":      done,
+			"output":    output,
+			"log":       logText,
+			"error":     errText,
+			"runOutput": runOutput,
+			"runErr":    runErr,
+		}
+		jsonResp, _ := json.Marshal(resp)
+		w.Write(jsonResp)
+		return
+
+	case "dic_run":
+		// 运行已编译的词库可执行文件，触发词固定为 Main，返回标准输出/错误。
+		if runtime.GOOS != "windows" {
+			http.Error(w, `{"status":"error","error":"运行仅支持 Windows 平台"}`, http.StatusBadRequest)
+			return
+		}
+		exeName := "nebula-dic"
+		if runtime.GOOS == "windows" {
+			exeName = "nebula-dic.exe"
+		}
+		exePath, _ := filepath.Abs(filepath.Join(utils.GetAppDir(), "private", "build", "dist", exeName))
+		if _, err := os.Stat(exePath); err != nil {
+			http.Error(w, `{"status":"error","error":"未找到编译产物，请先点击「编译」"}`, http.StatusNotFound)
+			return
+		}
+		stdout, stderr := runDicBundle(exePath, "Main")
+		// 加载器为纯 Go，结果直接写入 stdout（stderr 仅承载错误信息）。
+		resp := map[string]any{"status": "ok", "runOutput": stdout, "runErr": stderr}
 		jsonResp, _ := json.Marshal(resp)
 		w.Write(jsonResp)
 		return
@@ -7085,19 +6529,14 @@ func opuiHandleApi(w http.ResponseWriter, r *http.Request) {
 		return
 
 	case "firewall_get_config":
-		ff := utils.NewFileQueue(dto.CONFIG_SYSTEM_PATH)
-		cf, err := ff.LoadIni()
+		cfg, err := dto.LoadConfigFile()
 		if err != nil {
 			w.Write([]byte(`{"enabled":false,"dic_path":""}`))
 			return
 		}
-		fwSec := cf.Section("防火墙")
-		var enabled bool
-		var dicPath string
-		if fwSec != nil {
-			enabled = fwSec.Key("启用").MustBool(false)
-			dicPath = fwSec.Key("词库").String()
-		}
+		fwSec := cfg.Section("防火墙")
+		enabled := fwSec.Key("启用").MustBool(false)
+		dicPath := fwSec.Key("词库").String()
 		r, _ := json.Marshal(map[string]any{
 			"enabled":  enabled,
 			"dic_path": dicPath,
@@ -7114,15 +6553,14 @@ func opuiHandleApi(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, `{"status":"error","error":"invalid json"}`, http.StatusBadRequest)
 			return
 		}
-		ff := utils.NewFileQueue(dto.CONFIG_SYSTEM_PATH)
-		cf, err := ff.LoadIni()
+		cfg, err := dto.LoadConfigFile()
 		if err != nil {
 			http.Error(w, `{"status":"error","error":"config load failed"}`, http.StatusInternalServerError)
 			return
 		}
-		cf.Section("防火墙").Key("启用").SetValue(strconv.FormatBool(j.Enabled))
-		cf.Section("防火墙").Key("词库").SetValue(j.DicPath)
-		ff.SaveIni(cf)
+		cfg.Section("防火墙").Key("启用").SetValue(strconv.FormatBool(j.Enabled))
+		cfg.Section("防火墙").Key("词库").SetValue(j.DicPath)
+		cfg.Save()
 		w.Write([]byte(`{"status":"ok"}`))
 		return
 

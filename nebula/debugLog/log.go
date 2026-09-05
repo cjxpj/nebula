@@ -7,7 +7,7 @@ import "sync/atomic"
 var DefaultLogger = Logger(new(consoleLogger))
 
 // debugEnabled 全局调试开关，控制 Debug/Debugf 级别日志是否输出。
-// 由前端服务器配置（system.ini [HTTP] 调试）在启动与保存时同步。
+// 由前端服务器配置（config.yaml [HTTP] 调试）在启动与保存时同步。
 var debugEnabled atomic.Bool
 
 // SetDebug 设置全局调试开关，true 时输出 Debug/Debugf 日志。

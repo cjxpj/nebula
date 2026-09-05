@@ -495,8 +495,8 @@ func (c *compiler) compileNodeJs(b *ast.Block) {
 	c.emit(Instr{Op: OpNodeJsBlock, Lines: lines, Line: b.CloseLine})
 }
 
-// compileFunc 编译 函数> 框为 OpFuncBlock：内容行为开启行与关闭行之间的原始行
-// （含嵌套函数框的 函数>/<函数 行，与解释器 StateFunc 累积的 content 一致），
+// compileFunc 编译 变量:函数> / 变量:执行函数> 框为 OpFuncBlock/OpExecFuncBlock：
+// 内容行为开启行与关闭行之间的原始行（含嵌套函数框的开启/关闭行，与解释器累积的 content 一致），
 // LineNums 记录内容行的原始文件行号，供存储 FuncBox 后调用时定位报错。
 func (c *compiler) compileFunc(b *ast.Block) {
 	content := b.Raw
@@ -509,7 +509,11 @@ func (c *compiler) compileFunc(b *ast.Block) {
 		content = content[:len(content)-1] // 去掉关闭行
 		contentNums = contentNums[:len(contentNums)-1]
 	}
-	c.emit(Instr{Op: OpFuncBlock, Text: b.Open, Lines: content, LineNums: contentNums})
+	op := OpFuncBlock
+	if strings.Contains(b.Open, "执行函数>") {
+		op = OpExecFuncBlock
+	}
+	c.emit(Instr{Op: op, Text: b.Open, Lines: content, LineNums: contentNums})
 }
 
 // compileForEach 编译 遍历> 框为原生遍历循环：OpForEachInit 求值遍历源并入帧，

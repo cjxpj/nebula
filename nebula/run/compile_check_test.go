@@ -43,7 +43,7 @@ func TestCheckBlockPairsBalanced(t *testing.T) {
 		Trigger:     "测试",
 		TriggerLine: 1,
 		Text: []string{
-			"函数>f",
+			"f:函数>",
 			"循环>i",
 			"遍历>x",
 			"如果>条件",
@@ -66,12 +66,12 @@ func TestCheckBlockPairsUnclosed(t *testing.T) {
 	v.Dic = []*dto.BuildDic{{
 		Trigger:     "测试",
 		TriggerLine: 1,
-		Text:        []string{"函数>f", "循环>i", "<循环"},
+		Text:        []string{"f:函数>", "循环>i", "<循环"},
 		LineNums:    []int{2, 3, 4},
 	}}
 	s := newTestStack()
 	runCompileChecks(v, s)
-	if !containsText(s.warnings, "函数>") || !containsText(s.warnings, "未闭合") {
+	if !containsText(s.warnings, "函数框") || !containsText(s.warnings, "未闭合") {
 		t.Fatalf("期望报告未闭合的函数框，实际：%v", warningsText(s.warnings))
 	}
 }
@@ -81,7 +81,7 @@ func TestCheckBlockPairsMismatch(t *testing.T) {
 	v.Dic = []*dto.BuildDic{{
 		Trigger:     "测试",
 		TriggerLine: 1,
-		Text:        []string{"函数>f", "循环>i", "<函数", "<循环"},
+		Text:        []string{"f:函数>", "循环>i", "<函数", "<循环"},
 		LineNums:    []int{2, 3, 4, 5},
 	}}
 	s := newTestStack()
@@ -272,7 +272,7 @@ func TestCheckUndefinedVarSkipsDefined(t *testing.T) {
 			"遍历>k,v=[\"x\"]",
 			"%k%%v%",
 			"<遍历",
-			"函数>foo",
+			"foo:函数>",
 			"$%foo%$",
 			"<函数",
 		},
@@ -367,5 +367,90 @@ func TestCheckUndefinedVarFuncOutBeforeCall(t *testing.T) {
 	}
 	if len(warnedLines) != 1 || warnedLines[0] != 3 {
 		t.Fatalf("期望仅第 3 行 %%aa%% 告警，实际告警行：%v，全部：%v", warnedLines, warningsText(s.warnings))
+	}
+}
+
+func TestCheckUndefinedVarSkipRawTextBlocks(t *testing.T) {
+	v := newTestBuildValue()
+	v.Dic = []*dto.BuildDic{{
+		Trigger:     "测试",
+		TriggerLine: 1,
+		Text: []string{
+			"纯文本>%换行%", // 原样框：内容不做插值
+			"%不存在1%",
+			"<文本",
+			"变量:'''", // 原样赋值框：内容不做插值
+			"%不存在2%",
+			"'''",
+			"文本>%换行%", // 插值框：内容做插值，应检查
+			"%不存在3%",
+			"<文本",
+			"a:'''", // 再验证原样框不影响后续行检查
+			"%不存在4%",
+			"'''",
+		},
+		LineNums: []int{2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13},
+	}}
+	s := newTestStack()
+	runCompileChecks(v, s)
+
+	// 原样文本框内的 %不存在1% / %不存在2% / %不存在4% 不应告警；
+	// 插值文本框内的 %不存在3% 应告警。
+	for _, w := range s.warnings {
+		if strings.Contains(w.Text, "变量不存在：不存在1") ||
+			strings.Contains(w.Text, "变量不存在：不存在2") ||
+			strings.Contains(w.Text, "变量不存在：不存在4") {
+			t.Fatalf("原样文本框内的变量不应告警，实际：%v", warningsText(s.warnings))
+		}
+	}
+	if !containsText(s.warnings, "变量不存在：不存在3") {
+		t.Fatalf("插值文本框内的未定义变量应告警，实际：%v", warningsText(s.warnings))
+	}
+}
+
+func TestCheckUndefinedVarSkipRawTextBlocksInFunc(t *testing.T) {
+	v := newTestBuildValue()
+	v.DicFuncs["函数"] = []*dto.BuildDic{{
+		Trigger:   "f->r",
+		ParamRule: "0",
+		Text: []string{
+			"纯文本>%换行%", // 函数体内原样框：内容不做插值
+			"%不存在1%",
+			"<文本",
+			"r:'''", // 函数体内原样赋值框：内容不做插值
+			"%不存在2%",
+			"'''",
+			"r:1",
+		},
+		LineNums: []int{2, 3, 4, 5, 6, 7, 8},
+	}}
+	s := newTestStack()
+	runCompileChecks(v, s)
+	for _, w := range s.warnings {
+		if strings.Contains(w.Text, "变量不存在：不存在1") ||
+			strings.Contains(w.Text, "变量不存在：不存在2") {
+			t.Fatalf("函数体内原样文本框内的变量不应告警，实际：%v", warningsText(s.warnings))
+		}
+	}
+}
+
+func TestCheckUndefinedVarSkipRawTextBlocksInHead(t *testing.T) {
+	v := newTestBuildValue()
+	v.Head = []string{
+		"纯文本>%换行%", // 头部原样框：内容不做插值
+		"%不存在1%",
+		"<文本",
+		"变量:'''", // 头部原样赋值框：内容不做插值
+		"%不存在2%",
+		"'''",
+	}
+	v.HeadLineNums = []int{1, 2, 3, 4, 5, 6}
+	s := newTestStack()
+	runCompileChecks(v, s)
+	for _, w := range s.warnings {
+		if strings.Contains(w.Text, "变量不存在：不存在1") ||
+			strings.Contains(w.Text, "变量不存在：不存在2") {
+			t.Fatalf("头部原样文本框内的变量不应告警，实际：%v", warningsText(s.warnings))
+		}
 	}
 }

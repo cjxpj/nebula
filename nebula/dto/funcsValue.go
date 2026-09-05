@@ -29,7 +29,8 @@ func GetFuncRule(name string) (string, bool) {
 
 // 函数框
 type FuncBox struct {
-	Trigger  string
+	// Default 调用时的默认参数：$%变量%$ 无参调用时以该值作为触发词，留空默认 "0"。
+	Default  string
 	Content  []string
 	LineNums []int // 每行内容对应的原始文件行号（1-based），用于调试报错定位
 }

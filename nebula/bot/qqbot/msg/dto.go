@@ -421,6 +421,14 @@ type ButtonAction struct {
 	Enter         bool              `json:"enter,omitempty"`          // 指令按钮：点击后直接发送 data
 	Anchor        int               `json:"anchor,omitempty"`         // 1=唤起选图器（仅手机端单聊）
 	UnsupportTips string            `json:"unsupport_tips,omitempty"` // 不支持时的 toast 文案
+	Modal         *ButtonModal      `json:"modal,omitempty"`          // 二次确认弹窗
+}
+
+// ButtonModal 按钮二次确认弹窗
+type ButtonModal struct {
+	Content     string `json:"content,omitempty"`      // 弹窗提示内容
+	ConfirmText string `json:"confirm_text,omitempty"` // 确认按钮文案
+	CancelText  string `json:"cancel_text,omitempty"`  // 取消按钮文案
 }
 
 // ButtonPermission 按钮操作权限

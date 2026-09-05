@@ -147,3 +147,44 @@ func randLetterUpperLowerNum(d *dto.DicInputs) (any, error) { return randLetterH
 func randLetterLowerNum(d *dto.DicInputs) (any, error)      { return randLetterHelper(d, 4) }
 func randLetterUpperNum(d *dto.DicInputs) (any, error)      { return randLetterHelper(d, 5) }
 func randNumber(d *dto.DicInputs) (any, error)              { return randLetterHelper(d, 6) }
+
+// 设置随机种子：使后续随机数序列可复现。
+func randSeed(d *dto.DicInputs) (any, error) {
+	rand.Seed(d.Inputs.Int64(1))
+	return "", nil
+}
+
+// 随机小数：无参返回 [0,1) 均匀分布；两个参数返回 [min,max) 均匀分布。
+func randFloat(d *dto.DicInputs) (any, error) {
+	if d.Inputs.Len() >= 2 {
+		min := d.Inputs.Float64(1)
+		max := d.Inputs.Float64(2)
+		if min > max {
+			min, max = max, min
+		}
+		return min + rand.Float64()*(max-min), nil
+	}
+	return rand.Float64(), nil
+}
+
+// 正态分布：无参返回标准正态（均值 0、标准差 1）；两个参数返回 N(均值, 标准差)。
+func randNormal(d *dto.DicInputs) (any, error) {
+	mean := 0.0
+	std := 1.0
+	if d.Inputs.Len() >= 2 {
+		mean = d.Inputs.Float64(1)
+		std = d.Inputs.Float64(2)
+	}
+	return rand.NormFloat64()*std + mean, nil
+}
+
+// 指数分布：参数 λ（率参数）可省略（默认 1），均值 = 1/λ。
+func randExpDist(d *dto.DicInputs) (any, error) {
+	lambda := 1.0
+	if d.Inputs.Len() >= 1 {
+		if v := d.Inputs.Float64(1); v > 0 {
+			lambda = v
+		}
+	}
+	return rand.ExpFloat64() / lambda, nil
+}

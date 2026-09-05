@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/cjxpj/nebula/debugLog"
+	"github.com/cjxpj/nebula/dto"
 	"github.com/cjxpj/nebula/utils"
 )
 
@@ -66,6 +67,10 @@ func waitForCacheFile(t *testing.T, dicPath string) {
 // TestDicCompileCache 验证磁盘编译缓存的命中与失效。
 func TestDicCompileCache(t *testing.T) {
 	chdirToAppWin()
+
+	// 词库编译缓存默认关闭，测试需显式开启并在结束后还原
+	dto.ServerConfig.DicCache = true
+	defer func() { dto.ServerConfig.DicCache = false }()
 
 	const path = "cache_test_unique.n"
 	text1 := "Main\n缓存测试内容1"

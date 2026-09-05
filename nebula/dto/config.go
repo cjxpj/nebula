@@ -18,7 +18,6 @@ import (
 	"github.com/gorilla/websocket"
 	lark "github.com/larksuite/oapi-sdk-go/v3"
 	"github.com/patrickmn/go-cache"
-	"gopkg.in/ini.v1"
 )
 
 func init() {
@@ -26,10 +25,7 @@ func init() {
 	mime.AddExtensionType(".silk", "audio/silk")
 }
 
-const CONFIG_SYSTEM_PATH = "private/system/system.ini"
-const CONFIG_PATH = "private/system/config.ini"
-
-func LoadConfig_napcat(NapCat_Config *ini.Section) {
+func LoadConfig_napcat(NapCat_Config *ConfigSection) {
 	if ok, _ := NapCat_Config.Key("启用").Bool(); ok {
 		secret := NapCat_Config.Key("密钥").String()
 		dicPath := NapCat_Config.Key("词库").String()
@@ -58,7 +54,7 @@ func LoadConfig_napcat(NapCat_Config *ini.Section) {
 	}
 }
 
-func LoadConfig_qq(QQBot_Config *ini.Section, sectionName string) {
+func LoadConfig_qq(QQBot_Config *ConfigSection, sectionName string) {
 	if ServerConfig.QQBots == nil {
 		ServerConfig.QQBots = make(map[string]*qqbot_msg.RouterQQBot)
 	}
@@ -123,7 +119,7 @@ func LoadConfig_qq(QQBot_Config *ini.Section, sectionName string) {
 	}
 }
 
-func LoadConfig_yunhu(YunHu_Config *ini.Section) {
+func LoadConfig_yunhu(YunHu_Config *ConfigSection) {
 	if ok, _ := YunHu_Config.Key("启用").Bool(); ok {
 		secret := YunHu_Config.Key("密钥").String()
 		dicPath := YunHu_Config.Key("词库").String()
@@ -144,7 +140,7 @@ func LoadConfig_yunhu(YunHu_Config *ini.Section) {
 	}
 }
 
-func LoadConfig_feishu(FeiShu_Config *ini.Section) {
+func LoadConfig_feishu(FeiShu_Config *ConfigSection) {
 	if ok, _ := FeiShu_Config.Key("启用").Bool(); ok {
 		appId := FeiShu_Config.Key("APPID").String()
 		secret := FeiShu_Config.Key("密钥").String()
@@ -170,7 +166,7 @@ func LoadConfig_feishu(FeiShu_Config *ini.Section) {
 	}
 }
 
-func LoadConfig_websocket(WebSocket_Config *ini.Section) {
+func LoadConfig_websocket(WebSocket_Config *ConfigSection) {
 	if ok, _ := WebSocket_Config.Key("启用").Bool(); ok {
 		// 跨域默认 true（允许），显式设为 false 才限制同源
 		corsOk := WebSocket_Config.Key("跨域").MustBool(true)
@@ -209,7 +205,7 @@ func LoadConfig_websocket(WebSocket_Config *ini.Section) {
 	}
 }
 
-func LoadConfig_secluded(Secluded_Config *ini.Section) {
+func LoadConfig_secluded(Secluded_Config *ConfigSection) {
 	if ok, _ := Secluded_Config.Key("启用").Bool(); ok {
 		addr := Secluded_Config.Key("对接地址").String()
 		token := Secluded_Config.Key("令牌").String()

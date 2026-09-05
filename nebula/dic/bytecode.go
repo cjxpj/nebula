@@ -59,11 +59,11 @@ type forEachItem struct {
 func (a *dicRuntime) leafSub() *dic_dto.DicEntry {
 	if a.sub == nil {
 		a.sub = &dic_dto.DicEntry{
-			Output:         &dto.SingleValue{},
-			Val:            a.r.Val,
-			Sys_v:          a.r.Sys_v,
-			Trigger:        false,
-			Dic:            a.r.Dic,
+			Output:  &dto.SingleValue{},
+			Val:     a.r.Val,
+			Sys_v:   a.r.Sys_v,
+			Trigger: false,
+			Dic:     a.r.Dic,
 		}
 	}
 	return a.sub
@@ -86,6 +86,41 @@ func (a *dicRuntime) slotFor(name string) int32 {
 
 func (a *dicRuntime) Line(line int, text string) string {
 	return a.runLeaf(line, text)
+}
+
+// runAsyncValChain 在异步 goroutine 内逐段执行并写回 #（保留原始类型，供 $#.方法$ 调用），
+// 全部执行完后把最终 # 打印到终端。parts 为单行 >>> 分段或块内容行。
+func runAsyncValChain(val *dto.DicVal, dic *dto.BuildValue, parts []string) {
+	independentFuncV := &dic_dto.DicFunc{Val: val, Sys: &dto.LocalDicValue{}, Dic: dic}
+	subEntry := &dic_dto.DicEntry{Val: val}
+	for _, part := range parts {
+		if part == "" {
+			continue
+		}
+		runValSet(subEntry, independentFuncV, "#", part)
+	}
+	if s := utils.AnyToString(val.P.Get("#")); s != "" {
+		fmt.Println(s)
+	}
+}
+
+// runAsyncExecFunc 在异步 goroutine 内执行 执行函数> 函数框内容，返回内容写入 #，
+// 非空时打印到终端。trigger 为开启行 `执行函数>` 后的触发词（原样保留）。
+func runAsyncExecFunc(val *dto.DicVal, dic *dto.BuildValue, trigger string, content []string, lineNums []int) {
+	funcv := dto.NewVal().
+		Reset(val.P.GetAll()).
+		Set("触发", trigger).
+		Set("触发词", "")
+	RunDic := dic_dto.NewRunDicEntry().
+		SetGlobal_v(val.G).
+		Set_v(funcv).
+		SetDic_v(dic)
+	RunDic.LineNums = lineNums
+	out := (&dicImpl{}).dicRunLineBytecode(RunDic, content)
+	val.P.Set("#", out)
+	if out != "" {
+		fmt.Println(out)
+	}
 }
 
 // runLeaf 原生执行一条叶子语句（字节码路径专用），返回该叶子的完整输出（含 $函数$ 产生的输出）。
@@ -131,15 +166,13 @@ func (a *dicRuntime) runLeaf(line int, text string) string {
 	// 异步执行 #:
 	if textLen > 2 && text[:2] == "#:" {
 		val := funcV.Val.NewDicVal(funcV.Val.P.Clone())
-		dic := funcV.Dic
-		go func() {
-			independentFuncV := &dic_dto.DicFunc{
-				Val: val,
-				Sys: &dto.LocalDicValue{},
-				Dic: dic,
-			}
-			Runs(independentFuncV, utils.AnyToString(count.RunCountText(val, text[2:])))
-		}()
+		body := text[2:]
+		// >>> 多步操作：逐段执行并写回 #，供后续段通过 %#% 读取
+		parts := []string{body}
+		if strings.Contains(body, ">>>") && utils.IsJSONResult(body) == nil {
+			parts = SplitValChain(body)
+		}
+		go runAsyncValChain(val, funcV.Dic, parts)
 		return r.Output.Get()
 	}
 
@@ -537,8 +570,14 @@ func (a *dicRuntime) VarNewJsonBlock(text string, lines []string) string {
 // ValChainBlock 原生执行 变量:>>> 框，语义与解释器 StateValChain 状态机一致：
 // 开启行解析出变量名，内容行逐行执行 runValSet 写回变量（空行跳过），
 // 支持 ?: 回退与 @json 路径，<<< 关闭行不参与执行。无输出。
+// #:>>> 为异步变体：在独立 goroutine 内逐行写回 #，最终打印 # 到终端。
 func (a *dicRuntime) ValChainBlock(text string, lines []string) string {
 	r := a.r
+	if text == "#:>>>" {
+		val := a.funcV.Val.NewDicVal(a.funcV.Val.P.Clone())
+		go runAsyncValChain(val, a.funcV.Dic, lines)
+		return ""
+	}
 	_, varName, _ := dicBuild.ValTextTest(text)
 	for _, line := range lines {
 		if line == "" {
@@ -645,46 +684,67 @@ func (a *dicRuntime) NodeJsBlock(lines []string, line int) string {
 	return res.String()
 }
 
-// FuncBlock 原生执行 函数> 框，语义与解释器 StateFunc 状态机一致：
-//   - 开启行 `函数>变量名=触发` 或 `函数>变量名` 解析出变量名与触发词（触发词原样保留，不做插值）；
-//   - 变量名非空：把内容行与行号存入 FuncBox（不执行、不输出）；
-//   - 变量名为空：以当前变量表快照新建局部作用域（触发=触发词、触发词=""）直接执行内容并返回输出。
+// FuncBlock 原生执行 变量:函数> 框：
+//   - 开启行 `变量:函数>默认参数` 或 `变量:函数>` 解析出变量名与默认参数（留空默认 "0"）；
+//   - 把内容行与行号存入 FuncBox 赋给变量（不执行、不输出），供后续 $%变量名% 参数$ 调用。
 //
-// 内容行含嵌套函数框时仍作为原始行整体存储/执行，与解释器累积 content 完全一致。
+// 内容行含嵌套函数框时仍作为原始行整体存储，与解释器累积 content 完全一致。
 func (a *dicRuntime) FuncBlock(text string, lines []string, lineNums []int) string {
 	r := a.r
-	rest := text[len("函数>"):]
-	valueName := rest
-	trigger := ""
-	if idx := strings.IndexByte(rest, '='); idx != -1 {
-		valueName = rest[:idx]
-		trigger = rest[idx+1:]
+	_, valueName, suffix := dicBuild.ValTextTest(text)
+	defaultParam := strings.TrimPrefix(suffix, "函数>")
+	if defaultParam == "" {
+		defaultParam = "0"
 	}
 
 	// 复制，避免 FuncBox 持久引用 ParseBody 的 body 底层切片，被后续复用改写。
 	content := append([]string(nil), lines...)
 	nums := append([]int(nil), lineNums...)
 
-	if valueName == "" {
-		// 直接执行：以当前变量表快照新建局部 Val，触发词/触发词变量初始化后运行内容。
-		funcv := dto.NewVal().
-			Reset(r.Val.P.GetAll()).
-			Set("触发", trigger).
-			Set("触发词", "")
-		RunDic := dic_dto.NewRunDicEntry().
-			SetGlobal_v(r.Val.G).
-			Set_v(funcv).
-			SetDic_v(r.Dic)
-		RunDic.LineNums = nums
-		return a.m.dicRunLineBytecode(RunDic, content)
-	}
-
-	// 存储函数框，供后续 $%变量名% 参数$ 调用。
 	r.Val.P.Set(valueName, &dto.FuncBox{
-		Trigger:  trigger,
+		Default:  defaultParam,
 		Content:  content,
 		LineNums: nums,
 	})
+	return ""
+}
+
+// ExecFuncBlock 原生执行 变量:执行函数> 框：立即以当前变量表快照新建局部作用域
+// 执行内容，并把返回内容写入变量（不直接输出到外层）。
+// 开启行 `变量:执行函数>` 或 `变量:执行函数>默认参数` 解析出变量名与触发词（原样保留）。
+// #:执行函数> 为异步变体：在独立 goroutine 内执行，返回内容写入 # 并打印到终端。
+func (a *dicRuntime) ExecFuncBlock(text string, lines []string, lineNums []int) string {
+	r := a.r
+
+	var valueName, suffix string
+	if strings.HasPrefix(text, "#:执行函数>") {
+		valueName = "#"
+		suffix = strings.TrimPrefix(text, "#:")
+	} else {
+		_, valueName, suffix = dicBuild.ValTextTest(text)
+	}
+	trigger := strings.TrimPrefix(suffix, "执行函数>")
+
+	content := append([]string(nil), lines...)
+	nums := append([]int(nil), lineNums...)
+
+	if valueName == "#" {
+		val := a.funcV.Val.NewDicVal(a.funcV.Val.P.Clone())
+		go runAsyncExecFunc(val, a.funcV.Dic, trigger, content, nums)
+		return ""
+	}
+
+	funcv := dto.NewVal().
+		Reset(r.Val.P.GetAll()).
+		Set("触发", trigger).
+		Set("触发词", "")
+	RunDic := dic_dto.NewRunDicEntry().
+		SetGlobal_v(r.Val.G).
+		Set_v(funcv).
+		SetDic_v(r.Dic)
+	RunDic.LineNums = nums
+	out := a.m.dicRunLineBytecode(RunDic, content)
+	r.Val.P.Set(valueName, out)
 	return ""
 }
 
@@ -794,10 +854,10 @@ func (m *dicImpl) dicRunLineBytecodeInstrs(r *dic_dto.DicEntry, instrs []bc.Inst
 	}
 
 	funcV := &dic_dto.DicFunc{
-		Val:            r.Val,
-		Sys:            r.Sys_v,
-		Dic:            r.Dic,
-		Output:         r.Output,
+		Val:    r.Val,
+		Sys:    r.Sys_v,
+		Dic:    r.Dic,
+		Output: r.Output,
 	}
 
 	adapter := &dicRuntime{m: m, r: r, funcV: funcV}

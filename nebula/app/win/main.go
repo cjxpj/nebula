@@ -18,6 +18,7 @@ import (
 	"github.com/cjxpj/nebula/dic/funcs"
 	"github.com/cjxpj/nebula/dto"
 	dic_server "github.com/cjxpj/nebula/server"
+	"github.com/cjxpj/nebula/extloader"
 	"github.com/cjxpj/nebula/utils"
 	"github.com/hymkor/trash-go"
 )
@@ -59,9 +60,10 @@ func main() {
 
 	// 用主上下文控制整个进程生命周期
 	ctx, cancel := context.WithCancel(context.Background())
-	defer ShutdownPhp()    // 确保退出时同步 kill PHP 进程
-	defer ShutdownPython() // 确保退出时同步 kill Python 进程
-	defer cancel()         // 最后注册最先执行：先取消上下文，再关闭 PHP/Python
+	defer extloader.CloseAll() // 退出时统一关闭扩展动态库
+	defer ShutdownPhp()        // 确保退出时同步 kill PHP 进程
+	defer ShutdownPython()     // 确保退出时同步 kill Python 进程
+	defer cancel()             // 最后注册最先执行：先取消上下文，再关闭 PHP/Python
 
 	// 监听系统信号，退出时取消 ctx
 	sigCh := make(chan os.Signal, 1)
@@ -184,6 +186,8 @@ func main() {
 		fmt.Println("-v                  		（显示版本）")
 		fmt.Println("-autostart          		（开机自启）")
 		fmt.Println("-noautostart        		（取消开机自启）")
+		fmt.Println("-run <文件>         		（执行指定词库文件）")
+		fmt.Println("-check <文件>       		（预编译检测，输出警告与报错）")
 	case "-v":
 		fmt.Print(appfiles.Version)
 		return
@@ -201,6 +205,41 @@ func main() {
 			fmt.Println("取消开机启动失败:", err)
 		} else {
 			fmt.Println("已取消开机启动")
+		}
+		return
+	case "-run":
+		if argsLen < 3 {
+			fmt.Println("用法：-run <词库文件路径>")
+			return
+		}
+		res, err := dic.RunFile(args[2])
+		if err != nil {
+			fmt.Println("执行失败:", err)
+			return
+		}
+		if res != "" {
+			fmt.Println(res)
+		}
+		return
+	case "-check":
+		if argsLen < 3 {
+			fmt.Println("用法：-check <词库文件路径>")
+			return
+		}
+		warns, errs, err := dic.CheckFile(args[2])
+		if err != nil {
+			fmt.Println("检测失败:", err)
+			return
+		}
+		if len(errs) == 0 && len(warns) == 0 {
+			fmt.Println("检测通过：无警告，无报错")
+			return
+		}
+		for _, e := range errs {
+			fmt.Printf("[错误] 第 %d 行：%s\n", e.Line, e.Text)
+		}
+		for _, w := range warns {
+			fmt.Printf("[警告] 第 %d 行：%s\n", w.Line, w.Text)
 		}
 		return
 	default:
