@@ -586,6 +586,25 @@ func (b *QQBot) SetMemberMute(groupOpenID, memberOpenID, seconds string) error {
 	return b.Send(url, req, nil)
 }
 
+// ============= 群成员移除 ============
+
+// BatchRemoveMembers 批量移除群成员，addToBlacklist 为 true 时同时加入群黑名单
+func (b *QQBot) BatchRemoveMembers(groupOpenID string, memberOpenIDs []string, addToBlacklist bool) (*BatchRemoveMembersResponse, error) {
+	if groupOpenID == "" || len(memberOpenIDs) == 0 {
+		return nil, fmt.Errorf("groupOpenID或memberOpenIDs为空")
+	}
+	url := fmt.Sprintf("/v2/groups/%s/batch_remove_members", groupOpenID)
+	req := &BatchRemoveMembersRequest{
+		MemberOpenIDs:        memberOpenIDs,
+		AddToMemberBlacklist: addToBlacklist,
+	}
+	var resp BatchRemoveMembersResponse
+	if err := b.Send(url, req, &resp); err != nil {
+		return nil, err
+	}
+	return &resp, nil
+}
+
 // ============= 入群申请审批 ============
 
 // GetJoinRequests 拉取入群申请列表

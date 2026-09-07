@@ -8,8 +8,8 @@ require (
 	github.com/cjxpj/hajimimanbo v0.0.0-20250902210732-84be7d3299ad
 	github.com/corona10/goimagehash v1.1.0
 	github.com/disintegration/imaging v1.6.2
-	github.com/dop251/goja v0.0.0-20250125213203-5ef83b82af17
-	github.com/dop251/goja_nodejs v0.0.0-20250217171036-ba90ff8d8790
+	github.com/dop251/goja v0.0.0-20260903201622-f87b40ad7341
+	github.com/dop251/goja_nodejs v0.0.0-20260212111938-1f56ff5bcf14
 	github.com/go-sql-driver/mysql v1.8.1
 	github.com/golang/freetype v0.0.0-20170609003504-e2365dfdc4a0
 	github.com/gomarkdown/markdown v0.0.0-20250810172220-2e2c11897d1a
@@ -36,6 +36,7 @@ require (
 )
 
 require (
+	github.com/dlclark/regexp2/v2 v2.5.2 // indirect
 	github.com/dustin/go-humanize v1.0.1 // indirect
 	github.com/go-stack/stack v1.8.1 // indirect
 	github.com/google/uuid v1.6.0 // indirect
@@ -63,7 +64,6 @@ require (
 
 require (
 	filippo.io/edwards25519 v1.1.0 // indirect
-	github.com/dlclark/regexp2 v1.11.5 // indirect
 	github.com/dop251/base64dec v0.0.0-20231022112746-c6c9f9a96217 // indirect
 	github.com/go-ole/go-ole v1.2.6 // indirect
 	github.com/go-sourcemap/sourcemap v2.1.4+incompatible // indirect

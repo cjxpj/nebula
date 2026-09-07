@@ -41,8 +41,6 @@ type ServerRouterWebSocket struct {
 type OPUI struct {
 	// 地址
 	Addr string
-	// 密钥
-	Secret string
 	// 跨域开关
 	Cors bool
 }
@@ -211,6 +209,24 @@ type FuncServerRegistry struct {
 // FuncServers 全局函数服务器注册表，供前端查询/编辑。
 var FuncServers = &FuncServerRegistry{mp: make(map[string]*FuncServerInfo)}
 
+// 一次性配置加载器：由 dic 包注入，供「服务器.设置核心服务器」触发。
+var (
+	configLoadOnce sync.Once
+	configLoadFn   func()
+)
+
+// SetConfigLoader 注册一次性配置加载回调（仅需调用一次）。
+func SetConfigLoader(fn func()) {
+	configLoadFn = fn
+}
+
+// LoadConfigOnce 触发一次性配置加载，重复调用只会执行一次。
+func LoadConfigOnce() {
+	if configLoadFn != nil {
+		configLoadOnce.Do(configLoadFn)
+	}
+}
+
 // Add 添加或更新一个函数服务器。核心身份不在此自动指定，须由词库显式调用「服务器.设置核心服务器」标记。
 func (r *FuncServerRegistry) Add(s *FuncServerInfo) {
 	if s == nil {
@@ -285,6 +301,13 @@ func (r *FuncServerRegistry) Apply(addr string, fn func(*FuncServerInfo)) {
 	if e, ok := r.mp[addr]; ok {
 		fn(e)
 	}
+}
+
+// Len 返回当前已注册（监听中）的函数服务器数量。
+func (r *FuncServerRegistry) Len() int {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return len(r.mp)
 }
 
 // Snapshot 返回当前全部函数服务器快照（按地址排序），Core 字段按 coreAddr 动态派生。

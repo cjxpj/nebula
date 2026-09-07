@@ -142,7 +142,7 @@ func ensurePHPServerRunning(ctx context.Context, phpDir string) error {
 	}
 
 	cmdCtx, cancel := context.WithCancel(context.Background())
-	phpExec := dto.GV.GetStr("_PhpPath_")
+	phpExec := dto.GV.GetStr("_Php_")
 
 	// 预检查 PHP 可执行文件是否可用
 	if _, err := exec.LookPath(phpExec); err != nil {

@@ -209,7 +209,8 @@ func Funcs(d *dic_dto.DicFunc, dic_i *utils.DicInputs) (any, error) {
 				return handleFuncError(d, dic_i.String(0), fmt.Errorf("禁止覆盖系统内置函数：%s", dic_i.String(0)), captureErr), nil
 			}
 			funcv := dto.NewVal()
-			give, ok := d.Val.P.Get("_继承_").(string)
+			giveRaw, _ := d.Val.P.GetRaw("_继承_")
+			give, ok := giveRaw.(string)
 			if ok && give != "" {
 				for v := range strings.SplitSeq(give, ",") {
 					set, ok := d.Val.P.Get(v).(string)
@@ -217,7 +218,7 @@ func Funcs(d *dic_dto.DicFunc, dic_i *utils.DicInputs) (any, error) {
 						funcv.Set(v, set)
 					}
 				}
-				d.Val.P.Set("_继承_", "")
+				d.Val.P.SetRaw("_继承_", "")
 			}
 			funcv.Set("触发", Tstr)
 			funcv.Set("触发词", text)
@@ -315,7 +316,7 @@ func handleFuncError(d *dic_dto.DicFunc, name string, err error, captureErr bool
 	d.Sys.Stop.Store(true)
 	if err.Error() != "stop" {
 		d.Output.Clear()
-		d.Output.Add(fmt.Sprintf("[%s]%s(line:%d)：%v", d.Val.Get("_词库路径_"), name, d.CurLine, err))
+		d.Output.Add(fmt.Sprintf("[%s]%s(line:%d)：%v", dto.GV.GetStr("_词库路径_"), name, d.CurLine, err))
 	}
 	return ""
 }

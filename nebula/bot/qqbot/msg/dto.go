@@ -330,6 +330,20 @@ type BotState struct {
 	MemberRole        string `json:"member_role"`         // 群成员角色: member / owner / admin
 }
 
+// ============= 群成员移除 ============
+
+// BatchRemoveMembersRequest 批量移除群成员请求
+type BatchRemoveMembersRequest struct {
+	MemberOpenIDs        []string `json:"member_openids"`          // 需要移除的成员 member_openid 列表，单次最多 20 个
+	AddToMemberBlacklist bool     `json:"add_to_member_blacklist"` // 是否同时加入群黑名单，默认 false
+}
+
+// BatchRemoveMembersResponse 批量移除群成员返回
+type BatchRemoveMembersResponse struct {
+	RemoveMembersResult             string   `json:"remove_members_result"`                // 成功时返回 success
+	AddToMemberBlacklistFailOpenIDs []string `json:"add_to_member_blacklist_fail_openids"` // 拉黑失败的 openid
+}
+
 // ============= 入群申请审批 ============
 
 // JoinRequestItem 入群申请单条记录

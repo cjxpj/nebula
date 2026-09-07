@@ -10,6 +10,6 @@ func listSystemCerts() ([]map[string]string, error) {
 }
 
 // extractSystemCert 非 Windows 平台暂不支持系统证书库
-func extractSystemCert(thumbprint string) (certPEM, keyPEM []byte, err error) {
+func extractSystemCert(_ string) (certPEM, keyPEM []byte, err error) {
 	return nil, nil, errors.New("系统证书库提取仅支持 Windows 平台")
 }

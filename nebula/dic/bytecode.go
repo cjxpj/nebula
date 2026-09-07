@@ -9,6 +9,7 @@ import (
 	"github.com/buger/jsonparser"
 	dicBuild "github.com/cjxpj/nebula/build"
 	"github.com/cjxpj/nebula/count"
+	"github.com/cjxpj/nebula/debugLog"
 	"github.com/cjxpj/nebula/dic/ast"
 	"github.com/cjxpj/nebula/dic/bc"
 	dic_dto "github.com/cjxpj/nebula/dic/dto"
@@ -100,7 +101,7 @@ func runAsyncValChain(val *dto.DicVal, dic *dto.BuildValue, parts []string) {
 		runValSet(subEntry, independentFuncV, "#", part)
 	}
 	if s := utils.AnyToString(val.P.Get("#")); s != "" {
-		fmt.Println(s)
+		fmt.Println(debugLog.EscapeControlChars(s))
 	}
 }
 
@@ -119,14 +120,13 @@ func runAsyncExecFunc(val *dto.DicVal, dic *dto.BuildValue, trigger string, cont
 	out := (&dicImpl{}).dicRunLineBytecode(RunDic, content)
 	val.P.Set("#", out)
 	if out != "" {
-		fmt.Println(out)
+		fmt.Println(debugLog.EscapeControlChars(out))
 	}
 }
 
 // runLeaf 原生执行一条叶子语句（字节码路径专用），返回该叶子的完整输出（含 $函数$ 产生的输出）。
 // 语义与旧解释器对单行（StateNormal、非块开启行）的执行一致，但不再经过编译/状态机框架。
 // 此处只需处理单行叶子：简单赋值/算术、普通赋值（含单行 >>> 链式）、网络请求、类成员、异步 #: 与纯文本输出。
-// 规范的 >跳行(条件)>>偏移 已下沉为 OpJumpRel，畸形 >跳行( 已由编译器静默消费（OpNop），均不会作为叶子到达此处。
 // line 为该语句的真实源文件行号（1-based，0 表示未知），用于报错定位。
 func (a *dicRuntime) runLeaf(line int, text string) string {
 	r := a.leafSub()
@@ -294,10 +294,15 @@ func (a *dicRuntime) Resolve(expr string) string {
 	return utils.AnyToString(Runs(a.funcV, utils.AnyToString(count.RunCountText(a.r.Val, expr))))
 }
 
-// JumpRelOffset 求值 跳行 偏移表达式，语义与解释器 >跳行 一致：
-// 偏移经 r.Val.Text（%变量% 插值）后按整数解析，解析失败返回 ok=false（未命中，不跳转）。
-func (a *dicRuntime) JumpRelOffset(expr string) (int, bool) {
-	runText := utils.AnyIsString(a.r.Val.Text(expr))
+// SetLine 设置当前执行语句的行号，供 %行数% 变量读取。
+func (a *dicRuntime) SetLine(line int) {
+	a.r.Val.P.SetInt64("行数", int64(line))
+}
+
+// JumpAbsOffset 求值 $跳行 行号表达式（可为 [算术]/%变量%/字面量），返回目标行号与是否成功。
+// 语义与 LoopCount 的表达式求值路径一致：先 [算术] 展开，再 %变量%/$函数$ 求值，最后按整数解析。
+func (a *dicRuntime) JumpAbsOffset(expr string) (int, bool) {
+	runText := utils.AnyToString(Runs(a.funcV, utils.AnyToString(count.RunCountText(a.r.Val, expr))))
 	n, err := strconv.Atoi(runText)
 	if err != nil {
 		return 0, false
@@ -709,18 +714,22 @@ func (a *dicRuntime) FuncBlock(text string, lines []string, lineNums []int) stri
 	return ""
 }
 
-// ExecFuncBlock 原生执行 变量:执行函数> 框：立即以当前变量表快照新建局部作用域
-// 执行内容，并把返回内容写入变量（不直接输出到外层）。
-// 开启行 `变量:执行函数>` 或 `变量:执行函数>默认参数` 解析出变量名与触发词（原样保留）。
-// #:执行函数> 为异步变体：在独立 goroutine 内执行，返回内容写入 # 并打印到终端。
+// ExecFuncBlock 原生执行 执行函数> 框：立即以当前变量表快照新建局部作用域执行内容。
+//   - 变量:执行函数> 或 变量:执行函数>触发词 → 把返回内容写入变量（不直接输出到外层）。
+//   - 执行函数>（不带变量名）→ 立即执行并直接输出结果。
+//   - #:执行函数> 为异步变体：在独立 goroutine 内执行，返回内容写入 # 并打印到终端。
 func (a *dicRuntime) ExecFuncBlock(text string, lines []string, lineNums []int) string {
 	r := a.r
 
 	var valueName, suffix string
-	if strings.HasPrefix(text, "#:执行函数>") {
+	switch {
+	case strings.HasPrefix(text, "#:执行函数>"):
 		valueName = "#"
 		suffix = strings.TrimPrefix(text, "#:")
-	} else {
+	case strings.HasPrefix(text, "执行函数>"):
+		// 执行函数> 不带变量名：立即执行并直接输出结果。
+		suffix = text
+	default:
 		_, valueName, suffix = dicBuild.ValTextTest(text)
 	}
 	trigger := strings.TrimPrefix(suffix, "执行函数>")
@@ -744,6 +753,10 @@ func (a *dicRuntime) ExecFuncBlock(text string, lines []string, lineNums []int) 
 		SetDic_v(r.Dic)
 	RunDic.LineNums = nums
 	out := a.m.dicRunLineBytecode(RunDic, content)
+	if valueName == "" {
+		// 执行函数> 不带变量名：立即执行并直接输出结果
+		return out
+	}
 	r.Val.P.Set(valueName, out)
 	return ""
 }

@@ -16,6 +16,9 @@ type DicRunner interface {
 	DicRun(D *dic_dto.Dic, trigger string) string
 	// 执行词库（带超时）：超时后强行打断执行并返回当前结果，timedOut=true 表示已超时
 	DicRunTimeout(D *dic_dto.Dic, trigger string, timeout time.Duration) (result string, timedOut bool)
+	// 执行词库（脚本兜底）：触发词命中时行为与 DicRun/DicRunTimeout 一致；
+	// 未命中时把头部与全部正文按源码顺序当线性脚本执行，供调试面板运行无触发词的脚本。
+	DicRunScript(D *dic_dto.Dic, trigger string, timeout time.Duration) (result string, timedOut bool)
 }
 
 // DicPrivateRunner 内部触发执行。

@@ -396,9 +396,9 @@ func initPyPool() error {
 		return fmt.Errorf("写入 Python 服务脚本失败: %v", err)
 	}
 
-	pyExec = dto.GV.GetStr("_PythonPath_")
+	pyExec = dto.GV.GetStr("_Python_")
 	if pyExec == "" {
-		return fmt.Errorf("未设置 Python 执行路径 (_PythonPath_)")
+		return fmt.Errorf("未设置 Python 执行路径 (_Python_)")
 	}
 	if _, err := exec.LookPath(pyExec); err != nil {
 		return fmt.Errorf("Python 启动失败: 未找到 Python 运行环境 (%s)", pyExec)

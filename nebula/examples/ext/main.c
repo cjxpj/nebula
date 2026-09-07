@@ -33,6 +33,7 @@ static char result_buf[4096];
 
 int ext_init(void) {
     printf("example 扩展已加载（%d 个函数）\n", FUNC_COUNT);
+    fflush(stdout);
     return 0;
 }
 void ext_close(void) {}

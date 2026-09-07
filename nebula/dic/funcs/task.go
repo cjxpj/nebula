@@ -150,7 +150,7 @@ func (t *ScheduledTask) execute() {
 	}
 	dic := dic_dto.NewDic(t.DicPath, data)
 	defer dic.Close()
-	dic.Val.P.Set("_词库路径_", t.DicPath)
+	dto.SetThreadVarRaw("_词库路径_", t.DicPath)
 	if out := dic_api.Api.DicRun(dic, t.Trigger); out != "" {
 		debugLog.Infof("定时任务 %s 输出: %v", t.ID, out)
 	}
@@ -193,7 +193,7 @@ func addScheduledTaskFunc(d *dto.DicInputs) (any, error) {
 	dicPath := d.Inputs.String(3)
 	if dicPath == "" {
 		// 词库路径留空时默认执行当前词库
-		if p, ok := d.V.Get("_词库路径_").(string); ok {
+		if p := dto.GV.GetStr("_词库路径_"); p != "" {
 			dicPath = p
 		}
 	}

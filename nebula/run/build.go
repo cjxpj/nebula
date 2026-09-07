@@ -799,6 +799,10 @@ func loadDicCache(dicPath, mainHash string) *dto.BuildValue {
 // （此时编译结果尚未对外可见，避免异步读取共享数据），再异步落盘，
 // 避免磁盘 IO 阻塞词库加载。
 func saveDicCache(dicPath string, e *dicCacheEntry) {
+	// 启动阶段不写编译缓存，避免启动时自动创建 private/.dic_cache 目录
+	if utils.InStartupMode() {
+		return
+	}
 	var buf bytes.Buffer
 	if err := gob.NewEncoder(&buf).Encode(e); err != nil {
 		return

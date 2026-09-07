@@ -332,7 +332,7 @@ func qqBOTGroupRunEvent(m *qqbot_msg.GroupMessageEvent, bot *qqbot_msg.RouterQQB
 		// 回复消息
 		dic := dic_dto.NewDic(dicPath, FileData).
 			SetGlobal_v(valData)
-		dic.Val.P.Set("_词库路径_", dicPath)
+		dto.SetThreadVarRaw("_词库路径_", dicPath)
 
 		// 设置PushContext供 #引入=QQBot 函数使用
 		SetPushContext(dic, &PushContext{
@@ -612,7 +612,7 @@ func qqBOTGroupATRun(payload *qqbot_msg.Payload, bot *qqbot_msg.RouterQQBot) {
 		// 回复消息
 		dic := dic_dto.NewDic(dicPath, FileData).
 			SetGlobal_v(valData)
-		dic.Val.P.Set("_词库路径_", dicPath)
+		dto.SetThreadVarRaw("_词库路径_", dicPath)
 
 		// 设置PushContext供 #引入=QQBot 函数使用
 		SetPushContext(dic, &PushContext{
@@ -1262,7 +1262,7 @@ func qqBOTGroupPrivateRunEvent(m *qqbot_msg.GroupMessageEvent, bot *qqbot_msg.Ro
 		// 回复消息
 		dic := dic_dto.NewDic(dicPath, FileData).
 			SetGlobal_v(valData)
-		dic.Val.P.Set("_词库路径_", dicPath)
+		dto.SetThreadVarRaw("_词库路径_", dicPath)
 
 		// 设置PushContext供 #引入=QQBot 函数使用
 		SetPushContext(dic, &PushContext{

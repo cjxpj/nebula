@@ -45,18 +45,21 @@ func detectExtExec(relPath, fallback string) string {
 func main() {
 	// fmt.Println("Nebula 启动中...")
 
-	// 检测扩展目录中的可执行文件，优先使用内置扩展，否则回退到系统命令名
-	dto.GV.Set("_Ffmpeg_", "ffmpeg")
-	if ffmpegPath := utils.FindFfmpegExe(filepath.Join(utils.GetAppDir(), "private", "extensions", "ffmpeg")); ffmpegPath != "" {
-		dto.GV.Set("_Ffmpeg_", ffmpegPath)
-	}
+	// 扩展可执行文件路径需在启动词库确定数据目录后检测，故注入回调由 dic.Start 调用
+	dic.SetupExtensionPaths = func() {
+		// 检测扩展目录中的可执行文件，优先使用内置扩展，否则回退到系统命令名
+		dto.SetThreadVarRaw("_Ffmpeg_", "ffmpeg")
+		if ffmpegPath := utils.FindFfmpegExe(filepath.Join(utils.GetAppDir(), "private", "extensions", "ffmpeg")); ffmpegPath != "" {
+			dto.SetThreadVarRaw("_Ffmpeg_", ffmpegPath)
+		}
 
-	if utils.NewFileQueue("private/extensions/silk_v3").DirExists() {
-		dto.GV.Set("_SilkPath_", filepath.Join(utils.GetAppDir(), "private", "extensions", "silk_v3"))
-	}
+		if utils.NewFileQueue("private/extensions/silk_v3").DirExists() {
+			dto.SetThreadVarRaw("_SilkPath_", filepath.Join(utils.GetAppDir(), "private", "extensions", "silk_v3"))
+		}
 
-	dto.GV.Set("_PhpPath_", detectExtExec("private/extensions/php/php.exe", "php"))
-	dto.GV.Set("_PythonPath_", detectExtExec("private/extensions/python/python.exe", "python"))
+		dto.SetThreadVarRaw("_Php_", detectExtExec("private/extensions/php/php.exe", "php"))
+		dto.SetThreadVarRaw("_Python_", detectExtExec("private/extensions/python/python.exe", "python"))
+	}
 
 	// 用主上下文控制整个进程生命周期
 	ctx, cancel := context.WithCancel(context.Background())
@@ -169,6 +172,10 @@ func main() {
 	if argsLen == 1 {
 		// 启动
 		dic.Start()
+		if dto.FuncServers.Len() == 0 {
+			fmt.Println("主程序退出")
+			return
+		}
 		<-ctx.Done()
 		fmt.Println("主程序退出")
 		return
@@ -178,6 +185,10 @@ func main() {
 	case "--autostart":
 		// 启动
 		dic.Start()
+		if dto.FuncServers.Len() == 0 {
+			fmt.Println("主程序退出")
+			return
+		}
 		<-ctx.Done()
 		fmt.Println("主程序退出")
 		return

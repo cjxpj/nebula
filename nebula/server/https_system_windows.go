@@ -3,7 +3,10 @@
 package dic_server
 
 import (
+	"crypto/rand"
 	"encoding/base64"
+	"encoding/hex"
+	"encoding/json"
 	"encoding/pem"
 	"errors"
 	"os/exec"
@@ -11,6 +14,20 @@ import (
 
 	"golang.org/x/crypto/pkcs12"
 )
+
+// jsonUnmarshal 统一 JSON 解码入口
+func jsonUnmarshal(data []byte, v any) error {
+	return json.Unmarshal(data, v)
+}
+
+// randomHex 生成指定字节数的随机十六进制字符串
+func randomHex(n int) string {
+	b := make([]byte, n)
+	if _, err := rand.Read(b); err != nil {
+		return "00000000000000000000000000000000"
+	}
+	return hex.EncodeToString(b)
+}
 
 // listSystemCerts 枚举 Windows 系统证书库（当前用户 + 本地计算机 的个人证书，仅含私钥）
 // 返回: [{thumbprint, subject, issuer, not_after, has_private_key, store}]

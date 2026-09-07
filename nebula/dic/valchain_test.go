@@ -10,6 +10,7 @@ import (
 
 	dic_api "github.com/cjxpj/nebula/dic/api"
 	dic_dto "github.com/cjxpj/nebula/dic/dto"
+	"github.com/cjxpj/nebula/utils"
 )
 
 // chdirToAppWin 切换到 nebula/app/win（NebulaData 所在），基于源码文件位置计算绝对路径，多次调用幂等
@@ -19,6 +20,8 @@ func chdirToAppWin() {
 	if err := os.Chdir(winDir); err != nil {
 		panic(err)
 	}
+	// 测试沿用旧的数据目录基准 NebulaData，避免依赖生产环境的「设置工作目录」动态切换
+	utils.SetAppDir("NebulaData")
 }
 
 func runHead(t *testing.T, head []string) *dic_dto.Dic {

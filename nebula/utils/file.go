@@ -31,7 +31,8 @@ import (
 
 var httpClient = &http.Client{Timeout: 30 * time.Second}
 
-const GPATH = "NebulaData"
+// androidDataDir Android 端固定数据目录（Documents/Nebula）。
+const androidDataDir = "/storage/emulated/0/Documents/Nebula"
 
 // Error 将文本写入文件
 func Error(text string) {
@@ -76,17 +77,27 @@ func SetAppDir(dir string) {
 	appDirOverride = dir
 }
 
-// GetAppDir 获取应用目录
+// GetAppDir 获取应用目录。
+// 桌面端默认返回空串，相对路径直接基于进程当前工作目录解析（由「设置工作目录」函数切换）；
+// Android 返回固定数据目录，鸿蒙等移动端由 SetAppDir 注入沙箱目录。
 func GetAppDir() string {
 	if appDirOverride != "" {
 		return appDirOverride
 	}
-	switch runtime.GOOS {
-	case "android":
-		return path.Join("/storage/emulated/0/Documents", GPATH)
+	if runtime.GOOS == "android" {
+		return androidDataDir
 	}
-	return GPATH
+	return ""
 }
+
+// startupMode 启动阶段标志：启动期间不落盘日志与编译缓存，避免启动时自动创建 database/log、private/.dic_cache 目录。
+var startupMode atomic.Bool
+
+// SetStartupMode 设置启动阶段标志。
+func SetStartupMode(v bool) { startupMode.Store(v) }
+
+// InStartupMode 返回是否处于启动阶段。
+func InStartupMode() bool { return startupMode.Load() }
 
 // 随机数
 func RandNum(min, max int) int {

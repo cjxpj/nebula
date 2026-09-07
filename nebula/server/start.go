@@ -35,7 +35,10 @@ func Start() []StartEvent {
 	}
 
 	res = append(res, StartEvent{Trigger: "Main"})
-	res = append(res, StartEvent{Event: "系统", Trigger: "首页"})
+	// 手机端启动页事件：返回 WebView 启动地址；桌面端由浏览器直接访问，无需触发
+	if utils.GetAppDir() != "" {
+		res = append(res, StartEvent{Event: "系统", Trigger: "手机首页"})
+	}
 	return res
 }
 

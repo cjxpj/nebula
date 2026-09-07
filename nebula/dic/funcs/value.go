@@ -29,10 +29,10 @@ func getTempStore() *cache.Cache {
 // 线程变量
 func threadVar(d *dto.DicInputs) (any, error) {
 	if d.Inputs.LenOk("2") {
-		dto.GV.Set(d.Inputs.String(1), d.Inputs.Get(2))
+		dto.SetThreadVarRaw(d.Inputs.String(1), d.Inputs.Get(2))
 		return "", nil
 	}
-	if res := dto.GV.Get(d.Inputs.String(1)); res != nil {
+	if res, ok := dto.GetThreadVarRaw(d.Inputs.String(1)); ok {
 		return res, nil
 	}
 	return "", nil

@@ -290,7 +290,7 @@ func TestCheckUndefinedVarSkipsMagic(t *testing.T) {
 	v.Dic = []*dto.BuildDic{{
 		Trigger:     "测试",
 		TriggerLine: 1,
-		Text:        []string{"%参数1%%QQ%%时间%%换行%%_词库路径_%"},
+		Text:        []string{"%参数1%%QQ%%时间%%换行%%__词库路径__%"},
 		LineNums:    []int{3},
 	}}
 	s := newTestStack()

@@ -7,7 +7,6 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"crypto/x509/pkix"
-	"encoding/hex"
 	"encoding/json"
 	"encoding/pem"
 	"errors"
@@ -97,7 +96,7 @@ func writeCertFiles(certPEM, keyPEM []byte) (certPath, keyPath string, err error
 }
 
 // opuiGenHttpsCert 一键生成自签名证书并保存（API: gen_https_cert）
-func opuiGenHttpsCert(w http.ResponseWriter, r *http.Request, h *HttpOpUiData) {
+func opuiGenHttpsCert(w http.ResponseWriter, _ *http.Request, h *HttpOpUiData) {
 	var j struct {
 		CommonName string `json:"cn"`
 		Days       int    `json:"days"`
@@ -116,7 +115,7 @@ func opuiGenHttpsCert(w http.ResponseWriter, r *http.Request, h *HttpOpUiData) {
 		return
 	}
 	jsonResp, _ := json.Marshal(map[string]string{
-		"status":   "ok",
+		"status":    "ok",
 		"cert_file": certPath,
 		"key_file":  keyPath,
 	})
@@ -124,7 +123,7 @@ func opuiGenHttpsCert(w http.ResponseWriter, r *http.Request, h *HttpOpUiData) {
 }
 
 // opuiImportHttpsCert 上传导入证书（API: import_https_cert）
-func opuiImportHttpsCert(w http.ResponseWriter, r *http.Request, h *HttpOpUiData) {
+func opuiImportHttpsCert(w http.ResponseWriter, _ *http.Request, h *HttpOpUiData) {
 	var j struct {
 		CertPEM string `json:"cert"`
 		KeyPEM  string `json:"key"`
@@ -156,22 +155,8 @@ func strconvQuote(s string) string {
 	return string(b)
 }
 
-// jsonUnmarshal 统一 JSON 解码入口
-func jsonUnmarshal(data []byte, v any) error {
-	return json.Unmarshal(data, v)
-}
-
-// randomHex 生成指定字节数的随机十六进制字符串
-func randomHex(n int) string {
-	b := make([]byte, n)
-	if _, err := rand.Read(b); err != nil {
-		return "00000000000000000000000000000000"
-	}
-	return hex.EncodeToString(b)
-}
-
 // opuiListSystemCerts 枚举系统证书库（API: list_system_certs）
-func opuiListSystemCerts(w http.ResponseWriter, r *http.Request, h *HttpOpUiData) {
+func opuiListSystemCerts(w http.ResponseWriter, _ *http.Request, _ *HttpOpUiData) {
 	certs, err := listSystemCerts()
 	if err != nil {
 		http.Error(w, `{"status":"error","error":`+strconvQuote(err.Error())+`}`, http.StatusBadRequest)
@@ -182,7 +167,7 @@ func opuiListSystemCerts(w http.ResponseWriter, r *http.Request, h *HttpOpUiData
 }
 
 // opuiExtractSystemCert 从系统证书库提取证书（API: extract_system_cert）
-func opuiExtractSystemCert(w http.ResponseWriter, r *http.Request, h *HttpOpUiData) {
+func opuiExtractSystemCert(w http.ResponseWriter, _ *http.Request, h *HttpOpUiData) {
 	var j struct {
 		Thumbprint string `json:"thumbprint"`
 	}

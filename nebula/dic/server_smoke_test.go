@@ -94,13 +94,13 @@ func TestServerNewSmoke(t *testing.T) {
 		t.Fatalf("请求1失败: %q err=%v", body, err)
 	}
 
-	// 设置词库
-	upd, ok := cls.Fn["设置词库"]
+	// 设置路由词库
+	upd, ok := cls.Fn["设置路由词库"]
 	if !ok {
-		t.Fatal("缺少设置词库方法")
+		t.Fatal("缺少设置路由词库方法")
 	}
 	if _, err := callDicFn(upd, "/第二页\n第二句内容\n"); err != nil {
-		t.Fatalf("设置词库失败: %v", err)
+		t.Fatalf("设置路由词库失败: %v", err)
 	}
 
 	body, err = smokeGet(t, "http://127.0.0.1:19991/第二页")
@@ -110,7 +110,7 @@ func TestServerNewSmoke(t *testing.T) {
 
 	// 注册表快照应同步更新词库数据
 	if snap := dto.FuncServers.Snapshot(); len(snap) != 1 || snap[0].DicData != "/第二页\n第二句内容\n" {
-		t.Fatalf("设置词库后注册表未同步: %+v", snap)
+		t.Fatalf("设置路由词库后注册表未同步: %+v", snap)
 	}
 
 	// 模拟前端编辑（save_func_server）：仅关闭跨域（词库源码不再可通过前端编辑）
@@ -123,7 +123,7 @@ func TestServerNewSmoke(t *testing.T) {
 		t.Fatalf("Update失败: %v", err)
 	}
 
-	// 词库保持「设置词库」后的内容，仅跨域关闭
+	// 词库保持「设置路由词库」后的内容，仅跨域关闭
 	body, err = smokeGet(t, "http://127.0.0.1:19991/第二页")
 	if err != nil || body != "第二句内容" {
 		t.Fatalf("关闭跨域后词库应保持: %q err=%v", body, err)
@@ -150,7 +150,7 @@ func TestServerNewSmoke(t *testing.T) {
 	}
 }
 
-// TestServerCreateEmptyDic 验证「创建服务器」第二个参数可留空：词库后续通过设置词库补齐。
+// TestServerCreateEmptyDic 验证「创建服务器」第二个参数可留空：词库后续通过设置路由词库补齐。
 func TestServerCreateEmptyDic(t *testing.T) {
 	f, _ := funcs.GetFunc("创建服务器")
 
@@ -163,7 +163,7 @@ func TestServerCreateEmptyDic(t *testing.T) {
 		t.Fatalf("返回类型错误: %T", res)
 	}
 
-	// 留空创建后启动，随后设置词库
+	// 留空创建后启动，随后设置路由词库
 	startFn := cls.Fn["启动"]
 	if _, err := callDicFn(startFn); err != nil {
 		t.Fatalf("启动失败: %v", err)
@@ -176,14 +176,14 @@ func TestServerCreateEmptyDic(t *testing.T) {
 		t.Fatalf("词库留空请求应返回空: %q err=%v", body, err)
 	}
 
-	// 设置词库后正常命中
-	setFn := cls.Fn["设置词库"]
+	// 设置路由词库后正常命中
+	setFn := cls.Fn["设置路由词库"]
 	if _, err := callDicFn(setFn, "/补页\n补充内容\n"); err != nil {
-		t.Fatalf("设置词库失败: %v", err)
+		t.Fatalf("设置路由词库失败: %v", err)
 	}
 	body, err = smokeGet(t, "http://127.0.0.1:19992/补页")
 	if err != nil || body != "补充内容" {
-		t.Fatalf("设置词库后请求失败: %q err=%v", body, err)
+		t.Fatalf("设置路由词库后请求失败: %q err=%v", body, err)
 	}
 }
 

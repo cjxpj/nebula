@@ -831,8 +831,3 @@ func closeFrpWsStreams(fc *frpCon) {
 		debugLog.Infof("[FRP] WS代理: 清理%d个本地WS流", n)
 	}
 }
-
-// closeAllFrpWsStreams 断开所有本地 WS 代理连接
-func closeAllFrpWsStreams() {
-	closeFrpWsStreams(nil)
-}

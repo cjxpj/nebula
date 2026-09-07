@@ -119,6 +119,8 @@ func blockOpen(line string) (blockKind, bool) {
 		return blkJson, true
 	case strings.HasPrefix(line, "#:执行函数>"):
 		return blkFunc, true
+	case strings.HasPrefix(line, "执行函数>"):
+		return blkFunc, true
 	}
 	// 变量:函数> / 变量:执行函数> 开头的函数框（赋予值形式）。
 	if vt, vp, vs := build.ValTextTest(line); vt == 6 && vp != "" {

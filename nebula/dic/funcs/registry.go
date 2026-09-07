@@ -7,6 +7,12 @@ import (
 
 type f = dto.RegisterDicFunc
 
+// jumpAbsNoop $跳行 的注册占位实现：绝对跳行在字节码编译期（parseJumpAbs）整行拦截为 OpJumpAbs，
+// 不会走到函数调用；这里仅用于让「跳行」出现在 ListFuncs 补全列表，并使行内误用静默返回空串。
+func jumpAbsNoop(d *dto.DicInputs) (any, error) {
+	return "", nil
+}
+
 func Setup() {
 	if err := Registers(
 		// ========== 字符串 ==========
@@ -182,6 +188,7 @@ func Setup() {
 		f{Name: "STOP", L: "0", Fn: stopProgram},
 		f{Name: "重启", L: "0", Fn: restart},
 		f{Name: "GC回收", L: "0", Fn: gcCollect},
+		f{Name: "跳行", L: "1", Fn: jumpAbsNoop},
 
 		// ========== 定时任务 ==========
 		f{Name: "添加定时任务", L: "1|2|3|4|5", Fn: addScheduledTaskFunc},
@@ -201,6 +208,7 @@ func Setup() {
 		f{Name: "存在文件", L: "1", Fn: fileExist},
 		f{Name: "存在文件夹", L: "1", Fn: dirExist},
 		f{Name: "存在文件或文件夹", L: "1", Fn: fileOrDirExist},
+		f{Name: "设置工作目录", L: "1", Fn: setWorkDir},
 		f{Name: "删除文件", L: "1", Fn: deleteFile},
 		f{Name: "删除文件夹", L: "1", Fn: deleteDir},
 		f{Name: "文件夹列表", L: "0|1", Fn: dirList},
@@ -212,6 +220,8 @@ func Setup() {
 		f{Name: "重命名", L: "2", Fn: fileRename},
 		f{Name: "复制粘贴", L: "2", Fn: fileCopy},
 		f{Name: "下载文件", L: "2|3|4", Fn: downloadFile},
+		f{Name: "文件属性", L: "1", Fn: fileAttributeGet},
+		f{Name: "设置文件属性", L: "2", Fn: fileAttributeSet},
 
 		// ========== 日志 ==========
 		f{Name: "日志", L: "1|2", Fn: logfile},

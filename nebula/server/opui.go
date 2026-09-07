@@ -12,6 +12,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
 	"mime"
 	"net"
 	"net/http"
@@ -43,6 +44,7 @@ import (
 	"github.com/cjxpj/nebula/utils"
 	"github.com/gomarkdown/markdown"
 	"github.com/gorilla/websocket"
+	"golang.org/x/crypto/bcrypt"
 )
 
 type HttpOpUiData struct {
@@ -67,10 +69,13 @@ type HttpOpUiConfig_ngrok struct {
 }
 
 type HttpOpUiConfig_opui struct {
-	Open   bool   `json:"open"`
-	Path   string `json:"path"`
-	Secret string `json:"secret"`
-	Cors   bool   `json:"cors"`
+	Open          bool   `json:"open"`
+	Path          string `json:"path"`
+	Password      string `json:"password"`        // 保存时提交的新密码（明文，仅用于生成哈希）
+	AuthPassword  string `json:"auth_password"`   // 二次验证：更改密码/快捷码时提交的当前登录密码
+	HasPassword   bool   `json:"has_password"`    // 读取时返回：是否已设置登录密码
+	HasQuickToken bool   `json:"has_quick_token"` // 读取时返回：是否已设置快捷登录码
+	Cors          bool   `json:"cors"`
 }
 
 type HttpOpUiConfig_cloud_tool struct {
@@ -211,7 +216,7 @@ var (
 	cloudToolConn          *websocket.Conn
 	cloudToolWriteMu       sync.Mutex
 	cloudToolDebug         bool
-	cloudToolSeq           uint64
+	cloudToolSeq           atomic.Uint64
 	cloudToolPending       sync.Map // id(string) -> chan cloudToolMsg
 	cloudToolUsername      string
 	cloudToolToken         string
@@ -221,7 +226,7 @@ var (
 	cloudToolMaxDevices    = 1         // 当前账号最大在线设备数（来自云工具端，默认 1，0 表示无限制）
 	cloudToolEmail         = ""        // 当前账号绑定的邮箱（来自云工具端，空表示未绑定）
 
-	cloudToolGen        uint64 // 连接代次，每次成功连接递增，用于断开时回收对应注入的云函数
+	cloudToolGen        atomic.Uint64 // 连接代次，每次成功连接递增，用于断开时回收对应注入的云函数
 	cloudToolInjectedMu sync.Mutex
 	cloudToolInjected   = make(map[string]uint64) // 已注入的云函数名 -> 注入时的连接代次
 
@@ -463,10 +468,10 @@ func cloudToolBuildURL(addr, username string) string {
 		addr = "ws://" + addr
 	}
 	// https/http 地址统一转为 wss/ws，保证 WebSocket 可连接
-	if strings.HasPrefix(addr, "https://") {
-		addr = "wss://" + strings.TrimPrefix(addr, "https://")
-	} else if strings.HasPrefix(addr, "http://") {
-		addr = "ws://" + strings.TrimPrefix(addr, "http://")
+	if after, ok := strings.CutPrefix(addr, "https://"); ok {
+		addr = "wss://" + after
+	} else if after, ok := strings.CutPrefix(addr, "http://"); ok {
+		addr = "ws://" + after
 	}
 	u, err := url.Parse(addr)
 	if err != nil {
@@ -713,7 +718,7 @@ func cloudToolAuth(username, passwordHash, token string) (newToken string, offli
 	cloudToolOfflineNotify = notify
 	cloudToolMaxDevices = resp.MaxDevices
 	cloudToolEmail = resp.Email
-	gen := atomic.AddUint64(&cloudToolGen, 1)
+	gen := cloudToolGen.Add(1)
 	cloudToolMu.Unlock()
 
 	cloudToolSaveAuth(username, resp.Data)
@@ -740,7 +745,7 @@ func cloudToolCall(msg cloudToolMsg, timeout time.Duration) (cloudToolMsg, error
 		return cloudToolMsg{}, errors.New("云工具未连接")
 	}
 
-	id := fmt.Sprintf("%d", atomic.AddUint64(&cloudToolSeq, 1))
+	id := fmt.Sprintf("%d", cloudToolSeq.Add(1))
 	msg.ID = id
 	ch := make(chan cloudToolMsg, 1)
 	cloudToolPending.Store(id, ch)
@@ -833,9 +838,7 @@ func getCloudFuncs() map[string]cloudFuncInfo {
 		return nil
 	}
 	cp := make(map[string]cloudFuncInfo, len(cloudToolFuncsMap))
-	for k, v := range cloudToolFuncsMap {
-		cp[k] = v
-	}
+	maps.Copy(cp, cloudToolFuncsMap)
 	return cp
 }
 
@@ -942,6 +945,18 @@ func init() {
 	}()
 }
 
+// startupLogDir 返回启动日志的自定义落盘目录。
+// 由启动词库通过 $线程变量 _日志目录_ <目录>$ 设置，留空表示关闭启动日志落盘（默认）。
+func startupLogDir() string {
+	return strings.TrimSpace(dto.GV.GetStr("_日志目录_"))
+}
+
+// startupLogFq 返回启动日志当天文件句柄（启动日志目录/YYYYMMDD.txt），命名与常规日志一致。
+func startupLogFq() *utils.FileQueue {
+	now := time.Now()
+	return utils.NewFileQueue(filepath.Join(startupLogDir(), now.Format("20060102")+".txt"))
+}
+
 // processServerLogLine 处理一行终端输出：写入日志文件，仅当有客户端正在查看实时终端时才推送
 func processServerLogLine(raw string) {
 	line := strings.TrimRight(raw, "\r\n")
@@ -950,8 +965,15 @@ func processServerLogLine(raw string) {
 	}
 	level := parseLogLevel(line)
 
-	// 追加写入当前小时的日志文件，作为面板历史回放的持久化来源
-	serverLogFq().AppendToFile(line + "\n")
+	// 启动阶段默认不落盘，避免自动创建 database/log；若启动词库通过线程变量
+	// _日志目录_ 指定了日志目录，则写入该目录下的当天日志文件，留空默认关闭。
+	if utils.InStartupMode() {
+		if startupLogDir() != "" {
+			startupLogFq().AppendToFile(line + "\n")
+		}
+	} else {
+		serverLogFq().AppendToFile(line + "\n")
+	}
 
 	// 无客户端查看实时终端时跳过序列化与推送，避免无谓的网络开销
 	if !hasServerLogSubscriber() {
@@ -1053,10 +1075,7 @@ func readServerLogs(limit, skip int) ([]map[string]string, bool) {
 	if end <= 0 {
 		return []map[string]string{}, false
 	}
-	start := end - limit
-	if start < 0 {
-		start = 0
-	}
+	start := max(end-limit, 0)
 	logs := make([]map[string]string, 0, end-start)
 	for _, l := range lines[start:end] {
 		logs = append(logs, map[string]string{"level": parseLogLevel(l), "line": l})
@@ -1083,10 +1102,14 @@ func ClearOldServerLogs() {
 	}
 }
 
-// runTerminalDic 运行专门监听终端触发的词库（private/system/terminal.n）。
+// runTerminalDic 运行专门监听终端触发的词库（默认 private/system/terminal.n，可用 _终端词库路径_ 覆盖）。
 // 前端实时终端输入作为触发词运行该词库，输出写入进程 stdout（已被 init 重定向到日志管道），实时回显到终端。
 func runTerminalDic(input string) {
-	dic, err := dic_dto.RunDic("private/system/terminal.n")
+	terminalPath := dto.GV.GetStr("_终端词库路径_")
+	if terminalPath == "" {
+		terminalPath = "private/system/terminal.n"
+	}
+	dic, err := dic_dto.RunDic(terminalPath)
 	if err != nil || dic == nil {
 		fmt.Printf("[终端] 终端触发词库不可用: %v\n", err)
 		return
@@ -1585,20 +1608,230 @@ func findRunningTaskForComponent(component string) *InstallTask {
 	return found
 }
 
-func opuiCheckKey(r *http.Request, hType string) bool {
-	if hType == "check_opui_key" || hType == "get_opui" || hType == "get_bg" {
-		return true // 密钥校验和查询配置状态免鉴权
-	}
-	cfg, err := dto.LoadConfigFile()
+// opuiAuthTable 管理面板登录密码在全局数据库中的表名（仅存 bcrypt 哈希，单向加密不存明文）
+const opuiAuthTable = "opui_auth"
+
+// opuiPasswordKey 管理面板登录密码哈希在 opui_auth 表中的键名
+const opuiPasswordKey = "password"
+
+// opuiQuickTokenKey 管理面板快捷登录码哈希在 opui_auth 表中的键名
+const opuiQuickTokenKey = "quick_token"
+
+// 当前快捷登录码明文：仅驻留内存，供启动打印的 WebUI 地址拼接 ?key= 快捷登录；不落库。
+var (
+	opuiQuickTokenMu    sync.Mutex
+	opuiQuickTokenPlain string
+)
+
+// opuiPasswordHash 读取管理面板登录密码的 bcrypt 哈希。
+// 返回 (hash, 是否已设置, 错误)；数据库异常时返回错误，未设置密码时 set=false。
+func opuiPasswordHash() (string, bool, error) {
+	db, err := dic_funcs.GetGlobalDB()
 	if err != nil {
+		return "", false, err
+	}
+	if err := dic_funcs.EnsureFsTable(db, opuiAuthTable); err != nil {
+		return "", false, err
+	}
+	var hash string
+	err = db.QueryRow(`SELECT data FROM "`+opuiAuthTable+`" WHERE key=?`, opuiPasswordKey).Scan(&hash)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return "", false, nil
+		}
+		return "", false, err
+	}
+	return hash, true, nil
+}
+
+// opuiHasPassword 是否已设置管理面板登录密码（数据库异常时视为未设置）。
+func opuiHasPassword() bool {
+	_, set, err := opuiPasswordHash()
+	return err == nil && set
+}
+
+// opuiVerifyPassword 校验管理面板登录密码。
+// 未设置密码时返回 true；数据库异常时返回错误（调用方应拒绝访问）。
+func opuiVerifyPassword(password string) (bool, error) {
+	hash, set, err := opuiPasswordHash()
+	if err != nil {
+		return false, err
+	}
+	if !set {
+		return true, nil // 未设置密码，放行
+	}
+	if password == "" {
+		return false, nil
+	}
+	return bcrypt.CompareHashAndPassword([]byte(hash), []byte(password)) == nil, nil
+}
+
+// opuiQuickTokenHash 读取管理面板快捷登录码的 bcrypt 哈希。
+// 返回 (hash, 是否已设置, 错误)；数据库异常时返回错误，未设置时 set=false。
+func opuiQuickTokenHash() (string, bool, error) {
+	db, err := dic_funcs.GetGlobalDB()
+	if err != nil {
+		return "", false, err
+	}
+	if err := dic_funcs.EnsureFsTable(db, opuiAuthTable); err != nil {
+		return "", false, err
+	}
+	var hash string
+	err = db.QueryRow(`SELECT data FROM "`+opuiAuthTable+`" WHERE key=?`, opuiQuickTokenKey).Scan(&hash)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return "", false, nil
+		}
+		return "", false, err
+	}
+	return hash, true, nil
+}
+
+// opuiHasQuickToken 是否已设置快捷登录码（数据库异常时视为未设置）。
+func opuiHasQuickToken() bool {
+	_, set, err := opuiQuickTokenHash()
+	return err == nil && set
+}
+
+// opuiSetQuickToken 设置（或重置）快捷登录码，明文仅用于生成 bcrypt 哈希，不落库。
+func opuiSetQuickToken(token string) error {
+	db, err := dic_funcs.GetGlobalDB()
+	if err != nil {
+		return err
+	}
+	if err := dic_funcs.EnsureFsTable(db, opuiAuthTable); err != nil {
+		return err
+	}
+	hash, err := bcrypt.GenerateFromPassword([]byte(token), bcrypt.DefaultCost)
+	if err != nil {
+		return err
+	}
+	_, err = db.Exec(`
+		INSERT INTO "`+opuiAuthTable+`" (key, data, updated_at)
+		VALUES (?, ?, ?)
+		ON CONFLICT(key) DO UPDATE SET
+			data = excluded.data,
+			updated_at = excluded.updated_at
+	`, opuiQuickTokenKey, string(hash), time.Now().Unix())
+	return err
+}
+
+// opuiVerifyQuickToken 校验快捷登录码。
+func opuiVerifyQuickToken(token string) (bool, error) {
+	if token == "" {
+		return false, nil
+	}
+	hash, set, err := opuiQuickTokenHash()
+	if err != nil {
+		return false, err
+	}
+	if !set {
+		return false, nil
+	}
+	return bcrypt.CompareHashAndPassword([]byte(hash), []byte(token)) == nil, nil
+}
+
+// opuiVerifyKey 校验管理面板登录凭证：先匹配登录密码，再匹配快捷登录码。
+// 未设置密码时放行；数据库异常时返回错误（调用方应拒绝访问）。
+func opuiVerifyKey(key string) (bool, error) {
+	if ok, err := opuiVerifyPassword(key); err != nil || ok {
+		return ok, err
+	}
+	return opuiVerifyQuickToken(key)
+}
+
+// opuiVerifyAuthPassword 二次验证当前登录密码（仅匹配登录密码，不匹配快捷登录码）。
+// 用于更改密码/快捷登录码前确认身份。
+func opuiVerifyAuthPassword(password string) bool {
+	if password == "" {
 		return false
 	}
-	storedKey := cfg.Section("管理面板").Key("密钥").String()
-	if storedKey == "" {
-		return true // 未配置密钥，放行
+	ok, err := opuiVerifyPassword(password)
+	return err == nil && ok
+}
+
+// EnsureOpuiQuickToken 生成一个新的随机快捷登录码：哈希入库，明文保存在内存供 WebUI 地址拼接。
+// 管理面板未启用或生成失败时返回空串。
+func EnsureOpuiQuickToken() string {
+	if dto.ServerConfig.OPUI == nil {
+		return ""
 	}
-	reqKey := r.Header.Get("X-OPUI-Key")
-	return reqKey == storedKey
+	token := utils.RandomString("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789", 32)
+	if token == "" {
+		return ""
+	}
+	if err := opuiSetQuickToken(token); err != nil {
+		return ""
+	}
+	opuiQuickTokenMu.Lock()
+	opuiQuickTokenPlain = token
+	opuiQuickTokenMu.Unlock()
+	return token
+}
+
+// GetOpuiQuickToken 返回当前内存中保存的快捷登录码明文（用于 WebUI 地址拼接），无则返回空串。
+func GetOpuiQuickToken() string {
+	opuiQuickTokenMu.Lock()
+	defer opuiQuickTokenMu.Unlock()
+	return opuiQuickTokenPlain
+}
+
+// opuiSetPassword 设置（或更新）管理面板登录密码，明文仅用于生成 bcrypt 哈希，不落库。
+func opuiSetPassword(password string) error {
+	db, err := dic_funcs.GetGlobalDB()
+	if err != nil {
+		return err
+	}
+	if err := dic_funcs.EnsureFsTable(db, opuiAuthTable); err != nil {
+		return err
+	}
+	hash, err := bcrypt.GenerateFromPassword([]byte(password), bcrypt.DefaultCost)
+	if err != nil {
+		return err
+	}
+	_, err = db.Exec(`
+		INSERT INTO "`+opuiAuthTable+`" (key, data, updated_at)
+		VALUES (?, ?, ?)
+		ON CONFLICT(key) DO UPDATE SET
+			data = excluded.data,
+			updated_at = excluded.updated_at
+	`, opuiPasswordKey, string(hash), time.Now().Unix())
+	return err
+}
+
+// EnsureOpuiInitialPassword 管理面板启用但未设置登录密码时，自动生成随机初始密码并返回明文。
+// 未启用管理面板、已设置密码或数据库异常时返回空串与 false。
+func EnsureOpuiInitialPassword() (string, bool) {
+	if dto.ServerConfig.OPUI == nil {
+		return "", false
+	}
+	// 直接读取密码哈希，区分「未设置」与「数据库异常」：异常时不生成，避免误覆盖用户已设置的密码
+	_, set, err := opuiPasswordHash()
+	if err != nil {
+		return "", false
+	}
+	if set {
+		return "", false
+	}
+	pwd := utils.RandomString("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789", 16)
+	if pwd == "" {
+		return "", false
+	}
+	if err := opuiSetPassword(pwd); err != nil {
+		return "", false
+	}
+	return pwd, true
+}
+
+func opuiCheckKey(r *http.Request, hType string) bool {
+	if hType == "check_opui_key" || hType == "get_opui" || hType == "get_bg" {
+		return true // 密码校验和查询配置状态免鉴权
+	}
+	valid, err := opuiVerifyKey(r.Header.Get("X-OPUI-Key"))
+	if err != nil {
+		return false // 数据库异常时拒绝访问，避免误放行
+	}
+	return valid
 }
 
 // toDataURI 把图片字节转为 base64 data URI（带浏览器可识别的图片类型）
@@ -1928,6 +2161,17 @@ func loadDicDebugDefaults() map[string]any {
 	return def
 }
 
+// defaultDebugDic 返回词库调试默认词库路径（未配置时回退 private/debug.n）。
+// 默认调试词库首次打开时若不存在会自动创建，避免报「词库文件不存在」。
+func defaultDebugDic() string {
+	if cfg, err := dto.LoadConfigFile(); err == nil {
+		if v := strings.TrimSpace(cfg.Section("词库调试").Key("默认词库").String()); v != "" {
+			return filepath.ToSlash(filepath.Clean(v))
+		}
+	}
+	return "private/debug.n"
+}
+
 // checkDicPath 校验词库调试路径：仅允许应用目录内相对路径的 .n 文件，
 // 拒绝绝对路径、包含 .. 的越权路径以及非词库文件
 func checkDicPath(path string) bool {
@@ -1961,6 +2205,19 @@ func checkFilePath(path string) bool {
 	}
 	clean := filepath.ToSlash(filepath.Clean(path))
 	return clean != "." && clean != ".." && !strings.HasPrefix(clean, "../")
+}
+
+// opuiAppDir 返回 OPUI 文件管理的根目录。
+// 桌面端 utils.GetAppDir() 返回空串（相对路径基于进程当前工作目录），此时回退到当前工作目录，
+// 避免 os.ReadDir("") / filepath.Walk("") 等接口因空路径失败。
+func opuiAppDir() string {
+	if d := utils.GetAppDir(); d != "" {
+		return d
+	}
+	if wd, err := os.Getwd(); err == nil {
+		return wd
+	}
+	return "."
 }
 
 // nebulaSrcRoot 探测 Nebula 源码根目录（含 go.work 的目录）。
@@ -2215,7 +2472,7 @@ func findGoExe() (string, error) {
 // buildDicBundle 把指定词库与预编译 nebula.dll 一起打包为独立可执行文件。
 // 加载器为纯 Go（仅依赖标准库），无需引擎源码；运行时从内嵌 dll 动态加载引擎。
 // 返回产物绝对路径与构建日志。
-func buildDicBundle(dicPath, goos, goarch string) (outPath, logText string, err error) {
+func buildDicBundle(dicPath, goos, _ string) (outPath, logText string, err error) {
 	// 仅支持 Windows（nebula.dll 为 windows-amd64，加载器使用 syscall.LoadLibrary）
 	if goos != "windows" {
 		return "", "", errors.New("仅支持 Windows 平台打包")
@@ -2252,7 +2509,7 @@ func buildDicBundle(dicPath, goos, goarch string) (outPath, logText string, err 
 	if err != nil {
 		return "", "", fmt.Errorf("解析产物目录失败: %w", err)
 	}
-	if err := os.MkdirAll(appBuildDir, 0o755); err != nil {
+	if err = os.MkdirAll(appBuildDir, 0o755); err != nil {
 		return "", "", fmt.Errorf("创建产物目录失败: %w", err)
 	}
 	outPath = filepath.Join(appBuildDir, "nebula-dic.exe")
@@ -2289,16 +2546,16 @@ func buildDicBundle(dicPath, goos, goarch string) (outPath, logText string, err 
 	}
 	defer os.RemoveAll(buildDir)
 
-	if err := os.WriteFile(filepath.Join(buildDir, "main.go"), []byte(dicExecMainTemplate()), 0o644); err != nil {
+	if err = os.WriteFile(filepath.Join(buildDir, "main.go"), []byte(dicExecMainTemplate()), 0o644); err != nil {
 		return "", "", fmt.Errorf("写入 main.go 失败: %w", err)
 	}
-	if err := os.WriteFile(filepath.Join(buildDir, "compiled.gob"), gobData, 0o644); err != nil {
+	if err = os.WriteFile(filepath.Join(buildDir, "compiled.gob"), gobData, 0o644); err != nil {
 		return "", "", fmt.Errorf("写入 compiled.gob 失败: %w", err)
 	}
-	if err := os.WriteFile(filepath.Join(buildDir, "go.mod"), []byte("module nebuladic\n\ngo 1.18\n"), 0o644); err != nil {
+	if err = os.WriteFile(filepath.Join(buildDir, "go.mod"), []byte("module nebuladic\n\ngo 1.18\n"), 0o644); err != nil {
 		return "", "", fmt.Errorf("写入 go.mod 失败: %w", err)
 	}
-	if err := os.WriteFile(filepath.Join(buildDir, "nebula.dll"), dllData, 0o644); err != nil {
+	if err = os.WriteFile(filepath.Join(buildDir, "nebula.dll"), dllData, 0o644); err != nil {
 		return "", "", fmt.Errorf("复制 nebula.dll 失败: %w", err)
 	}
 
@@ -2358,7 +2615,7 @@ func opuiOpenSqlite(w http.ResponseWriter, path string) *sql.DB {
 		http.Error(w, `{"status":"error","error":"文件路径不合法"}`, http.StatusBadRequest)
 		return nil
 	}
-	full := filepath.Join(utils.GetAppDir(), filepath.FromSlash(path))
+	full := filepath.Join(opuiAppDir(), filepath.FromSlash(path))
 	db, err := openSqliteOpui(full)
 	if err != nil {
 		http.Error(w, `{"status":"error","error":"数据库打开失败: `+err.Error()+`"}`, http.StatusBadRequest)
@@ -2598,7 +2855,7 @@ func copyPath(src, dst string) error {
 	if !info.IsDir() {
 		return copyFile(src, dst, info.Mode().Perm())
 	}
-	if err := os.MkdirAll(dst, info.Mode().Perm()); err != nil {
+	if err = os.MkdirAll(dst, info.Mode().Perm()); err != nil {
 		return err
 	}
 	entries, err := os.ReadDir(src)
@@ -2715,25 +2972,21 @@ func OpUI(w http.ResponseWriter, r *http.Request, getpath string) {
 					continue
 				}
 
-				// check_opui_key 在连接内处理：验证密钥并标记认证状态
+				// check_opui_key 在连接内处理：验证密码或快捷登录码并标记认证状态
 				if wsMsg.Type == "check_opui_key" {
 					var authReq struct {
 						Key string `json:"key"`
 					}
 					valid := false
 					if json.Unmarshal(wsMsg.Data, &authReq) == nil && authReq.Key != "" {
-						cfg, err := dto.LoadConfigFile()
-						if err == nil {
-							storedKey := cfg.Section("管理面板").Key("密钥").String()
-							if storedKey == "" || storedKey == authReq.Key {
-								authenticatedKey = authReq.Key
-								valid = true
-								clientIP := utils.GetClientIP(r)
-								addLoginEvent("admin_login", "OPUI 管理员登录成功", clientIP)
-							} else {
-								clientIP := utils.GetClientIP(r)
-								addLoginEvent("admin_login_fail", "OPUI 登录失败: 密钥错误", clientIP)
-							}
+						if ok, err := opuiVerifyKey(authReq.Key); err == nil && ok {
+							authenticatedKey = authReq.Key
+							valid = true
+							clientIP := utils.GetClientIP(r)
+							addLoginEvent("admin_login", "OPUI 管理员登录成功", clientIP)
+						} else {
+							clientIP := utils.GetClientIP(r)
+							addLoginEvent("admin_login_fail", "OPUI 登录失败: 密码错误", clientIP)
 						}
 					}
 					resp, _ := json.Marshal(map[string]any{
@@ -2802,7 +3055,12 @@ func OpUI(w http.ResponseWriter, r *http.Request, getpath string) {
 
 	// HTTP：本地托管 OPUI 前端静态资源
 	if getpath == "" {
-		http.Redirect(w, r, dto.ServerConfig.OPUI.Addr+"/", http.StatusFound)
+		// 保留原始查询参数（如 ?key= 快捷登录码），避免重定向到带斜杠地址时丢失
+		target := dto.ServerConfig.OPUI.Addr + "/"
+		if r.URL.RawQuery != "" {
+			target += "?" + r.URL.RawQuery
+		}
+		http.Redirect(w, r, target, http.StatusFound)
 		return
 	}
 	if getpath == "/" {
@@ -2915,19 +3173,20 @@ func opuiHandleApi(w http.ResponseWriter, r *http.Request) {
 		cfg, err := dto.LoadConfigFile()
 		if err != nil {
 			debugLog.Errorf("[OPUI] get_opui LoadConfigFile failed: %v", err)
-			w.Write([]byte(`{"open":false,"path":"","secret":"","cors":false}`))
+			w.Write([]byte(`{"open":false,"path":"","password":"","has_password":false,"cors":false}`))
 			return
 		}
 		d := cfg.Section("管理面板")
 		var j HttpOpUiConfig_opui
 		j.Open = d.Key("启用").MustBool(false)
 		j.Path = d.Key("访问路径").String()
-		j.Secret = d.Key("密钥").String()
+		j.HasPassword = opuiHasPassword()
+		j.HasQuickToken = opuiHasQuickToken()
 		j.Cors = d.Key("跨域").MustBool(false)
 		r, err := json.Marshal(j)
 		if err != nil {
 			debugLog.Errorf("[OPUI] get_opui json.Marshal failed: %v", err)
-			w.Write([]byte(`{"open":false,"path":"","secret":""}`))
+			w.Write([]byte(`{"open":false,"path":"","has_password":false}`))
 			return
 		}
 		w.Write(r)
@@ -2946,20 +3205,78 @@ func opuiHandleApi(w http.ResponseWriter, r *http.Request) {
 		d := cfg.Section("管理面板")
 		d.Key("启用").SetValue(strconv.FormatBool(j.Open))
 		d.Key("访问路径").SetValue(j.Path)
-		d.Key("密钥").SetValue(j.Secret)
 		d.Key("跨域").SetValue(strconv.FormatBool(j.Cors))
 		cfg.Save()
 
+		// 登录密码改为单向加密存储到全局数据库，不再写入配置文件；更改密码需二次验证当前密码
+		if j.Password != "" {
+			if !opuiVerifyAuthPassword(j.AuthPassword) {
+				http.Error(w, `{"status":"error","error":"auth_password_invalid"}`, http.StatusUnauthorized)
+				return
+			}
+			debugLog.Debugf("[OPUI] save_opui: 设置登录密码 (len=%d)", len(j.Password))
+			if err := opuiSetPassword(j.Password); err != nil {
+				http.Error(w, `{"status":"error","error":"set password failed"}`, http.StatusInternalServerError)
+				return
+			}
+		}
+
 		if j.Open {
 			dto.ServerConfig.OPUI = &dto.OPUI{
-				Addr:   "/" + j.Path,
-				Secret: j.Secret,
-				Cors:   j.Cors,
+				Addr: "/" + j.Path,
+				Cors: j.Cors,
 			}
 		} else {
 			dto.ServerConfig.OPUI = nil
 		}
 		w.Write([]byte(`{"status":"ok"}`))
+		return
+
+	case "reset_opui_password":
+		var j struct {
+			AuthPassword string `json:"auth_password"`
+		}
+		if err := json.Unmarshal(h.Data, &j); err != nil {
+			http.Error(w, `{"status":"error","error":"invalid json"}`, http.StatusBadRequest)
+			return
+		}
+		if !opuiVerifyAuthPassword(j.AuthPassword) {
+			http.Error(w, `{"status":"error","error":"auth_password_invalid"}`, http.StatusUnauthorized)
+			return
+		}
+		pwd := utils.RandomString("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789", 16)
+		if pwd == "" {
+			http.Error(w, `{"status":"error","error":"generate password failed"}`, http.StatusInternalServerError)
+			return
+		}
+		if err := opuiSetPassword(pwd); err != nil {
+			http.Error(w, `{"status":"error","error":"set password failed"}`, http.StatusInternalServerError)
+			return
+		}
+		debugLog.Infof("[OPUI] reset_opui_password: 重置随机登录密码")
+		resp, _ := json.Marshal(map[string]string{"password": pwd})
+		w.Write(resp)
+		return
+
+	case "generate_quick_token":
+		var j struct {
+			AuthPassword string `json:"auth_password"`
+		}
+		if err := json.Unmarshal(h.Data, &j); err != nil {
+			http.Error(w, `{"status":"error","error":"invalid json"}`, http.StatusBadRequest)
+			return
+		}
+		if !opuiVerifyAuthPassword(j.AuthPassword) {
+			http.Error(w, `{"status":"error","error":"auth_password_invalid"}`, http.StatusUnauthorized)
+			return
+		}
+		token := EnsureOpuiQuickToken()
+		if token == "" {
+			http.Error(w, `{"status":"error","error":"generate token failed"}`, http.StatusInternalServerError)
+			return
+		}
+		resp, _ := json.Marshal(map[string]string{"token": token})
+		w.Write(resp)
 		return
 
 	case "get_cloud_tool":
@@ -3760,19 +4077,17 @@ func opuiHandleApi(w http.ResponseWriter, r *http.Request) {
 			w.Write([]byte(`{"valid":false}`))
 			return
 		}
-		cfg, err := dto.LoadConfigFile()
+		clientIP := utils.GetClientIP(r)
+		valid, err := opuiVerifyKey(j.Key)
 		if err != nil {
 			w.Write([]byte(`{"valid":false}`))
 			return
 		}
-		d := cfg.Section("管理面板")
-		storedKey := d.Key("密钥").String()
-		clientIP := utils.GetClientIP(r)
-		if storedKey == "" || storedKey == j.Key {
+		if valid {
 			addLoginEvent("admin_login", "OPUI 管理员登录成功", clientIP)
 			w.Write([]byte(`{"valid":true}`))
 		} else {
-			addLoginEvent("admin_login_fail", "OPUI 登录失败: 密钥错误", clientIP)
+			addLoginEvent("admin_login_fail", "OPUI 登录失败: 密码错误", clientIP)
 			w.Write([]byte(`{"valid":false}`))
 		}
 		return
@@ -4465,7 +4780,7 @@ func opuiHandleApi(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, `{"status":"error","error":"文件路径不合法"}`, http.StatusBadRequest)
 			return
 		}
-		src := filepath.Join(utils.GetAppDir(), filepath.FromSlash(j.Path))
+		src := filepath.Join(opuiAppDir(), filepath.FromSlash(j.Path))
 		data, err := os.ReadFile(src)
 		if err != nil {
 			http.Error(w, `{"status":"error","error":"文件读取失败: `+err.Error()+`"}`, http.StatusBadRequest)
@@ -4477,7 +4792,7 @@ func opuiHandleApi(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		dst := j.Path + ".bak"
-		full := filepath.Join(utils.GetAppDir(), filepath.FromSlash(dst))
+		full := filepath.Join(opuiAppDir(), filepath.FromSlash(dst))
 		if err := os.WriteFile(full, []byte("// "+appfiles.Version+"\n"+encodeDic), 0o644); err != nil {
 			http.Error(w, `{"status":"error","error":"文件写入失败: `+err.Error()+`"}`, http.StatusBadRequest)
 			return
@@ -4991,14 +5306,14 @@ func opuiHandleApi(w http.ResponseWriter, r *http.Request) {
 		}
 		_ = json.Unmarshal(h.Data, &j)
 		dirPath := strings.TrimSpace(j.Path)
-		root := utils.GetAppDir()
+		root := opuiAppDir()
 		if dirPath != "" {
 			if !checkFilePath(dirPath) {
 				jsonResp, _ := json.Marshal(map[string]any{"entries": []any{}})
 				w.Write(jsonResp)
 				return
 			}
-			root = filepath.Join(utils.GetAppDir(), filepath.FromSlash(dirPath))
+			root = filepath.Join(opuiAppDir(), filepath.FromSlash(dirPath))
 		}
 		items, err := os.ReadDir(root)
 		if err != nil {
@@ -5053,11 +5368,18 @@ func opuiHandleApi(w http.ResponseWriter, r *http.Request) {
 		content, err := utils.NewFileQueue(j.Path).ReadFromFile()
 		if err != nil {
 			if os.IsNotExist(err) {
-				w.Write([]byte(`{"status":"not_found","error":"词库文件不存在"}`))
+				// 默认调试词库（如 private/debug.n）首次打开时自动创建空文件
+				if filepath.ToSlash(filepath.Clean(j.Path)) == defaultDebugDic() {
+					utils.NewFileQueue(j.Path).WriteToFile("")
+					content = ""
+				} else {
+					w.Write([]byte(`{"status":"not_found","error":"词库文件不存在"}`))
+					return
+				}
+			} else {
+				http.Error(w, `{"status":"error","error":"词库读取失败: `+err.Error()+`"}`, http.StatusBadRequest)
 				return
 			}
-			http.Error(w, `{"status":"error","error":"词库读取失败: `+err.Error()+`"}`, http.StatusBadRequest)
-			return
 		}
 
 		// 编译检测：打开词库时也编译一次，返回编译问题（error 红色 / warning 黄色）供前端高亮
@@ -5110,13 +5432,13 @@ func opuiHandleApi(w http.ResponseWriter, r *http.Request) {
 		}
 		_ = json.Unmarshal(h.Data, &j)
 		dirPath := strings.TrimSpace(j.Path)
-		root := utils.GetAppDir()
+		root := opuiAppDir()
 		if dirPath != "" {
 			if !checkFilePath(dirPath) {
 				http.Error(w, `{"status":"error","error":"目录路径不合法"}`, http.StatusBadRequest)
 				return
 			}
-			root = filepath.Join(utils.GetAppDir(), filepath.FromSlash(dirPath))
+			root = filepath.Join(opuiAppDir(), filepath.FromSlash(dirPath))
 		}
 		items, err := os.ReadDir(root)
 		if err != nil {
@@ -5154,7 +5476,7 @@ func opuiHandleApi(w http.ResponseWriter, r *http.Request) {
 		})
 		jsonResp, _ := json.Marshal(map[string]any{
 			"entries": entries,
-			"root":    filepath.Base(utils.GetAppDir()), // 应用数据目录名，供前端面包屑根节点显示真实目录名
+			"root":    filepath.Base(opuiAppDir()), // 应用数据目录名，供前端面包屑根节点显示真实目录名
 		})
 		w.Write(jsonResp)
 		return
@@ -5171,13 +5493,13 @@ func opuiHandleApi(w http.ResponseWriter, r *http.Request) {
 		}
 		_ = json.Unmarshal(h.Data, &j)
 		dirPath := strings.TrimSpace(j.Path)
-		root := utils.GetAppDir()
+		root := opuiAppDir()
 		if dirPath != "" {
 			if !checkFilePath(dirPath) {
 				http.Error(w, `{"status":"error","error":"目录路径不合法"}`, http.StatusBadRequest)
 				return
 			}
-			root = filepath.Join(utils.GetAppDir(), filepath.FromSlash(dirPath))
+			root = filepath.Join(opuiAppDir(), filepath.FromSlash(dirPath))
 		}
 		kw := strings.TrimSpace(j.Keyword)
 		var re *regexp.Regexp
@@ -5276,7 +5598,7 @@ func opuiHandleApi(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, `{"status":"error","error":"文件路径不合法"}`, http.StatusBadRequest)
 			return
 		}
-		full := filepath.Join(utils.GetAppDir(), filepath.FromSlash(j.Path))
+		full := filepath.Join(opuiAppDir(), filepath.FromSlash(j.Path))
 		data, err := os.ReadFile(full)
 		if err != nil {
 			http.Error(w, `{"status":"error","error":"文件读取失败: `+err.Error()+`"}`, http.StatusBadRequest)
@@ -5309,7 +5631,7 @@ func opuiHandleApi(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, `{"status":"error","error":"文件路径不合法"}`, http.StatusBadRequest)
 			return
 		}
-		full := filepath.Join(utils.GetAppDir(), filepath.FromSlash(j.Path))
+		full := filepath.Join(opuiAppDir(), filepath.FromSlash(j.Path))
 		data, err := os.ReadFile(full)
 		if err != nil {
 			http.Error(w, `{"status":"error","error":"文件读取失败: `+err.Error()+`"}`, http.StatusBadRequest)
@@ -5356,7 +5678,7 @@ func opuiHandleApi(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, `{"status":"error","error":"文件路径不合法"}`, http.StatusBadRequest)
 			return
 		}
-		full := filepath.Join(utils.GetAppDir(), filepath.FromSlash(j.Path))
+		full := filepath.Join(opuiAppDir(), filepath.FromSlash(j.Path))
 		if err := os.MkdirAll(filepath.Dir(full), 0o755); err != nil {
 			http.Error(w, `{"status":"error","error":"创建目录失败: `+err.Error()+`"}`, http.StatusBadRequest)
 			return
@@ -5549,7 +5871,7 @@ func opuiHandleApi(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, `{"status":"error","error":"文件路径不合法"}`, http.StatusBadRequest)
 			return
 		}
-		full := filepath.Join(utils.GetAppDir(), filepath.FromSlash(j.Path))
+		full := filepath.Join(opuiAppDir(), filepath.FromSlash(j.Path))
 		if _, err := os.Stat(full); err == nil {
 			http.Error(w, `{"status":"error","error":"文件已存在"}`, http.StatusBadRequest)
 			return
@@ -5579,7 +5901,7 @@ func opuiHandleApi(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, `{"status":"error","error":"文件路径不合法"}`, http.StatusBadRequest)
 			return
 		}
-		full := filepath.Join(utils.GetAppDir(), filepath.FromSlash(j.Path))
+		full := filepath.Join(opuiAppDir(), filepath.FromSlash(j.Path))
 		if err := os.RemoveAll(full); err != nil {
 			http.Error(w, `{"status":"error","error":"删除失败: `+err.Error()+`"}`, http.StatusBadRequest)
 			return
@@ -5607,7 +5929,7 @@ func opuiHandleApi(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, `{"status":"error","error":"文件内容解码失败: `+err.Error()+`"}`, http.StatusBadRequest)
 			return
 		}
-		full := filepath.Join(utils.GetAppDir(), filepath.FromSlash(j.Path))
+		full := filepath.Join(opuiAppDir(), filepath.FromSlash(j.Path))
 		if err := os.MkdirAll(filepath.Dir(full), 0o755); err != nil {
 			http.Error(w, `{"status":"error","error":"创建目录失败: `+err.Error()+`"}`, http.StatusBadRequest)
 			return
@@ -5709,7 +6031,7 @@ func opuiHandleApi(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		tmpDir := uploadTmpDir(j.Path)
-		full := filepath.Join(utils.GetAppDir(), filepath.FromSlash(j.Path))
+		full := filepath.Join(opuiAppDir(), filepath.FromSlash(j.Path))
 		if err := os.MkdirAll(filepath.Dir(full), 0o755); err != nil {
 			http.Error(w, `{"status":"error","error":"创建目录失败: `+err.Error()+`"}`, http.StatusBadRequest)
 			return
@@ -5756,7 +6078,7 @@ func opuiHandleApi(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, `{"status":"error","error":"路径不合法"}`, http.StatusBadRequest)
 			return
 		}
-		full := filepath.Join(utils.GetAppDir(), filepath.FromSlash(j.Path))
+		full := filepath.Join(opuiAppDir(), filepath.FromSlash(j.Path))
 		if _, err := os.Stat(full); err == nil {
 			http.Error(w, `{"status":"error","error":"已存在同名项"}`, http.StatusBadRequest)
 			return
@@ -5792,7 +6114,7 @@ func opuiHandleApi(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, `{"status":"error","error":"名称不合法"}`, http.StatusBadRequest)
 			return
 		}
-		oldFull := filepath.Join(utils.GetAppDir(), filepath.FromSlash(j.Path))
+		oldFull := filepath.Join(opuiAppDir(), filepath.FromSlash(j.Path))
 		if _, err := os.Stat(oldFull); err != nil {
 			http.Error(w, `{"status":"error","error":"原文件不存在"}`, http.StatusBadRequest)
 			return
@@ -5834,7 +6156,7 @@ func opuiHandleApi(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, `{"status":"error","error":"目标路径不合法"}`, http.StatusBadRequest)
 			return
 		}
-		appDir := utils.GetAppDir()
+		appDir := opuiAppDir()
 		targetDir := filepath.Join(appDir, filepath.FromSlash(j.Target))
 		if err := os.MkdirAll(targetDir, 0o755); err != nil {
 			http.Error(w, `{"status":"error","error":"创建目标目录失败: `+err.Error()+`"}`, http.StatusBadRequest)
@@ -5881,7 +6203,7 @@ func opuiHandleApi(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, `{"status":"error","error":"目标路径不合法"}`, http.StatusBadRequest)
 			return
 		}
-		appDir := utils.GetAppDir()
+		appDir := opuiAppDir()
 		targetDir := filepath.Join(appDir, filepath.FromSlash(j.Target))
 		if err := os.MkdirAll(targetDir, 0o755); err != nil {
 			http.Error(w, `{"status":"error","error":"创建目标目录失败: `+err.Error()+`"}`, http.StatusBadRequest)
@@ -5928,14 +6250,8 @@ func opuiHandleApi(w http.ResponseWriter, r *http.Request) {
 		}
 		all := dic_funcs.ListScheduledTasks()
 		total := len(all)
-		start := j.Skip
-		if start > total {
-			start = total
-		}
-		end := j.Skip + j.Limit
-		if end > total {
-			end = total
-		}
+		start := min(j.Skip, total)
+		end := min(j.Skip+j.Limit, total)
 		jsonResp, _ := json.Marshal(map[string]any{
 			"list":    all[start:end],
 			"total":   total,
@@ -6105,20 +6421,15 @@ func opuiHandleApi(w http.ResponseWriter, r *http.Request) {
 		}
 
 		// 注入词库路径，便于错误日志显示来源（顶层词库默认没有 _词库路径_）
-		dic.Val.P.Set("_词库路径_", j.Path)
+		dto.SetThreadVarRaw("_词库路径_", j.Path)
 
 		// 注入全局变量
 		for k, v := range j.G {
 			dic.Val.G.Set(k, v)
 		}
 
-		var output string
-		var timedOut bool
-		if j.Timeout > 0 {
-			output, timedOut = dic_api.Api.DicRunTimeout(dic, j.Trigger, time.Duration(j.Timeout)*time.Second)
-		} else {
-			output = dic_api.Api.DicRun(dic, j.Trigger)
-		}
+		// 触发词命中则正常执行；未命中（如调试脚本没有写触发词）则整体按线性脚本执行
+		output, timedOut := dic_api.Api.DicRunScript(dic, j.Trigger, time.Duration(j.Timeout)*time.Second)
 
 		// 从输出中提取错误行号（格式：funcName(line:N)：error 或 JS错误(line:N)：error）
 		var errorLine int
@@ -6139,10 +6450,6 @@ func opuiHandleApi(w http.ResponseWriter, r *http.Request) {
 		}
 		gvVars := make(map[string]any)
 		for k, v := range dto.GV.GetAll() {
-			// 系统内部线程变量（_ 前缀）不纳入监控，避免与用户线程变量混淆
-			if strings.HasPrefix(k, "_") {
-				continue
-			}
 			gvVars[k] = varDebugItem(v)
 		}
 
@@ -6162,6 +6469,21 @@ func opuiHandleApi(w http.ResponseWriter, r *http.Request) {
 		// 编译警告（如循环引入），前端以黄色警告展示
 		if len(dic.Data.Warnings) > 0 {
 			resp["warnings"] = dic.Data.Warnings
+		}
+		jsonResp, _ := json.Marshal(resp)
+		w.Write(jsonResp)
+		return
+
+	case "get_compile_env":
+		// 检测词库编译环境：Go 工具链是否可用（扩展部署下载的 Go 或 PATH 中的 go）
+		goAvailable := false
+		if _, err := findGoExe(); err == nil {
+			goAvailable = true
+		}
+		resp := map[string]any{
+			"status":  "ok",
+			"windows": runtime.GOOS == "windows",
+			"go":      goAvailable,
 		}
 		jsonResp, _ := json.Marshal(resp)
 		w.Write(jsonResp)
@@ -6290,21 +6612,12 @@ func opuiHandleApi(w http.ResponseWriter, r *http.Request) {
 		all := dto.GV.GetAll()
 		keys := make([]string, 0, len(all))
 		for k := range all {
-			if strings.HasPrefix(k, "_") {
-				continue
-			}
 			keys = append(keys, k)
 		}
 		sort.Strings(keys)
 		total := len(keys)
-		start := j.Skip
-		if start > total {
-			start = total
-		}
-		end := j.Skip + j.Limit
-		if end > total {
-			end = total
-		}
+		start := min(j.Skip, total)
+		end := min(j.Skip+j.Limit, total)
 		items := make([]map[string]any, 0, end-start)
 		for _, k := range keys[start:end] {
 			item := varDebugItem(all[k])

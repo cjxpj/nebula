@@ -61,19 +61,19 @@ func runDic(d *dto.DicInputs) (any, error) {
 			return "", nil
 		}})
 	calldicrun.ClassText = d.Dic.Class
-	calldicrun.Val.P.Set("_词库路径_", dicPath)
+	dto.SetThreadVarRaw("_词库路径_", dicPath)
 
 	switch dicType {
 	case "继承":
 		fv := dto.NewVal()
 		fv.Reset(d.V.P.GetAll())
-		fv.Set("_词库路径_", dicPath)
+		dto.SetThreadVarRaw("_词库路径_", dicPath)
 		calldicrun.Set_v(fv)
 		calldicrun.FuncText = d.Dic.DicFuncs
 	case "继承函数":
 		calldicrun.FuncText = d.Dic.DicFuncs
 	case "互通":
-		d.V.P.Set("_词库路径_", dicPath)
+		dto.SetThreadVarRaw("_词库路径_", dicPath)
 		calldicrun.Set_v(d.V.P)
 		calldicrun.FuncText = d.Dic.DicFuncs
 	}
@@ -114,19 +114,19 @@ func runDicFile(d *dto.DicInputs) (any, error) {
 			return "", nil
 		}})
 	calldicrun.ClassText = d.Dic.Class
-	calldicrun.Val.P.Set("_词库路径_", dicPath)
+	dto.SetThreadVarRaw("_词库路径_", dicPath)
 
 	switch dicType {
 	case "继承":
 		fv := dto.NewVal()
 		fv.Reset(d.V.P.GetAll())
-		fv.Set("_词库路径_", dicPath)
+		dto.SetThreadVarRaw("_词库路径_", dicPath)
 		calldicrun.Set_v(fv)
 		calldicrun.FuncText = d.Dic.DicFuncs
 	case "继承函数":
 		calldicrun.FuncText = d.Dic.DicFuncs
 	case "互通":
-		d.V.P.Set("_词库路径_", dicPath)
+		dto.SetThreadVarRaw("_词库路径_", dicPath)
 		calldicrun.Set_v(d.V.P)
 		calldicrun.FuncText = d.Dic.DicFuncs
 	}
@@ -428,11 +428,11 @@ func wsCreate(d *dto.DicInputs) (any, error) {
 	// 返回 WS 对象（面对像），方法内全局变量随 WS 一直存在
 	instance := &dto.DicClass{
 		LocalValue: dto.NewVal().
-			Set("_WS_", ws).
+			SetRaw("_WS_", ws).
 			Set("访问路径", addr).
-			Set("_词库路径_", dicPath).
 			Set("跨域", cors),
 	}
+	dto.SetThreadVarRaw("_词库路径_", dicPath)
 	instance.Fn = map[string]dto.DicFunc{
 		"设置跨域": {L: "1", Fn: func(d *dto.DicInputs) (any, error) {
 			cors := d.Inputs.Bool(1)
@@ -454,7 +454,7 @@ func wsCreate(d *dto.DicInputs) (any, error) {
 			}
 			ws.FilePath = p
 			dto.ServerConfig.AddWs(ws)
-			instance.LocalValue.Set("_词库路径_", p)
+			dto.SetThreadVarRaw("_词库路径_", p)
 			return "", nil
 		}},
 		"设置访问路径": {L: "1", Fn: func(d *dto.DicInputs) (any, error) {
@@ -500,6 +500,10 @@ type dicServerState struct {
 	compiledBytes []byte // 编译好的词库数据（gob 序列化），请求时直接反序列化复用
 	cors          bool
 	srv           *http.Server
+	// 词库路径热更新（设置路由词库传入路径时启用）
+	dicPath    string    // 词库文件绝对路径，非空则每次请求前检测文件变化并自动重载
+	dicModTime time.Time // 上次编译时词库文件的修改时间
+	dicSize    int64     // 上次编译时词库文件大小
 	// HTTPS
 	tls      bool
 	certFile string
@@ -526,7 +530,7 @@ func resolveServerTLSPath(p string) string {
 // 每个请求以 URL 路径为触发词运行词库，输出作为 HTTP 响应。
 // 用法: s:$创建服务器 <端口地址> <编译好的词库数据>$ 然后 $s.启动$
 // 第二个参数只接受「编译好的词库数据」（$编译词库$ 或 //@资源 匹配 .n 自动编译得到的 base64 gob 产物），
-// 源码文本请先用 $编译词库$ 编译，或创建后通过「服务器.设置词库」传入源码重新编译。
+// 源码文本请先用 $编译词库$ 编译，或创建后通过「服务器.设置路由词库」传入源码重新编译。
 func createServer(d *dto.DicInputs) (any, error) {
 	addr := d.Inputs.String(1)
 	if addr == "" {
@@ -541,25 +545,9 @@ func createServer(d *dto.DicInputs) (any, error) {
 	// - map（「编译词库」直接返回值）取「编译数据」字段（[]byte）；
 	// - []byte（//@资源 变量:xxx.n 的自动编译结果）直接使用。
 	// 均不接受源码文本，也无需 base64 编解码。
-	var compiledBytes []byte
-	if dicData != nil {
-		switch v := dicData.(type) {
-		case map[string]any:
-			if b, ok := v["编译数据"].([]byte); ok && len(b) > 0 {
-				if _, err := run.UnmarshalBuildValue(b); err == nil {
-					compiledBytes = b
-				}
-			}
-		case []byte:
-			if len(v) > 0 {
-				if _, err := run.UnmarshalBuildValue(v); err == nil {
-					compiledBytes = v
-				}
-			}
-		}
-		if compiledBytes == nil {
-			return "", errors.New("创建服务器：第二个参数必须是编译好的词库数据")
-		}
+	compiledBytes, _ := compiledBytesFrom(dicData)
+	if dicData != nil && compiledBytes == nil {
+		return "", errors.New("创建服务器：第二个参数必须是编译好的词库数据")
 	}
 
 	st := &dicServerState{
@@ -571,7 +559,7 @@ func createServer(d *dto.DicInputs) (any, error) {
 
 	instance := &dto.DicClass{
 		LocalValue: dto.NewVal().
-			Set("_服务器_", st).
+			SetRaw("_服务器_", st).
 			Set("端口地址", addr).
 			Set("跨域", true),
 	}
@@ -588,15 +576,68 @@ func createServer(d *dto.DicInputs) (any, error) {
 		dto.FuncServers.Remove(addr)
 	}
 
-	// setDic 字典方法「服务器.设置词库」：编译源码并即时生效
+	// setDic 字典方法「服务器.设置路由词库」：编译源码并即时生效
 	setDic := func(dicData string) error {
 		compiled := compileServerText(dicData)
 		st.mu.Lock()
+		st.dicPath = ""
 		st.dicData = dicData
 		st.compiledBytes = compiled
 		st.mu.Unlock()
 		dto.FuncServers.UpdateData(addr, dicData)
 		return nil
+	}
+
+	// setDicPath 以词库文件路径设置并启用实时热更新：记录文件路径与修改时间，后续请求前自动检测重载。
+	setDicPath := func(path, text string) error {
+		compiled := compileServerText(text)
+		info, _ := os.Stat(path)
+		st.mu.Lock()
+		st.dicPath = path
+		st.dicData = text
+		st.compiledBytes = compiled
+		if info != nil {
+			st.dicModTime = info.ModTime()
+			st.dicSize = info.Size()
+		}
+		st.mu.Unlock()
+		dto.FuncServers.UpdateData(addr, text)
+		return nil
+	}
+
+	// setDicInput 「服务器.设置路由词库」入口：支持编译好的词库数据（map/[]byte）或词库路径/源码。
+	setDicInput := func(val any) error {
+		// 编译好的词库数据：map（$编译词库$ 返回值）或 []byte（//@资源 编译产物）
+		if b, ok := compiledBytesFrom(val); ok {
+			st.mu.Lock()
+			st.dicPath = ""
+			st.dicData = ""
+			st.compiledBytes = b
+			st.mu.Unlock()
+			dto.FuncServers.UpdateData(addr, "")
+			return nil
+		}
+		// 字符串：以 .n 结尾按词库文件路径处理（不存在时自动从内嵌模板生成），否则按源码文本编译
+		if s, ok := val.(string); ok {
+			if strings.HasSuffix(s, ".n") {
+				f := utils.NewFileQueue(s)
+				if !f.FileExists() {
+					if data, err := appfiles.GetFile("dic/system/" + filepath.Base(s)); err == nil {
+						f.WriteFileByte(data)
+					}
+				}
+				if !f.FileExists() {
+					return errors.New("服务器.设置路由词库：词库文件不存在：" + s)
+				}
+				data, err := f.ReadFileByte()
+				if err != nil {
+					return err
+				}
+				return setDicPath(f.FileName, string(data))
+			}
+			return setDic(s)
+		}
+		return errors.New("服务器.设置路由词库：参数必须是编译好的词库数据或词库路径/源码")
 	}
 
 	// startListen 绑定端口并启动监听（HTTP/HTTPS），返回后服务器即处于监听状态
@@ -798,12 +839,11 @@ func createServer(d *dto.DicInputs) (any, error) {
 			}
 			return "true", nil
 		}},
-		"设置词库": {L: "1", Fn: func(d *dto.DicInputs) (any, error) {
-			data := d.Inputs.String(1)
-			if data == "" {
-				return "", errors.New("服务器.设置词库：词库数据不能为空")
+		"设置路由词库": {L: "1", Fn: func(d *dto.DicInputs) (any, error) {
+			if err := setDicInput(d.Inputs.Get(1)); err != nil {
+				return "", err
 			}
-			return setDic(data), nil
+			return "", nil
 		}},
 		"关闭": {L: "0", Fn: func(d *dto.DicInputs) (any, error) {
 			stopServer()
@@ -829,6 +869,8 @@ func createServer(d *dto.DicInputs) (any, error) {
 			if !dto.FuncServers.SetCore(addr) {
 				return "", errors.New("服务器.设置核心服务器：服务器尚未启动")
 			}
+			// 首次标记核心服务器时，触发一次性配置加载（config.yaml / router.n / 机器人等服务初始化）
+			dto.LoadConfigOnce()
 			return "", nil
 		}},
 		"设置BeerFrp": {L: "0|1|2|3|4", Fn: func(d *dto.DicInputs) (any, error) {
@@ -888,6 +930,26 @@ func compileServerText(text string) []byte {
 		return nil
 	}
 	return data
+}
+
+// compiledBytesFrom 从输入提取编译好的词库数据（gob 字节）。
+// 支持 map（「编译词库」返回值的「编译数据」字段）与 []byte（//@资源 编译产物）；非编译数据返回 false。
+func compiledBytesFrom(val any) ([]byte, bool) {
+	switch v := val.(type) {
+	case map[string]any:
+		if b, ok := v["编译数据"].([]byte); ok && len(b) > 0 {
+			if _, err := run.UnmarshalBuildValue(b); err == nil {
+				return b, true
+			}
+		}
+	case []byte:
+		if len(v) > 0 {
+			if _, err := run.UnmarshalBuildValue(v); err == nil {
+				return v, true
+			}
+		}
+	}
+	return nil, false
 }
 
 // compileDic 编译词库源码，直接返回 map 结构数据（避免 base64 编解码与 JSON 序列化造成数据错误）：
@@ -950,7 +1012,12 @@ func coreServerWebUI(addr string) string {
 	if dto.ServerConfig.OPUI != nil && dto.ServerConfig.OPUI.Addr != "" {
 		opui = dto.ServerConfig.OPUI.Addr
 	}
-	return "http://" + net.JoinHostPort(host, port) + opui
+	webui := "http://" + net.JoinHostPort(host, port) + opui
+	// 若已生成快捷登录码，拼接到 WebUI 地址上，实现打开链接即快捷登录
+	if tk := dic_server.GetOpuiQuickToken(); tk != "" {
+		webui += "?key=" + tk
+	}
+	return webui
 }
 
 // newServerDicFromBytes 从编译产物反序列化词库；失败时按源码文本回退编译。
@@ -966,6 +1033,37 @@ func newServerDicFromBytes(compiled []byte, text string) *dic_dto.Dic {
 		}
 	}
 	return newServerDic(text)
+}
+
+// reloadDicIfChanged 路径模式下检测词库文件是否变化，变化则重新编译加载（实时热更新）。
+func (st *dicServerState) reloadDicIfChanged() {
+	st.mu.RLock()
+	dicPath := st.dicPath
+	modTime := st.dicModTime
+	size := st.dicSize
+	st.mu.RUnlock()
+	if dicPath == "" {
+		return
+	}
+	info, err := os.Stat(dicPath)
+	if err != nil {
+		return
+	}
+	if info.ModTime().Equal(modTime) && info.Size() == size {
+		return
+	}
+	data, err := os.ReadFile(dicPath)
+	if err != nil {
+		return
+	}
+	compiled := compileServerText(string(data))
+	st.mu.Lock()
+	st.dicData = string(data)
+	st.compiledBytes = compiled
+	st.dicModTime = info.ModTime()
+	st.dicSize = info.Size()
+	st.mu.Unlock()
+	dto.FuncServers.UpdateData(st.addr, string(data))
 }
 
 // serveHTTP 处理单个 HTTP 请求：以 URL 路径为触发词运行词库
@@ -1028,6 +1126,9 @@ func (st *dicServerState) serveHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// 词库路径热更新：检测文件变化并自动重载
+	st.reloadDicIfChanged()
+
 	st.mu.RLock()
 	dicData := st.dicData
 	compiledBytes := st.compiledBytes
@@ -1049,8 +1150,8 @@ func (st *dicServerState) serveHTTP(w http.ResponseWriter, r *http.Request) {
 		Set("网站根目录", dto.DefaultWebRoot)
 
 	// 请求指针
-	globalV.Set("_请求数据_", r)
-	globalV.Set("_响应数据_", w)
+	globalV.SetRaw("_请求数据_", r)
+	globalV.SetRaw("_响应数据_", w)
 
 	resS, err := json.Marshal(responseData)
 	if err != nil {

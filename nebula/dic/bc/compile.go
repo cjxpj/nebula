@@ -81,14 +81,8 @@ func (c *compiler) compileNode(n ast.Node) {
 // compileStmt 编译叶子语句：识别终止/循环控制关键字，无副作用赋值下沉为 OpAssign，
 // 其余交给 Runtime.Line。line 为语句真实源文件行号（1-based，0 表示未知）。
 func (c *compiler) compileStmt(line int, text string) {
-	if cond, offset, ok := parseJumpRel(text); ok {
-		c.emit(Instr{Op: OpJumpRel, Text: cond, Expr: offset, Line: line})
-		return
-	}
-	// 畸形 >跳行(（有内容但缺 )>> 偏移）：解释器 execProgram 命中「>跳行( 前缀且前缀非空」
-	// 后 continue，即静默消费该行（无输出、不跳转）。>跳行(（空前缀）除外，按普通行处理。
-	if rest, has := strings.CutPrefix(text, ">跳行("); has && rest != "" {
-		c.emit(Instr{Op: OpNop})
+	if expr, ok := parseJumpAbs(text); ok {
+		c.emit(Instr{Op: OpJumpAbs, Expr: expr, Line: line})
 		return
 	}
 	switch {
@@ -120,19 +114,26 @@ func (c *compiler) compileStmt(line int, text string) {
 	}
 }
 
-// parseJumpRel 识别 >跳行(条件)>>偏移 语句，返回条件表达式与偏移表达式。
-// 语义与解释器 execProgram 的跳行分支一致：对原始行做 CutPrefix(">跳行(")，
-// 再 SplitN(rest, ")>>", 2)；解析失败（缺 )>> 或空前缀）返回 ok=false，由调用方当普通行处理。
-func parseJumpRel(text string) (cond, offset string, ok bool) {
-	rest, has := strings.CutPrefix(text, ">跳行(")
-	if !has || rest == "" {
-		return "", "", false
+// parseJumpAbs 识别整行 $跳行 <行号表达式>$ 语句，返回行号表达式。
+// 仅当整行恰好是一个 $跳行 ...$ 调用（首尾各一个 $，函数名后为空格，且表达式内不再含 $）时命中，
+// 避免与普通输出行内的 $跳行 混淆。无参数（$跳行$）返回 expr 为空、ok=true，由运行时按未命中处理。
+func parseJumpAbs(text string) (expr string, ok bool) {
+	if !strings.HasPrefix(text, "$跳行") || !strings.HasSuffix(text, "$") {
+		return "", false
 	}
-	parts := strings.SplitN(rest, ")>>", 2)
-	if len(parts) != 2 {
-		return "", "", false
+	if len(text) == len("$跳行$") {
+		return "", true
 	}
-	return parts[0], parts[1], true
+	inner := text[1 : len(text)-1] // 去掉首尾 $
+	rest, has := strings.CutPrefix(inner, "跳行")
+	if !has || !strings.HasPrefix(rest, " ") {
+		return "", false
+	}
+	expr = strings.TrimSpace(rest)
+	if expr == "" || strings.Contains(expr, "$") {
+		return "", false
+	}
+	return expr, true
 }
 
 // assignableLeaf 判断叶子语句是否为「无副作用的赋值/算术」，返回其结构化信息。
@@ -176,6 +177,16 @@ func (c *compiler) findBlock(kind blockKind) int {
 	return -1
 }
 
+// findLoopBlock 从栈顶向下查找最内层的循环/遍历块，返回其下标（-1 表示未找到）。
+func (c *compiler) findLoopBlock() int {
+	for i := len(c.blocks) - 1; i >= 0; i-- {
+		if c.blocks[i].kind == blockFor || c.blocks[i].kind == blockForEach {
+			return i
+		}
+	}
+	return -1
+}
+
 // emitBreak 发射 >中断 / >终止循环 / >终止遍历 的统一中断指令：跳出最内层指定类别（循环/遍历）执行块。
 // 三者共用 OpBreak，仅目标块类别不同（>中断 与 >终止循环 均跳循环）；命中后由块关闭逻辑回填截断帧深度与弹出指令 PC。
 // 返回是否成功发射（无对应类别执行块时返回 false，交由调用方当作普通行）。
@@ -189,23 +200,24 @@ func (c *compiler) emitBreak(kind blockKind) bool {
 	return true
 }
 
-// emitSkip 发射 >跳过 跳转。语义为「结束最内层执行块」：
-//   - 最内层为判断块：跳到判断块末尾（跳过剩余分支），与解释器 IfFunc.Jump 一致；
-//   - 最内层为循环/遍历块：跳到其 OpLoopEnd/OpForEachEnd（continue）。
+// emitSkip 发射 >跳过 跳转。语义为「跳过本轮剩余语句（continue 最内层循环/遍历）」：
+//   - 位于循环/遍历体内（含其内嵌的判断/匹配块）时，跳到最内层循环/遍历块末尾（continue）；
+//   - 不在任何循环/遍历内时，跳到最内层判断/匹配块末尾（等价 IfFunc.Jump）。
 //
 // 返回是否成功发射（无任何执行块时返回 false，交由调用方当作普通行）。
 func (c *compiler) emitSkip() bool {
 	if len(c.blocks) == 0 {
 		return false
 	}
-	top := len(c.blocks) - 1
-	if c.blocks[top].kind == blockIf {
+	// 优先 continue 最内层循环/遍历：让「循环内嵌判断块里的 >跳过」能跳过本轮剩余语句。
+	if i := c.findLoopBlock(); i >= 0 {
 		idx := c.emit(Instr{Op: OpJump})
-		c.blocks[top].skips = append(c.blocks[top].skips, idx)
+		c.blocks[i].continues = append(c.blocks[i].continues, idx)
 		return true
 	}
+	top := len(c.blocks) - 1
 	idx := c.emit(Instr{Op: OpJump})
-	c.blocks[top].continues = append(c.blocks[top].continues, idx)
+	c.blocks[top].skips = append(c.blocks[top].skips, idx)
 	return true
 }
 

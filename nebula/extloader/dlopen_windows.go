@@ -4,6 +4,7 @@ package extloader
 
 import (
 	"fmt"
+	"os"
 	"runtime"
 	"syscall"
 	"unsafe"
@@ -20,7 +21,21 @@ type winLib struct {
 	extCall  *syscall.LazyProc
 }
 
+// redirectNativeStdout 将进程原生标准输出（STD_OUTPUT_HANDLE）重定向到 Go 当前的 os.Stdout。
+// 主程序启动时已把 os.Stdout 重定向到日志管道，这里让扩展动态库的原生 printf 也走同一条管道，
+// 从而被回显到终端并写入日志，而不是绕过日志系统直接写控制台。
+func redirectNativeStdout() {
+	if os.Stdout == nil {
+		return
+	}
+	kernel32 := syscall.NewLazyDLL("kernel32.dll")
+	setStdHandle := kernel32.NewProc("SetStdHandle")
+	const stdOutputHandle = ^uintptr(10) // STD_OUTPUT_HANDLE == -11
+	setStdHandle.Call(stdOutputHandle, os.Stdout.Fd())
+}
+
 func openNative(path string) (nativeLib, error) {
+	redirectNativeStdout()
 	dll := syscall.NewLazyDLL(path)
 	if err := dll.Load(); err != nil {
 		return nil, fmt.Errorf("加载 %s 失败：%w", path, err)
@@ -48,7 +63,8 @@ func cstrToGo(p uintptr) string {
 	if p == 0 {
 		return ""
 	}
-	ptr := unsafe.Pointer(p)
+	// p 来自 syscall 返回的 uintptr，用 unsafe.Add 还原为指针读取 C 字符串
+	ptr := unsafe.Add(unsafe.Pointer(nil), p)
 	n := 0
 	for *(*byte)(unsafe.Add(ptr, n)) != 0 {
 		n++

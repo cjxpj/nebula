@@ -216,7 +216,7 @@ func requestForward(d *dto.DicInputs) (any, error) {
 	}
 
 	// 从 dic 线程变量中获取原始请求
-	reqVal := d.V.G.Get("_请求数据_")
+	reqVal, _ := d.V.G.GetRaw("_请求数据_")
 	if reqVal == nil {
 		return "", errors.New("无法获取原始请求")
 	}

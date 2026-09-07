@@ -122,38 +122,49 @@ func (v *Val) Close() {
 // 线程变量
 var GV *Val = NewVal()
 
-// ClearThreadVars 清空线程变量，保留系统内部变量（键名以 _ 开头）。
+// threadVarName 将词库变量名规范化为全局线程变量 GV 的键：
+// 变量名前后都有下划线（_变量名_ / __变量名__ ...）时，去掉一层下划线得到线程变量键。
+func threadVarName(key string) (string, bool) {
+	if len(key) >= 3 && key[0] == '_' && key[len(key)-1] == '_' {
+		if inner := key[1 : len(key)-1]; inner != "" {
+			return inner, true
+		}
+	}
+	return "", false
+}
+
+// ClearThreadVars 清空全部线程变量（不再保留 _ 开头的系统内部变量）。
 // 同时清空对应无锁槽，避免 get 槽优先读返回残留旧值。
 func ClearThreadVars() {
 	GV.mu.Lock()
 	for k := range GV.obj {
-		if !strings.HasPrefix(k, "_") {
-			delete(GV.obj, k)
-			GV.slotClearKey(k)
-		}
+		delete(GV.obj, k)
+		GV.slotClearKey(k)
 	}
 	for k := range GV.num {
-		if !strings.HasPrefix(k, "_") {
-			delete(GV.num, k)
-			GV.slotClearKey(k)
-		}
+		delete(GV.num, k)
+		GV.slotClearKey(k)
 	}
 	GV.mu.Unlock()
 }
 
-// SetThreadVar 设置线程变量（键名以 _ 开头为系统内部变量，不允许修改）
+// SetThreadVar 设置线程变量
 func SetThreadVar(key, val string) {
-	if strings.HasPrefix(key, "_") {
-		return
-	}
 	GV.Set(key, val)
 }
 
-// DeleteThreadVar 删除指定线程变量（键名以 _ 开头为系统内部变量，不允许删除）
+// SetThreadVarRaw 以原始键（不做下划线规范化）写入线程变量。
+func SetThreadVarRaw(key string, val any) {
+	GV.set(key, val)
+}
+
+// GetThreadVarRaw 以原始键（不做下划线规范化）读取线程变量，返回是否存在。
+func GetThreadVarRaw(key string) (any, bool) {
+	return GV.get(key)
+}
+
+// DeleteThreadVar 删除指定线程变量
 func DeleteThreadVar(key string) {
-	if strings.HasPrefix(key, "_") {
-		return
-	}
 	GV.mu.Lock()
 	delete(GV.obj, key)
 	delete(GV.num, key)
@@ -568,7 +579,7 @@ func (v *DicVal) GetAll() map[string]any {
 
 // Get 返回指定键的值
 func (v *Val) Get(key string) any {
-	if name, ok := strings.CutPrefix(key, "__"); ok && name != "" {
+	if name, ok := threadVarName(key); ok {
 		value, _ := GV.get(name)
 		return value
 	}
@@ -695,7 +706,7 @@ func (v *Val) SetLock(key string, val bool) *Val {
 
 // Set 设置指定键的值，只有在键未被锁定时才设置
 func (v *Val) Set(key string, val any) *Val {
-	if name, ok := strings.CutPrefix(key, "__"); ok && name != "" {
+	if name, ok := threadVarName(key); ok {
 		GV.set(name, val)
 		return v
 	}
@@ -711,6 +722,17 @@ func (v *Val) Set(key string, val any) *Val {
 		v.slotSet(internVar(key), val)
 	}
 	return v
+}
+
+// SetRaw 以原始键（不做下划线规范化）写入变量，供内部对象变量（如 _请求数据_/_响应数据_/_WS连接_）绕过线程变量映射。
+func (v *Val) SetRaw(key string, val any) *Val {
+	v.set(key, val)
+	return v
+}
+
+// GetRaw 以原始键（不做下划线规范化）读取变量。
+func (v *Val) GetRaw(key string) (any, bool) {
+	return v.get(key)
 }
 
 // SetOnce 设置一次性变量（//@一次性资源）：写入后仅在首次读取时返回，读取后即销毁。
@@ -731,7 +753,7 @@ func (v *Val) SetOnce(key string, val any) *Val {
 
 // SetInt64 设置整数变量值（直存 int64 免装箱），只有在键未被锁定时才设置。
 func (v *Val) SetInt64(key string, val int64) *Val {
-	if name, ok := strings.CutPrefix(key, "__"); ok && name != "" {
+	if name, ok := threadVarName(key); ok {
 		GV.setInt64(name, val)
 		return v
 	}
@@ -751,7 +773,7 @@ func (v *Val) SetInt64(key string, val int64) *Val {
 
 // GetInt64 读取整数变量值（直读 int64 免装箱），未命中返回 false。
 func (v *Val) GetInt64(key string) (int64, bool) {
-	if name, ok := strings.CutPrefix(key, "__"); ok && name != "" {
+	if name, ok := threadVarName(key); ok {
 		return GV.getInt64(name)
 	}
 	return v.getInt64(key)
@@ -791,7 +813,7 @@ func (v *Val) HeaderAdd(key string, val any) {
 
 // 获取变量值，优先从 P，再从 G
 func (v *DicVal) GetVal(key string) (any, bool) {
-	if name, ok := strings.CutPrefix(key, "__"); ok && name != "" {
+	if name, ok := threadVarName(key); ok {
 		return GV.get(name)
 	}
 	value, ok := v.P.get(key)
@@ -803,7 +825,7 @@ func (v *DicVal) GetVal(key string) (any, bool) {
 
 // GetInt64 读取整数变量值（优先从 P，再从 G），未命中返回 false。用于免装箱的数值快速路径。
 func (v *DicVal) GetInt64(key string) (int64, bool) {
-	if name, ok := strings.CutPrefix(key, "__"); ok && name != "" {
+	if name, ok := threadVarName(key); ok {
 		return GV.getInt64(name)
 	}
 	n, ok := v.P.getInt64(key)
@@ -837,7 +859,7 @@ func (v *DicVal) GetSlot(slot int32) (any, bool) {
 
 // 获取变量值，优先从 P，再从 G
 func (v *Val) GetVal(vv *Val, key string) (any, bool) {
-	if name, ok := strings.CutPrefix(key, "__"); ok && name != "" {
+	if name, ok := threadVarName(key); ok {
 		return GV.get(name)
 	}
 	value, ok := v.get(key)

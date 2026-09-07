@@ -130,8 +130,12 @@ func (m *mockRT) LoopRange(expr string) (int, int) {
 	return atoi(startExpr), atoi(endExpr)
 }
 
-// JumpRelOffset 模拟跳行偏移求值：优先字面量整数，其次变量表查找。
-func (m *mockRT) JumpRelOffset(expr string) (int, bool) {
+// SetLine 模拟设置当前行号（写入 行数 变量，供 %行数% 读取）。
+func (m *mockRT) SetLine(line int) { m.vars["行数"] = strconv.Itoa(line) }
+
+// JumpAbsOffset 模拟 $跳行 行号表达式求值：先 %var% 插值，再字面量整数、变量表查找，最后简单 [x+1] 算术。
+func (m *mockRT) JumpAbsOffset(expr string) (int, bool) {
+	expr = strings.TrimSpace(m.Resolve(expr))
 	if n, err := strconv.Atoi(expr); err == nil {
 		return n, true
 	}
@@ -140,8 +144,20 @@ func (m *mockRT) JumpRelOffset(expr string) (int, bool) {
 			return n, true
 		}
 	}
+	// 简单 [行数+1] 算术（仅测试用，覆盖 [%行数%+1] 插值后的形态 [N+1]）。
+	if strings.HasPrefix(expr, "[") && strings.HasSuffix(expr, "]") {
+		inner := strings.TrimSpace(expr[1 : len(expr)-1])
+		if lhs, rhs, ok := strings.Cut(inner, "+"); ok {
+			lv, err1 := strconv.Atoi(strings.TrimSpace(lhs))
+			rv, err2 := strconv.Atoi(strings.TrimSpace(rhs))
+			if err1 == nil && err2 == nil {
+				return lv + rv, true
+			}
+		}
+	}
 	return 0, false
 }
+
 func (m *mockRT) Stop() bool { return false }
 func (m *mockRT) Halt()      {}
 
@@ -583,19 +599,35 @@ func TestHalt(t *testing.T) {
 	}
 }
 
-func TestJumpRelSkip(t *testing.T) {
-	// >跳行(true)>>1 命中：相对跳转跳过下一行
-	out := runBody(t, []string{">跳行(true)>>1", "跳过", "后"})
+func TestJumpAbsLiteral(t *testing.T) {
+	// $跳行 3$ 绝对跳转到第 3 行（跳过第 2 行）
+	out := runBody(t, []string{"$跳行 3$", "跳过", "后"})
 	if out != "后\n" {
 		t.Fatalf("输出 = %q, 期望 %q", out, "后\n")
 	}
 }
 
-func TestJumpRelMiss(t *testing.T) {
-	// >跳行(false)>>1 未命中：顺序执行
-	out := runBody(t, []string{">跳行(false)>>1", "跳过", "后"})
-	if out != "跳过\n后\n" {
-		t.Fatalf("输出 = %q, 期望 %q", out, "跳过\n后\n")
+func TestJumpAbsArith(t *testing.T) {
+	// $跳行 [1+2]$ 行号算术求值后跳转到第 3 行
+	out := runBody(t, []string{"$跳行 [1+2]$", "跳过", "后"})
+	if out != "后\n" {
+		t.Fatalf("输出 = %q, 期望 %q", out, "后\n")
+	}
+}
+
+func TestJumpAbsLineVar(t *testing.T) {
+	// $跳行 [%行数%+2]$ 从当前行(1)跳转到第 3 行
+	out := runBody(t, []string{"$跳行 [%行数%+2]$", "跳过", "后"})
+	if out != "后\n" {
+		t.Fatalf("输出 = %q, 期望 %q", out, "后\n")
+	}
+}
+
+func TestJumpAbsMiss(t *testing.T) {
+	// 目标行号不存在（9 超出范围）：不跳转，顺序执行
+	out := runBody(t, []string{"$跳行 9$", "A", "B"})
+	if out != "A\nB\n" {
+		t.Fatalf("输出 = %q, 期望 %q", out, "A\nB\n")
 	}
 }
 

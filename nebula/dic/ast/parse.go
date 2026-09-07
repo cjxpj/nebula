@@ -35,6 +35,8 @@ func blockOpen(line string) (BlockKind, bool) {
 		return BlockValChain, true
 	case strings.HasPrefix(line, "#:执行函数>"):
 		return BlockFunc, true
+	case strings.HasPrefix(line, "执行函数>"):
+		return BlockFunc, true
 	}
 	// 变量: 开头的赋值框（vType 6，后缀决定框类型）：
 	//   { / [   → 多行 JSON 赋值（变量名不含 -> 路径，避免与 a->b:{ 单行 JSON 路径赋值混淆）

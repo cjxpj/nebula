@@ -867,8 +867,8 @@ func callCloudToolFunc(data *dto.BuildValue, dicPath, username, name string, arg
 	funcv := dto.NewVal().
 		Set("触发", Tstr).
 		Set("触发词", text).
-		Set("账号", username).
-		Set("_词库路径_", dicPath)
+		Set("账号", username)
+	dto.SetThreadVarRaw("_词库路径_", dicPath)
 
 	dto.ValRunTrigger(text, Tstr, v.NewDicVal(funcv), v)
 

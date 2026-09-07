@@ -717,6 +717,45 @@ var ReplyFuncs = map[string]dto.DicFunc{
 			return "", nil
 		},
 	},
+	"踢": {
+		L: "2",
+		Fn: func(d *dto.DicInputs) (any, error) {
+			ctx := GetPushContext(d)
+			if ctx == nil || ctx.Bot == nil || ctx.Bot.API == nil {
+				return "", nil
+			}
+			groupOpenID := d.Inputs.String(1)
+			memberOpenID := d.Inputs.String(2)
+			if groupOpenID == "" || memberOpenID == "" {
+				return "", nil
+			}
+			resp, err := ctx.Bot.API.BatchRemoveMembers(groupOpenID, []string{memberOpenID}, false)
+			if err != nil {
+				debugLog.Infof("[QQBot] 移除群成员失败: %v", err)
+				return "", nil
+			}
+			data, _ := json.Marshal(resp)
+			return string(data), nil
+		},
+	},
+	"踢黑": {
+		L: "2",
+		Fn: func(d *dto.DicInputs) (any, error) {
+			ctx := GetPushContext(d)
+			if ctx == nil || ctx.Bot == nil || ctx.Bot.API == nil {
+				return "", nil
+			}
+			groupOpenID := d.Inputs.String(1)
+			memberOpenID := d.Inputs.String(2)
+			if groupOpenID == "" || memberOpenID == "" {
+				return "", nil
+			}
+			if _, err := ctx.Bot.API.BatchRemoveMembers(groupOpenID, []string{memberOpenID}, true); err != nil {
+				debugLog.Infof("[QQBot] 移除群成员并拉黑失败: %v", err)
+			}
+			return "", nil
+		},
+	},
 	"获取群信息": {
 		L: "0|1",
 		Fn: func(d *dto.DicInputs) (any, error) {
@@ -737,6 +776,29 @@ var ReplyFuncs = map[string]dto.DicFunc{
 				return "", nil
 			}
 			data, _ := json.Marshal(info)
+			return string(data), nil
+		},
+	},
+	"获取机器人群内状态": {
+		L: "0|1",
+		Fn: func(d *dto.DicInputs) (any, error) {
+			ctx := GetPushContext(d)
+			if ctx == nil || ctx.Bot == nil || ctx.Bot.API == nil {
+				return "", nil
+			}
+			groupOpenID := d.Inputs.String(1)
+			if groupOpenID == "" {
+				groupOpenID = ctx.GroupOpenID
+			}
+			if groupOpenID == "" {
+				return "", nil
+			}
+			state, err := ctx.Bot.API.GetBotState(groupOpenID)
+			if err != nil {
+				debugLog.Infof("[QQBot] 获取机器人群内状态失败: %v", err)
+				return "", nil
+			}
+			data, _ := json.Marshal(state)
 			return string(data), nil
 		},
 	},

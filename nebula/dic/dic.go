@@ -406,3 +406,90 @@ func (m *dicImpl) DicRunTimeout(D *dic_dto.Dic, trigger string, timeout time.Dur
 		}
 	}
 }
+
+// DicRunScript 执行词库，带「无触发词兜底」：当 trigger 命中正文词条时，行为与
+// DicRun / DicRunTimeout 完全一致；未命中时，把词库头部与全部正文（触发词行 + 正文行）
+// 按源码顺序当作线性脚本依次执行，供调试面板运行不含触发词的调试脚本。
+func (m *dicImpl) DicRunScript(D *dic_dto.Dic, trigger string, timeout time.Duration) (result string, timedOut bool) {
+	// 命中触发词：直接走正常触发执行（DicRun/DicRunTimeout 内部会自行完成函数/类合并）
+	if _, matchedTrigger, _, _ := run.RunFor(D.Data.Dic, trigger, 0); matchedTrigger != "" {
+		if timeout > 0 {
+			return m.DicRunTimeout(D, trigger, timeout)
+		}
+		return m.DicRun(D, trigger), false
+	}
+
+	// 无命中：按线性脚本执行，自行完成函数/类合并
+	D.Data.MergeFuncs(D.FuncText)
+	if D.ClassText != nil {
+		maps.Copy(D.Data.Class, D.ClassText)
+	}
+
+	D.Val.P.Set("触发词", trigger)
+	D.Val.P.Set("触发", "")
+
+	dicRun := dic_dto.NewRunDicEntry().
+		SetV(D.Val).
+		SetDic(D.Data)
+	dicRun.Dic.MyFunc = D.MyFunc
+
+	// 注入编译期资源变量（//@资源），供头部与正文引用
+	D.Data.ApplyResources(D.Val)
+
+	// 重建正文：每个词条的触发词行 + 正文行（跳过函数/内部/特殊触发定义）
+	var bodyLines []string
+	var bodyLineNums []int
+	for _, e := range D.Data.Dic {
+		bodyLines = append(bodyLines, e.Trigger)
+		bodyLineNums = append(bodyLineNums, e.TriggerLine)
+		bodyLines = append(bodyLines, e.Text...)
+		bodyLineNums = append(bodyLineNums, e.LineNums...)
+	}
+
+	runFunc := func() string {
+		var out string
+		dicRun.LineNums = D.Data.HeadLineNums
+		D.Data.InHeader = true
+		out = m.DicRunLine(dicRun, D.Data.Head)
+		D.Data.InHeader = false
+		dicRun.LineNums = bodyLineNums
+		out += m.DicRunLine(dicRun, bodyLines)
+		return out
+	}
+
+	if timeout <= 0 {
+		out := runFunc()
+		dicRun.Close()
+		return out, false
+	}
+
+	done := make(chan string, 1)
+	go func() {
+		defer func() {
+			if r := recover(); r != nil {
+				debugLog.Errorf("DicRunScript panic: %v", r)
+				done <- ""
+			}
+		}()
+		done <- runFunc()
+	}()
+
+	timer := time.NewTimer(timeout)
+	defer timer.Stop()
+
+	select {
+	case r := <-done:
+		dicRun.Close()
+		return r, false
+	case <-timer.C:
+		dicRun.Sys_v.Stop.Store(true)
+		select {
+		case r := <-done:
+			dicRun.Close()
+			return r, true
+		case <-time.After(3 * time.Second):
+			dicRun.Close()
+			return "", true
+		}
+	}
+}

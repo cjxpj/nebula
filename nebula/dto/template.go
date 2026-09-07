@@ -57,7 +57,7 @@ func isPlainVarName(name string) bool {
 		"val0", "val1", "val2", "val3", "val4", "val5", "val6", "val7", "val8", "val9", "val10":
 		return false
 	}
-	for _, p := range [...]string{"URL编码@", "B64编码@", "URL@", "B64@", "TYPE@", "@", "!", "时间", "随机数"} {
+	for _, p := range [...]string{"URL编码@", "B64编码@", "URL@", "B64@", "TYPE@", "@", "?", "!", "时间", "随机数"} {
 		if strings.HasPrefix(name, p) {
 			return false
 		}
@@ -301,6 +301,17 @@ func (v *Val) renderVar(vv *Val, val string) any {
 				return utils.AnyToString(res)
 			}
 		}
+	}
+
+	// ? 前缀：变量存在则输出值，否则输出空字符串（区别于普通 %变量% 不存在时原样输出 %变量%）。
+	if strings.HasPrefix(val, "?") {
+		if value, ok := v.GetVal(vv, val[1:]); ok && value != nil {
+			if strValue, isString := value.(string); isString {
+				return strValue
+			}
+			return value
+		}
+		return ""
 	}
 
 	if strings.HasPrefix(val, "!") {

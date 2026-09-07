@@ -33,16 +33,19 @@ func main() {
 	defer cancel()
 	defer ShutdownPython()
 
-	// 检测 Python 环境（优先内置扩展目录，否则系统 python3，否则报未安装）
-	pythonPath := ""
-	if utils.NewFileQueue("private/extensions/python/python3").FileExists() {
-		pythonPath = filepath.Join(utils.GetAppDir(), "private", "extensions", "python", "python3")
-	} else if p, err := exec.LookPath("python3"); err == nil {
-		pythonPath = p
-	} else {
-		fmt.Println("Python 未安装：未检测到内置扩展，也未在系统 PATH 中找到 python3")
+	// 扩展可执行文件路径需在启动词库确定数据目录后检测，故注入回调由 dic.Start 调用
+	dic.SetupExtensionPaths = func() {
+		// 检测 Python 环境（优先内置扩展目录，否则系统 python3，否则报未安装）
+		pythonPath := ""
+		if utils.NewFileQueue("private/extensions/python/python3").FileExists() {
+			pythonPath = filepath.Join(utils.GetAppDir(), "private", "extensions", "python", "python3")
+		} else if p, err := exec.LookPath("python3"); err == nil {
+			pythonPath = p
+		} else {
+			fmt.Println("Python 未安装：未检测到内置扩展，也未在系统 PATH 中找到 python3")
+		}
+		dto.SetThreadVarRaw("_Python_", pythonPath)
 	}
-	dto.GV.Set("_PythonPath_", pythonPath)
 
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
@@ -69,6 +72,10 @@ func main() {
 	if argsLen == 1 {
 		// 启动
 		dic.Start()
+		if dto.FuncServers.Len() == 0 {
+			fmt.Println("主程序退出")
+			return
+		}
 		<-ctx.Done()
 		fmt.Println("主程序退出")
 		return
@@ -514,7 +521,7 @@ func startPythonWorker() (*pyWorker, error) {
 	pythonDir := filepath.Join(appDir, "private", "extensions", "python")
 	scriptFile := filepath.Join(pythonDir, "_nebula_python_server.py")
 
-	pythonExec := dto.GV.GetStr("_PythonPath_")
+	pythonExec := dto.GV.GetStr("_Python_")
 	if pythonExec == "" {
 		return nil, fmt.Errorf("Python 未安装：未检测到内置扩展，也未在系统 PATH 中找到 python3")
 	}
@@ -614,9 +621,9 @@ func (e *pyMissingModuleError) Error() string {
 
 // pipInstallModule 使用 Python 解释器安装缺失的第三方模块。
 func pipInstallModule(module string) error {
-	pyExec := dto.GV.GetStr("_PythonPath_")
+	pyExec := dto.GV.GetStr("_Python_")
 	if pyExec == "" {
-		return fmt.Errorf("未设置 Python 执行路径 (_PythonPath_)")
+		return fmt.Errorf("未设置 Python 执行路径 (_Python_)")
 	}
 	if !filepath.IsAbs(pyExec) {
 		if abs, err := filepath.Abs(pyExec); err == nil {

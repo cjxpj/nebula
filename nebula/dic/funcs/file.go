@@ -1,6 +1,7 @@
 package funcs
 
 import (
+	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -24,6 +25,26 @@ func deleteDir(d *dto.DicInputs) (any, error) {
 // 文件后缀
 func fileSuffix(d *dto.DicInputs) (any, error) {
 	return filepath.Ext(d.Inputs.String(1)), nil
+}
+
+// 设置工作目录：切换进程当前工作目录，后续相对路径基于该目录解析。
+func setWorkDir(d *dto.DicInputs) (any, error) {
+	dir := d.Inputs.String(1)
+	if dir == "" {
+		return "", nil
+	}
+	// 移动端数据目录已由 SetAppDir 注入（GetAppDir 非空），无需再切换进程工作目录
+	if utils.GetAppDir() != "" {
+		return "", nil
+	}
+	// 目标目录不存在时先创建，避免首次启动因目录缺失导致 chdir 失败、后续文件写入落到错误位置
+	if err := os.MkdirAll(dir, 0755); err != nil {
+		return "", err
+	}
+	if err := os.Chdir(dir); err != nil {
+		return "", err
+	}
+	return "", nil
 }
 
 // 存在文件

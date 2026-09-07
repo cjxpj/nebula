@@ -39,12 +39,16 @@ var golden = map[string]string{
 	"函数框默认参数留空":      "0",
 	"函数框立即执行":        "hi",
 	"函数框立即执行带触发":     "你好",
+	"函数框立即执行无变量":     "hi",
 	"嵌套函数框":          "外",
 	"遍历":             "0:a1:b",
 	"判断否则如果":         "二",
 	"判断否则如果走否则":      "三",
 	"循环内终止循环":        "12",
-	"循环内跳过":          "1234",
+	"循环内跳过":          "134",
+	"判断循环内嵌判断跳过":     "13",
+	"遍历内嵌判断跳过":       "13",
+	"循环内嵌匹配跳过":       "13",
 	"判断内循环":          "123",
 	"嵌套判断框":          "外层内层",
 	"循环变量改写":         "1",
@@ -120,9 +124,10 @@ var golden = map[string]string{
 	"行内判断elif在循环":    "其他1二三其他4",
 	"行内判断在判断框":       "内命中外",
 	"行内判断elif在判断框":   "一后",
-	"跳行命中":           "后",
-	"跳行未命中":          "跳过后",
-	"跳行负数偏移循环":       "12345ok",
+	"跳行绝对值":          "后",
+	"跳行算术行号":         "后",
+	"跳行行数变量跳过":       "后",
+	"跳行未命中绝对值":       "AB",
 	"循环中断":           "1尾",
 	"匹配命中":           "二",
 	"匹配走否则":          "其他",
@@ -343,6 +348,15 @@ func TestEquivExecFuncBlockTrigger(t *testing.T) {
 	}, nil)
 }
 
+func TestEquivExecFuncBlockNoVar(t *testing.T) {
+	// 执行函数> 不带变量名：立即执行并直接输出结果
+	assertEquivalent(t, "函数框立即执行无变量", []string{
+		"执行函数>",
+		"hi",
+		"<函数",
+	}, nil)
+}
+
 func TestEquivNestedFuncBox(t *testing.T) {
 	// 嵌套函数框：外层内容含内层函数框原始行，整体存储后调用执行
 	assertEquivalent(t, "嵌套函数框", []string{
@@ -394,11 +408,51 @@ func TestEquivForBreak(t *testing.T) {
 }
 
 func TestEquivForContinue(t *testing.T) {
+	// 循环内嵌判断块里的 >跳过：continue 本轮循环，跳过判断块后的 %i% 输出
 	assertEquivalent(t, "循环内跳过", []string{
 		"循环>i=4",
 		"如果>%i%==2",
 		">跳过",
 		"<如果",
+		"%i%",
+		"<循环",
+	}, nil)
+}
+
+func TestEquivWhileIfSkip(t *testing.T) {
+	// 判断循环内嵌判断块里的 >跳过：continue 本轮，跳过判断块后的输出
+	assertEquivalent(t, "判断循环内嵌判断跳过", []string{
+		"i::0",
+		"判断循环>%i%<3",
+		"i+:1",
+		"如果>%i%==2",
+		">跳过",
+		"<如果",
+		"%i%",
+		"<循环",
+	}, nil)
+}
+
+func TestEquivForEachIfSkip(t *testing.T) {
+	// 遍历内嵌判断块里的 >跳过：continue 本轮遍历，跳过判断块后的输出
+	assertEquivalent(t, "遍历内嵌判断跳过", []string{
+		"遍历>i,ii=[1,2,3]",
+		"如果>%ii%==2",
+		">跳过",
+		"<如果",
+		"%ii%",
+		"<遍历",
+	}, nil)
+}
+
+func TestEquivForMatchSkip(t *testing.T) {
+	// 循环内嵌匹配框里的 >跳过：continue 本轮循环，跳过匹配框后的输出
+	assertEquivalent(t, "循环内嵌匹配跳过", []string{
+		"循环>i=3",
+		"匹配>%i%",
+		"如果是:2",
+		">跳过",
+		"<匹配",
 		"%i%",
 		"<循环",
 	}, nil)
@@ -1228,31 +1282,38 @@ func TestEquivInlineIfElifInIfBlock(t *testing.T) {
 	}, func(p *dto.Val) { p.Set("x", "1") })
 }
 
-func TestEquivJumpLineCond(t *testing.T) {
-	// >跳行(条件)>>偏移 命中：相对跳行跳过下一行（当前整段回退旧解释器，仅锁定语义）
-	assertEquivalent(t, "跳行命中", []string{
-		">跳行(%x%==1)>>1",
+func TestEquivJumpAbsLiteral(t *testing.T) {
+	// $跳行 3$ 绝对跳转到第 3 行（跳过第 2 行）
+	assertEquivalent(t, "跳行绝对值", []string{
+		"$跳行 3$",
 		"跳过",
 		"后",
-	}, func(p *dto.Val) { p.Set("x", "1") })
+	}, nil)
 }
 
-func TestEquivJumpLineCondMiss(t *testing.T) {
-	// >跳行(条件)>>偏移 未命中：顺序执行
-	assertEquivalent(t, "跳行未命中", []string{
-		">跳行(%x%==1)>>1",
+func TestEquivJumpAbsArith(t *testing.T) {
+	// $跳行 [1+2]$ 行号算术求值后跳转到第 3 行
+	assertEquivalent(t, "跳行算术行号", []string{
+		"$跳行 [1+2]$",
 		"跳过",
 		"后",
-	}, func(p *dto.Val) { p.Set("x", "2") })
+	}, nil)
 }
 
-func TestEquivJumpLineNegLoop(t *testing.T) {
-	// >跳行 负数偏移回退（真实 test.n Main 用到的局部循环写法）：i 自增到 5 后顺序落到终止
-	assertEquivalent(t, "跳行负数偏移循环", []string{
-		"i+:1",
-		"%i%",
-		">跳行(%i%!=5)>>-2",
-		">终止 ok",
-		">终止 ok2",
+func TestEquivJumpAbsLineVar(t *testing.T) {
+	// $跳行 [%行数%+2]$ 从当前行(1)跳转到第 3 行，跳过第 2 行
+	assertEquivalent(t, "跳行行数变量跳过", []string{
+		"$跳行 [%行数%+2]$",
+		"跳过",
+		"后",
+	}, nil)
+}
+
+func TestEquivJumpAbsMiss(t *testing.T) {
+	// 目标行号不存在：不跳转，顺序执行
+	assertEquivalent(t, "跳行未命中绝对值", []string{
+		"$跳行 9$",
+		"A",
+		"B",
 	}, nil)
 }

@@ -12,7 +12,7 @@ const (
 	OpLine                  // 执行叶子语句，Text 为行文本，返回输出追加到结果
 	OpJump                  // 无条件跳转，Arg 为目标 PC
 	OpJumpIfFalse           // 条件为假跳转，Text 为条件表达式，Arg 为目标 PC
-	OpJumpRel               // 相对跳转（>跳行(条件)>>偏移）：Text 为条件表达式，Expr 为偏移表达式（可为 %变量%）
+	OpJumpAbs               // 绝对跳行（$跳行 <行号>$）：Expr 为行号表达式（可为 [算术]/%变量%/字面量），Line 为当前语句行号
 	OpLoop                  // 循环入口，Text 为循环变量名，Arg 为次数（<0 表示无限）
 	OpLoopDyn               // 循环入口（次数为运行时表达式），Text 为循环变量名，Expr 为次数表达式
 	OpLoopRange             // 范围循环入口（循环>变量=起始~结束）：Text 为循环变量名，Start/Arg 为字面量起止值（Expr 非空时为动态 "起~止" 表达式）
@@ -43,12 +43,12 @@ const (
 // Instr 一条字节码指令。
 type Instr struct {
 	Op    Op
-	Text  string   // OpLine/OpJumpIfFalse/OpJumpRel(条件)/OpLoop/OpLoopDyn/OpLoopRange(变量名)/OpHaltOut/OpAssign(原始行)/OpForEachInit(遍历开启行) 使用
+	Text  string   // OpLine/OpJumpIfFalse/OpLoop/OpLoopDyn/OpLoopRange(变量名)/OpHaltOut/OpAssign(原始行)/OpForEachInit(遍历开启行) 使用
 	Arg   int      // OpJump/OpJumpIfFalse/OpLoopEnd/OpForEachEnd 使用（目标 PC 或循环次数）；OpLoopRange 使用：结束值（Expr 为空时）
 	Start int      // OpLoopRange 使用：起始值（Expr 为空时）
-	Expr  string   // OpLoopDyn 使用：循环次数运行时表达式（%变量%/$函数$ 等）；OpLoopRange 使用：动态 "起~止" 表达式；OpJumpRel 使用：偏移表达式（可为 %变量%）
+	Expr  string   // OpLoopDyn 使用：循环次数运行时表达式（%变量%/$函数$ 等）；OpLoopRange 使用：动态 "起~止" 表达式；OpJumpAbs 使用：行号表达式（可为 [算术]/%变量%/字面量）
 	End   int      // OpLoop/OpLoopDyn/OpLoopRange/OpForEachInit 使用：循环退出目标 PC（OpLoopPop/OpForEachPop），用于 0 次循环跳过循环体；OpBreak 使用：截断后的帧深度
-	Line  int      // OpLine/OpAssign 使用：语句真实源文件行号（1-based，0 表示未知），用于运行时报错定位；OpNodeJsBlock 使用：关闭行行号
+	Line  int      // OpLine/OpAssign/OpJumpAbs 使用：语句真实源文件行号（1-based，0 表示未知），用于运行时报错定位与 %行数% 取值；OpNodeJsBlock 使用：关闭行行号
 	Lines []string // 各类框指令使用：内容行（OpTextBlock/OpJsonBlock/OpNewJsonBlock/OpFuncBlock/OpExecFuncBlock/OpVarNewJsonBlock/OpValChainBlock/OpValTextBlock/OpNodeJsBlock）
 	// OpFuncBlock/OpExecFuncBlock 使用：内容行对应的原始文件行号（与 Lines 平行，1-based）。
 	LineNums []int

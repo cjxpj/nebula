@@ -7,7 +7,7 @@ import "fmt"
 // stubLib 非 CGO 构建下的占位实现：不支持加载动态库扩展。
 type stubLib struct{}
 
-func openNative(path string) (nativeLib, error) {
+func openNative(_ string) (nativeLib, error) {
 	return nil, fmt.Errorf("当前平台/构建未启用 CGO，不支持加载动态库扩展")
 }
 

@@ -1,6 +1,6 @@
 
-[系统]首页
-$读配置 system.ini 管理面板 访问路径$
+[系统]手机首页
+$读配置 config.yaml 管理面板.访问路径$
 
 [Ngrok]启动 https?://.+
 NgrokUrl：%参数1%

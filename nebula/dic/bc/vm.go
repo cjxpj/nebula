@@ -16,9 +16,12 @@ type Runtime interface {
 	Cond(expr string) bool
 	// Resolve 求值表达式（%变量%/$函数$/[算术] 等）为字符串，供 匹配> 框一次性求值主体与 case 值。
 	Resolve(expr string) string
-	// JumpRelOffset 求值 跳行 偏移表达式（可为 %变量%/字面量），返回解析后的整数与是否解析成功。
-	// 语义与解释器 >跳行 一致：偏移经 %变量% 插值后按整数解析，解析失败视为未命中（不跳转）。
-	JumpRelOffset(expr string) (int, bool)
+	// SetLine 设置当前执行语句的行号（1-based），供 %行数% 变量读取。VM 在每条叶子语句与
+	// $跳行 语句执行前调用，保证 %行数% 始终反映当前语句行号。
+	SetLine(line int)
+	// JumpAbsOffset 求值 $跳行 行号表达式（可为 [算术]/%变量%/字面量），返回解析后的目标行号与是否成功。
+	// 解析失败视为未命中（不跳转）。
+	JumpAbsOffset(expr string) (int, bool)
 	// SetVarInt 写入整数循环变量（直接写 int64，避免字符串往返装箱）。
 	SetVarInt(name string, value int)
 	// GetVar 读取循环变量当前值。
@@ -93,16 +96,37 @@ func Run(instrs []Instr, rt Runtime) string {
 	var frames []frame
 	var switchVals []string
 
+	// 仅当存在绝对跳行（$跳行）指令时才构建「行号 → PC」映射，避免常规执行的无谓开销。
+	var lineToPc map[int]int
+	for i := range instrs {
+		if instrs[i].Op == OpJumpAbs {
+			lineToPc = make(map[int]int, 16)
+			break
+		}
+	}
+	if lineToPc != nil {
+		for i := range instrs {
+			in := &instrs[i]
+			if (in.Op == OpLine || in.Op == OpAssign) && in.Line > 0 {
+				if _, exists := lineToPc[in.Line]; !exists {
+					lineToPc[in.Line] = i
+				}
+			}
+		}
+	}
+
 	for pc := 0; pc < len(instrs); pc++ {
 		in := instrs[pc]
 		switch in.Op {
 		case OpNop:
 		case OpLine:
+			rt.SetLine(in.Line)
 			rt.Append(rt.Line(in.Line, in.Text))
 			if rt.Stop() {
 				return rt.Output()
 			}
 		case OpAssign:
+			rt.SetLine(in.Line)
 			rt.Append(rt.Assign(in.Line, in.Text, in.VType, in.Prefix, in.Suffix))
 			if rt.Stop() {
 				return rt.Output()
@@ -113,18 +137,13 @@ func Run(instrs []Instr, rt Runtime) string {
 			if !rt.Cond(in.Text) {
 				pc = in.Arg - 1
 			}
-		case OpJumpRel:
-			// 相对跳转：条件命中时求值偏移并相对当前 PC 跳转。
-			// 语义与解释器 >跳行 的 index = index + seti 完全一致：
-			//   - 偏移 >= 0：跳过 offset 行（pc += offset，循环末尾 pc++ 抵消）；
-			//   - 偏移 < 0：回退 -offset 行（解释器 seti<0 时先 seti-=1，等价于 pc += offset-1）。
-			if rt.Cond(in.Text) {
-				if offset, ok := rt.JumpRelOffset(in.Expr); ok {
-					if offset >= 0 {
-						pc += offset
-					} else {
-						pc += offset - 1
-					}
+		case OpJumpAbs:
+			// 绝对跳行：求值目标行号后跳到对应行号的首条叶子指令。
+			// 未命中（行号不存在/解析失败）时不跳转，顺序执行下一指令。
+			rt.SetLine(in.Line)
+			if target, ok := rt.JumpAbsOffset(in.Expr); ok {
+				if dst, exists := lineToPc[target]; exists {
+					pc = dst - 1 // 循环末尾 pc++ 抵消
 				}
 			}
 		case OpLoop:
