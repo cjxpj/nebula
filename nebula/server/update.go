@@ -21,14 +21,15 @@ import (
 
 // UpdateCheckResult 更新检测结果
 type UpdateCheckResult struct {
-	Status  string `json:"status"`   // ok / error
-	Current string `json:"current"`  // 当前版本
-	Latest  string `json:"latest"`   // 最新版本
-	Update  bool   `json:"update"`   // 是否有新版本
-	URL     string `json:"url"`      // 下载页地址
-	Notes   string `json:"notes"`    // 更新说明
-	DownURL string `json:"down_url"` // 当前平台二进制直链
-	Error   string `json:"error"`    // 检测失败原因
+	Status    string `json:"status"`     // ok / error
+	Current   string `json:"current"`    // 当前版本
+	Latest    string `json:"latest"`     // 最新版本
+	Update    bool   `json:"update"`     // 是否有新版本
+	BigUpdate bool   `json:"big_update"` // 是否大更新（主版本号变化，需手动下载）
+	URL       string `json:"url"`        // 下载页地址
+	Notes     string `json:"notes"`      // 更新说明
+	DownURL   string `json:"down_url"`   // 当前平台二进制直链
+	Error     string `json:"error"`      // 检测失败原因
 }
 
 // checkUpdate 检测最新版本：优先 Gitee（国内快），失败回退 GitHub
@@ -52,6 +53,7 @@ func checkUpdate() UpdateCheckResult {
 	result.DownURL = downURL
 	result.Notes = notes
 	result.Update = compareVersions(result.Latest, appfiles.Version) > 0
+	result.BigUpdate = parseVersion(result.Latest)[0] > parseVersion(appfiles.Version)[0]
 	return result
 }
 
