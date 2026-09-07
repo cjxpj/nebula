@@ -113,10 +113,10 @@ func Start() string {
 var SetupExtensionPaths func()
 
 // startDicPath 返回启动词库路径。
-// 桌面端（未注入数据目录）使用程序(exe)目录下的 start.n；移动端沿用数据目录下 private/system/start.n。
+// 桌面端使用程序(exe)目录下的 start.n；移动端使用应用主目录（Android 为 Documents/Nebula，鸿蒙为注入沙箱目录）下的 start.n。
 func startDicPath() string {
 	if utils.GetAppDir() != "" {
-		return "private/system/start.n"
+		return "start.n"
 	}
 	if exe, err := os.Executable(); err == nil {
 		return filepath.Join(filepath.Dir(exe), "start.n")

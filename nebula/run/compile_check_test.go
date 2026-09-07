@@ -258,6 +258,81 @@ func TestCheckUndefinedVar(t *testing.T) {
 	}
 }
 
+func TestCheckFuncParamsExecFuncAssign(t *testing.T) {
+	// :$: 执行函数赋值：操作符 $:$ 不应被误判为空函数。
+	v := newTestBuildValue()
+	v.DicFuncs["函数"] = []*dto.BuildDic{{Trigger: "执行函数", ParamRule: "0", Text: []string{"a"}, LineNums: []int{1}}}
+	v.Dic = []*dto.BuildDic{{
+		Trigger:     "测试",
+		TriggerLine: 1,
+		Text:        []string{"x:$:$执行函数$"},
+		LineNums:    []int{3},
+	}}
+	s := newTestStack()
+	runCompileChecks(v, s)
+	if len(s.warnings) != 0 {
+		t.Fatalf(":$: 执行函数赋值不应产生警告，实际：%v", warningsText(s.warnings))
+	}
+}
+
+func TestCheckFuncParamsExecFuncAssignUndefined(t *testing.T) {
+	// :$: 执行函数赋值：应报告右侧真实函数名，而不是把 $:$ 误判为名为 ":" 的空函数。
+	v := newTestBuildValue()
+	v.Dic = []*dto.BuildDic{{
+		Trigger:     "测试",
+		TriggerLine: 1,
+		Text:        []string{"x:$:$不存在的函数$"},
+		LineNums:    []int{3},
+	}}
+	s := newTestStack()
+	runCompileChecks(v, s)
+	if !containsText(s.warnings, "函数不存在：不存在的函数") {
+		t.Fatalf("期望报告右侧真实函数不存在，实际：%v", warningsText(s.warnings))
+	}
+	for _, w := range s.warnings {
+		if w.Text == "函数不存在：" {
+			t.Fatalf("不应把 $:$ 误判为空函数，实际：%v", warningsText(s.warnings))
+		}
+	}
+}
+
+func TestCheckUndefinedVarExecVarAssign(t *testing.T) {
+	// :%: 只读取变量赋值：操作符 %:% 不应被误判为空变量，右侧变量已定义时不应告警。
+	v := newTestBuildValue()
+	v.Dic = []*dto.BuildDic{{
+		Trigger:     "测试",
+		TriggerLine: 1,
+		Text:        []string{"y:1", "x:%:%y%"},
+		LineNums:    []int{2, 3},
+	}}
+	s := newTestStack()
+	runCompileChecks(v, s)
+	if len(s.warnings) != 0 {
+		t.Fatalf(":%%: 只读取变量赋值不应产生警告，实际：%v", warningsText(s.warnings))
+	}
+}
+
+func TestCheckUndefinedVarExecVarAssignUndefined(t *testing.T) {
+	// :%: 只读取变量赋值：应报告右侧真实变量名，而不是把 %:% 误判为名为 ":" 的空变量。
+	v := newTestBuildValue()
+	v.Dic = []*dto.BuildDic{{
+		Trigger:     "测试",
+		TriggerLine: 1,
+		Text:        []string{"x:%:%y%"},
+		LineNums:    []int{3},
+	}}
+	s := newTestStack()
+	runCompileChecks(v, s)
+	if !containsText(s.warnings, "变量不存在：y") {
+		t.Fatalf("期望报告右侧真实变量不存在，实际：%v", warningsText(s.warnings))
+	}
+	for _, w := range s.warnings {
+		if w.Text == "变量不存在：" {
+			t.Fatalf("不应把 %%:%% 误判为空变量，实际：%v", warningsText(s.warnings))
+		}
+	}
+}
+
 func TestCheckUndefinedVarSkipsDefined(t *testing.T) {
 	v := newTestBuildValue()
 	v.Dic = []*dto.BuildDic{{
@@ -282,6 +357,46 @@ func TestCheckUndefinedVarSkipsDefined(t *testing.T) {
 	runCompileChecks(v, s)
 	if len(s.warnings) != 0 {
 		t.Fatalf("已定义变量不应告警，实际：%v", warningsText(s.warnings))
+	}
+}
+
+func TestCheckUndefinedVarJsonBlockAssign(t *testing.T) {
+	v := newTestBuildValue()
+	v.Dic = []*dto.BuildDic{{
+		Trigger:     "测试",
+		TriggerLine: 1,
+		Text: []string{
+			"JSON>a={}",
+			"a=ok",
+			"<JSON",
+			"%a%",
+		},
+		LineNums: []int{2, 3, 4, 5},
+	}}
+	s := newTestStack()
+	runCompileChecks(v, s)
+	if len(s.warnings) != 0 {
+		t.Fatalf("JSON> 框赋值变量不应告警，实际：%v", warningsText(s.warnings))
+	}
+}
+
+func TestCheckUndefinedVarJsonBlockNoAssign(t *testing.T) {
+	v := newTestBuildValue()
+	v.Dic = []*dto.BuildDic{{
+		Trigger:     "测试",
+		TriggerLine: 1,
+		Text: []string{
+			"JSON>[]",
+			"0=a",
+			"<JSON",
+			"%a%", // JSON>[] 直接输出，未声明变量 a，应告警
+		},
+		LineNums: []int{2, 3, 4, 5},
+	}}
+	s := newTestStack()
+	runCompileChecks(v, s)
+	if !containsText(s.warnings, "变量不存在：a") {
+		t.Fatalf("JSON>[] 直接输出不声明变量，%%a%% 应告警，实际：%v", warningsText(s.warnings))
 	}
 }
 

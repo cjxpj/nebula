@@ -249,6 +249,7 @@ func checkFuncParams(v *dto.BuildValue, stack *importStack) {
 
 func checkFuncParamsEntry(e *dto.BuildDic, v *dto.BuildValue, funcIndex map[string][]*dto.BuildDic, stack *importStack) {
 	for i, line := range e.Text {
+		line = assignOpValue(line)
 		if !strings.Contains(line, "$") {
 			continue
 		}
@@ -406,6 +407,7 @@ func checkUndefinedVarsEntry(e *dto.BuildDic, headDefined map[string]bool, funcO
 
 // checkUndefinedVarsLine 检查单行里的变量引用；同一行内重复引用去重。
 func checkUndefinedVarsLine(line string, ln int, defined map[string]bool, stack *importStack) {
+	line = assignOpValue(line)
 	if !strings.Contains(line, "%") {
 		return
 	}
@@ -459,6 +461,17 @@ func extractVarRefs(s string) []string {
 	return names
 }
 
+// assignOpValue 返回赋予值行中需参与函数/变量静态检查的「值」部分。
+// 执行函数(:$:)与只读取变量(:%:)的操作符内含有相邻的 $/% 与 :，整行按 $/% 切分会被误判为
+// 空函数「$:$」或空变量「%:%」，故返回操作符后的值；其余行返回原行。
+func assignOpValue(line string) string {
+	vt, _, vs := build.ValTextTest(line)
+	if vt == 3 || vt == 4 {
+		return vs
+	}
+	return line
+}
+
 // collectFuncOutVars 建立「函数名 → 传出变量集合」映射，供 $函数$ 调用写回分析使用。
 func collectFuncOutVars(v *dto.BuildValue) map[string]map[string]bool {
 	out := make(map[string]map[string]bool)
@@ -490,6 +503,7 @@ func collectFuncOutVars(v *dto.BuildValue) map[string]map[string]bool {
 
 // collectFuncOutVarsFromLine 识别一行中的 $函数$ 调用，把对应函数的传出变量加入 defined。
 func collectFuncOutVarsFromLine(line string, funcOutVars map[string]map[string]bool, defined map[string]bool) {
+	line = assignOpValue(line)
 	if !strings.Contains(line, "$") || len(funcOutVars) == 0 {
 		return
 	}
@@ -537,6 +551,14 @@ func collectBlockVars(line string, defined map[string]bool) {
 		rest = line[len("循环>"):]
 	case strings.HasPrefix(line, "遍历>"):
 		rest = line[len("遍历>"):]
+	case strings.HasPrefix(line, "JSON>"):
+		rest = line[len("JSON>"):]
+		i := strings.IndexByte(rest, '=')
+		if i < 0 {
+			// 无 =：JSON>{/[ 新建、JSON>[]、JSON> 直接输出，均不声明变量。
+			return
+		}
+		rest = rest[:i]
 	default:
 		return
 	}

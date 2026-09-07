@@ -592,6 +592,10 @@ type importStack struct {
 	files    map[string]bool
 	warnings []dto.BuildWarning
 
+	// curFile 当前正在编译的词库文件（规范路径，如 private/xxx.n），
+	// 用于把 addWarning/addError 产生的诊断归属到正确的来源文件。
+	curFile string
+
 	// deps 记录所有已成功加载文件（含主文件）的路径与内容 hash，用于磁盘编译缓存失效校验。
 	deps map[string]string
 }
@@ -620,16 +624,16 @@ func (s *importStack) pop(path string) {
 
 // addWarning 追加一条编译警告（黄色）。
 func (s *importStack) addWarning(line int, text string) {
-	s.warnings = append(s.warnings, dto.BuildWarning{Line: line, Text: text, Level: "warning"})
+	s.warnings = append(s.warnings, dto.BuildWarning{Line: line, File: s.curFile, Text: text, Level: "warning"})
 }
 
 // addError 追加一条编译错误（红色）。
 func (s *importStack) addError(line int, text string) {
-	s.warnings = append(s.warnings, dto.BuildWarning{Line: line, Text: text, Level: "error"})
+	s.warnings = append(s.warnings, dto.BuildWarning{Line: line, File: s.curFile, Text: text, Level: "error"})
 }
 
 // dicCacheVersion 磁盘编译缓存格式版本，结构变化时递增以淘汰旧缓存。
-const dicCacheVersion = 5
+const dicCacheVersion = 6
 
 // dicCacheEntry 词库编译结果的磁盘缓存结构（gob 序列化）。
 // 只缓存可序列化词条；含 bot 注入（MyFunc 非空）的词库不落缓存，故无需序列化 Go 函数。
@@ -1076,6 +1080,11 @@ func importFilePath(name string) string {
 
 // buildDic 为 BuildDic 的内部实现，携带引入链用于检测循环引入。
 func buildDic(dicPath string, lines []string, stack *importStack) *dto.BuildValue {
+	// 记录当前编译文件，使后续 addWarning/addError 的警告归属到正确来源文件。
+	prevFile := stack.curFile
+	stack.curFile = dicPath
+	defer func() { stack.curFile = prevFile }()
+
 	lines_num := len(lines) - 1
 
 	var (

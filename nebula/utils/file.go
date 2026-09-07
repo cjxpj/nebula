@@ -32,6 +32,7 @@ import (
 var httpClient = &http.Client{Timeout: 30 * time.Second}
 
 // androidDataDir Android 端固定数据目录（Documents/Nebula）。
+// 启动词库 start.n 位于该目录下，实际数据目录由启动词库头部「$设置工作目录$」切换到 Nebula/NebulaData 下。
 const androidDataDir = "/storage/emulated/0/Documents/Nebula"
 
 // Error 将文本写入文件

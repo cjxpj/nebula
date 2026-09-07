@@ -65,7 +65,9 @@ dependencies {
     implementation 'androidx.webkit:webkit:1.8.0'
 
     // Shizuku：让普通 App 以 ADB 级别权限执行终端命令
-    def shizuku_version = '13.1.5'
+    // 注意：13.1.4+ 把 Shizuku.newProcess 改为 private（官方不再提供公开的进程执行 API），
+    // 故固定使用 13.0.0（newProcess 仍为 public）；如需升级需改用 UserService 模式重写执行逻辑
+    def shizuku_version = '13.0.0'
     implementation "dev.rikka.shizuku:api:$shizuku_version"
     implementation "dev.rikka.shizuku:provider:$shizuku_version"
 }

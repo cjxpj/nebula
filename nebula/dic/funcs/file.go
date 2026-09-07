@@ -33,11 +33,18 @@ func setWorkDir(d *dto.DicInputs) (any, error) {
 	if dir == "" {
 		return "", nil
 	}
-	// 移动端数据目录已由 SetAppDir 注入（GetAppDir 非空），无需再切换进程工作目录
+	// 移动端数据主目录已由 GetAppDir 确定，此处把「设置工作目录」映射为切换到主目录下的子目录
+	// （如 Android：/storage/emulated/0/Documents/Nebula -> .../Nebula/NebulaData）
 	if utils.GetAppDir() != "" {
+		newDir := filepath.Join(utils.GetAppDir(), dir)
+		if err := os.MkdirAll(newDir, 0755); err != nil {
+			return "", err
+		}
+		utils.SetAppDir(newDir)
 		return "", nil
 	}
-	// 目标目录不存在时先创建，避免首次启动因目录缺失导致 chdir 失败、后续文件写入落到错误位置
+	// 桌面端：切换进程当前工作目录；目标目录不存在时先创建，
+	// 避免首次启动因目录缺失导致 chdir 失败、后续文件写入落到错误位置
 	if err := os.MkdirAll(dir, 0755); err != nil {
 		return "", err
 	}

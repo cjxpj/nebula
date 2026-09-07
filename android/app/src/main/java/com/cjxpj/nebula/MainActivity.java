@@ -567,8 +567,9 @@ public class MainActivity extends Activity {
         Thread t2 = null;
         try {
             // 使用 Shizuku 提权创建进程（以 shell UID 运行）
-            p = Shizuku.newProcess(
+            final Process proc = Shizuku.newProcess(
                     new String[]{"sh", "-c", command}, null, null);
+            p = proc;
             if (p == null) {
                 return "错误: Shizuku 创建进程失败，请检查 Shizuku 服务状态";
             }
@@ -579,7 +580,7 @@ public class MainActivity extends Activity {
                 try {
                     byte[] buf = new byte[4096];
                     int n;
-                    java.io.InputStream is = p.getInputStream();
+                    java.io.InputStream is = proc.getInputStream();
                     while ((n = is.read(buf)) != -1) {
                         out.write(buf, 0, n);
                     }
@@ -589,7 +590,7 @@ public class MainActivity extends Activity {
                 try {
                     byte[] buf = new byte[4096];
                     int n;
-                    java.io.InputStream es = p.getErrorStream();
+                    java.io.InputStream es = proc.getErrorStream();
                     while ((n = es.read(buf)) != -1) {
                         out.write(buf, 0, n);
                     }

@@ -207,9 +207,10 @@ func NewDicClass() *DicClass {
 
 // BuildWarning 编译警告/错误（如循环引入、框配对错误），携带行号与级别供前端定位。
 type BuildWarning struct {
-	Line  int    `json:"line"`  // 触发警告的行号（1-based）
-	Text  string `json:"text"`  // 警告文本
-	Level string `json:"level"` // 级别：error（红色错误）/ warning（黄色警告）
+	Line  int    `json:"line"`            // 触发警告的行号（1-based）
+	File  string `json:"file,omitempty"`  // 警告来源词库文件（相对应用数据目录的规范路径，如 private/xxx.n）；空表示无文件归属
+	Text  string `json:"text"`            // 警告文本
+	Level string `json:"level"`           // 级别：error（红色错误）/ warning（黄色警告）
 }
 
 type BuildValue struct {
