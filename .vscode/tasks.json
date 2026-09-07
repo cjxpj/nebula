@@ -105,34 +105,17 @@
             "detail": "编译预编译 SDK（Windows x64 .dll + nebula.h，需 MinGW-w64 gcc）"
         },
         {
-            "type": "process",
-            "label": "SDK: 打包 Linux .so",
-            "command": "powershell.exe",
-            "args": [
-                "-NoProfile",
-                "-Command",
-                "New-Item -ItemType Directory -Force -Path 'dist/sdk/linux-amd64' | Out-Null; if (Get-Command zig -ErrorAction SilentlyContinue) { $env:CC='zig cc -target x86_64-linux-gnu' } elseif (Get-Command x86_64-linux-gnu-gcc -ErrorAction SilentlyContinue) { $env:CC='x86_64-linux-gnu-gcc' } else { Write-Error '未找到 Linux 交叉编译器（需要 zig 或 x86_64-linux-gnu-gcc），可执行：winget install zig.zig'; exit 1 }; $env:CGO_ENABLED='1'; $env:GOOS='linux'; $env:GOARCH='amd64'; go build -tags dll -buildmode=c-shared -ldflags '-s -w' -trimpath -o 'dist/sdk/linux-amd64/nebula.so' ./nebula/app"
-            ],
-            "problemMatcher": [],
-            "group": {
-                "kind": "build",
-                "isDefault": true
-            },
-            "detail": "编译预编译 SDK（Linux x64 .so + nebula.h，需 zig 或 x86_64-linux-gnu-gcc）"
-        },
-        {
-            "label": "SDK: 一键打包 (Windows + Linux)",
+            "label": "SDK: 一键打包 Windows .dll",
             "dependsOrder": "sequence",
             "dependsOn": [
-                "SDK: 打包 Windows .dll",
-                "SDK: 打包 Linux .so"
+                "SDK: 打包 Windows .dll"
             ],
             "problemMatcher": [],
             "group": {
                 "kind": "build",
                 "isDefault": true
             },
-            "detail": "一键打包预编译 SDK（Windows .dll + Linux .so）"
+            "detail": "一键打包预编译 SDK（Windows .dll）"
         },
         {
             "type": "go",
@@ -334,7 +317,7 @@
             "args": [
                 "-NoProfile",
                 "-Command",
-                "if (Get-NetTCPConnection -LocalPort 7890 -State Listen -ErrorAction SilentlyContinue) { $env:HTTP_PROXY=\u0027http://127.0.0.1:7890\u0027; $env:HTTPS_PROXY=\u0027http://127.0.0.1:7890\u0027 }; $gh=\u0027C:\\Program Files\\GitHub CLI\\gh.exe\u0027; $n=\u0027${input:releaseNotes}\u0027; if (-not $n) { $n=\u0027Nebula v${input:releaseVersion} 发布\u0027 }; \u0026 $gh release create v${input:releaseVersion} dist/nebula.exe dist/nebula dist/nebula.apk dist/sdk/windows-amd64/nebula.dll dist/sdk/linux-amd64/nebula.so --repo cjxpj/nebula --title v${input:releaseVersion} --notes $n"
+                "if (Get-NetTCPConnection -LocalPort 7890 -State Listen -ErrorAction SilentlyContinue) { $env:HTTP_PROXY=\u0027http://127.0.0.1:7890\u0027; $env:HTTPS_PROXY=\u0027http://127.0.0.1:7890\u0027 }; $gh=\u0027C:\\Program Files\\GitHub CLI\\gh.exe\u0027; $n=\u0027${input:releaseNotes}\u0027; if (-not $n) { $n=\u0027Nebula v${input:releaseVersion} 发布\u0027 }; \u0026 $gh release create v${input:releaseVersion} dist/nebula.exe dist/nebula dist/nebula.apk dist/sdk/windows-amd64/nebula.dll --repo cjxpj/nebula --title v${input:releaseVersion} --notes $n"
             ],
             "problemMatcher": [],
             "detail": "gh 创建 GitHub Release 并上传 exe/linux/apk"
@@ -346,7 +329,7 @@
             "args": [
                 "-NoProfile",
                 "-Command",
-                "$tok=[Environment]::GetEnvironmentVariable(\u0027GITEE_TOKEN\u0027,\u0027User\u0027); if (-not $tok) { Write-Host \u0027未找到 GITEE_TOKEN，请先设置\u0027; exit 1 }; $body=@{access_token=$tok; tag_name=\u0027v${input:releaseVersion}\u0027; name=\u0027v${input:releaseVersion}\u0027; body=\u0027${input:releaseNotes}\u0027; target_commitish=(git branch --show-current)} | ConvertTo-Json; $rel=Invoke-RestMethod -Method Post -Uri \u0027https://gitee.com/api/v5/repos/cjxpj/nebula/releases\u0027 -ContentType \u0027application/json; charset=utf-8\u0027 -Body ([System.Text.Encoding]::UTF8.GetBytes($body)); curl.exe -s -X POST \"https://gitee.com/api/v5/repos/cjxpj/nebula/releases/$($rel.id)/attach_files\" -F \"access_token=$tok\" -F \u0027file=@dist/nebula.exe\u0027; curl.exe -s -X POST \"https://gitee.com/api/v5/repos/cjxpj/nebula/releases/$($rel.id)/attach_files\" -F \"access_token=$tok\" -F \u0027file=@dist/nebula\u0027; curl.exe -s -X POST \"https://gitee.com/api/v5/repos/cjxpj/nebula/releases/$($rel.id)/attach_files\" -F \"access_token=$tok\" -F \u0027file=@dist/nebula.apk\u0027; curl.exe -s -X POST \"https://gitee.com/api/v5/repos/cjxpj/nebula/releases/$($rel.id)/attach_files\" -F \"access_token=$tok\" -F \u0027file=@dist/sdk/windows-amd64/nebula.dll\u0027; curl.exe -s -X POST \"https://gitee.com/api/v5/repos/cjxpj/nebula/releases/$($rel.id)/attach_files\" -F \"access_token=$tok\" -F \u0027file=@dist/sdk/linux-amd64/nebula.so\u0027"
+                "$tok=[Environment]::GetEnvironmentVariable(\u0027GITEE_TOKEN\u0027,\u0027User\u0027); if (-not $tok) { Write-Host \u0027未找到 GITEE_TOKEN，请先设置\u0027; exit 1 }; $body=@{access_token=$tok; tag_name=\u0027v${input:releaseVersion}\u0027; name=\u0027v${input:releaseVersion}\u0027; body=\u0027${input:releaseNotes}\u0027; target_commitish=(git branch --show-current)} | ConvertTo-Json; $rel=Invoke-RestMethod -Method Post -Uri \u0027https://gitee.com/api/v5/repos/cjxpj/nebula/releases\u0027 -ContentType \u0027application/json; charset=utf-8\u0027 -Body ([System.Text.Encoding]::UTF8.GetBytes($body)); curl.exe -s -X POST \"https://gitee.com/api/v5/repos/cjxpj/nebula/releases/$($rel.id)/attach_files\" -F \"access_token=$tok\" -F \u0027file=@dist/nebula.exe\u0027; curl.exe -s -X POST \"https://gitee.com/api/v5/repos/cjxpj/nebula/releases/$($rel.id)/attach_files\" -F \"access_token=$tok\" -F \u0027file=@dist/nebula\u0027; curl.exe -s -X POST \"https://gitee.com/api/v5/repos/cjxpj/nebula/releases/$($rel.id)/attach_files\" -F \"access_token=$tok\" -F \u0027file=@dist/nebula.apk\u0027; curl.exe -s -X POST \"https://gitee.com/api/v5/repos/cjxpj/nebula/releases/$($rel.id)/attach_files\" -F \"access_token=$tok\" -F \u0027file=@dist/sdk/windows-amd64/nebula.dll\u0027"
             ],
             "problemMatcher": [],
             "detail": "Gitee API 创建 Release 并上传 exe/linux/apk"
@@ -360,7 +343,7 @@
                 "发布: 重新生成 resource.syso",
                 "buildWindows_amd64",
                 "buildLinux_amd64",
-                "SDK: 一键打包 (Windows + Linux)",
+                "SDK: 一键打包 Windows .dll",
                 "upx 压缩",
                 "一键打包 APK",
                 "发布: git 提交并打标签",

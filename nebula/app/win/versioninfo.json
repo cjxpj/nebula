@@ -1,13 +1,13 @@
 {
     "FixedFileInfo":  {
                           "FileVersion":  {
-                                              "Major":  19,
+                                              "Major":  20,
                                               "Minor":  0,
                                               "Patch":  0,
                                               "Build":  0
                                           },
                           "ProductVersion":  {
-                                                 "Major":  19,
+                                                 "Major":  20,
                                                  "Minor":  0,
                                                  "Patch":  0,
                                                  "Build":  0
@@ -22,14 +22,14 @@
                            "Comments":  "",
                            "CompanyName":  "cjxpj",
                            "FileDescription":  "Nebula 词库机器人框架",
-                           "FileVersion":  "19.0.0",
+                           "FileVersion":  "20.0.0",
                            "InternalName":  "nebula",
                            "LegalCopyright":  "Copyright (c) 2026 cjxpj",
                            "LegalTrademarks":  "",
                            "OriginalFilename":  "nebula.exe",
                            "PrivateBuild":  "",
                            "ProductName":  "Nebula",
-                           "ProductVersion":  "19.0.0",
+                           "ProductVersion":  "20.0.0",
                            "SpecialBuild":  ""
                        },
     "VarFileInfo":  {
