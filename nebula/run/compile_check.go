@@ -153,21 +153,24 @@ func blockClose(line string) (blockKind, bool) {
 }
 
 func checkBlockPairs(v *dto.BuildValue, stack *importStack) {
+	// 头部虽无触发词，但同样会经 DicRunLine 线性执行，框结构缺失闭合应在编译期报错，
+	// 与正文词条保持一致的检查口径。
+	checkBlockPairsLines(v.Head, v.HeadLineNums, stack)
 	for _, e := range allBuildDics(v) {
-		checkBlockPairsEntry(e, stack)
+		checkBlockPairsLines(e.Text, e.LineNums, stack)
 	}
 }
 
-func checkBlockPairsEntry(e *dto.BuildDic, stack *importStack) {
-	if len(e.Text) == 0 {
+func checkBlockPairsLines(lines []string, lineNums []int, stack *importStack) {
+	if len(lines) == 0 {
 		return
 	}
 
 	frames := make([]blockFrame, 0, 4)
-	for i, line := range e.Text {
+	for i, line := range lines {
 		ln := 0
-		if i < len(e.LineNums) {
-			ln = e.LineNums[i]
+		if i < len(lineNums) {
+			ln = lineNums[i]
 		}
 
 		// 叶子框（文本/JSON/新建JSON）只识别各自的关闭，内部不再识别其他框。

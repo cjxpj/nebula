@@ -573,19 +573,6 @@ func loadResource(name, rel string, resources map[string]any, stack *importStack
 	stack.deps[abs] = dicHashBytes(data)
 }
 
-// isBlankOrComment 判断一行是否为空白或注释行（用于头部/正文分隔）。
-// //@ 开头的指令不算注释，它们是有实际作用的编译指令。
-func isBlankOrComment(line string) bool {
-	line = strings.TrimSpace(line)
-	if line == "" {
-		return true
-	}
-	if strings.HasPrefix(line, "//@") {
-		return false
-	}
-	return strings.HasPrefix(line, "//") || strings.HasPrefix(line, "/*")
-}
-
 // importStack 记录当前 #引入= 递归加载链上的文件路径，用于检测循环引入。
 // 加载为单 goroutine 递归，无需加锁。
 type importStack struct {
@@ -1150,11 +1137,12 @@ func buildDic(dicPath string, lines []string, stack *importStack) *dto.BuildValu
 		resourceOnce  bool
 	)
 
-	// 头部区域：文件开头到第一个空行（或注释行）之间为头部（#引入= 与初始化语句），
-	// 空行/注释行之后为正文；无空行或注释分隔时文件直接按正文解析（如被引入的 [函数] 文件）。
+	// 头部区域：文件开头到第一个空行之间为头部（#引入= 与初始化语句），
+	// 空行之后为正文；注释行不参与分隔（仅被跳过）。无空行分隔时文件直接按正文解析
+	// （如被引入的 [函数] 文件）。
 	runhead = false
 	for i, l := range lines {
-		if isBlankOrComment(l) {
+		if strings.TrimSpace(l) == "" {
 			runhead = i > 0
 			break
 		}
@@ -1182,7 +1170,6 @@ func buildDic(dicPath string, lines []string, stack *importStack) *dto.BuildValu
 			continue
 		}
 		if !zhushi && lineLen >= 2 && line[:2] == "/*" {
-			runhead = false
 			if idx := strings.Index(line[2:], "*/"); idx >= 0 {
 				// 单行块注释 /* ... */
 				if content := strings.TrimSpace(line[2 : 2+idx]); content != "" {
@@ -1236,10 +1223,9 @@ func buildDic(dicPath string, lines []string, stack *importStack) *dto.BuildValu
 				resourceBlock = true
 				resourceOnce = true
 			}
-			// 普通 // 注释（非 @ 指令）：收集为函数上方的说明，并视作空行分隔头部与正文
+			// 普通 // 注释（非 @ 指令）：收集为函数上方的说明，不参与头部/正文分隔
 			if !strings.HasPrefix(line, "//@") {
 				pendingComment = append(pendingComment, strings.TrimSpace(line[2:]))
-				runhead = false
 			}
 			continue
 		}
