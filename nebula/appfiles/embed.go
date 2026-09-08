@@ -29,4 +29,4 @@ func GetFile(filename string) ([]byte, error) {
 var Key []byte = []byte("cjxpj2960965389 nebula0052 juice")
 
 // 版本号
-var Version string = "20.0.1"
+var Version string = "20.0.2"
