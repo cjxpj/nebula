@@ -332,6 +332,23 @@ func (v *Val) renderVar(vv *Val, val string) any {
 		return ""
 	}
 
+	// 词库路径：从当前词库实例读取（SetRaw 绕过线程变量全局映射，避免并发串线）
+	if val == "__词库路径__" {
+		if vv != nil {
+			if p, ok := vv.GetRaw("_词库路径_"); ok {
+				if s, isStr := p.(string); isStr {
+					return s
+				}
+			}
+		}
+		if p, ok := v.GetRaw("_词库路径_"); ok {
+			if s, isStr := p.(string); isStr {
+				return s
+			}
+		}
+		return ""
+	}
+
 	switch val {
 	case "时间":
 		return time.Now()

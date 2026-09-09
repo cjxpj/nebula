@@ -223,7 +223,7 @@ var (
 // fetchGroupListOnStartup 连接成功后自动获取群列表并缓存
 // 注意：必须在 readLoop 运行后调用，否则收不到响应
 func fetchGroupListOnStartup() {
-	account := getCurrentAccount()
+	account := getCurrentAccount(nil)
 	if account == "" {
 		return
 	}

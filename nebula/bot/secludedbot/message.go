@@ -367,8 +367,8 @@ skipGroupCheck:
 			dic := dic_dto.NewDic(dicPath, fileData).
 				SetGlobal_v(msgValData)
 
-			// 设置当前上下文（供词库函数使用）
-			setPushContext(&msgMeta, msgContent)
+			// 设置当前上下文（供词库函数使用，挂到本词库实例，避免并发串线）
+			setPushContext(dic, &msgMeta)
 
 			dic.AddFuncs(Funcs)
 
@@ -423,9 +423,6 @@ skipGroupCheck:
 					debugLog.Infof("[secluded] reply failed: %v", err)
 				}
 			}
-
-			// 清空上下文
-			clearPushContext()
 		}()
 	}
 }
@@ -485,34 +482,33 @@ func triggerSystemPush(meta pushElem, rawData json.RawMessage) {
 	}
 }
 
-// pushContext 给词库函数使用（例如 群单发 / 私聊 等无需指定 qq 时使用当前上下文）
-var pushContext struct {
-	mu      sync.RWMutex
-	current *pushElem
-	text    string
+// pushCtxKey 是消息上下文存入词库实例 Val.G 的键名。
+// 用 SetRaw/GetRaw 绕过线程变量映射，保证每条消息的上下文彼此隔离（避免并发串线）。
+const pushCtxKey = "_secluded_pushctx_"
+
+// dicContext 挂在单个词库实例上的消息上下文
+type dicContext struct {
+	meta *pushElem
 }
 
-func setPushContext(current *pushElem, text string) {
-	pushContext.mu.Lock()
-	pushContext.current = current
-	pushContext.text = text
-	pushContext.mu.Unlock()
-}
-
-func clearPushContext() {
-	pushContext.mu.Lock()
-	pushContext.current = nil
-	pushContext.text = ""
-	pushContext.mu.Unlock()
-}
-
-func pushContextAccount() string {
-	pushContext.mu.RLock()
-	defer pushContext.mu.RUnlock()
-	if pushContext.current != nil {
-		return pushContext.current.Account
+// setPushContext 将消息上下文挂到指定词库实例上，供 Funcs 中无需指定 account 的函数使用
+func setPushContext(dic *dic_dto.Dic, meta *pushElem) {
+	if dic == nil || dic.Val == nil || dic.Val.G == nil {
+		return
 	}
-	return ""
+	dic.Val.G.SetRaw(pushCtxKey, &dicContext{meta: meta})
+}
+
+// getPushContext 从当前词库实例读取消息上下文
+func getPushContext(d *dto.DicInputs) *dicContext {
+	if d == nil || d.V == nil || d.V.G == nil {
+		return nil
+	}
+	if v, ok := d.V.G.GetRaw(pushCtxKey); ok {
+		ctx, _ := v.(*dicContext)
+		return ctx
+	}
+	return nil
 }
 
 // ReplyText 用 SendOicqMsg 回复一条文本消息
@@ -573,9 +569,6 @@ func SendText(targetType, targetId, text string) error {
 	}
 
 	account := dto.ServerConfig.SecludedBot.Account
-	if account == "" {
-		account = pushContextAccount()
-	}
 	if account == "" {
 		return fmt.Errorf("secluded bot account not set")
 	}

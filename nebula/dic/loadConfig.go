@@ -63,8 +63,6 @@ func Start() string {
 
 	GV := dto.NewVal()
 	GV.Set("版本", appfiles.Version)
-	// 注入词库路径，便于启动词库内函数报错时显示来源（顶层词库默认没有 _词库路径_）
-	dto.SetThreadVarRaw("_词库路径_", startPath)
 	// 终端词库路径注入系统全局变量，供 Go 侧读取（start.n 通过 $线程变量$ 自行设置）
 	dto.SetThreadVarRaw("_终端词库路径_", terminalPath)
 	infoDic, err := dic_dto.NewDicFile(startPath)
@@ -84,7 +82,6 @@ func Start() string {
 
 	routerGV := dto.NewVal()
 	routerGV.Set("版本", appfiles.Version)
-	dto.SetThreadVarRaw("_词库路径_", routerPath)
 	routerDic, routerErr := dic_dto.NewDicFile(routerPath)
 	if routerErr != nil {
 		utils.ErrorStop("路由词库不存在")

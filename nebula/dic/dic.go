@@ -200,6 +200,8 @@ func (m *dicImpl) DicRunPrivate(D *dic_dto.Dic, trigger string) string {
 // 运行内部-自义定局部变量
 func (m *dicImpl) DicRunPrivateVal(D *dic_dto.Dic, trigger string, v *dto.DicVal) string {
 
+	D.Val.G.SetRaw("_词库路径_", D.Path)
+
 	D.Data.MergeFuncs(D.FuncText)
 
 	if D.ClassText != nil {
@@ -231,6 +233,8 @@ func (m *dicImpl) DicRunEvent(D *dic_dto.Dic, event string, trigger string) stri
 
 // 运行特殊触发-自义定局部变量
 func (m *dicImpl) DicRunEventVal(D *dic_dto.Dic, event string, trigger string, v *dto.DicVal) string {
+
+	D.Val.G.SetRaw("_词库路径_", D.Path)
 
 	D.Data.MergeFuncs(D.FuncText)
 
@@ -280,6 +284,8 @@ func (m *dicImpl) DicRun(D *dic_dto.Dic, trigger string) string {
 	var RunDic string
 
 	// fmt.Println("词库文本:", SplitText)
+
+	D.Val.G.SetRaw("_词库路径_", D.Path)
 
 	D.Data.MergeFuncs(D.FuncText)
 
@@ -334,6 +340,8 @@ func (m *dicImpl) DicRunTimeout(D *dic_dto.Dic, trigger string, timeout time.Dur
 	if timeout <= 0 {
 		return m.DicRun(D, trigger), false
 	}
+
+	D.Val.G.SetRaw("_词库路径_", D.Path)
 
 	D.Data.MergeFuncs(D.FuncText)
 
@@ -420,6 +428,8 @@ func (m *dicImpl) DicRunScript(D *dic_dto.Dic, trigger string, timeout time.Dura
 	}
 
 	// 无命中：按线性脚本执行，自行完成函数/类合并
+	D.Val.G.SetRaw("_词库路径_", D.Path)
+
 	D.Data.MergeFuncs(D.FuncText)
 	if D.ClassText != nil {
 		maps.Copy(D.Data.Class, D.ClassText)

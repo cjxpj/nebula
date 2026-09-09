@@ -316,7 +316,7 @@ func handleFuncError(d *dic_dto.DicFunc, name string, err error, captureErr bool
 	d.Sys.Stop.Store(true)
 	if err.Error() != "stop" {
 		d.Output.Clear()
-		d.Output.Add(fmt.Sprintf("[%s]%s(line:%d)：%v", dto.GV.GetStr("_词库路径_"), name, d.CurLine, err))
+		d.Output.Add(fmt.Sprintf("[%s]%s(line:%d)：%v", d.Val.G.GetStr("_词库路径_"), name, d.CurLine, err))
 	}
 	return ""
 }

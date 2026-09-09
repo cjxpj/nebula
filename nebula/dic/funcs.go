@@ -61,19 +61,16 @@ func runDic(d *dto.DicInputs) (any, error) {
 			return "", nil
 		}})
 	calldicrun.ClassText = d.Dic.Class
-	dto.SetThreadVarRaw("_词库路径_", dicPath)
 
 	switch dicType {
 	case "继承":
 		fv := dto.NewVal()
 		fv.Reset(d.V.P.GetAll())
-		dto.SetThreadVarRaw("_词库路径_", dicPath)
 		calldicrun.Set_v(fv)
 		calldicrun.FuncText = d.Dic.DicFuncs
 	case "继承函数":
 		calldicrun.FuncText = d.Dic.DicFuncs
 	case "互通":
-		dto.SetThreadVarRaw("_词库路径_", dicPath)
 		calldicrun.Set_v(d.V.P)
 		calldicrun.FuncText = d.Dic.DicFuncs
 	}
@@ -114,19 +111,16 @@ func runDicFile(d *dto.DicInputs) (any, error) {
 			return "", nil
 		}})
 	calldicrun.ClassText = d.Dic.Class
-	dto.SetThreadVarRaw("_词库路径_", dicPath)
 
 	switch dicType {
 	case "继承":
 		fv := dto.NewVal()
 		fv.Reset(d.V.P.GetAll())
-		dto.SetThreadVarRaw("_词库路径_", dicPath)
 		calldicrun.Set_v(fv)
 		calldicrun.FuncText = d.Dic.DicFuncs
 	case "继承函数":
 		calldicrun.FuncText = d.Dic.DicFuncs
 	case "互通":
-		dto.SetThreadVarRaw("_词库路径_", dicPath)
 		calldicrun.Set_v(d.V.P)
 		calldicrun.FuncText = d.Dic.DicFuncs
 	}
@@ -432,7 +426,6 @@ func wsCreate(d *dto.DicInputs) (any, error) {
 			Set("访问路径", addr).
 			Set("跨域", cors),
 	}
-	dto.SetThreadVarRaw("_词库路径_", dicPath)
 	instance.Fn = map[string]dto.DicFunc{
 		"设置跨域": {L: "1", Fn: func(d *dto.DicInputs) (any, error) {
 			cors := d.Inputs.Bool(1)
@@ -454,7 +447,6 @@ func wsCreate(d *dto.DicInputs) (any, error) {
 			}
 			ws.FilePath = p
 			dto.ServerConfig.AddWs(ws)
-			dto.SetThreadVarRaw("_词库路径_", p)
 			return "", nil
 		}},
 		"设置访问路径": {L: "1", Fn: func(d *dto.DicInputs) (any, error) {

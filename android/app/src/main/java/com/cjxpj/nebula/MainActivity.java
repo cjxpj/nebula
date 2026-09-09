@@ -12,6 +12,7 @@ import android.content.Context;
 import android.content.Intent;
 import android.content.IntentFilter;
 import android.content.pm.PackageManager;
+import android.content.res.AssetManager;
 import android.net.Uri;
 import android.os.BatteryManager;
 import android.os.Build;
@@ -34,7 +35,12 @@ import androidx.core.content.FileProvider;
 
 import org.json.JSONObject;
 
+import java.io.ByteArrayOutputStream;
 import java.io.File;
+import java.io.FileInputStream;
+import java.io.FileOutputStream;
+import java.io.IOException;
+import java.io.InputStream;
 import java.lang.reflect.Method;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -55,6 +61,11 @@ public class MainActivity extends Activity {
     private static final String TAG = "MainActivity";
     private static final String HTTP_HOST = "http://127.0.0.1:8080";
     private static final int REQ_NOTIFICATION = 101;
+
+    // 手机端数据主目录（与 Go 引擎 utils.GetAppDir() 的 androidDataDir 一致）：
+    // 启动词库 start.n 位于该目录下，实际数据目录由启动词库「$设置工作目录 NebulaData$」切到其子目录。
+    // 词库打包时把 assets/nebula/ 下的内容同步过来（见 syncBundledDic）。
+    private static final String DIC_ROOT_DIR = "/storage/emulated/0/Documents/Nebula";
 
     // 类加载时自动加载 .so，确保 JNI 方法可用
     static {
@@ -213,6 +224,10 @@ public class MainActivity extends Activity {
      * 后台线程：启动服务 → 等待就绪 → 加载 opui
      */
     private void startAndLoad() {
+        // 0) 把 APK 内预置的启动词库同步到数据主目录（须在 RunNebula 前，引擎只在 start.n
+        //    缺失时才写内嵌默认模板，预置词库落盘后即可顶替默认启动词库生效）
+        syncBundledDic();
+
         // 1) 启动 Go HTTP 服务
         try {
             Log.i(TAG, "正在启动 Nebula 服务...");
@@ -290,6 +305,113 @@ public class MainActivity extends Activity {
                 .replace(">", "&gt;").replace("\"", "&quot;");
         String html = "<html><body style='display:flex;align-items:center;justify-content:center;height:100vh;font-family:sans-serif;background:#1a1a2e;color:#e74c3c'><div style='text-align:center;padding:20px'><h2>错误</h2><p>" + safeMsg + "</p></div></body></html>";
         mHandler.post(() -> mWebView.loadData(html, "text/html", "UTF-8"));
+    }
+
+    // ---------- APK 预置启动词库同步 ----------
+
+    /**
+     * 首启同步：把 APK assets/nebula/ 下预置的启动词库同步到数据主目录（Documents/Nebula）。
+     *
+     * 幂等规则：assets 内 .dic_version 为预置 start.n 内容的 md5（打包时写入）；与本地
+     * Documents/Nebula/.dic_version 一致说明该 APK 的词库已生效，跳过（避免每次启动都覆盖
+     * 用户修改过的词库）；不一致（换新 APK / 重新打包词库变化）时才整体刷新。
+     */
+    private void syncBundledDic() {
+        try {
+            AssetManager am = getAssets();
+            String marker = readAssetText(am, "nebula/.dic_version");
+            if (marker == null) {
+                Log.i(TAG, "APK 未预置启动词库（assets/nebula 为空），使用引擎内嵌默认词库");
+                return;
+            }
+            File root = new File(DIC_ROOT_DIR);
+            File localMarker = new File(root, ".dic_version");
+            if (marker.equals(readTextFile(localMarker))) {
+                Log.i(TAG, "预置启动词库已是最新，跳过同步");
+                return;
+            }
+            if (!root.exists() && !root.mkdirs()) {
+                Log.e(TAG, "无法创建数据主目录: " + DIC_ROOT_DIR);
+                return;
+            }
+            // 拷贝目录树（跳过 .dic_version，最后单独写入，保证标记仅在内容全部落盘后更新）
+            copyAssetTree(am, "nebula", root);
+            copyAssetFile(am, "nebula/.dic_version", new File(root, ".dic_version"));
+            Log.i(TAG, "已同步预置启动词库 → " + DIC_ROOT_DIR + "/start.n");
+        } catch (Exception e) {
+            Log.e(TAG, "同步预置启动词库失败", e);
+        }
+    }
+
+    /** 递归拷贝 assets 目录到目标目录（目标已存在的同名文件会被覆盖）。 */
+    private void copyAssetTree(AssetManager am, String assetPath, File destDir) throws IOException {
+        String[] children = am.list(assetPath);
+        if (children == null || children.length == 0) {
+            return; // 空目录（或非目录），无需处理
+        }
+        for (String child : children) {
+            String childAsset = assetPath + "/" + child;
+            if (child.equals("dic.version")) {
+                continue; // 版本标记最后统一写入
+            }
+            String[] sub = am.list(childAsset);
+            if (sub != null && sub.length > 0) {
+                File subDir = new File(destDir, child);
+                if (!subDir.exists() && !subDir.mkdirs()) {
+                    throw new IOException("无法创建目录: " + subDir);
+                }
+                copyAssetTree(am, childAsset, subDir);
+            } else {
+                copyAssetFile(am, childAsset, new File(destDir, child));
+            }
+        }
+    }
+
+    /** 拷贝单个 assets 文件到目标文件。 */
+    private void copyAssetFile(AssetManager am, String assetPath, File target) throws IOException {
+        File parent = target.getParentFile();
+        if (parent != null && !parent.exists() && !parent.mkdirs()) {
+            throw new IOException("无法创建目录: " + parent);
+        }
+        try (InputStream in = am.open(assetPath);
+             FileOutputStream out = new FileOutputStream(target)) {
+            byte[] buf = new byte[8192];
+            int n;
+            while ((n = in.read(buf)) != -1) {
+                out.write(buf, 0, n);
+            }
+        }
+    }
+
+    /** 读取 assets 中文本文件内容（去掉首尾空白）；不存在返回 null。 */
+    private String readAssetText(AssetManager am, String assetPath) {
+        try (InputStream in = am.open(assetPath)) {
+            return readAllText(in);
+        } catch (IOException e) {
+            return null;
+        }
+    }
+
+    /** 读取本地文本文件内容（去掉首尾空白）；不存在返回 null。 */
+    private String readTextFile(File f) {
+        if (!f.exists() || !f.isFile()) {
+            return null;
+        }
+        try (FileInputStream in = new FileInputStream(f)) {
+            return readAllText(in);
+        } catch (IOException e) {
+            return null;
+        }
+    }
+
+    private String readAllText(InputStream in) throws IOException {
+        ByteArrayOutputStream bos = new ByteArrayOutputStream();
+        byte[] buf = new byte[8192];
+        int n;
+        while ((n = in.read(buf)) != -1) {
+            bos.write(buf, 0, n);
+        }
+        return bos.toString("UTF-8").trim();
     }
 
     // ---------- 手机端专属功能 ----------

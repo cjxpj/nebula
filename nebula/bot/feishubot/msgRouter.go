@@ -68,7 +68,6 @@ func groupMsg(m *feishubot_msg.ImMessageReceiveV1) {
 			// 回复消息
 		dic := dic_dto.NewDic(dicPath, FileData).
 			SetGlobal_v(valData)
-		dto.SetThreadVarRaw("_词库路径_", dicPath)
 
 		dic.SetFunc("调用", dto.DicFunc{
 				L: "2..",

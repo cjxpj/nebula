@@ -268,8 +268,10 @@
             "command": "powershell.exe",
             "args": [
                 "-NoProfile",
-                "-Command",
-                "$v=\u0027${input:releaseVersion}\u0027; $e=(Join-Path $PWD \u0027nebula\\appfiles\\embed.go\u0027); $t=[IO.File]::ReadAllText($e); $i=$t.IndexOf(\u0027var Version string = \u0027); $j=$t.IndexOf(\u0027\"\u0027,$i); $k=$t.IndexOf(\u0027\"\u0027,$j+1); $t=$t.Substring(0,$j)+\u0027\"\u0027+$v+\u0027\"\u0027+$t.Substring($k+1); [IO.File]::WriteAllText($e,$t,(New-Object System.Text.UTF8Encoding $false)); $p=(Join-Path $PWD \u0027nebula\\app\\win\\versioninfo.json\u0027); $j2=[IO.File]::ReadAllText($p) | ConvertFrom-Json; $a=$v.Split(\u0027.\u0027); $j2.FixedFileInfo.FileVersion.Major=[int]$a[0]; $j2.FixedFileInfo.FileVersion.Minor=[int]$a[1]; $j2.FixedFileInfo.FileVersion.Patch=[int]$a[2]; $j2.FixedFileInfo.ProductVersion=$j2.FixedFileInfo.FileVersion; $j2.StringFileInfo.FileVersion=$v; $j2.StringFileInfo.ProductVersion=$v; [IO.File]::WriteAllText((Resolve-Path $p),($j2|ConvertTo-Json -Depth 10),(New-Object System.Text.UTF8Encoding $false)); Write-Host \u0027版本号已更新为 \u0027$v"
+                "-ExecutionPolicy",
+                "Bypass",
+                "-File",
+                ".vscode/update-version.ps1"
             ],
             "problemMatcher": [],
             "detail": "更新 embed.go 与 versioninfo.json 中的版本号"
@@ -293,7 +295,7 @@
             "args": [
                 "-NoProfile",
                 "-Command",
-                "git add -A; git commit -m \u0027release: v${input:releaseVersion}\u0027; git tag -f v${input:releaseVersion}"
+                "$v=(Get-Content -Raw (Join-Path $env:TEMP \u0027nebula_release_ver.txt\u0027)); git add -A; git commit -m \u0027release: v$v\u0027; git tag -f v$v"
             ],
             "problemMatcher": [],
             "detail": "git add -A + commit + 打标签 v\u003c版本\u003e"
@@ -305,7 +307,7 @@
             "args": [
                 "-NoProfile",
                 "-Command",
-                "if (Get-NetTCPConnection -LocalPort 7890 -State Listen -ErrorAction SilentlyContinue) { $env:HTTP_PROXY=\u0027http://127.0.0.1:7890\u0027; $env:HTTPS_PROXY=\u0027http://127.0.0.1:7890\u0027 }; $b=git branch --show-current; git push origin $b; if ($LASTEXITCODE -ne 0) { exit 1 }; git push --force origin refs/tags/v${input:releaseVersion}; if ($LASTEXITCODE -ne 0) { exit 1 }; $tok=[Environment]::GetEnvironmentVariable(\u0027GITEE_TOKEN\u0027,\u0027User\u0027); if (-not $tok) { Write-Host \u0027未找到 GITEE_TOKEN，请先设置\u0027; exit 1 }; git push --force \"https://cjxpj:$tok@gitee.com/cjxpj/nebula.git\" $b; if ($LASTEXITCODE -ne 0) { exit 1 }; git push --force \"https://cjxpj:$tok@gitee.com/cjxpj/nebula.git\" refs/tags/v${input:releaseVersion}"
+                "if (Get-NetTCPConnection -LocalPort 7890 -State Listen -ErrorAction SilentlyContinue) { $env:HTTP_PROXY=\u0027http://127.0.0.1:7890\u0027; $env:HTTPS_PROXY=\u0027http://127.0.0.1:7890\u0027 }; $v=(Get-Content -Raw (Join-Path $env:TEMP \u0027nebula_release_ver.txt\u0027)); $b=git branch --show-current; git push origin $b; if ($LASTEXITCODE -ne 0) { exit 1 }; git push --force origin refs/tags/v$v; if ($LASTEXITCODE -ne 0) { exit 1 }; $tok=[Environment]::GetEnvironmentVariable(\u0027GITEE_TOKEN\u0027,\u0027User\u0027); if (-not $tok) { Write-Host \u0027未找到 GITEE_TOKEN，请先设置\u0027; exit 1 }; git push --force \"https://cjxpj:$tok@gitee.com/cjxpj/nebula.git\" $b; if ($LASTEXITCODE -ne 0) { exit 1 }; git push --force \"https://cjxpj:$tok@gitee.com/cjxpj/nebula.git\" refs/tags/v$v"
             ],
             "problemMatcher": [],
             "detail": "推送分支+tag 到 GitHub(origin) 与 Gitee（自动启用代理）"
@@ -317,7 +319,7 @@
             "args": [
                 "-NoProfile",
                 "-Command",
-                "if (Get-NetTCPConnection -LocalPort 7890 -State Listen -ErrorAction SilentlyContinue) { $env:HTTP_PROXY=\u0027http://127.0.0.1:7890\u0027; $env:HTTPS_PROXY=\u0027http://127.0.0.1:7890\u0027 }; $gh=\u0027C:\\Program Files\\GitHub CLI\\gh.exe\u0027; $n=\u0027${input:releaseNotes}\u0027; if (-not $n) { $n=\u0027Nebula v${input:releaseVersion} 发布\u0027 }; \u0026 $gh release create v${input:releaseVersion} dist/nebula.exe dist/nebula dist/nebula.apk dist/sdk/windows-amd64/nebula.dll --repo cjxpj/nebula --title v${input:releaseVersion} --notes $n"
+                "if (Get-NetTCPConnection -LocalPort 7890 -State Listen -ErrorAction SilentlyContinue) { $env:HTTP_PROXY=\u0027http://127.0.0.1:7890\u0027; $env:HTTPS_PROXY=\u0027http://127.0.0.1:7890\u0027 }; $gh=\u0027C:\\Program Files\\GitHub CLI\\gh.exe\u0027; $v=(Get-Content -Raw (Join-Path $env:TEMP \u0027nebula_release_ver.txt\u0027)); $n=(Get-Content -Raw (Join-Path $PWD \u0027.vscode/release-notes.md\u0027)).Trim(); if (-not $n) { $n=\u0027Nebula v$v 发布\u0027 }; \u0026 $gh release create v$v dist/nebula.exe dist/nebula dist/nebula.apk --repo cjxpj/nebula --title v$v --notes $n"
             ],
             "problemMatcher": [],
             "detail": "gh 创建 GitHub Release 并上传 exe/linux/apk"
@@ -329,21 +331,33 @@
             "args": [
                 "-NoProfile",
                 "-Command",
-                "$tok=[Environment]::GetEnvironmentVariable(\u0027GITEE_TOKEN\u0027,\u0027User\u0027); if (-not $tok) { Write-Host \u0027未找到 GITEE_TOKEN，请先设置\u0027; exit 1 }; $body=@{access_token=$tok; tag_name=\u0027v${input:releaseVersion}\u0027; name=\u0027v${input:releaseVersion}\u0027; body=\u0027${input:releaseNotes}\u0027; target_commitish=(git branch --show-current)} | ConvertTo-Json; $rel=Invoke-RestMethod -Method Post -Uri \u0027https://gitee.com/api/v5/repos/cjxpj/nebula/releases\u0027 -ContentType \u0027application/json; charset=utf-8\u0027 -Body ([System.Text.Encoding]::UTF8.GetBytes($body)); curl.exe -s -X POST \"https://gitee.com/api/v5/repos/cjxpj/nebula/releases/$($rel.id)/attach_files\" -F \"access_token=$tok\" -F \u0027file=@dist/nebula.exe\u0027; curl.exe -s -X POST \"https://gitee.com/api/v5/repos/cjxpj/nebula/releases/$($rel.id)/attach_files\" -F \"access_token=$tok\" -F \u0027file=@dist/nebula\u0027; curl.exe -s -X POST \"https://gitee.com/api/v5/repos/cjxpj/nebula/releases/$($rel.id)/attach_files\" -F \"access_token=$tok\" -F \u0027file=@dist/nebula.apk\u0027; curl.exe -s -X POST \"https://gitee.com/api/v5/repos/cjxpj/nebula/releases/$($rel.id)/attach_files\" -F \"access_token=$tok\" -F \u0027file=@dist/sdk/windows-amd64/nebula.dll\u0027"
+                "$tok=[Environment]::GetEnvironmentVariable(\u0027GITEE_TOKEN\u0027,\u0027User\u0027); if (-not $tok) { Write-Host \u0027未找到 GITEE_TOKEN，请先设置\u0027; exit 1 }; $v=(Get-Content -Raw (Join-Path $env:TEMP \u0027nebula_release_ver.txt\u0027)); $n=(Get-Content -Raw (Join-Path $PWD \u0027.vscode/release-notes.md\u0027)).Trim(); $body=@{access_token=$tok; tag_name=\u0027v$v\u0027; name=\u0027v$v\u0027; body=\u0027$n\u0027; target_commitish=(git branch --show-current)} | ConvertTo-Json; $rel=Invoke-RestMethod -Method Post -Uri \u0027https://gitee.com/api/v5/repos/cjxpj/nebula/releases\u0027 -ContentType \u0027application/json; charset=utf-8\u0027 -Body ([System.Text.Encoding]::UTF8.GetBytes($body)); curl.exe -s -X POST \"https://gitee.com/api/v5/repos/cjxpj/nebula/releases/$($rel.id)/attach_files\" -F \"access_token=$tok\" -F \u0027file=@dist/nebula.exe\u0027; curl.exe -s -X POST \"https://gitee.com/api/v5/repos/cjxpj/nebula/releases/$($rel.id)/attach_files\" -F \"access_token=$tok\" -F \u0027file=@dist/nebula\u0027; curl.exe -s -X POST \"https://gitee.com/api/v5/repos/cjxpj/nebula/releases/$($rel.id)/attach_files\" -F \"access_token=$tok\" -F \u0027file=@dist/nebula.apk\u0027"
             ],
             "problemMatcher": [],
             "detail": "Gitee API 创建 Release 并上传 exe/linux/apk"
         },
         {
+            "label": "发布: 输入版本号",
+            "type": "process",
+            "command": "powershell.exe",
+            "args": [
+                "-NoProfile",
+                "-Command",
+                "$v=\u0027${input:releaseVersion}\u0027; $enc=New-Object System.Text.UTF8Encoding $false; [IO.File]::WriteAllText((Join-Path $env:TEMP \u0027nebula_release_ver.txt\u0027),$v,$enc); Write-Host \u0027版本号: \u0027$v"
+            ],
+            "problemMatcher": [],
+            "detail": "开头提问一次版本号；更新说明请填写 .vscode/release-notes.md（留空则用默认说明）"
+        },
+        {
             "label": "一键打包发布 (GitHub + Gitee)",
             "dependsOrder": "sequence",
             "dependsOn": [
+                "发布: 输入版本号",
                 "发布: 清空 dist 文件夹",
                 "发布: 更新版本号",
                 "发布: 重新生成 resource.syso",
                 "buildWindows_amd64",
                 "buildLinux_amd64",
-                "SDK: 一键打包 Windows .dll",
                 "upx 压缩",
                 "一键打包 APK",
                 "发布: git 提交并打标签",
@@ -359,14 +373,8 @@
         {
             "id": "releaseVersion",
             "type": "promptString",
-            "description": "请输入新版本号（如 16.18.3）",
+            "description": "请输入新版本号（如 16.18.3）；更新说明请填写 .vscode/release-notes.md",
             "default": "16.18.3"
-        },
-        {
-            "id": "releaseNotes",
-            "type": "promptString",
-            "description": "更新说明（可留空，将用于 GitHub/Gitee Release）",
-            "default": ""
         }
     ]
 }

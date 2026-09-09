@@ -22,7 +22,7 @@ var Funcs = map[string]dto.DicFunc{
 			if rMsg != "" {
 				rMsg = strings.ReplaceAll(rMsg, "\\r", "\n")
 				groupId := d.Inputs.String(1)
-				account := getCurrentAccount()
+				account := getCurrentAccount(d)
 				// debugLog.Infof("[secluded] 群单发: groupId=%s, message=%s, account=%s", groupId, rMsg, account)
 				if err := SendTextWithAccount("group", groupId, rMsg, account); err != nil {
 					debugLog.Infof("[secluded] 群单发失败: %v", err)
@@ -38,7 +38,7 @@ var Funcs = map[string]dto.DicFunc{
 			if rMsg != "" {
 				rMsg = strings.ReplaceAll(rMsg, "\\r", "\n")
 				userId := d.Inputs.String(1)
-				account := getCurrentAccount()
+				account := getCurrentAccount(d)
 				// debugLog.Infof("[secluded] 私聊: userId=%s, message=%s, account=%s", userId, rMsg, account)
 				if err := SendTextWithAccount("friend", userId, rMsg, account); err != nil {
 					debugLog.Infof("[secluded] 私聊失败: %v", err)
@@ -62,7 +62,7 @@ var Funcs = map[string]dto.DicFunc{
 			if groupId == "" || pttUrl == "" {
 				return "", nil
 			}
-			account := getCurrentAccount()
+			account := getCurrentAccount(d)
 			if account == "" {
 				return "", nil
 			}
@@ -100,7 +100,7 @@ var Funcs = map[string]dto.DicFunc{
 			if groupId == "" || videoUrl == "" {
 				return "", nil
 			}
-			account := getCurrentAccount()
+			account := getCurrentAccount(d)
 			if account == "" {
 				return "", nil
 			}
@@ -135,7 +135,7 @@ var Funcs = map[string]dto.DicFunc{
 	"获取群列表": {
 		L: "0",
 		Fn: func(d *dto.DicInputs) (any, error) {
-			account := getCurrentAccount()
+			account := getCurrentAccount(d)
 			if account == "" {
 				return "", nil
 			}
@@ -176,7 +176,7 @@ var Funcs = map[string]dto.DicFunc{
 			}
 			account := d.Inputs.String(2)
 			if account == "" {
-				account = getCurrentAccount()
+				account = getCurrentAccount(d)
 			}
 			if account == "" {
 				return "", nil
@@ -220,7 +220,7 @@ var Funcs = map[string]dto.DicFunc{
 		Fn: func(d *dto.DicInputs) (any, error) {
 			groupId := d.Inputs.String(1)
 			msgId := d.Inputs.String(2)
-			account := getCurrentAccount()
+			account := getCurrentAccount(d)
 			if account == "" || groupId == "" || msgId == "" {
 				return "", nil
 			}
@@ -250,7 +250,7 @@ var Funcs = map[string]dto.DicFunc{
 			groupId := d.Inputs.String(1)
 			uin := d.Inputs.String(2)
 			muteTime := d.Inputs.String(3)
-			account := getCurrentAccount()
+			account := getCurrentAccount(d)
 			if account == "" || groupId == "" || muteTime == "" {
 				return "", nil
 			}
@@ -281,7 +281,7 @@ var Funcs = map[string]dto.DicFunc{
 		Fn: func(d *dto.DicInputs) (any, error) {
 			groupId := d.Inputs.String(1)
 			uin := d.Inputs.String(2)
-			account := getCurrentAccount()
+			account := getCurrentAccount(d)
 			if account == "" || groupId == "" || uin == "" {
 				return "", nil
 			}
@@ -306,7 +306,7 @@ var Funcs = map[string]dto.DicFunc{
 		Fn: func(d *dto.DicInputs) (any, error) {
 			groupId := d.Inputs.String(1)
 			uin := d.Inputs.String(2)
-			account := getCurrentAccount()
+			account := getCurrentAccount(d)
 			if account == "" || groupId == "" || uin == "" {
 				return "", nil
 			}
@@ -331,7 +331,7 @@ var Funcs = map[string]dto.DicFunc{
 		Fn: func(d *dto.DicInputs) (any, error) {
 			groupId := d.Inputs.String(1)
 			groupName := d.Inputs.String(2)
-			account := getCurrentAccount()
+			account := getCurrentAccount(d)
 			if account == "" || groupId == "" || groupName == "" {
 				return "", nil
 			}
@@ -356,7 +356,7 @@ var Funcs = map[string]dto.DicFunc{
 			groupId := d.Inputs.String(1)
 			uin := d.Inputs.String(2)
 			action := d.Inputs.String(3)
-			account := getCurrentAccount()
+			account := getCurrentAccount(d)
 			if account == "" || groupId == "" || uin == "" || action == "" {
 				return "", nil
 			}
@@ -391,7 +391,7 @@ var Funcs = map[string]dto.DicFunc{
 		Fn: func(d *dto.DicInputs) (any, error) {
 			groupId := d.Inputs.String(1)
 			uin := d.Inputs.String(2)
-			account := getCurrentAccount()
+			account := getCurrentAccount(d)
 			if account == "" || groupId == "" || uin == "" {
 				return "", nil
 			}
@@ -415,7 +415,7 @@ var Funcs = map[string]dto.DicFunc{
 		L: "1",
 		Fn: func(d *dto.DicInputs) (any, error) {
 			groupId := d.Inputs.String(1)
-			account := getCurrentAccount()
+			account := getCurrentAccount(d)
 			if account == "" || groupId == "" {
 				return "", nil
 			}
@@ -440,7 +440,7 @@ var Funcs = map[string]dto.DicFunc{
 			msgId := d.Inputs.String(2)
 			code := d.Inputs.String(3)
 			action := d.Inputs.String(4)
-			account := getCurrentAccount()
+			account := getCurrentAccount(d)
 			if account == "" || groupId == "" || msgId == "" || code == "" {
 				return "", nil
 			}
@@ -479,7 +479,7 @@ var Funcs = map[string]dto.DicFunc{
 		Fn: func(d *dto.DicInputs) (any, error) {
 			groupId := d.Inputs.String(1)
 			text := d.Inputs.String(2)
-			account := getCurrentAccount()
+			account := getCurrentAccount(d)
 			if account == "" || groupId == "" || text == "" {
 				return "", nil
 			}
@@ -504,7 +504,7 @@ var Funcs = map[string]dto.DicFunc{
 		Fn: func(d *dto.DicInputs) (any, error) {
 			uin := d.Inputs.String(1)
 			info := d.Inputs.String(2)
-			account := getCurrentAccount()
+			account := getCurrentAccount(d)
 			if account == "" || uin == "" {
 				return "", nil
 			}
@@ -530,7 +530,7 @@ var Funcs = map[string]dto.DicFunc{
 		L: "1",
 		Fn: func(d *dto.DicInputs) (any, error) {
 			uin := d.Inputs.String(1)
-			account := getCurrentAccount()
+			account := getCurrentAccount(d)
 			if account == "" || uin == "" {
 				return "", nil
 			}
@@ -553,7 +553,7 @@ var Funcs = map[string]dto.DicFunc{
 		Fn: func(d *dto.DicInputs) (any, error) {
 			uin := d.Inputs.String(1)
 			name := d.Inputs.String(2)
-			account := getCurrentAccount()
+			account := getCurrentAccount(d)
 			if account == "" || uin == "" || name == "" {
 				return "", nil
 			}
@@ -575,7 +575,7 @@ var Funcs = map[string]dto.DicFunc{
 	"获取好友列表": {
 		L: "0",
 		Fn: func(d *dto.DicInputs) (any, error) {
-			account := getCurrentAccount()
+			account := getCurrentAccount(d)
 			if account == "" {
 				return "", nil
 			}
@@ -602,7 +602,7 @@ var Funcs = map[string]dto.DicFunc{
 		L: "1",
 		Fn: func(d *dto.DicInputs) (any, error) {
 			groupId := d.Inputs.String(1)
-			account := getCurrentAccount()
+			account := getCurrentAccount(d)
 			if account == "" || groupId == "" {
 				return "", nil
 			}
@@ -629,7 +629,7 @@ var Funcs = map[string]dto.DicFunc{
 		L: "1",
 		Fn: func(d *dto.DicInputs) (any, error) {
 			groupId := d.Inputs.String(1)
-			account := getCurrentAccount()
+			account := getCurrentAccount(d)
 			if account == "" || groupId == "" {
 				return "", nil
 			}
@@ -655,7 +655,7 @@ var Funcs = map[string]dto.DicFunc{
 	"获取用户信息": {
 		L: "0",
 		Fn: func(d *dto.DicInputs) (any, error) {
-			account := getCurrentAccount()
+			account := getCurrentAccount(d)
 			if account == "" {
 				return "", nil
 			}
@@ -682,7 +682,7 @@ var Funcs = map[string]dto.DicFunc{
 		Fn: func(d *dto.DicInputs) (any, error) {
 			groupId := d.Inputs.String(1)
 			mode := d.Inputs.String(2)
-			account := getCurrentAccount()
+			account := getCurrentAccount(d)
 			if account == "" || groupId == "" || mode == "" {
 				return "", nil
 			}
@@ -707,7 +707,7 @@ var Funcs = map[string]dto.DicFunc{
 			groupId := d.Inputs.String(1)
 			msgId := d.Inputs.String(2)
 			action := d.Inputs.String(3)
-			account := getCurrentAccount()
+			account := getCurrentAccount(d)
 			if account == "" || groupId == "" || msgId == "" || action == "" {
 				return "", nil
 			}
@@ -742,7 +742,7 @@ var Funcs = map[string]dto.DicFunc{
 		Fn: func(d *dto.DicInputs) (any, error) {
 			groupId := d.Inputs.String(1)
 			xml := d.Inputs.String(2)
-			account := getCurrentAccount()
+			account := getCurrentAccount(d)
 			if account == "" || groupId == "" || xml == "" {
 				return "", nil
 			}
@@ -765,7 +765,7 @@ var Funcs = map[string]dto.DicFunc{
 		Fn: func(d *dto.DicInputs) (any, error) {
 			groupId := d.Inputs.String(1)
 			jsonCard := d.Inputs.String(2)
-			account := getCurrentAccount()
+			account := getCurrentAccount(d)
 			if account == "" || groupId == "" || jsonCard == "" {
 				return "", nil
 			}
@@ -788,7 +788,7 @@ var Funcs = map[string]dto.DicFunc{
 		Fn: func(d *dto.DicInputs) (any, error) {
 			uin := d.Inputs.String(1)
 			msgId := d.Inputs.String(2)
-			account := getCurrentAccount()
+			account := getCurrentAccount(d)
 			if account == "" || uin == "" || msgId == "" {
 				return "", nil
 			}
@@ -870,7 +870,7 @@ var Funcs = map[string]dto.DicFunc{
 		L: "1",
 		Fn: func(d *dto.DicInputs) (any, error) {
 			groupId := d.Inputs.String(1)
-			account := getCurrentAccount()
+			account := getCurrentAccount(d)
 			if account == "" || groupId == "" {
 				return "", nil
 			}
@@ -895,7 +895,7 @@ var Funcs = map[string]dto.DicFunc{
 		L: "1",
 		Fn: func(d *dto.DicInputs) (any, error) {
 			groupId := d.Inputs.String(1)
-			account := getCurrentAccount()
+			account := getCurrentAccount(d)
 			if account == "" || groupId == "" {
 				return "", nil
 			}
@@ -922,7 +922,7 @@ var Funcs = map[string]dto.DicFunc{
 			groupId := d.Inputs.String(1)
 			msgId := d.Inputs.String(2)
 			emoReply := d.Inputs.String(3)
-			account := getCurrentAccount()
+			account := getCurrentAccount(d)
 			if account == "" || groupId == "" || msgId == "" || emoReply == "" {
 				return "", nil
 			}
@@ -946,7 +946,7 @@ var Funcs = map[string]dto.DicFunc{
 		L: "1",
 		Fn: func(d *dto.DicInputs) (any, error) {
 			groupName := d.Inputs.String(1)
-			account := getCurrentAccount()
+			account := getCurrentAccount(d)
 			if account == "" || groupName == "" {
 				return "", nil
 			}
@@ -975,7 +975,7 @@ var Funcs = map[string]dto.DicFunc{
 			uin := d.Inputs.String(1)
 			uid := d.Inputs.String(2)
 			value := d.Inputs.String(3)
-			account := getCurrentAccount()
+			account := getCurrentAccount(d)
 			if account == "" || uin == "" || uid == "" || value == "" {
 				return "", nil
 			}
@@ -1000,7 +1000,7 @@ var Funcs = map[string]dto.DicFunc{
 		Fn: func(d *dto.DicInputs) (any, error) {
 			groupId := d.Inputs.String(1)
 			info := d.Inputs.String(2)
-			account := getCurrentAccount()
+			account := getCurrentAccount(d)
 			if account == "" || groupId == "" {
 				return "", nil
 			}
@@ -1024,11 +1024,11 @@ var Funcs = map[string]dto.DicFunc{
 	},
 }
 
-// getCurrentAccount 获取当前机器人账户
-func getCurrentAccount() string {
-	// 优先从消息上下文获取（实时可靠）
-	if account := pushContextAccount(); account != "" {
-		return account
+// getCurrentAccount 获取当前机器人账户：优先取消息上下文（词库实例内），其次取配置
+func getCurrentAccount(d *dto.DicInputs) string {
+	// 优先从消息上下文获取（实时可靠，按消息隔离）
+	if ctx := getPushContext(d); ctx != nil && ctx.meta != nil && ctx.meta.Account != "" {
+		return ctx.meta.Account
 	}
 	// 其次从配置获取（上线时保存的）
 	if dto.ServerConfig.SecludedBot != nil && dto.ServerConfig.SecludedBot.Account != "" {

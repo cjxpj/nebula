@@ -17,7 +17,6 @@ func RunFile(path string) (string, error) {
 	}
 	GV := dto.NewVal()
 	GV.Set("版本", appfiles.Version)
-	dto.SetThreadVarRaw("_词库路径_", path)
 	infoDic.SetGlobal_v(GV)
 	return dic_api.Api.DicRun(infoDic, "Main"), nil
 }

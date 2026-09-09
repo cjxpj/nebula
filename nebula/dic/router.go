@@ -74,7 +74,6 @@ func handleWsServer(w http.ResponseWriter, r *http.Request, ws *dto.ServerRouter
 
 	// 运行词库
 	if dic, err := dic_dto.NewDicFile(dicPath); err == nil {
-		dto.SetThreadVarRaw("_词库路径_", dicPath)
 		dic.Val.G.Set("访问数据", string(responseJSON))
 		dic.SetFunc("断开连接", dto.DicFunc{
 			L: "0",
@@ -127,7 +126,6 @@ func handleWsServer(w http.ResponseWriter, r *http.Request, ws *dto.ServerRouter
 				conn.Close() // 关闭连接
 				break
 			}
-			dto.SetThreadVarRaw("_词库路径_", dicPath)
 			d.Val.G.SetRaw("_WS连接_", conn)
 			d.Val.G.Set("访问数据", string(responseJSON))
 			d.SetFunc("断开连接", dto.DicFunc{

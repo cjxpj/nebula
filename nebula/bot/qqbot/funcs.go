@@ -41,7 +41,9 @@ func SetPushContext(dic *dic_dto.Dic, ctx *PushContext) {
 	if dic == nil || dic.Val == nil || dic.Val.G == nil || ctx == nil {
 		return
 	}
-	dic.Val.G.Set(pushCtxKey, ctx)
+	// 必须用 SetRaw：pushCtxKey 前后都带下划线，Set/Get 会把它当成线程变量路由到全局 GV，
+	// 导致并发处理多条消息时上下文互相覆盖（串线）。SetRaw 绕过线程变量映射，落到本词库实例。
+	dic.Val.G.SetRaw(pushCtxKey, ctx)
 }
 
 // GetPushContext 从当前执行的词库变量中获取上下文（嵌套运行共享同一 G，均可取到）
@@ -49,8 +51,11 @@ func GetPushContext(d *dto.DicInputs) *PushContext {
 	if d == nil || d.V == nil || d.V.G == nil {
 		return nil
 	}
-	ctx, _ := d.V.G.Get(pushCtxKey).(*PushContext)
-	return ctx
+	if v, ok := d.V.G.GetRaw(pushCtxKey); ok {
+		ctx, _ := v.(*PushContext)
+		return ctx
+	}
+	return nil
 }
 
 // ConsumeEventID 原子读取并清除 eventID，确保每次 INTERACTION_CREATE 的 event_id 只被使用一次

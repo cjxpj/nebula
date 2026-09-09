@@ -73,6 +73,8 @@ func TestDicCompileCache(t *testing.T) {
 	defer func() { dto.ServerConfig.DicCache = false }()
 
 	const path = "cache_test_unique.n"
+	// 测试收尾清理缓存文件，避免每次跑测试都在真实数据目录残留 .dic_cache 垃圾文件
+	defer os.Remove(dicCachePath(importFilePath(path)))
 	text1 := "Main\n缓存测试内容1"
 	text2 := "Main\n缓存测试内容2"
 

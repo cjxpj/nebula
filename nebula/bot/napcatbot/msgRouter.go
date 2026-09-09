@@ -87,7 +87,6 @@ func napCatBOTGroupUploadFileRun(msgData *MessagePayload) {
 			// 回复消息
 		dic := dic_dto.NewDic(dicPath, FileData).
 			SetGlobal_v(valData)
-		dto.SetThreadVarRaw("_词库路径_", dicPath)
 
 		dic.AddFuncs(Funcs)
 
@@ -197,7 +196,6 @@ func napCatBOTGroupRecallRun(msgData *MessagePayload) {
 			// 回复消息
 		dic := dic_dto.NewDic(dicPath, FileData).
 			SetGlobal_v(valData)
-		dto.SetThreadVarRaw("_词库路径_", dicPath)
 
 		dic.AddFuncs(Funcs)
 
@@ -276,7 +274,6 @@ func napCatBOTProfileLikeRun(msgData *MessagePayload) {
 			// 回复消息
 		dic := dic_dto.NewDic(dicPath, FileData).
 			SetGlobal_v(valData)
-		dto.SetThreadVarRaw("_词库路径_", dicPath)
 
 		dic.SetFunc("调用", dto.DicFunc{
 			L: "2..",
@@ -375,7 +372,6 @@ func napCatBOTGroupNudgeRun(msgData *MessagePayload) {
 			// 回复消息
 		dic := dic_dto.NewDic(dicPath, FileData).
 			SetGlobal_v(valData)
-		dto.SetThreadVarRaw("_词库路径_", dicPath)
 
 		dic.SetFunc("调用", dto.DicFunc{
 			L: "2..",
@@ -474,7 +470,6 @@ func napCatBOTPrivateRun(msgData *MessagePayload) {
 			// 回复消息
 		dic := dic_dto.NewDic(dicPath, FileData).
 			SetGlobal_v(valData)
-		dto.SetThreadVarRaw("_词库路径_", dicPath)
 
 		dic.SetFunc("调用", dto.DicFunc{
 			L: "2..",
@@ -615,7 +610,6 @@ func napCatBOTGroupRun(msgData *MessagePayload) {
 			// 回复消息
 		dic := dic_dto.NewDic(dicPath, FileData).
 			SetGlobal_v(valData)
-		dto.SetThreadVarRaw("_词库路径_", dicPath)
 
 		dic.SetFunc("调用", dto.DicFunc{
 			L: "2..",

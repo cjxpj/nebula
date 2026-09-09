@@ -2242,6 +2242,26 @@ func nebulaSrcRoot() (string, error) {
 	return "", errors.New("未找到 Nebula 源码目录（需含 go.work），请设置环境变量 NEBULA_SRC 指向源码根目录后重试")
 }
 
+// nebulaModuleRoot 定位 Nebula 源码 module 根目录（含 go.mod，即 module github.com/cjxpj/nebula）。
+// 仓库根（含 go.work）下的 nebula/ 子目录即为 module 根；同时兼容 NEBULA_SRC 直接指向 module 根的场景。
+// 统一此定位后，linux 打包与 android 打包可共用同一个 NEBULA_SRC（仓库根）。
+func nebulaModuleRoot() (string, error) {
+	// 1) NEBULA_SRC 直接指向 module 根（含 go.mod）
+	if s := strings.TrimSpace(os.Getenv("NEBULA_SRC")); s != "" {
+		if fi, err := os.Stat(filepath.Join(s, "go.mod")); err == nil && !fi.IsDir() {
+			return filepath.Clean(s), nil
+		}
+	}
+	// 2) 仓库根（含 go.work）下的 nebula/ 子目录
+	if root, err := nebulaSrcRoot(); err == nil {
+		mod := filepath.Join(root, "nebula")
+		if fi, err := os.Stat(filepath.Join(mod, "go.mod")); err == nil && !fi.IsDir() {
+			return filepath.Clean(mod), nil
+		}
+	}
+	return "", errors.New("未找到 Nebula 源码 module 目录（含 go.mod），请设置环境变量 NEBULA_SRC 指向仓库根（含 go.work 与 nebula/）")
+}
+
 // buildTask 词库打包任务的运行状态（异步执行，前端按 taskId 轮询）。
 type buildTask struct {
 	mu        sync.Mutex
@@ -2457,31 +2477,156 @@ func downloadNebulaDLL() (string, error) {
 	return destPath, nil
 }
 
-// findGoExe 定位 Go 工具链可执行文件：优先使用「扩展部署」下载的词库编译环境
-// （private/extensions/go/bin/go.exe），否则回退到 PATH 中的 go。
+// findGoExe 定位「扩展部署」的 Go 工具链（private/extensions/go/bin/go.exe）。
+// 该目录由 OPUI「扩展部署」下载到应用数据目录；扩展 Go 缺失时上层用 resolveGoExe
+// 回退 PATH 中的 go（词库运行器在独立 module 源码现编、仅依赖标准库，无需特定 Go 版本）。
+// 返回绝对路径，规避 exec 在子进程工作目录下解析相对路径失败的问题。
 func findGoExe() (string, error) {
-	if extGo := filepath.Join(utils.GetAppDir(), "private", "extensions", "go", "bin", "go.exe"); fileExists(extGo) {
+	extGo := filepath.Join(utils.GetAppDir(), "private", "extensions", "go", "bin", "go.exe")
+	if abs, err := filepath.Abs(extGo); err == nil {
+		extGo = abs
+	}
+	if fileExists(extGo) {
 		return extGo, nil
 	}
-	if p, err := exec.LookPath("go"); err == nil && p != "" {
-		return p, nil
-	}
-	return "", errors.New("未检测到 Go 工具链，请先在「扩展部署」下载词库编译环境，或安装 Go 并加入 PATH")
+	return "", errors.New("未检测到词库编译环境（Go 工具链），请先在「扩展部署」下载词库编译环境")
 }
 
-// buildDicBundle 把指定词库与预编译 nebula.dll 一起打包为独立可执行文件。
-// 加载器为纯 Go（仅依赖标准库），无需引擎源码；运行时从内嵌 dll 动态加载引擎。
-// 返回产物绝对路径与构建日志。
-func buildDicBundle(dicPath, goos, _ string) (outPath, logText string, err error) {
-	// 仅支持 Windows（nebula.dll 为 windows-amd64，加载器使用 syscall.LoadLibrary）
+// resolveGoExe 定位可用 Go 工具链：优先「扩展部署」的 go.exe，
+// 其次 PATH 中的 go（开发机自带 / 源码现编场景），供 exe / linux 打包共用。
+func resolveGoExe() (string, error) {
+	if ext, err := findGoExe(); err == nil {
+		return ext, nil
+	}
+	if p, err := exec.LookPath("go"); err == nil {
+		return p, nil
+	}
+	return "", errors.New("未检测到 Go 工具链：扩展部署 Go 与 PATH 中的 go 均不可用")
+}
+
+// linuxDicMainTemplate 生成 Linux 独立运行器入口源码：在 Nebula 源码 module 内编译，
+// 直接 import 引擎包执行内嵌的词库 gob（源码现编，不需要 .so/dll/dlopen，产物为单文件 ELF）。
+func linuxDicMainTemplate() string {
+	return `package main
+
+import (
+	_ "embed"
+	"fmt"
+	"os"
+
+	_ "github.com/cjxpj/nebula/dic" // 触发引擎初始化：注入 dic_api.Api 并注册内置函数
+	dic_api "github.com/cjxpj/nebula/dic/api"
+	dic_dto "github.com/cjxpj/nebula/dic/dto"
+	"github.com/cjxpj/nebula/dto"
+	"github.com/cjxpj/nebula/run"
+)
+
+//go:embed compiled.gob
+var compiledData []byte
+
+func main() {
+	trigger := "Main"
+	if len(os.Args) > 1 && os.Args[1] != "" {
+		trigger = os.Args[1]
+	}
+	bv, err := run.UnmarshalBuildValue(compiledData)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "编译产物加载失败:", err)
+		os.Exit(1)
+	}
+	d := &dic_dto.Dic{Data: bv, Val: dto.NewDicVal(), MyFunc: bv.MyFunc}
+	fmt.Println(dic_api.Api.DicRun(d, trigger))
+}
+`
+}
+
+// buildLinuxDicBundle 把词库打包为 Linux 独立单文件运行器（源码现编）：
+//  1. 词库编译产物（gob）与运行器 main.go 一起写入 Nebula 源码内的临时包目录；
+//  2. 用 goExe 在该源码 module 中编译（import 引擎包，go.mod/go.sum 齐备即可，无需联网下载）；
+//  3. 纯 Go 静态 ELF（CGO_ENABLED=0），可 Windows 交叉编译，运行时不依赖 .so/dll，
+//     直接以 Main/命令行触发词执行。
+func buildLinuxDicBundle(dicPath, goExe, goarch string) (outPath, logText string, err error) {
+	content, err := utils.NewFileQueue(dicPath).ReadFromFile()
+	if err != nil {
+		return "", "", fmt.Errorf("词库读取失败: %w", err)
+	}
+	buildValue := run.BuildDic(dicPath, content)
+	gobData, err := run.MarshalBuildValue(buildValue)
+	if err != nil {
+		return "", "", err
+	}
+
+	// 源码 module 根：编译运行器必须在 Nebula module 内，才能 import 引擎包。
+	srcRoot, err := nebulaModuleRoot()
+	if err != nil {
+		return "", "", err
+	}
+	if srcRoot, err = filepath.Abs(srcRoot); err != nil {
+		return "", "", fmt.Errorf("解析源码 module 根失败: %w", err)
+	}
+
+	// 产物输出到应用数据目录 private/build/dist/。
+	appBuildDir, err := filepath.Abs(filepath.Join(utils.GetAppDir(), "private", "build", "dist"))
+	if err != nil {
+		return "", "", fmt.Errorf("解析产物目录失败: %w", err)
+	}
+	if err = os.MkdirAll(appBuildDir, 0o755); err != nil {
+		return "", "", fmt.Errorf("创建产物目录失败: %w", err)
+	}
+	outPath = filepath.Join(appBuildDir, "nebula-dic")
+
+	// 源码内临时运行器包目录（必须位于 module 内才能 import 引擎包；构建后删除）。
+	pkgName := fmt.Sprintf("dicrun_tmp_%d", time.Now().UnixNano())
+	pkgDir := filepath.Join(srcRoot, pkgName)
+	if err = os.MkdirAll(pkgDir, 0o755); err != nil {
+		return "", "", fmt.Errorf("创建运行器目录失败: %w", err)
+	}
+	defer os.RemoveAll(pkgDir)
+
+	if err = os.WriteFile(filepath.Join(pkgDir, "main.go"), []byte(linuxDicMainTemplate()), 0o644); err != nil {
+		return "", "", fmt.Errorf("写入 main.go 失败: %w", err)
+	}
+	if err = os.WriteFile(filepath.Join(pkgDir, "compiled.gob"), gobData, 0o644); err != nil {
+		return "", "", fmt.Errorf("写入 compiled.gob 失败: %w", err)
+	}
+
+	cmd := exec.Command(goExe, "build", "-trimpath", "-ldflags", "-s -w", "-o", outPath, "./"+pkgName)
+	cmd.Dir = srcRoot
+	// 强制 GOOS=linux：即使打包动作发生在 Windows（纯 Go 交叉编译，CGO_ENABLED=0 无需 gcc），
+	// 产物也是 ELF。GOARCH 取调用方指定的目标架构。
+	if goarch == "" {
+		goarch = runtime.GOARCH
+	}
+	cmd.Env = append(os.Environ(), "GOWORK=off", "GOOS=linux", "GOARCH="+goarch, "CGO_ENABLED=0")
+	combined, err := cmd.CombinedOutput()
+	logText = string(combined)
+	if err != nil {
+		return "", logText, fmt.Errorf("go build 失败: %v", err)
+	}
+	return outPath, logText, nil
+}
+
+// buildDicBundle 把指定词库打包为独立可执行文件，按目标平台分发：
+//   - windows：编译嵌入 nebula.dll + 词库 gob 的运行器（复用已发布 DLL，加载器纯标准库）
+//   - linux：在 Nebula 源码目录内编译「直连引擎」运行器（import 引擎包执行词库 gob），
+//     需要环境变量 NEBULA_SRC 指向 Nebula 源码根、可用 Go 工具链（源码现编，无 .so/dll）
+func buildDicBundle(dicPath, goos, goarch string) (outPath, logText string, err error) {
+	if goos == "linux" {
+		goExe, gerr := resolveGoExe()
+		if gerr != nil {
+			return "", "", gerr
+		}
+		return buildLinuxDicBundle(dicPath, goExe, goarch)
+	}
+	// Windows：nebula.dll 为 windows-amd64，加载器使用 syscall.LoadLibrary
 	if goos != "windows" {
-		return "", "", errors.New("仅支持 Windows 平台打包")
+		return "", "", errors.New("仅支持 Windows / Linux 平台打包")
 	}
 	dllPath, err := locateNebulaDLL()
 	if err != nil {
 		return "", "", err
 	}
-	goExe, err := findGoExe()
+	goExe, err := resolveGoExe()
 	if err != nil {
 		return "", "", err
 	}
@@ -2572,6 +2717,140 @@ func buildDicBundle(dicPath, goos, _ string) (outPath, logText string, err error
 	// 记录本次打包指纹，供下次编译做缓存命中判断。
 	_ = os.WriteFile(cachePath, []byte(fingerprint), 0o644)
 
+	return outPath, logText, nil
+}
+
+// androidProjectRoot 定位 Android 工程根目录（含 app/build.gradle）。
+// APK 打包是「打包机本机打包」：需在包含 android/ 与 go.work 的仓库根上跑 gradle。
+// 候选路径：环境变量 NEBULA_SRC/android → 源码反推的仓库根/android。
+func androidProjectRoot() (string, error) {
+	var candidates []string
+	if s := strings.TrimSpace(os.Getenv("NEBULA_SRC")); s != "" {
+		candidates = append(candidates, filepath.Join(s, "android"))
+	}
+	if r, err := nebulaSrcRoot(); err == nil {
+		candidates = append(candidates, filepath.Join(r, "android"))
+	}
+	seen := make(map[string]bool)
+	for _, c := range candidates {
+		abs, err := filepath.Abs(c)
+		if err != nil || seen[abs] {
+			continue
+		}
+		seen[abs] = true
+		if fi, statErr := os.Stat(filepath.Join(abs, "app", "build.gradle")); statErr == nil && !fi.IsDir() {
+			return abs, nil
+		}
+	}
+	return "", errors.New("未找到 Android 工程目录（app/build.gradle）：请设置 NEBULA_SRC 环境变量指向仓库根目录（含 android/ 与 go.work）")
+}
+
+// apkToolchain 探测 APK 打包所需的 JDK 与 Android SDK（优先环境变量，其次常见默认路径）。
+func apkToolchain() (javaHome, sdkRoot string, err error) {
+	javaHome = strings.TrimSpace(os.Getenv("JAVA_HOME"))
+	if javaHome == "" {
+		javaHome = `C:\Program Files\Java\jdk-17`
+	}
+	if fi, statErr := os.Stat(filepath.Join(javaHome, "bin", "java.exe")); statErr != nil || fi.IsDir() {
+		return "", "", fmt.Errorf("未找到 JDK（%s\\bin\\java.exe）：请安装 JDK 17 或设置环境变量 JAVA_HOME", javaHome)
+	}
+	sdkRoot = strings.TrimSpace(os.Getenv("ANDROID_SDK_ROOT"))
+	if sdkRoot == "" {
+		sdkRoot = strings.TrimSpace(os.Getenv("ANDROID_HOME"))
+	}
+	if sdkRoot == "" {
+		sdkRoot = `E:\android-sdk`
+	}
+	if fi, statErr := os.Stat(filepath.Join(sdkRoot, "platforms")); statErr != nil || !fi.IsDir() {
+		return "", "", fmt.Errorf("未找到 Android SDK（%s）：请设置环境变量 ANDROID_SDK_ROOT", sdkRoot)
+	}
+	return javaHome, sdkRoot, nil
+}
+
+// buildApkBundle 把指定词库预置进 Android 工程 assets 并调用 gradle 打包 APK：
+//  1. 读取词库文件（.n 源文本，与 exe/linux 打包共用同一份文件；三端产物运行时都执行该词库）；
+//     词库是否带「$设置工作目录$」头部都不影响打包：Android 默认工作目录即 Documents/Nebula，
+//     词库数据会直接写入该目录；带头部则把工作目录切到其下的子目录；
+//  2. 写入 android/app/src/main/assets/nebula/start.n 与版本标记 dic.version（内容 md5），
+//     App 首启时由 MainActivity.syncBundledDic() 同步到 Documents/Nebula/start.n 顶替默认模板；
+//     同内容时跳过覆盖，避免每次启动都改写用户已有词库；
+//  3. 用本机 gradle（JAVA_HOME + ANDROID_SDK_ROOT）执行 assembleRelease；
+//  4. 复制 app-release.apk 到 private/build/dist/nebula.apk。
+//
+// APK 引擎 .so 已发布在 android jniLibs，本流程不改动引擎，仅内置词库。
+func buildApkBundle(dicPath string) (outPath, logText string, err error) {
+	content, err := utils.NewFileQueue(dicPath).ReadFromFile()
+	if err != nil {
+		return "", "", fmt.Errorf("词库读取失败: %w", err)
+	}
+	if strings.TrimSpace(content) == "" {
+		return "", "", errors.New("词库内容为空，无法打包")
+	}
+	if !strings.Contains(content, "设置工作目录") {
+		logText = "说明：词库未含「$设置工作目录 …$」头部。Android 端默认工作目录即为 Documents/Nebula，数据将直接写入该目录，无需特殊处理；如需把数据放入 NebulaData 子目录，可在词库头部添加该指令。\n"
+	}
+
+	androidRoot, err := androidProjectRoot()
+	if err != nil {
+		return "", "", err
+	}
+	javaHome, sdkRoot, err := apkToolchain()
+	if err != nil {
+		return "", "", err
+	}
+
+	// 1) 写入 assets/nebula/：start.n + dic.version（md5 标记，App 首启幂等同步用；
+	//    注意用普通文件名，aapt2 打包时会过滤点开头的隐藏文件）
+	assetsDir := filepath.Join(androidRoot, "app", "src", "main", "assets", "nebula")
+	if err = os.MkdirAll(assetsDir, 0o755); err != nil {
+		return "", "", fmt.Errorf("创建 assets 目录失败: %w", err)
+	}
+	if err = os.WriteFile(filepath.Join(assetsDir, "start.n"), []byte(content), 0o644); err != nil {
+		return "", "", fmt.Errorf("写入 assets/nebula/start.n 失败: %w", err)
+	}
+	sum := md5.Sum([]byte(content))
+	if err = os.WriteFile(filepath.Join(assetsDir, "dic.version"), []byte(hex.EncodeToString(sum[:])), 0o644); err != nil {
+		return "", "", fmt.Errorf("写入词库版本标记失败: %w", err)
+	}
+
+	// 2) gradle 打包 APK（release 已走调试签名，产物为 app/build/outputs/apk/release/app-release.apk）
+	gradlew := filepath.Join(androidRoot, "gradlew.bat")
+	if _, statErr := os.Stat(gradlew); statErr != nil {
+		return "", "", fmt.Errorf("Android 工程缺少 gradlew.bat（%s）", gradlew)
+	}
+	cmd := exec.Command(gradlew, "assembleRelease")
+	cmd.Dir = androidRoot
+	cmd.Env = append(os.Environ(),
+		"JAVA_HOME="+javaHome,
+		"ANDROID_SDK_ROOT="+sdkRoot,
+		"ANDROID_HOME="+sdkRoot,
+	)
+	combined, err := cmd.CombinedOutput()
+	logText = string(combined)
+	if err != nil {
+		return "", logText, fmt.Errorf("gradle 打包失败: %v", err)
+	}
+	apkSrc := filepath.Join(androidRoot, "app", "build", "outputs", "apk", "release", "app-release.apk")
+	if _, statErr := os.Stat(apkSrc); statErr != nil {
+		return "", logText, fmt.Errorf("未找到打包产物 %s", apkSrc)
+	}
+
+	// 3) 复制到产物目录 private/build/dist/nebula.apk（与 exe/linux 运行器同一目录）
+	appBuildDir, err := filepath.Abs(filepath.Join(utils.GetAppDir(), "private", "build", "dist"))
+	if err != nil {
+		return "", logText, fmt.Errorf("解析产物目录失败: %w", err)
+	}
+	if err = os.MkdirAll(appBuildDir, 0o755); err != nil {
+		return "", logText, fmt.Errorf("创建产物目录失败: %w", err)
+	}
+	outPath = filepath.Join(appBuildDir, "nebula.apk")
+	apkData, err := os.ReadFile(apkSrc)
+	if err != nil {
+		return "", logText, fmt.Errorf("读取 APK 失败: %w", err)
+	}
+	if err = os.WriteFile(outPath, apkData, 0o644); err != nil {
+		return "", logText, fmt.Errorf("复制 APK 失败: %w", err)
+	}
 	return outPath, logText, nil
 }
 
@@ -6420,9 +6699,6 @@ func opuiHandleApi(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 
-		// 注入词库路径，便于错误日志显示来源（顶层词库默认没有 _词库路径_）
-		dto.SetThreadVarRaw("_词库路径_", j.Path)
-
 		// 注入全局变量
 		for k, v := range j.G {
 			dic.Val.G.Set(k, v)
@@ -6475,66 +6751,129 @@ func opuiHandleApi(w http.ResponseWriter, r *http.Request) {
 		return
 
 	case "get_compile_env":
-		// 检测词库编译环境：Go 工具链是否可用（扩展部署下载的 Go 或 PATH 中的 go）
+		// 检测词库打包能力（前端据此显隐「编译词库」入口与目标平台）：
+		//   - windows：当前主机是否为 Windows
+		//   - go：是否存在可用 Go 工具链（「扩展部署」go.exe，缺失时回退 PATH 中的 go）
+		//   - linux：可打包 Linux ELF = 找到 Nebula 源码 module 根（含 go.mod）+ 可用 Go 工具链
+		//   - apk：可打包 APK = Windows 主机 + Android 工程 + JDK + Android SDK
+		//     （NEBULA_SRC 统一指向仓库根，含 go.work / android/ / nebula/；module 根由 nebulaModuleRoot 定位）
 		goAvailable := false
-		if _, err := findGoExe(); err == nil {
+		if _, err := resolveGoExe(); err == nil {
 			goAvailable = true
+		}
+		linuxSrcOK := false
+		if _, err := nebulaModuleRoot(); err == nil {
+			linuxSrcOK = true
+		}
+		linuxReady := linuxSrcOK && goAvailable
+
+		// APK 打包只在 Windows 打包机上进行（gradle + JDK + Android SDK）
+		apkReady := false
+		if runtime.GOOS == "windows" {
+			if _, err := androidProjectRoot(); err == nil {
+				if _, _, err := apkToolchain(); err == nil {
+					apkReady = true
+				}
+			}
 		}
 		resp := map[string]any{
 			"status":  "ok",
+			"host":    runtime.GOOS, // 后端主机系统（windows / linux），前端据此判断本机「运行」按钮可用性
 			"windows": runtime.GOOS == "windows",
 			"go":      goAvailable,
+			"linux":   linuxReady,
+			"apk":     apkReady,
 		}
 		jsonResp, _ := json.Marshal(resp)
 		w.Write(jsonResp)
 		return
 
 	case "dic_build":
-		// 词库打包：把指定词库嵌入引擎，编译为独立可执行文件。
-		// 依赖本机 Go 工具链与 Nebula 源码（开发机场景），源码目录可用环境变量 NEBULA_SRC 指定。
+		// 词库打包：三个平台共用同一份词库文件（Path），target 决定产出与流程：
+		//   exe   - Windows 单文件运行器（嵌入 nebula.dll + 词库 gob，需可用 Go 工具链）
+		//   linux - Linux 单文件 ELF（源码现编直连引擎：NEBULA_SRC + 可用 Go，可 Windows 交叉编译）
+		//   apk   - Android 安装包：把该词库预置进 assets（App 首启作为启动词库执行）后 gradle 打包
 		var j struct {
-			Path   string `json:"path"`
-			Target string `json:"target"` // exe（默认）；dll/so 暂未支持
-			GOOS   string `json:"goos"`   // 目标系统，默认当前系统
-			GOARCH string `json:"goarch"` // 目标架构，默认当前架构
+			Path      string `json:"path"`       // 词库（.n）路径：exe/linux/apk 统一要打包的词库
+			Target    string `json:"target"`     // exe（默认）/ linux / apk
+			StartPath string `json:"start_path"` // 兼容字段：旧版前端 apk 专用启动词库路径，Path 为空时回退
+			GOOS      string `json:"goos"`       // exe/linux 目标系统，默认当前系统
+			GOARCH    string `json:"goarch"`     // 目标架构，默认当前架构
 		}
 		if err := json.Unmarshal(h.Data, &j); err != nil {
 			http.Error(w, `{"status":"error","error":"invalid json"}`, http.StatusBadRequest)
 			return
 		}
-		if j.Path == "" {
-			http.Error(w, `{"status":"error","error":"词库路径不能为空"}`, http.StatusBadRequest)
-			return
-		}
-		if !checkDicPath(j.Path) {
-			http.Error(w, `{"status":"error","error":"词库路径不合法"}`, http.StatusBadRequest)
-			return
-		}
-		if runtime.GOOS != "windows" {
-			http.Error(w, `{"status":"error","error":"编译仅支持 Windows 平台"}`, http.StatusBadRequest)
-			return
-		}
 		if j.Target == "" {
 			j.Target = "exe"
 		}
-		if j.Target != "exe" {
-			http.Error(w, `{"status":"error","error":"暂仅支持 target=exe（打包为独立可执行文件）"}`, http.StatusBadRequest)
+		var dicPath, goos, goarch string
+		switch j.Target {
+		case "exe", "linux":
+			if j.Path == "" {
+				http.Error(w, `{"status":"error","error":"词库路径不能为空"}`, http.StatusBadRequest)
+				return
+			}
+			if !checkDicPath(j.Path) {
+				http.Error(w, `{"status":"error","error":"词库路径不合法"}`, http.StatusBadRequest)
+				return
+			}
+			dicPath = j.Path
+			goos = j.GOOS
+			if j.Target == "linux" {
+				goos = "linux"
+			}
+			if goos == "" {
+				goos = runtime.GOOS
+			}
+			if goos != "windows" && goos != "linux" {
+				http.Error(w, `{"status":"error","error":"仅支持打包 windows / linux 目标平台"}`, http.StatusBadRequest)
+				return
+			}
+			// windows 产物需要 nebula.dll 与「扩展部署」Go 工具链，仅 Windows 主机可打；
+			// linux 产物为纯 Go 交叉编译，任意主机均可打（见 buildLinuxDicBundle）。
+			if goos == "windows" && runtime.GOOS != "windows" {
+				http.Error(w, `{"status":"error","error":"Windows exe 需在 Windows 主机上打包"}`, http.StatusBadRequest)
+				return
+			}
+			goarch = j.GOARCH
+			if goarch == "" {
+				goarch = runtime.GOARCH
+			}
+		case "apk":
+			if runtime.GOOS != "windows" {
+				http.Error(w, `{"status":"error","error":"APK 打包需在 Windows 主机（Android 工程 + JDK + Android SDK + gradle）上执行"}`, http.StatusBadRequest)
+				return
+			}
+			// exe/linux/apk 共用同一份词库文件；start_path 仅为旧版前端的兼容字段。
+			dicPath = j.Path
+			if dicPath == "" {
+				dicPath = j.StartPath
+			}
+			if dicPath == "" {
+				http.Error(w, `{"status":"error","error":"词库路径不能为空"}`, http.StatusBadRequest)
+				return
+			}
+			if !checkDicPath(dicPath) {
+				http.Error(w, `{"status":"error","error":"词库路径不合法"}`, http.StatusBadRequest)
+				return
+			}
+		default:
+			http.Error(w, `{"status":"error","error":"未知 target，仅支持 exe / linux / apk"}`, http.StatusBadRequest)
 			return
 		}
-		goos := j.GOOS
-		if goos == "" || goos != "windows" {
-			goos = "windows"
-		}
-		goarch := j.GOARCH
-		if goarch == "" {
-			goarch = runtime.GOARCH
-		}
-		// 打包耗时较长（首次编译需构建引擎依赖），异步执行，前端按 taskId 轮询进度。
+		// 打包耗时较长（首次 exe/linux 需编译引擎依赖、apk 需跑完整 gradle），异步执行，前端按 taskId 轮询。
 		taskID := strconv.FormatInt(time.Now().UnixNano(), 10)
 		task := &buildTask{}
 		buildTasks.Store(taskID, task)
 		go func() {
-			out, logText, err := buildDicBundle(j.Path, goos, goarch)
+			var out, logText string
+			var err error
+			if j.Target == "apk" {
+				out, logText, err = buildApkBundle(dicPath)
+			} else {
+				out, logText, err = buildDicBundle(dicPath, goos, goarch)
+			}
 			if err != nil {
 				task.finish("", logText, err.Error(), "", "")
 				return
@@ -6575,9 +6914,12 @@ func opuiHandleApi(w http.ResponseWriter, r *http.Request) {
 		return
 
 	case "dic_run":
-		// 运行已编译的词库可执行文件，触发词固定为 Main，返回标准输出/错误。
-		if runtime.GOOS != "windows" {
-			http.Error(w, `{"status":"error","error":"运行仅支持 Windows 平台"}`, http.StatusBadRequest)
+		// 运行已编译的「本机原生产物」词库可执行文件，触发词固定为 Main，返回标准输出/错误。
+		//   windows：nebula-dic.exe（嵌入 DLL 加载器）
+		//   linux：nebula-dic（源码现编直连引擎 ELF）
+		// 仅能运行当前主机平台编译的产物；例如 Windows 上打出的 linux ELF 需拷到 Linux 主机运行。
+		if runtime.GOOS != "windows" && runtime.GOOS != "linux" {
+			http.Error(w, `{"status":"error","error":"运行仅支持 Windows / Linux 平台"}`, http.StatusBadRequest)
 			return
 		}
 		exeName := "nebula-dic"
