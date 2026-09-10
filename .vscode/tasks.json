@@ -295,7 +295,7 @@
             "args": [
                 "-NoProfile",
                 "-Command",
-                "$v=(Get-Content -Raw (Join-Path $env:TEMP \u0027nebula_release_ver.txt\u0027)); git add -A; git commit -m \u0027release: v$v\u0027; git tag -f v$v"
+                "$v=(Get-Content -Raw (Join-Path $env:TEMP \u0027nebula_release_ver.txt\u0027)); git add -A; git commit -m (\u0027release: v\u0027+$v); git tag -f v$v"
             ],
             "problemMatcher": [],
             "detail": "git add -A + commit + 打标签 v\u003c版本\u003e"
@@ -319,7 +319,7 @@
             "args": [
                 "-NoProfile",
                 "-Command",
-                "if (Get-NetTCPConnection -LocalPort 7890 -State Listen -ErrorAction SilentlyContinue) { $env:HTTP_PROXY=\u0027http://127.0.0.1:7890\u0027; $env:HTTPS_PROXY=\u0027http://127.0.0.1:7890\u0027 }; $gh=\u0027C:\\Program Files\\GitHub CLI\\gh.exe\u0027; $v=(Get-Content -Raw (Join-Path $env:TEMP \u0027nebula_release_ver.txt\u0027)); $n=(Get-Content -Raw (Join-Path $PWD \u0027.vscode/release-notes.md\u0027)).Trim(); if (-not $n) { $n=\u0027Nebula v$v 发布\u0027 }; \u0026 $gh release create v$v dist/nebula.exe dist/nebula dist/nebula.apk --repo cjxpj/nebula --title v$v --notes $n"
+                "if (Get-NetTCPConnection -LocalPort 7890 -State Listen -ErrorAction SilentlyContinue) { $env:HTTP_PROXY=\u0027http://127.0.0.1:7890\u0027; $env:HTTPS_PROXY=\u0027http://127.0.0.1:7890\u0027 }; $gh=\u0027C:\\Program Files\\GitHub CLI\\gh.exe\u0027; $v=(Get-Content -Raw (Join-Path $env:TEMP \u0027nebula_release_ver.txt\u0027)); $n=(Get-Content -Raw -Encoding UTF8 (Join-Path $PWD \u0027.vscode/release-notes.md\u0027)).Trim(); if (-not $n) { $n=(\u0027Nebula v\u0027+$v+\u0027 发布\u0027) }; \u0026 $gh release create v$v dist/nebula.exe dist/nebula dist/nebula.apk --repo cjxpj/nebula --title v$v --notes $n"
             ],
             "problemMatcher": [],
             "detail": "gh 创建 GitHub Release 并上传 exe/linux/apk"
@@ -331,7 +331,7 @@
             "args": [
                 "-NoProfile",
                 "-Command",
-                "$tok=[Environment]::GetEnvironmentVariable(\u0027GITEE_TOKEN\u0027,\u0027User\u0027); if (-not $tok) { Write-Host \u0027未找到 GITEE_TOKEN，请先设置\u0027; exit 1 }; $v=(Get-Content -Raw (Join-Path $env:TEMP \u0027nebula_release_ver.txt\u0027)); $n=(Get-Content -Raw (Join-Path $PWD \u0027.vscode/release-notes.md\u0027)).Trim(); $body=@{access_token=$tok; tag_name=\u0027v$v\u0027; name=\u0027v$v\u0027; body=\u0027$n\u0027; target_commitish=(git branch --show-current)} | ConvertTo-Json; $rel=Invoke-RestMethod -Method Post -Uri \u0027https://gitee.com/api/v5/repos/cjxpj/nebula/releases\u0027 -ContentType \u0027application/json; charset=utf-8\u0027 -Body ([System.Text.Encoding]::UTF8.GetBytes($body)); curl.exe -s -X POST \"https://gitee.com/api/v5/repos/cjxpj/nebula/releases/$($rel.id)/attach_files\" -F \"access_token=$tok\" -F \u0027file=@dist/nebula.exe\u0027; curl.exe -s -X POST \"https://gitee.com/api/v5/repos/cjxpj/nebula/releases/$($rel.id)/attach_files\" -F \"access_token=$tok\" -F \u0027file=@dist/nebula\u0027; curl.exe -s -X POST \"https://gitee.com/api/v5/repos/cjxpj/nebula/releases/$($rel.id)/attach_files\" -F \"access_token=$tok\" -F \u0027file=@dist/nebula.apk\u0027"
+                "$tok=[Environment]::GetEnvironmentVariable(\u0027GITEE_TOKEN\u0027,\u0027User\u0027); if (-not $tok) { Write-Host \u0027未找到 GITEE_TOKEN，请先设置\u0027; exit 1 }; $v=(Get-Content -Raw (Join-Path $env:TEMP \u0027nebula_release_ver.txt\u0027)); $n=(Get-Content -Raw -Encoding UTF8 (Join-Path $PWD \u0027.vscode/release-notes.md\u0027)).Trim(); $body=@{access_token=$tok; tag_name=(\u0027v\u0027+$v); name=(\u0027v\u0027+$v); body=$n; target_commitish=(git branch --show-current)} | ConvertTo-Json; $rel=Invoke-RestMethod -Method Post -Uri \u0027https://gitee.com/api/v5/repos/cjxpj/nebula/releases\u0027 -ContentType \u0027application/json; charset=utf-8\u0027 -Body ([System.Text.Encoding]::UTF8.GetBytes($body)); curl.exe -s -X POST \"https://gitee.com/api/v5/repos/cjxpj/nebula/releases/$($rel.id)/attach_files\" -F \"access_token=$tok\" -F \u0027file=@dist/nebula.exe\u0027; curl.exe -s -X POST \"https://gitee.com/api/v5/repos/cjxpj/nebula/releases/$($rel.id)/attach_files\" -F \"access_token=$tok\" -F \u0027file=@dist/nebula\u0027; curl.exe -s -X POST \"https://gitee.com/api/v5/repos/cjxpj/nebula/releases/$($rel.id)/attach_files\" -F \"access_token=$tok\" -F \u0027file=@dist/nebula.apk\u0027"
             ],
             "problemMatcher": [],
             "detail": "Gitee API 创建 Release 并上传 exe/linux/apk"

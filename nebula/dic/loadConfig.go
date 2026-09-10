@@ -15,6 +15,7 @@ import (
 	"github.com/cjxpj/nebula/bot/secludedbot"
 	"github.com/cjxpj/nebula/debugLog"
 	dic_api "github.com/cjxpj/nebula/dic/api"
+	dic_funcs "github.com/cjxpj/nebula/dic/funcs"
 	dic_dto "github.com/cjxpj/nebula/dic/dto"
 	"github.com/cjxpj/nebula/dto"
 	"github.com/cjxpj/nebula/extloader"
@@ -398,5 +399,8 @@ func loadConfig() {
 
 	// 启动内置云工具服务端
 	dic_server.StartCloudToolServer()
+
+	// 从全局数据库恢复定时任务并重启调度（数据目录已确定，词库引擎已就绪）
+	dic_funcs.LoadScheduledTasks()
 
 }

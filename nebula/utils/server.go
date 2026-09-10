@@ -12,6 +12,7 @@ import (
 	"math/big"
 	"net"
 	"net/http"
+	"path/filepath"
 	"strings"
 	"time"
 )
@@ -75,9 +76,15 @@ func getLocalIP() string {
 	return ""
 }
 
-// FtpDir 获取 FTP 根目录路径
+// FtpDir 获取 FTP 根目录路径。
+// 桌面端 GetAppDir() 返回空串（表示当前工作目录），此处统一转成绝对路径，
+// 否则 FTP/SFTP 的路径前缀校验会把所有子路径误判为「路径越权」。
 func FtpDir() string {
-	return GetAppDir()
+	dir := GetAppDir()
+	if abs, err := filepath.Abs(dir); err == nil {
+		return abs
+	}
+	return dir
 }
 
 // GenerateSelfSignedTLS 生成自签名 TLS 证书配置

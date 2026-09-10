@@ -148,14 +148,14 @@ func handleFtpConn(conn net.Conn, debug bool) {
 		case "SYST":
 			ftp.reply(215, "UNIX Type: L8")
 		case "FEAT":
-			feat := "UTF8\r\n SIZE\r\n MDTM"
+			feat := "UTF8\n SIZE\n MDTM"
 			if ftpTlsConfig != nil && !ftp.tlsEnabled {
-				feat += "\r\n AUTH TLS"
+				feat += "\n AUTH TLS"
 			}
 			if ftpTlsConfig != nil && ftp.tlsEnabled {
-				feat += "\r\n PBSZ\r\n PROT"
+				feat += "\n PBSZ\n PROT"
 			}
-			feat += "\r\nEnd"
+			feat += "\nEnd"
 			ftp.reply(211, feat)
 		case "AUTH":
 			ftp.handleAUTH(arg)
@@ -931,11 +931,12 @@ func (ftp *ftpSession) handleAUTH(arg string) {
 		}
 		return
 	}
-	ftp.reply(234, "AUTH TLS successful")
+	// 先切换到 TLS 读写通道，再通过加密通道回复 234（RFC 4217 要求 234 走加密链路）
 	ftp.conn = tlsConn
 	ftp.writer = bufio.NewWriter(tlsConn)
 	ftp.reader = bufio.NewReader(tlsConn)
 	ftp.tlsEnabled = true
+	ftp.reply(234, "AUTH TLS successful")
 
 	if ftp.debug {
 		debugLog.Infof("%s", ftp.logPrefix()+" TLS 会话已建立")

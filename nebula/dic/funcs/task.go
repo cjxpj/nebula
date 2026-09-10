@@ -37,8 +37,11 @@ type ScheduledTask struct {
 	cancel     chan struct{}
 }
 
-// scheduledTasks 进程内定时任务存储（重启后清空）
+// scheduledTasks 进程内定时任务存储（内存态），持久化副本位于全局数据库 scheduled_tasks 表
 var scheduledTasks sync.Map // map[string]*ScheduledTask
+
+// scheduledTaskTable 定时任务在全局数据库中的持久化表名
+const scheduledTaskTable = "scheduled_tasks"
 
 // AddScheduledTask 添加定时任务并启动调度，返回唯一编号；once 为 true 时仅执行一次，runAtStart 为 true 时启动立即触发一次
 func AddScheduledTask(dicPath, trigger, interval string, once, runAtStart bool) (string, error) {
@@ -68,6 +71,7 @@ func AddScheduledTask(dicPath, trigger, interval string, once, runAtStart bool) 
 		cancel:     make(chan struct{}),
 	}
 	scheduledTasks.Store(id, task)
+	persistScheduledTask(task)
 	go task.run()
 	return id, nil
 }
@@ -84,6 +88,7 @@ func DelScheduledTask(id string) error {
 	if task, ok := v.(*ScheduledTask); ok {
 		close(task.cancel)
 	}
+	removeScheduledTaskFromDB(id)
 	return nil
 }
 
@@ -109,13 +114,112 @@ func ListScheduledTasks() []ScheduledTaskInfo {
 	return list
 }
 
+// persistScheduledTask 将任务写入全局数据库，失败仅记日志不影响内存调度
+func persistScheduledTask(task *ScheduledTask) {
+	db, err := GetGlobalDB()
+	if err != nil {
+		debugLog.Infof("定时任务 %s 持久化失败（数据库不可用）: %v", task.ID, err)
+		return
+	}
+	if err := EnsureFsTable(db, scheduledTaskTable); err != nil {
+		debugLog.Infof("定时任务 %s 持久化失败（建表）: %v", task.ID, err)
+		return
+	}
+	b, err := json.Marshal(ScheduledTaskInfo{
+		ID:         task.ID,
+		DicPath:    task.DicPath,
+		Trigger:    task.Trigger,
+		Interval:   task.Interval,
+		Once:       task.Once,
+		RunAtStart: task.RunAtStart,
+	})
+	if err != nil {
+		debugLog.Infof("定时任务 %s 序列化失败: %v", task.ID, err)
+		return
+	}
+	_, err = db.Exec(fmt.Sprintf(`
+		INSERT INTO "%s" (key, data, updated_at)
+		VALUES (?, ?, ?)
+		ON CONFLICT(key) DO UPDATE SET
+			data = excluded.data,
+			updated_at = excluded.updated_at
+	`, scheduledTaskTable), task.ID, string(b), time.Now().Unix())
+	if err != nil {
+		debugLog.Infof("定时任务 %s 持久化写入失败: %v", task.ID, err)
+	}
+}
+
+// removeScheduledTaskFromDB 从全局数据库删除任务，失败仅记日志
+func removeScheduledTaskFromDB(id string) {
+	db, err := GetGlobalDB()
+	if err != nil {
+		return
+	}
+	_ = EnsureFsTable(db, scheduledTaskTable)
+	if _, err := db.Exec(fmt.Sprintf(`DELETE FROM "%s" WHERE key=?`, scheduledTaskTable), id); err != nil {
+		debugLog.Infof("定时任务 %s 删除持久化失败: %v", id, err)
+	}
+}
+
+// loadScheduledTasksOnce 保证启动加载仅执行一次
+var loadScheduledTasksOnce sync.Once
+
+// LoadScheduledTasks 从全局数据库恢复定时任务并重启调度，进程启动时调用一次
+func LoadScheduledTasks() {
+	loadScheduledTasksOnce.Do(func() {
+		db, err := GetGlobalDB()
+		if err != nil {
+			debugLog.Infof("定时任务恢复失败（数据库不可用）: %v", err)
+			return
+		}
+		if err := EnsureFsTable(db, scheduledTaskTable); err != nil {
+			debugLog.Infof("定时任务恢复失败（建表）: %v", err)
+			return
+		}
+		rows, err := db.Query(fmt.Sprintf(`SELECT key, data FROM "%s"`, scheduledTaskTable))
+		if err != nil {
+			debugLog.Infof("定时任务恢复失败（查询）: %v", err)
+			return
+		}
+		defer rows.Close()
+		for rows.Next() {
+			var id, data string
+			if err := rows.Scan(&id, &data); err != nil {
+				continue
+			}
+			var info ScheduledTaskInfo
+			if err := json.Unmarshal([]byte(data), &info); err != nil {
+				debugLog.Infof("定时任务 %s 反序列化失败: %v", id, err)
+				continue
+			}
+			if id == "" {
+				continue
+			}
+			// 以数据库主键为准，避免脏数据导致 ID 不一致
+			info.ID = id
+			task := &ScheduledTask{
+				ID:         info.ID,
+				DicPath:    info.DicPath,
+				Trigger:    info.Trigger,
+				Interval:   info.Interval,
+				Once:       info.Once,
+				RunAtStart: info.RunAtStart,
+				cancel:     make(chan struct{}),
+			}
+			scheduledTasks.Store(task.ID, task)
+			go task.run()
+		}
+	})
+}
+
 // run 定时调度循环：启动时可选立即触发一次，之后每次等待间隔后执行指定词库的触发词，直到被取消或（一次性任务）执行完毕
 func (t *ScheduledTask) run() {
 	if t.RunAtStart {
 		t.execute()
 		if t.Once {
-			// 一次性任务执行完后自动移除自身
+			// 一次性任务执行完后自动移除自身（内存 + 数据库）
 			scheduledTasks.Delete(t.ID)
+			removeScheduledTaskFromDB(t.ID)
 			return
 		}
 	}
@@ -123,6 +227,9 @@ func (t *ScheduledTask) run() {
 		d, err := parseInterval(t.Interval)
 		if err != nil {
 			debugLog.Infof("定时任务 %s 停止：%v", t.ID, err)
+			// 间隔非法（如历史脏数据）：同步清理内存与数据库，避免僵尸任务反复加载
+			scheduledTasks.Delete(t.ID)
+			removeScheduledTaskFromDB(t.ID)
 			return
 		}
 		timer := time.NewTimer(d)
@@ -134,8 +241,9 @@ func (t *ScheduledTask) run() {
 		}
 		t.execute()
 		if t.Once {
-			// 一次性任务执行完后自动移除自身
+			// 一次性任务执行完后自动移除自身（内存 + 数据库）
 			scheduledTasks.Delete(t.ID)
+			removeScheduledTaskFromDB(t.ID)
 			return
 		}
 	}
@@ -143,6 +251,12 @@ func (t *ScheduledTask) run() {
 
 // execute 加载并执行一次词库
 func (t *ScheduledTask) execute() {
+	// 词库执行由独立 goroutine 承载，panic 未恢复会拖垮整个进程，这里兜底拦截
+	defer func() {
+		if r := recover(); r != nil {
+			debugLog.Infof("定时任务 %s 执行 panic: %v", t.ID, r)
+		}
+	}()
 	data, err := utils.NewFileQueue(t.DicPath).ReadFromFile()
 	if err != nil {
 		debugLog.Infof("定时任务 %s 读取词库失败: %v", t.ID, err)

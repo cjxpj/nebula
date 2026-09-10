@@ -187,13 +187,6 @@ func serveSftp(channel ssh.Channel, debug bool) {
 	defer channel.Close()
 
 	rootDir := utils.FtpDir()
-	// 如果根目录是相对路径，相对于可执行文件目录解析
-	if !filepath.IsAbs(rootDir) {
-		exe, err := os.Executable()
-		if err == nil {
-			rootDir = filepath.Join(filepath.Dir(exe), rootDir)
-		}
-	}
 	absDir, err := filepath.Abs(rootDir)
 	if err != nil {
 		if debug {
