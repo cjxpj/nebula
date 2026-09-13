@@ -158,6 +158,47 @@ func ensureRouterDic(routerPath string) {
 	}
 }
 
+// ensurePublicFiles 确保 public 目录存在；目录不存在（首次初始化）时写入内嵌的主页、图标、样板词库与 404 文件。
+// 仅在 public 目录整体缺失时初始化，避免误补回用户主动删除的文件。
+func ensurePublicFiles() {
+	file := utils.NewFile()
+
+	// public 目录已存在则无需初始化
+	file.SetPath("public")
+	if file.DirExists() {
+		return
+	}
+
+	// 默认主页
+	file.SetPath("public/index.wn")
+	if s, err := appfiles.GetFileString("dic/public/index.wn"); err == nil {
+		file.WriteToFile(s)
+	} else {
+		fmt.Println("embed err:", err)
+	}
+	// 默认图标
+	file.SetPath("public/favicon.ico")
+	if data, err := appfiles.GetFile("dic/public/favicon.ico"); err == nil {
+		file.WriteFileByte(data)
+	} else {
+		fmt.Println("embed err:", err)
+	}
+	// 默认样板文件
+	file.SetPath("public/api.n")
+	if s, err := appfiles.GetFileString("dic/public/api.n"); err == nil {
+		file.WriteToFile(s)
+	} else {
+		fmt.Println("embed err:", err)
+	}
+	// 404文件
+	file.SetPath("public/404.wn")
+	if data, err := appfiles.GetFile("dic/public/404.wn"); err == nil {
+		file.WriteFileByte(data)
+	} else {
+		fmt.Println("embed err:", err)
+	}
+}
+
 func loadConfig() {
 
 	// 加载 IP 黑名单
@@ -229,6 +270,9 @@ func loadConfig() {
 	// 生成快捷登录码（每次启动刷新），明文保存在内存供 WebUI 地址拼接 ?key= 快捷登录。
 	dic_server.EnsureOpuiQuickToken()
 
+	// AI 对接（OpenAI 兼容接口，默认 DeepSeek）：为词库编辑提供代码补全 / AI 对话 / 编译诊断修复
+	dto.ServerConfig.AI = dto.LoadConfig_ai(cfg.Section("AI"))
+
 	// 内置云工具服务端
 	cloudToolCfg := cfg.Section("云工具服务端")
 	if ok, _ := cloudToolCfg.Key("启用").Bool(); ok {
@@ -253,6 +297,14 @@ func loadConfig() {
 			// 断开自动注销时长（秒），默认 30
 			LogoutSec: cloudToolCfg.Key("断开注销时长").MustInt(30),
 			Debug:     cloudToolCfg.Key("调试").MustBool(false),
+			// 词库商城开关
+			ShopOpen: cloudToolCfg.Key("词库商城").MustBool(false),
+			// 图床开关
+			ImageHost: cloudToolCfg.Key("图床").MustBool(false),
+			// 词库上传审核（默认开启）
+			ShopReview: cloudToolCfg.Key("词库审核").MustBool(true),
+			// 图床上传审核（默认开启）
+			ImageReview: cloudToolCfg.Key("图床审核").MustBool(true),
 		}
 	}
 
@@ -264,40 +316,11 @@ func loadConfig() {
 		} else {
 			fmt.Println("embed err:", err)
 		}
-
-		// 主页文件
-		file.SetPath("public")
-		if !file.DirExists() {
-			// 默认主页
-			file.SetPath("public/index.wn")
-			if s, err := appfiles.GetFileString("dic/public/index.wn"); err == nil {
-				file.WriteToFile(s)
-			} else {
-				fmt.Println("embed err:", err)
-			}
-			// 默认图标
-			file.SetPath("public/favicon.ico")
-			if data, err := appfiles.GetFile("dic/public/favicon.ico"); err == nil {
-				file.WriteFileByte(data)
-			} else {
-				fmt.Println("embed err:", err)
-			}
-			// 默认样板文件
-			file.SetPath("public/api.n")
-			if s, err := appfiles.GetFileString("dic/public/api.n"); err == nil {
-				file.WriteToFile(s)
-			} else {
-				fmt.Println("embed err:", err)
-			}
-			// 404文件
-			file.SetPath("public/404.wn")
-			if data, err := appfiles.GetFile("dic/public/404.wn"); err == nil {
-				file.WriteFileByte(data)
-			} else {
-				fmt.Println("embed err:", err)
-			}
-		}
 	}
+
+	// 主页 / 样板词库等 public 文件
+	// 与路由词库相互独立，逐文件校验是否存在，避免 public 目录已存在（或路由词库已存在）时样板词库缺失
+	ensurePublicFiles()
 
 	// 专门监听终端触发的词库
 	file.SetPath(terminalDicPath())

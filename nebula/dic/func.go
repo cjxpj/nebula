@@ -147,6 +147,8 @@ func Funcs(d *dic_dto.DicFunc, dic_i *utils.DicInputs) (any, error) {
 					if res, ok := runClassMethod(d, classData, methodArgs, captureErr); ok {
 						return res, nil
 					}
+					// 变量确为面对象实例，但方法不存在：直接报错，不再回退为普通函数名静默吞掉。
+					return handleFuncError(d, s, fmt.Errorf("面对象不存在方法：%s", methodArgs[0]), captureErr), nil
 				}
 			}
 		}

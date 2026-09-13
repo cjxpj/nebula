@@ -31,6 +31,9 @@ var fileAttrNames = map[string]uint32{
 
 // 获取文件属性：返回 JSON 对象，键为属性名，值为是否启用。
 func fileAttributeGet(d *dto.DicInputs) (any, error) {
+	if err := checkFuncPath(d, 1); err != nil {
+		return "", err
+	}
 	p, err := windows.UTF16PtrFromString(d.Inputs.String(1))
 	if err != nil {
 		return "{}", nil
@@ -62,6 +65,9 @@ func fileAttributeGet(d *dto.DicInputs) (any, error) {
 
 // 设置文件属性：第二参数为逗号分隔的属性名列表，置位指定属性；传「正常」清除全部属性。
 func fileAttributeSet(d *dto.DicInputs) (any, error) {
+	if err := checkFuncPath(d, 1); err != nil {
+		return "", err
+	}
 	p, err := windows.UTF16PtrFromString(d.Inputs.String(1))
 	if err != nil {
 		return "false", nil

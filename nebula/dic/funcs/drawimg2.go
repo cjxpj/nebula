@@ -218,6 +218,14 @@ func newDrawClass(img *NDrawImg) *dto.DicClass {
 		"高斯模糊":  wrapDraw(img, drawImgGaussianBlur, "4"),
 		"马赛克":   wrapDraw(img, drawImgMosaic, "4"),
 	}
+	// 绘制类方法统一加「绘制」前缀；旧名保留为别名，兼容已有词库。
+	for _, name := range []string{
+		"文本", "点", "线", "喷漆", "波浪", "油漆桶",
+		"方形", "方形描边", "椭圆", "椭圆描边", "圆形", "圆形描边",
+		"多边形", "多边形描边", "图片", "圆弧", "随机点", "随机线条", "马赛克",
+	} {
+		instance.Fn["绘制"+name] = instance.Fn[name]
+	}
 	return instance
 }
 

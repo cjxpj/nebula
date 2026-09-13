@@ -91,6 +91,44 @@ func GetAppDir() string {
 	return ""
 }
 
+// WorkDir 返回当前工作目录：移动端为应用数据目录，桌面端未注入目录时为进程当前工作目录。
+// 词库文件函数的读写均以此为边界，越界访问会被拒绝。
+func WorkDir() string {
+	if d := GetAppDir(); d != "" {
+		return d
+	}
+	wd, err := os.Getwd()
+	if err != nil {
+		return ""
+	}
+	return wd
+}
+
+// IsWithinWorkDir 判断目标路径解析为绝对路径后是否仍位于工作目录内。
+// 绝对路径、以 .. 逃逸到工作目录之外的路径都会返回 false。
+func IsWithinWorkDir(target string) bool {
+	root := WorkDir()
+	if root == "" {
+		return false
+	}
+	absRoot, err := filepath.Abs(root)
+	if err != nil {
+		return false
+	}
+	absTarget, err := filepath.Abs(target)
+	if err != nil {
+		return false
+	}
+	rel, err := filepath.Rel(absRoot, absTarget)
+	if err != nil {
+		return false
+	}
+	if rel == "." {
+		return true
+	}
+	return rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator))
+}
+
 // startupMode 启动阶段标志：启动期间不落盘日志与编译缓存，避免启动时自动创建 database/log、private/.dic_cache 目录。
 var startupMode atomic.Bool
 

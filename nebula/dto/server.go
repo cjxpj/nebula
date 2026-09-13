@@ -2,17 +2,22 @@ package dto
 
 import (
 	"context"
+	"encoding/json"
+	"fmt"
 	"net"
 	"net/http"
 	"net/url"
 	"sort"
+	"strings"
 	"sync"
 
+	"github.com/cjxpj/nebula/appfiles"
 	feishubot_msg "github.com/cjxpj/nebula/bot/feishubot/msg"
 	napcatbot_dto "github.com/cjxpj/nebula/bot/napcatbot/dto"
 	qqbot_msg "github.com/cjxpj/nebula/bot/qqbot/msg"
 	secludedbot_dto "github.com/cjxpj/nebula/bot/secludedbot/dto"
 	yunhubot_dto "github.com/cjxpj/nebula/bot/yunhubot/dto"
+	"github.com/cjxpj/nebula/utils"
 	"github.com/gorilla/websocket"
 )
 
@@ -61,6 +66,246 @@ type CloudTool struct {
 	LogoutSec int
 	// 调试打印
 	Debug bool
+	// 词库商城开关：开启后客户端可浏览、购买并下载词库（余额购买）
+	ShopOpen bool
+	// 图床开关：开启后客户端可上传图片并获取外链 URL
+	ImageHost bool
+	// 词库上传审核：开启后上传的词库需审核通过才上架，默认开启
+	ShopReview bool
+	// 图床上传审核：开启后上传的图片需审核通过才可访问外链，默认开启
+	ImageReview bool
+}
+
+// AIConfig AI 对接配置（config.yaml [AI] 节）：OpenAI 兼容接口，支持多模型列表。
+// BaseURL/APIKey/Model/Reasoning 等运行期字段为「当前选中模型」的解析结果，供发起 AI 请求的代码直接使用；
+// Models 为完整模型列表，CurrentID 为选中项标识（列表为空时为空串）。
+type AIConfig struct {
+	// 是否启用
+	Open bool
+	// 当前模型的接口地址（OpenAI 兼容 BaseURL，如 https://api.deepseek.com/v1）
+	BaseURL string
+	// 当前模型的接口密钥（明文，仅存内存）
+	APIKey string
+	// 当前模型名，默认 deepseek-flash
+	Model string
+	// 系统提示词，留空时使用内置词库开发提示词
+	SystemPrompt string
+	// 请求超时（秒）
+	Timeout int
+	// 是否启用词库编辑器内联补全
+	InlineComplete bool
+	// 当前模型是否默认开启思考/推理模式（任务可单独覆盖）
+	Reasoning bool
+	// 当前模型的推理强度：low | medium | high | max，留空时由接口按模型默认处理
+	ReasoningEffort string
+	// 当前模型的推理模型名，如 deepseek-reasoner；填写后开启思考模式时改用此模型
+	ReasoningModel string
+	// 当前选中模型的 ID
+	CurrentID string
+	// 模型列表（每项为独立完整配置）
+	Models []*AIModelConfig
+}
+
+// AIModelConfig 模型列表中的单个模型配置：每项可独立对接不同服务商，
+// 分别保存接口地址、密钥、模型名与思考模式设置。
+type AIModelConfig struct {
+	// 唯一标识（列表内不重复，用于选中与密钥保留匹配）
+	ID string `json:"id"`
+	// 展示名称
+	Name string `json:"name"`
+	// 接口地址（OpenAI 兼容 BaseURL）
+	BaseURL string `json:"base_url"`
+	// 接口密钥：配置文件中为密文（enc: 前缀），内存中为明文
+	APIKey string `json:"api_key"`
+	// 模型名
+	Model string `json:"model"`
+	// 是否开启思考/推理模式
+	Reasoning bool `json:"reasoning"`
+	// 推理强度：low | medium | high | max
+	ReasoningEffort string `json:"reasoning_effort"`
+	// 推理模型名
+	ReasoningModel string `json:"reasoning_model"`
+}
+
+// DefaultAIModel AI 默认模型名（未配置模型时使用）。
+const DefaultAIModel = "deepseek-flash"
+
+// AI 模型列表在 [AI] 节中的存储键：模型列表为 JSON 数组字符串，当前模型为选中项 ID。
+const (
+	AIModelsKey  = "模型列表"
+	AICurrentKey = "当前模型"
+)
+
+// aiKeyPrefix AI 密钥在配置文件中的密文前缀：用于识别密文，并兼容历史明文值。
+const aiKeyPrefix = "enc:"
+
+// EncryptAIKey 加密 AI 接口密钥，用于写入配置文件，避免密钥明文落盘；明文为空时返回空串。
+func EncryptAIKey(plain string) (string, error) {
+	plain = strings.TrimSpace(plain)
+	if plain == "" {
+		return "", nil
+	}
+	enc, err := utils.Encrypt(plain, appfiles.Key)
+	if err != nil {
+		return "", err
+	}
+	return aiKeyPrefix + enc, nil
+}
+
+// DecryptAIKey 解密配置文件中的 AI 接口密钥。
+// 不带前缀的值为历史明文，原样返回（下次保存时自动加密为密文）；带前缀但解密失败时返回空串，避免把密文当密钥使用。
+func DecryptAIKey(stored string) string {
+	stored = strings.TrimSpace(stored)
+	if stored == "" {
+		return ""
+	}
+	if !strings.HasPrefix(stored, aiKeyPrefix) {
+		return stored
+	}
+	plain, err := utils.Decrypt(strings.TrimPrefix(stored, aiKeyPrefix), appfiles.Key)
+	if err != nil {
+		return ""
+	}
+	return plain
+}
+
+// LoadConfig_ai 从配置节读取 AI 配置：读取模型列表与全局设置，并解析当前选中模型填充运行期字段。
+// 模型名留空时回退默认模型；密钥字段以密文存储，此处解密后再提供给调用方。
+func LoadConfig_ai(sec *ConfigSection) *AIConfig {
+	models := LoadAIModels(sec)
+	cur := PickAIModel(models, sec.Key(AICurrentKey).String())
+
+	cfg := &AIConfig{
+		Open:           sec.Key("启用").MustBool(false),
+		SystemPrompt:   strings.TrimSpace(sec.Key("系统提示").String()),
+		Timeout:        sec.Key("超时").MustInt(60),
+		InlineComplete: sec.Key("代码补全").MustBool(true),
+		Models:         models,
+	}
+	if cur != nil {
+		cfg.CurrentID = cur.ID
+		cfg.BaseURL = cur.BaseURL
+		cfg.APIKey = cur.APIKey
+		cfg.Model = cur.Model
+		cfg.Reasoning = cur.Reasoning
+		cfg.ReasoningEffort = cur.ReasoningEffort
+		cfg.ReasoningModel = cur.ReasoningModel
+	}
+	if cfg.Model == "" {
+		cfg.Model = DefaultAIModel
+	}
+	return cfg
+}
+
+// PickAIModel 按 ID 从模型列表中查找；ID 为空或未命中时返回首项，列表为空返回 nil。
+func PickAIModel(models []*AIModelConfig, id string) *AIModelConfig {
+	if len(models) == 0 {
+		return nil
+	}
+	id = strings.TrimSpace(id)
+	if id != "" {
+		for _, m := range models {
+			if m != nil && m.ID == id {
+				return m
+			}
+		}
+	}
+	for _, m := range models {
+		if m != nil {
+			return m
+		}
+	}
+	return nil
+}
+
+// LoadAIModels 读取 [AI] 节中的模型列表（JSON 数组），密钥字段解密为明文返回。
+// 兼容旧配置：无「模型列表」键时，用旧的单模型键生成一项。
+func LoadAIModels(sec *ConfigSection) []*AIModelConfig {
+	var models []*AIModelConfig
+	if raw := strings.TrimSpace(sec.Key(AIModelsKey).String()); raw != "" {
+		_ = json.Unmarshal([]byte(raw), &models)
+	}
+	if len(models) == 0 {
+		if legacy := legacyAIModel(sec); legacy != nil {
+			models = []*AIModelConfig{legacy}
+		}
+	}
+
+	out := make([]*AIModelConfig, 0, len(models))
+	for i, m := range models {
+		if m == nil {
+			continue
+		}
+		m.ID = strings.TrimSpace(m.ID)
+		if m.ID == "" {
+			m.ID = fmt.Sprintf("m%d", i+1)
+		}
+		m.Name = strings.TrimSpace(m.Name)
+		m.BaseURL = strings.TrimSpace(m.BaseURL)
+		m.APIKey = DecryptAIKey(m.APIKey)
+		m.Model = strings.TrimSpace(m.Model)
+		m.ReasoningEffort = NormalizeReasoningEffort(m.ReasoningEffort)
+		m.ReasoningModel = strings.TrimSpace(m.ReasoningModel)
+		out = append(out, m)
+	}
+	return out
+}
+
+// EncodeAIModels 将模型列表序列化为 JSON 字符串供写入配置文件，密钥统一加密；列表为空时返回 "[]"。
+func EncodeAIModels(models []*AIModelConfig) (string, error) {
+	encrypted := make([]*AIModelConfig, 0, len(models))
+	for _, m := range models {
+		if m == nil {
+			continue
+		}
+		c := *m
+		stored, err := EncryptAIKey(c.APIKey)
+		if err != nil {
+			return "", err
+		}
+		c.APIKey = stored
+		encrypted = append(encrypted, &c)
+	}
+	out, err := json.Marshal(encrypted)
+	if err != nil {
+		return "", err
+	}
+	return string(out), nil
+}
+
+// legacyAIModel 用旧版单模型键（接口地址/密钥/模型/思考模式/推理强度/推理模型）构造一项模型配置；
+// 未配置接口地址时返回 nil（视为无模型），用于旧配置的平滑迁移。
+func legacyAIModel(sec *ConfigSection) *AIModelConfig {
+	baseURL := strings.TrimSpace(sec.Key("接口地址").String())
+	if baseURL == "" {
+		return nil
+	}
+	model := strings.TrimSpace(sec.Key("模型").String())
+	if model == "" {
+		model = DefaultAIModel
+	}
+	return &AIModelConfig{
+		ID:              "default",
+		Name:            "默认模型",
+		BaseURL:         baseURL,
+		APIKey:          DecryptAIKey(sec.Key("密钥").String()),
+		Model:           model,
+		Reasoning:       sec.Key("思考模式").MustBool(false),
+		ReasoningEffort: NormalizeReasoningEffort(sec.Key("推理强度").String()),
+		ReasoningModel:  strings.TrimSpace(sec.Key("推理模型").String()),
+	}
+}
+
+// NormalizeReasoningEffort 归一化推理强度，仅接受 low/medium/high/max，其余（含留空）返回空串。
+// low/medium/high 适配 OpenAI 等，low/high/max 适配 DeepSeek、Kimi K3 等。
+func NormalizeReasoningEffort(v string) string {
+	v = strings.ToLower(strings.TrimSpace(v))
+	switch v {
+	case "low", "medium", "high", "max":
+		return v
+	default:
+		return ""
+	}
 }
 
 type ServerConfigInfo struct {
@@ -72,6 +317,8 @@ type ServerConfigInfo struct {
 	DicCache bool
 	// OPUI
 	OPUI *OPUI
+	// AI 对接（DeepSeek 等 OpenAI 兼容接口）
+	AI *AIConfig
 	// 内置云工具
 	CloudTool *CloudTool
 	// 正在监听的WS列表

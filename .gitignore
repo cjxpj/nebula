@@ -1,4 +1,5 @@
-/nebula/app/win/NebulaData*
+/nebula/app/win/NebulaData/
+/nebula/app/win/NebulaData0/
 dist
 debug
 __debug_bin.exe*
@@ -10,3 +11,4 @@ android/app/src/main/jniLibs/arm64-v8a/libnebula_arm64.so
 nebula/app/win/nebula.exe
 .trae/
 nebula/app/win/start.n
+/tools/

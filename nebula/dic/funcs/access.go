@@ -24,6 +24,9 @@ func downloadFile(d *dto.DicInputs) (any, error) {
 	}
 	url := d.Inputs.String(1)
 	savePath := d.Inputs.String(2)
+	if err := checkFuncPath(d, 2); err != nil {
+		return "", err
+	}
 	threads := 0 // 默认 0：按文件大小自适应（2~8）
 	printOpen := false
 	if d.Inputs.LenOk(3) {

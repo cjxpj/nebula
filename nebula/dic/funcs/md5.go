@@ -16,6 +16,9 @@ func enMd5(d *dto.DicInputs) (any, error) {
 
 // 读文件MD5：读取文件内容并计算 MD5，返回十六进制字符串
 func readFileMd5(d *dto.DicInputs) (any, error) {
+	if err := checkFuncPath(d, 1); err != nil {
+		return "", err
+	}
 	data, err := utils.NewFileQueue(d.Inputs.String(1)).ReadFileByte()
 	if err != nil {
 		return "", err

@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"sort"
 	"sync"
+	"sync/atomic"
 
 	"github.com/cjxpj/nebula/dto"
 	"github.com/cjxpj/nebula/utils"
@@ -25,6 +26,12 @@ type DicFunc struct {
 // 全部函数
 var FuncList sync.Map
 
+// funcRev 函数注册表版本号：每次注册/注销自增，供上层据此缓存函数清单文本。
+var funcRev atomic.Int64
+
+// Revision 返回当前函数注册表版本号。
+func Revision() int64 { return funcRev.Load() }
+
 // 获取函数
 func GetFunc(name string) (dto.DicFunc, bool) {
 	v, ok := FuncList.Load(name)
@@ -44,6 +51,7 @@ func Register(name, l string, fn func(d *dto.DicInputs) (any, error)) error {
 		return fmt.Errorf("已存在函数 %s", name)
 	}
 	dto.RegisterFuncRule(name, l)
+	funcRev.Add(1)
 	return nil
 }
 
@@ -51,6 +59,7 @@ func Register(name, l string, fn func(d *dto.DicInputs) (any, error)) error {
 func Unregister(name string) {
 	FuncList.Delete(name)
 	dto.UnregisterFuncRule(name)
+	funcRev.Add(1)
 }
 
 // 批量注册函数

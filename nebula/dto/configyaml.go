@@ -150,6 +150,11 @@ func (s *ConfigSection) Key(name string) *ConfigKey {
 	return &ConfigKey{section: s, name: name}
 }
 
+// DeleteKey 删除节内指定名称的键。
+func (s *ConfigSection) DeleteKey(name string) {
+	delete(s.keys, name)
+}
+
 func (k *ConfigKey) get() (any, bool) {
 	v, ok := k.section.keys[k.name]
 	return v, ok

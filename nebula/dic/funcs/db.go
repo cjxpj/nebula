@@ -7,6 +7,7 @@ import (
 	"os"
 	"path"
 	"regexp"
+	"strings"
 	"sync"
 	"time"
 
@@ -29,7 +30,20 @@ func GetGlobalDB() (*sql.DB, error) {
 			globalDBErr = err
 			return
 		}
-		globalDB, globalDBErr = sql.Open("sqlite", path.Join(dir, "data.db"))
+		db, err := sql.Open("sqlite", path.Join(dir, "data.db"))
+		if err != nil {
+			globalDBErr = err
+			return
+		}
+		// 单连接 + 忙碌等待，避免与词库写入并发时出现 database is locked
+		db.SetMaxOpenConns(1)
+		db.SetMaxIdleConns(1)
+		if _, err = db.Exec("PRAGMA busy_timeout=5000"); err != nil {
+			db.Close()
+			globalDBErr = err
+			return
+		}
+		globalDB = db
 	})
 	return globalDB, globalDBErr
 }
@@ -216,19 +230,23 @@ func dbWrite(d *dto.DicInputs) (any, error) {
 		return nil, fmt.Errorf("全局数据库初始化失败: %w", err)
 	}
 
+	// 与 写sqlite 一致，固定写入 fs_files 表
 	table := "fs_files"
 	if err = EnsureFsTable(db, table); err != nil {
 		return nil, err
 	}
 
-	key := d.Inputs.String(1)
-	data := ""
-	if d.Inputs.LenOk(2) {
-		data = d.Inputs.String(2)
-	}
-
-	if key == "" {
+	// 首参数为命名空间，实际 key 为「命名空间/key」
+	namespace := d.Inputs.String(1)
+	rawKey := d.Inputs.String(2)
+	if rawKey == "" {
 		return nil, errors.New("key不能为空")
+	}
+	key := joinKey(namespace, rawKey)
+
+	data := ""
+	if d.Inputs.LenOk(3) {
+		data = d.Inputs.String(3)
 	}
 
 	sqlWrite := fmt.Sprintf(`
@@ -252,30 +270,48 @@ func dbWrite(d *dto.DicInputs) (any, error) {
 	return nil, nil
 }
 
+// joinKey 将命名空间与 key 组合为 fs_files 中的实际键
+func joinKey(namespace, key string) string {
+	if namespace == "" {
+		return key
+	}
+	return namespace + "/" + key
+}
+
 func dbRead(d *dto.DicInputs) (any, error) {
 	db, err := GetGlobalDB()
 	if err != nil {
 		return nil, fmt.Errorf("全局数据库初始化失败: %w", err)
 	}
 
+	// 与 读sqlite 一致，固定读取 fs_files 表
 	table := "fs_files"
 	if err = EnsureFsTable(db, table); err != nil {
 		return nil, err
 	}
 
-	// 无参数：返回全部 key
-	if !d.Inputs.LenOk(1) {
+	namespace := d.Inputs.String(1)
+
+	// 仅传入命名空间：返回该命名空间下的全部 key
+	if d.Inputs.LenOk(1) {
 		rows, err := db.Query(fmt.Sprintf(`SELECT key FROM "%s"`, table))
 		if err != nil {
 			return "[]", nil
 		}
 		defer rows.Close()
 
+		prefix := namespace + "/"
 		keys := make([]string, 0)
 		for rows.Next() {
 			var k string
 			if err2 := rows.Scan(&k); err2 == nil {
-				keys = append(keys, k)
+				if namespace == "" {
+					keys = append(keys, k)
+					continue
+				}
+				if strings.HasPrefix(k, prefix) {
+					keys = append(keys, strings.TrimPrefix(k, prefix))
+				}
 			}
 		}
 		if err = rows.Err(); err != nil {
@@ -285,8 +321,8 @@ func dbRead(d *dto.DicInputs) (any, error) {
 	}
 
 	// 读取指定 key
-	key := d.Inputs.String(1)
-	defaultValue := d.Inputs.String(2)
+	key := joinKey(namespace, d.Inputs.String(2))
+	defaultValue := d.Inputs.String(3)
 
 	var data string
 	err = db.QueryRow(

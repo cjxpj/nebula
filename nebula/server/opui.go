@@ -95,6 +95,10 @@ type HttpOpUiConfig_cloudtool_server struct {
 	DicDir        string `json:"dic_dir"`        // 云工具词库目录（相对 private/）
 	LogoutSec     int    `json:"logout_sec"`     // 断开自动注销时长（秒），0 表示关闭
 	Debug         bool   `json:"debug"`          // 调试打印
+	ShopOpen      bool   `json:"shop_open"`      // 词库商城开关
+	ImageHost     bool   `json:"image_host"`     // 图床开关
+	ShopReview    bool   `json:"shop_review"`    // 词库上传审核开关
+	ImageReview   bool   `json:"image_review"`   // 图床上传审核开关
 }
 
 type HttpOpUiConfig_bg struct {
@@ -323,6 +327,51 @@ func broadcastServerLog(msg []byte) {
 		if err != nil {
 			delete(opuiNotifyClients, conn)
 		}
+	}
+}
+
+// ---------- 词库调试：删除操作人工确认 ----------
+// 词库调试运行期间，若脚本要删除文件 / 文件夹，后端向前端推送确认请求并阻塞等待用户答复，
+// 未答复（拒绝 / 超时 / 断线）一律按拒绝处理，确保删除操作必须经人工放行。
+
+var (
+	dicDeleteSeq           atomic.Uint64
+	dicDeletePending       sync.Map // id(string) -> chan bool
+	dicDeleteConfirmOnce   sync.Once
+	dicDeleteConfirmActive atomic.Int32 // 正在进行的调试运行数，0 表示非交互式执行（如机器人正式运行）
+)
+
+// ensureDicDeleteConfirm 注册词库删除确认回调（仅注册一次）。
+// 回调内部按「是否处于调试运行」决定是否拦截：非调试运行直接放行，保持原有非交互行为。
+func ensureDicDeleteConfirm() {
+	dicDeleteConfirmOnce.Do(func() {
+		dic_funcs.SetFileDeleteConfirm(func(action, target string) bool {
+			if dicDeleteConfirmActive.Load() == 0 {
+				return true
+			}
+			return requestDicDeleteConfirm(action, target)
+		})
+	})
+}
+
+// requestDicDeleteConfirm 向前端推送删除确认请求并阻塞等待答复，超时按拒绝处理。
+func requestDicDeleteConfirm(action, target string) bool {
+	id := fmt.Sprintf("%d", dicDeleteSeq.Add(1))
+	ch := make(chan bool, 1)
+	dicDeletePending.Store(id, ch)
+	defer dicDeletePending.Delete(id)
+
+	data, _ := json.Marshal(map[string]any{
+		"type": "dic_delete_confirm",
+		"data": map[string]any{"id": id, "action": action, "target": target},
+	})
+	broadcastOpuiNotify(data)
+
+	select {
+	case ok := <-ch:
+		return ok
+	case <-time.After(60 * time.Second):
+		return false
 	}
 }
 
@@ -592,6 +641,11 @@ func cloudToolReadLoop(conn *websocket.Conn, gen uint64) {
 			cloudToolClearAuth()
 			return
 		}
+		if msg.Type == "dic_updated" {
+			// 服务端热更新了云函数词库：无需断开连接，重新拉取并注入最新的云函数
+			go injectAllCloudFuncs(gen)
+			continue
+		}
 		if msg.Type == "result" || msg.Type == "error" {
 			if ch, ok := cloudToolPending.Load(msg.ID); ok {
 				ch.(chan cloudToolMsg) <- msg
@@ -843,17 +897,26 @@ func getCloudFuncs() map[string]cloudFuncInfo {
 }
 
 // injectAllCloudFuncs 拉取云工具已注册的云函数并逐个注入为字典函数，同时缓存完整信息供前端复用。
-// 每次连接成功（含断线重连）都会调用，重复注入已存在的函数会被忽略，新增函数会被补上。
+// 每次连接成功（含断线重连）与服务端热更新词库后都会调用：先注销本连接已注入的旧函数再按最新列表重新注入，
+// 使新增与修改的云函数都能生效，无需断开连接。
 func injectAllCloudFuncs(gen uint64) {
 	infos, ok := fetchCloudFuncs()
 	if !ok {
-		return
+		return // 拉取失败时保留现有注入，避免云函数整体失效
 	}
+	cloudToolInjectedMu.Lock()
+	for name, g := range cloudToolInjected {
+		if g == gen {
+			dic_funcs.Unregister(name)
+			delete(cloudToolInjected, name)
+		}
+	}
+	cloudToolInjectedMu.Unlock()
 	for name, info := range infos {
 		if name == "" {
 			continue
 		}
-		_ = injectCloudFunc(gen, name, info.Rule) // 已存在会返回错误，忽略即可
+		_ = injectCloudFunc(gen, name, info.Rule)
 	}
 }
 
@@ -2105,6 +2168,45 @@ func parseOutputSegments(output string) []map[string]string {
 	return segments
 }
 
+// dicRunResultPayload 汇总一次词库运行的输出、分段、错误行与变量快照。
+// 手动运行（dic_debug_run）与 AI 工具运行（run_dic）共用，保证前端「运行结果」面板展示一致。
+func dicRunResultPayload(dic *dic_dto.Dic, output string, timedOut bool) map[string]any {
+	pVars := make(map[string]any)
+	for k, v := range dic.Val.P.GetAll() {
+		pVars[k] = varDebugItem(v)
+	}
+	gVars := make(map[string]any)
+	for k, v := range dic.Val.G.GetAll() {
+		gVars[k] = varDebugItem(v)
+	}
+	gvVars := make(map[string]any)
+	for k, v := range dto.GV.GetAll() {
+		gvVars[k] = varDebugItem(v)
+	}
+	resp := map[string]any{
+		"output":   output,
+		"timedOut": timedOut,
+		"segments": parseOutputSegments(output),
+		"vars": map[string]any{
+			"P":  pVars,
+			"G":  gVars,
+			"GV": gvVars,
+		},
+	}
+	// 从输出中提取错误行号（格式：funcName(line:N)：error 或 JS错误(line:N)：error）
+	if re := regexp.MustCompile(`\(line:(\d+)\)`); re != nil {
+		if m := re.FindStringSubmatch(output); len(m) >= 2 {
+			if n, err := strconv.Atoi(m[1]); err == nil && n > 0 {
+				resp["errorLine"] = n
+			}
+		}
+	}
+	if len(dic.Data.Warnings) > 0 {
+		resp["warnings"] = dic.Data.Warnings
+	}
+	return resp
+}
+
 // loadDicDebugDefaults 读取合并配置中 [词库调试] 节的配置（运行配置的唯一存储位置）
 func loadDicDebugDefaults() map[string]any {
 	def := map[string]any{}
@@ -3284,6 +3386,35 @@ func OpUI(w http.ResponseWriter, r *http.Request, getpath string) {
 					continue
 				}
 
+				// 词库调试删除确认：前端弹窗得到答复后回传，唤醒正在阻塞等待的调试运行协程
+				if wsMsg.Type == "dic_delete_confirm_result" {
+					var res struct {
+						ID      string `json:"id"`
+						Confirm bool   `json:"confirm"`
+					}
+					if json.Unmarshal(wsMsg.Data, &res) == nil && res.ID != "" {
+						if v, ok := dicDeletePending.Load(res.ID); ok {
+							select {
+							case v.(chan bool) <- res.Confirm:
+							default:
+							}
+						}
+					}
+					continue
+				}
+
+				// AI 工具调用审批：前端内联卡片得到答复后回传，唤醒正在阻塞等待的对话协程
+				if wsMsg.Type == "ai_tool_approval_result" {
+					var res struct {
+						ID    string `json:"id"`
+						Allow bool   `json:"allow"`
+					}
+					if json.Unmarshal(wsMsg.Data, &res) == nil && res.ID != "" {
+						resolveAIToolApproval(res.ID, res.Allow)
+					}
+					continue
+				}
+
 				// 构造虚拟 HTTP 请求
 				fakeReq, _ := http.NewRequest("POST", "/", bytes.NewReader(msg))
 				fakeReq.Header.Set("Content-Type", "application/json")
@@ -3597,48 +3728,6 @@ func opuiHandleApi(w http.ResponseWriter, r *http.Request) {
 		w.Write(resp)
 		return
 
-	case "cloud_money_logs":
-		var req struct {
-			Page     int `json:"page"`
-			PageSize int `json:"page_size"`
-		}
-		if err := json.Unmarshal(h.Data, &req); err != nil {
-			resp, _ := json.Marshal(map[string]string{"status": "error", "error": err.Error()})
-			w.Write(resp)
-			return
-		}
-		if req.Page < 1 {
-			req.Page = 1
-		}
-		if req.PageSize <= 0 {
-			req.PageSize = 20
-		}
-		offset := (req.Page - 1) * req.PageSize
-		data, _ := json.Marshal(map[string]int{"offset": offset, "limit": req.PageSize})
-		res, err := cloudToolCall(cloudToolMsg{Type: "money_logs", Data: string(data)}, 15*time.Second)
-		if err != nil {
-			resp, _ := json.Marshal(map[string]string{"status": "error", "error": err.Error()})
-			w.Write(resp)
-			return
-		}
-		if res.Type == "error" {
-			resp, _ := json.Marshal(map[string]string{"status": "error", "error": res.Msg})
-			w.Write(resp)
-			return
-		}
-		var page struct {
-			Items json.RawMessage `json:"items"`
-			Total int             `json:"total"`
-		}
-		if err := json.Unmarshal([]byte(res.Data), &page); err != nil {
-			resp, _ := json.Marshal(map[string]string{"status": "error", "error": err.Error()})
-			w.Write(resp)
-			return
-		}
-		resp, _ := json.Marshal(map[string]any{"status": "ok", "items": page.Items, "total": page.Total})
-		w.Write(resp)
-		return
-
 	case "cloud_account_info":
 		res, err := cloudToolCall(cloudToolMsg{Type: "account_info"}, 15*time.Second)
 		if err != nil {
@@ -3657,6 +3746,7 @@ func opuiHandleApi(w http.ResponseWriter, r *http.Request) {
 			Coupon        string `json:"coupon"`
 			TotalMoney    string `json:"total_money"`
 			OnlineSeconds int64  `json:"online_seconds"`
+			Reviewer      bool   `json:"reviewer"`
 			Devices       []struct {
 				IP    string `json:"ip"`
 				Start int64  `json:"start"`
@@ -3674,6 +3764,7 @@ func opuiHandleApi(w http.ResponseWriter, r *http.Request) {
 			"coupon":         info.Coupon,
 			"total_money":    info.TotalMoney,
 			"online_seconds": info.OnlineSeconds,
+			"reviewer":       info.Reviewer,
 			"devices":        info.Devices,
 		})
 		w.Write(resp)
@@ -3723,6 +3814,10 @@ func opuiHandleApi(w http.ResponseWriter, r *http.Request) {
 		}
 		j.LogoutSec = d.Key("断开注销时长").MustInt(30)
 		j.Debug = d.Key("调试").MustBool(false)
+		j.ShopOpen = d.Key("词库商城").MustBool(false)
+		j.ImageHost = d.Key("图床").MustBool(false)
+		j.ShopReview = d.Key("词库审核").MustBool(true)
+		j.ImageReview = d.Key("图床审核").MustBool(true)
 		r, _ := json.Marshal(j)
 		w.Write(r)
 		return
@@ -3755,6 +3850,10 @@ func opuiHandleApi(w http.ResponseWriter, r *http.Request) {
 		d.Key("词库目录").SetValue(dicDir)
 		d.Key("断开注销时长").SetValue(strconv.Itoa(j.LogoutSec))
 		d.Key("调试").SetValue(strconv.FormatBool(j.Debug))
+		d.Key("词库商城").SetValue(strconv.FormatBool(j.ShopOpen))
+		d.Key("图床").SetValue(strconv.FormatBool(j.ImageHost))
+		d.Key("词库审核").SetValue(strconv.FormatBool(j.ShopReview))
+		d.Key("图床审核").SetValue(strconv.FormatBool(j.ImageReview))
 		cfg.Save()
 
 		// 更新内存配置并即时生效（Open=false 时仅拒绝新连接）；白名单由白名单配置页单独管理，不在此覆盖
@@ -3766,8 +3865,22 @@ func opuiHandleApi(w http.ResponseWriter, r *http.Request) {
 			DicDir:        dicDir,
 			LogoutSec:     j.LogoutSec,
 			Debug:         j.Debug,
+			ShopOpen:      j.ShopOpen,
+			ImageHost:     j.ImageHost,
+			ShopReview:    j.ShopReview,
+			ImageReview:   j.ImageReview,
 		}
 		StartCloudToolServer()
+		w.Write([]byte(`{"status":"ok"}`))
+		return
+
+	case "reload_cloudtool_dic":
+		// 热更新云工具词库：重新编译词库目录并通知全部在线连接重新拉取云函数，无需重启或断开连接
+		if err := CloudToolReloadDic(); err != nil {
+			b, _ := json.Marshal(map[string]string{"status": "error", "error": err.Error()})
+			http.Error(w, string(b), http.StatusBadRequest)
+			return
+		}
 		w.Write([]byte(`{"status":"ok"}`))
 		return
 
@@ -3940,6 +4053,43 @@ func opuiHandleApi(w http.ResponseWriter, r *http.Request) {
 		w.Write([]byte(`{"status":"ok"}`))
 		return
 
+	case "set_cloudtool_balance":
+		// 直接设置云工具账号余额（面板点击余额编辑，不存在则创建）
+		var j struct {
+			Username string `json:"username"`
+			Balance  int64  `json:"balance"`
+		}
+		if err := json.Unmarshal(h.Data, &j); err != nil {
+			http.Error(w, `{"status":"error","error":"invalid json"}`, http.StatusBadRequest)
+			return
+		}
+		if err := CloudToolSetBalance(j.Username, j.Balance); err != nil {
+			resp, _ := json.Marshal(map[string]string{"status": "error", "error": err.Error()})
+			w.Write(resp)
+			return
+		}
+		w.Write([]byte(`{"status":"ok"}`))
+		return
+
+	case "set_cloudtool_reviewer":
+		// 授予/取消云工具账号的审核权限（拥有审核权限的账号可在客户端审核他人上传的内容）
+		var j struct {
+			Username string `json:"username"`
+			Reviewer bool   `json:"reviewer"`
+		}
+		if err := json.Unmarshal(h.Data, &j); err != nil {
+			http.Error(w, `{"status":"error","error":"invalid json"}`, http.StatusBadRequest)
+			return
+		}
+		if err := CloudToolSetReviewer(j.Username, j.Reviewer); err != nil {
+			resp, _ := json.Marshal(map[string]string{"status": "error", "error": err.Error()})
+			w.Write(resp)
+			return
+		}
+		resp, _ := json.Marshal(map[string]any{"status": "ok", "reviewer": j.Reviewer})
+		w.Write(resp)
+		return
+
 	case "clear_cloudtool_accounts":
 		// 清空全部云工具账号（白名单内账号保留）
 		deleted, kept, err := CloudToolClearAccounts()
@@ -4050,6 +4200,258 @@ func opuiHandleApi(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		resp, _ := json.Marshal(map[string]string{"status": "ok", "result": res.Data})
+		w.Write(resp)
+		return
+
+	case "cloud_shop_list":
+		res, err := cloudToolCall(cloudToolMsg{Type: "shop_list"}, 15*time.Second)
+		if err != nil {
+			resp, _ := json.Marshal(map[string]string{"status": "error", "error": err.Error()})
+			w.Write(resp)
+			return
+		}
+		if res.Type == "error" {
+			resp, _ := json.Marshal(map[string]string{"status": "error", "error": res.Msg})
+			w.Write(resp)
+			return
+		}
+		resp, _ := json.Marshal(map[string]string{"status": "ok", "result": res.Data})
+		w.Write(resp)
+		return
+
+	case "cloud_review_list":
+		// 审核员查看待审资源列表（返回 JSON 字符串）
+		res, err := cloudToolCall(cloudToolMsg{Type: "review_list"}, 15*time.Second)
+		if err != nil {
+			resp, _ := json.Marshal(map[string]string{"status": "error", "error": err.Error()})
+			w.Write(resp)
+			return
+		}
+		if res.Type == "error" {
+			resp, _ := json.Marshal(map[string]string{"status": "error", "error": res.Msg})
+			w.Write(resp)
+			return
+		}
+		resp, _ := json.Marshal(map[string]string{"status": "ok", "result": res.Data})
+		w.Write(resp)
+		return
+
+	case "cloud_review_action":
+		// 审核员提交审核动作：kind: shop|image，id: 资源标识，action: approve|reject
+		var j struct {
+			Kind   string `json:"kind"`
+			ID     string `json:"id"`
+			Action string `json:"action"`
+		}
+		if err := json.Unmarshal(h.Data, &j); err != nil {
+			http.Error(w, `{"status":"error","error":"invalid json"}`, http.StatusBadRequest)
+			return
+		}
+		res, err := cloudToolCall(cloudToolMsg{Type: "review_action", Func: j.Kind, ID: j.ID, Args: []string{j.Action}}, 15*time.Second)
+		if err != nil {
+			resp, _ := json.Marshal(map[string]string{"status": "error", "error": err.Error()})
+			w.Write(resp)
+			return
+		}
+		if res.Type == "error" {
+			resp, _ := json.Marshal(map[string]string{"status": "error", "error": res.Msg})
+			w.Write(resp)
+			return
+		}
+		resp, _ := json.Marshal(map[string]string{"status": "ok", "result": res.Data})
+		w.Write(resp)
+		return
+
+	case "cloud_shop_buy":
+		var j struct {
+			Item string `json:"item"`
+		}
+		if err := json.Unmarshal(h.Data, &j); err != nil {
+			http.Error(w, `{"status":"error","error":"invalid json"}`, http.StatusBadRequest)
+			return
+		}
+		res, err := cloudToolCall(cloudToolMsg{Type: "shop_buy", Func: j.Item}, 15*time.Second)
+		if err != nil {
+			resp, _ := json.Marshal(map[string]string{"status": "error", "error": err.Error()})
+			w.Write(resp)
+			return
+		}
+		if res.Type == "error" {
+			resp, _ := json.Marshal(map[string]string{"status": "error", "error": res.Msg})
+			w.Write(resp)
+			return
+		}
+		resp, _ := json.Marshal(map[string]string{"status": "ok", "result": res.Data})
+		w.Write(resp)
+		return
+
+	case "cloud_shop_download":
+		var j struct {
+			Item string `json:"item"`
+		}
+		if err := json.Unmarshal(h.Data, &j); err != nil {
+			http.Error(w, `{"status":"error","error":"invalid json"}`, http.StatusBadRequest)
+			return
+		}
+		res, err := cloudToolCall(cloudToolMsg{Type: "shop_download", Func: j.Item}, 15*time.Second)
+		if err != nil {
+			resp, _ := json.Marshal(map[string]string{"status": "error", "error": err.Error()})
+			w.Write(resp)
+			return
+		}
+		if res.Type == "error" {
+			resp, _ := json.Marshal(map[string]string{"status": "error", "error": res.Msg})
+			w.Write(resp)
+			return
+		}
+		resp, _ := json.Marshal(map[string]string{"status": "ok", "result": res.Data})
+		w.Write(resp)
+		return
+
+	case "cloud_shop_publish":
+		// 发布词库：文件已在服务端，读取应用目录内的词库文件转 base64 后转发给云工具落盘
+		var j struct {
+			Path string   `json:"path"`
+			Args []string `json:"args"`
+		}
+		if err := json.Unmarshal(h.Data, &j); err != nil {
+			http.Error(w, `{"status":"error","error":"invalid json"}`, http.StatusBadRequest)
+			return
+		}
+		if !checkFilePath(j.Path) {
+			resp, _ := json.Marshal(map[string]string{"status": "error", "error": "词库路径不合法"})
+			w.Write(resp)
+			return
+		}
+		full := filepath.Join(opuiAppDir(), filepath.FromSlash(j.Path))
+		raw, err := os.ReadFile(full)
+		if err != nil {
+			resp, _ := json.Marshal(map[string]string{"status": "error", "error": "读取词库文件失败: " + err.Error()})
+			w.Write(resp)
+			return
+		}
+		args := append([]string{filepath.Base(full)}, j.Args...)
+		res, err := cloudToolCall(cloudToolMsg{Type: "shop_publish", Data: base64.StdEncoding.EncodeToString(raw), Args: args}, 30*time.Second)
+		if err != nil {
+			resp, _ := json.Marshal(map[string]string{"status": "error", "error": err.Error()})
+			w.Write(resp)
+			return
+		}
+		if res.Type == "error" {
+			resp, _ := json.Marshal(map[string]string{"status": "error", "error": res.Msg})
+			w.Write(resp)
+			return
+		}
+		resp, _ := json.Marshal(map[string]string{"status": "ok", "result": res.Data})
+		w.Write(resp)
+		return
+
+	case "cloud_image_upload":
+		// 上传图床：文件已在服务端，读取应用目录内的图片文件转 base64 后转发给云工具
+		var j struct {
+			Path string   `json:"path"`
+			Args []string `json:"args"`
+		}
+		if err := json.Unmarshal(h.Data, &j); err != nil {
+			http.Error(w, `{"status":"error","error":"invalid json"}`, http.StatusBadRequest)
+			return
+		}
+		if !checkFilePath(j.Path) {
+			resp, _ := json.Marshal(map[string]string{"status": "error", "error": "图片路径不合法"})
+			w.Write(resp)
+			return
+		}
+		full := filepath.Join(opuiAppDir(), filepath.FromSlash(j.Path))
+		raw, err := os.ReadFile(full)
+		if err != nil {
+			resp, _ := json.Marshal(map[string]string{"status": "error", "error": "读取图片文件失败: " + err.Error()})
+			w.Write(resp)
+			return
+		}
+		res, err := cloudToolCall(cloudToolMsg{Type: "image_upload", Data: base64.StdEncoding.EncodeToString(raw), Args: j.Args}, 30*time.Second)
+		if err != nil {
+			resp, _ := json.Marshal(map[string]string{"status": "error", "error": err.Error()})
+			w.Write(resp)
+			return
+		}
+		if res.Type == "error" {
+			resp, _ := json.Marshal(map[string]string{"status": "error", "error": res.Msg})
+			w.Write(resp)
+			return
+		}
+		// 待审核时 result 为空串，message 给出「等待审核」提示，前端据此展示
+		resp, _ := json.Marshal(map[string]string{"status": "ok", "result": res.Data, "message": res.Msg})
+		w.Write(resp)
+		return
+
+	case "cloud_list_resources":
+		// 云工具资源管理列表（kind: shop|image；status: -1 全部，0 待审，1 通过，2 拒绝）
+		var req struct {
+			Kind     string `json:"kind"`
+			Keyword  string `json:"keyword"`
+			Status   int    `json:"status"`
+			Page     int    `json:"page"`
+			PageSize int    `json:"page_size"`
+		}
+		if err := json.Unmarshal(h.Data, &req); err != nil {
+			http.Error(w, `{"status":"error","error":"invalid json"}`, http.StatusBadRequest)
+			return
+		}
+		if req.Page < 1 {
+			req.Page = 1
+		}
+		if req.PageSize <= 0 {
+			req.PageSize = 20
+		}
+		if req.PageSize > 100 {
+			req.PageSize = 100
+		}
+		items, total, err := CloudToolListResources(req.Kind, req.Keyword, req.Status, req.Page, req.PageSize)
+		if err != nil {
+			resp, _ := json.Marshal(map[string]string{"status": "error", "error": err.Error()})
+			w.Write(resp)
+			return
+		}
+		resp, _ := json.Marshal(map[string]any{"status": "ok", "items": items, "total": total})
+		w.Write(resp)
+		return
+
+	case "cloud_review_resource":
+		// 审核云工具资源：kind: shop|image，id: 资源标识，action: approve|reject|delete
+		var j struct {
+			Kind   string `json:"kind"`
+			ID     string `json:"id"`
+			Action string `json:"action"`
+		}
+		if err := json.Unmarshal(h.Data, &j); err != nil {
+			http.Error(w, `{"status":"error","error":"invalid json"}`, http.StatusBadRequest)
+			return
+		}
+		if err := CloudToolReviewResource(j.Kind, j.ID, j.Action, "面板"); err != nil {
+			resp, _ := json.Marshal(map[string]string{"status": "error", "error": err.Error()})
+			w.Write(resp)
+			return
+		}
+		w.Write([]byte(`{"status":"ok"}`))
+		return
+
+	case "cloud_resource_content":
+		// 预览云工具资源内容：kind: shop|image，id: 资源标识
+		var j struct {
+			Kind string `json:"kind"`
+			ID   string `json:"id"`
+		}
+		if err := json.Unmarshal(h.Data, &j); err != nil {
+			http.Error(w, `{"status":"error","error":"invalid json"}`, http.StatusBadRequest)
+			return
+		}
+		content, err := CloudToolResourceContent(j.Kind, j.ID)
+		if err != nil {
+			resp, _ := json.Marshal(map[string]string{"status": "error", "error": err.Error()})
+			w.Write(resp)
+			return
+		}
+		resp, _ := json.Marshal(map[string]string{"status": "ok", "content": content})
 		w.Write(resp)
 		return
 
@@ -5550,6 +5952,110 @@ func opuiHandleApi(w http.ResponseWriter, r *http.Request) {
 		w.Write([]byte(`{"status":"ok"}`))
 		return
 
+	case "get_ai_config":
+		// 读取 AI 对接配置（合并配置的 [AI] 节），供管理面板展示
+		cfg, err := dto.LoadConfigFile()
+		if err != nil {
+			jsonResp, _ := json.Marshal(defaultAIConfigJSON())
+			w.Write(jsonResp)
+			return
+		}
+		aiCfg := dto.LoadConfig_ai(cfg.Section("AI"))
+		jsonResp, _ := json.Marshal(aiConfigJSON(aiCfg))
+		w.Write(jsonResp)
+		return
+
+	case "save_ai_config":
+		// 保存 AI 模型列表与全局配置到 [AI] 节，并同步运行期内存配置（无需重启）
+		var j struct {
+			Open           bool   `json:"open"`
+			CurrentID      string `json:"current_id"`
+			SystemPrompt   string `json:"system_prompt"`
+			Timeout        int    `json:"timeout"`
+			InlineComplete bool   `json:"inline_complete"`
+			Models         []struct {
+				ID              string `json:"id"`
+				Name            string `json:"name"`
+				BaseURL         string `json:"base_url"`
+				APIKey          string `json:"api_key"`
+				ClearAPIKey     bool   `json:"clear_api_key"`
+				Model           string `json:"model"`
+				Reasoning       bool   `json:"reasoning"`
+				ReasoningEffort string `json:"reasoning_effort"`
+				ReasoningModel  string `json:"reasoning_model"`
+			} `json:"models"`
+		}
+		if err := json.Unmarshal(h.Data, &j); err != nil {
+			http.Error(w, `{"status":"error","error":"invalid json"}`, http.StatusBadRequest)
+			return
+		}
+		timeout := j.Timeout
+		if timeout <= 0 {
+			timeout = 60
+		}
+		cfg, err := dto.LoadConfigFile()
+		if err != nil {
+			w.Write([]byte(`{"status":"error","error":"读取系统配置失败"}`))
+			return
+		}
+		sec := cfg.Section("AI")
+		// 密钥不返回给前端：某模型密钥留空表示保持其已保存的密钥不变，仅 clear_api_key 为 true 时清空
+		oldKeys := map[string]string{}
+		for _, m := range dto.LoadAIModels(sec) {
+			oldKeys[m.ID] = m.APIKey
+		}
+		models := make([]*dto.AIModelConfig, 0, len(j.Models))
+		for i, m := range j.Models {
+			id := strings.TrimSpace(m.ID)
+			if id == "" {
+				id = "m" + strconv.Itoa(i+1)
+			}
+			apiKey := strings.TrimSpace(m.APIKey)
+			if apiKey == "" && !m.ClearAPIKey {
+				apiKey = oldKeys[id]
+			}
+			models = append(models, &dto.AIModelConfig{
+				ID:              id,
+				Name:            strings.TrimSpace(m.Name),
+				BaseURL:         strings.TrimSpace(m.BaseURL),
+				APIKey:          apiKey,
+				Model:           strings.TrimSpace(m.Model),
+				Reasoning:       m.Reasoning,
+				ReasoningEffort: dto.NormalizeReasoningEffort(m.ReasoningEffort),
+				ReasoningModel:  strings.TrimSpace(m.ReasoningModel),
+			})
+		}
+		// 当前模型：未指定或已不存在时回退列表首项
+		currentID := strings.TrimSpace(j.CurrentID)
+		if cur := dto.PickAIModel(models, currentID); cur != nil {
+			currentID = cur.ID
+		} else {
+			currentID = ""
+		}
+		stored, err := dto.EncodeAIModels(models)
+		if err != nil {
+			w.Write([]byte(`{"status":"error","error":"密钥加密失败"}`))
+			return
+		}
+		sec.Key("启用").SetValue(strconv.FormatBool(j.Open))
+		sec.Key(dto.AIModelsKey).SetValue(stored)
+		sec.Key(dto.AICurrentKey).SetValue(currentID)
+		sec.Key("系统提示").SetValue(j.SystemPrompt)
+		sec.Key("超时").SetValue(strconv.Itoa(timeout))
+		sec.Key("代码补全").SetValue(strconv.FormatBool(j.InlineComplete))
+		// 清除旧版单模型键，避免与模型列表重复
+		for _, k := range []string{"接口地址", "密钥", "模型", "思考模式", "推理强度", "推理模型"} {
+			sec.DeleteKey(k)
+		}
+		if err := cfg.Save(); err != nil {
+			w.Write([]byte(`{"status":"error","error":"保存系统配置失败"}`))
+			return
+		}
+		// 由落盘内容重新解析，同步运行期内存配置（密钥保持明文）
+		dto.ServerConfig.AI = dto.LoadConfig_ai(sec)
+		w.Write([]byte(`{"status":"ok"}`))
+		return
+
 	case "get_autostart":
 		enabled, err := GetAutoStart()
 		if err != nil {
@@ -6514,6 +7020,61 @@ func opuiHandleApi(w http.ResponseWriter, r *http.Request) {
 		w.Write(jsonResp)
 		return
 
+	case "ai_chat":
+		// AI 对话：词库编辑时与 AI 协作开发（关联词库代码、结合编译报错/警告）
+		// 携带 session_id 时进入「任务模式」（独立记忆 + 持久化 + 自动压缩）
+		aiChatHandle(w, h)
+		return
+
+	case "list_ai_sessions", "get_ai_session", "create_ai_session", "save_ai_session",
+		"delete_ai_session", "clear_ai_session", "truncate_ai_messages",
+		"compress_ai_session", "export_ai_sessions", "import_ai_sessions", "cancel_ai_chat":
+		// AI 多任务会话管理：任务的增删改查、记忆压缩与导入导出、终止在途生成
+		aiSessionHandle(w, h)
+		return
+
+	case "ai_complete":
+		// AI 内联补全：根据光标前后代码续写，供编辑器以虚影（ghost text）形式提示
+		var j struct {
+			Path   string `json:"path"`
+			Prefix string `json:"prefix"`
+			Suffix string `json:"suffix"`
+		}
+		if err := json.Unmarshal(h.Data, &j); err != nil {
+			http.Error(w, `{"status":"error","error":"invalid json"}`, http.StatusBadRequest)
+			return
+		}
+		aiCfg := aiResolveConfig()
+		// 补全由用户显式触发（Alt+\）：未就绪时带上原因返回，供前端提示，避免看起来"快捷键没反应"
+		if err := aiCheckReady(aiCfg, true); err != nil {
+			b, _ := json.Marshal(map[string]string{"status": "disabled", "error": err.Error()})
+			w.Write(b)
+			return
+		}
+		prompt := aiBuildCompletePrompt(j.Path, j.Prefix, j.Suffix)
+		if prompt == "" {
+			w.Write([]byte(`{"status":"ok","content":""}`))
+			return
+		}
+		// 内联补全为高频请求：仅注入光标附近代码实际调用的内置函数，避免每次下发完整函数清单
+		completeSystem := aiCompleteSystemPrompt
+		if f := aiBuiltinFuncsTextUsed(j.Prefix + "\n" + j.Suffix); f != "" {
+			completeSystem += "\n\n" + f
+		}
+		content, err := aiChatOnce(aiCfg, "", []aiChatMessage{
+			{Role: "system", Content: completeSystem},
+			{Role: "user", Content: prompt},
+		})
+		if err != nil {
+			// 显式触发时把失败原因回传前端提示；不再静默，便于用户排查
+			b, _ := json.Marshal(map[string]string{"status": "error", "error": err.Error()})
+			w.Write(b)
+			return
+		}
+		jsonResp, _ := json.Marshal(map[string]string{"status": "ok", "content": aiCleanComplete(content)})
+		w.Write(jsonResp)
+		return
+
 	case "get_dic_tasks":
 		// 返回定时任务（分页），避免任务过多时一次性返回全部
 		var j struct {
@@ -6682,6 +7243,11 @@ func opuiHandleApi(w http.ResponseWriter, r *http.Request) {
 		}
 		defer dic.Close()
 
+		// 调试运行期间启用删除操作人工确认：脚本删除文件 / 文件夹时弹窗等待用户放行
+		ensureDicDeleteConfirm()
+		dicDeleteConfirmActive.Add(1)
+		defer dicDeleteConfirmActive.Add(-1)
+
 		// 编译存在 error 级诊断（框配对错误、触发词正则错误等）时拒绝运行：
 		// 不执行词库，直接把错误与编译诊断回传前端高亮。
 		for _, warn := range dic.Data.Warnings {
@@ -6707,45 +7273,8 @@ func opuiHandleApi(w http.ResponseWriter, r *http.Request) {
 		// 触发词命中则正常执行；未命中（如调试脚本没有写触发词）则整体按线性脚本执行
 		output, timedOut := dic_api.Api.DicRunScript(dic, j.Trigger, time.Duration(j.Timeout)*time.Second)
 
-		// 从输出中提取错误行号（格式：funcName(line:N)：error 或 JS错误(line:N)：error）
-		var errorLine int
-		if re := regexp.MustCompile(`\(line:(\d+)\)`); re != nil {
-			if m := re.FindStringSubmatch(output); len(m) >= 2 {
-				errorLine, _ = strconv.Atoi(m[1])
-			}
-		}
-
-		// 收集运行后的局部/全局变量（值 + 类型，类实例携带成员变量供前端折叠）
-		pVars := make(map[string]any)
-		for k, v := range dic.Val.P.GetAll() {
-			pVars[k] = varDebugItem(v)
-		}
-		gVars := make(map[string]any)
-		for k, v := range dic.Val.G.GetAll() {
-			gVars[k] = varDebugItem(v)
-		}
-		gvVars := make(map[string]any)
-		for k, v := range dto.GV.GetAll() {
-			gvVars[k] = varDebugItem(v)
-		}
-
-		resp := map[string]any{
-			"output":   output,
-			"timedOut": timedOut,
-			"segments": parseOutputSegments(output),
-			"vars": map[string]any{
-				"P":  pVars,
-				"G":  gVars,
-				"GV": gvVars,
-			},
-		}
-		if errorLine > 0 {
-			resp["errorLine"] = errorLine
-		}
-		// 编译警告（如循环引入），前端以黄色警告展示
-		if len(dic.Data.Warnings) > 0 {
-			resp["warnings"] = dic.Data.Warnings
-		}
+		// 输出/分段/错误行/变量/警告统一组装（与 AI 工具运行共用同一实现）
+		resp := dicRunResultPayload(dic, output, timedOut)
 		jsonResp, _ := json.Marshal(resp)
 		w.Write(jsonResp)
 		return
@@ -7223,4 +7752,945 @@ func opuiHandleApi(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, `{"status":"error","error":"invalid type"}`, http.StatusBadRequest)
 		return
 	}
+}
+
+// ============== AI 对接（OpenAI 兼容，默认 DeepSeek） ==============
+
+// aiDicSystemPrompt AI 词库开发内置系统提示词（未配置「系统提示」时使用）。
+const aiDicSystemPrompt = `你是 Nebula 词库（.n 文件）开发助手。回答必须以本次对话实际提供的信息为准，不得臆造。
+
+【Nebula 词库语法速览】写 .n 代码时必须遵守：
+一、文件结构
+1. .n 是 UTF-8 文本，全文分「头部」与「正文词条」两段：文件开头到第一个空行为止是头部（一般只放 #引入=xxx.n、初始化赋值、$重定向触发词 ...$ 等），空行之后全部是词条；$设置工作目录 ...$ 只允许出现在启动词库 start.n 的头部且仅一次，普通 .n 文件（含绘制类）一律禁止写它；
+2. 一条词条 = 触发词独占一行 + 紧接其下的正文行，正文行之间必须紧贴、不能有空行（空行会立即结束该词条，把后续内容拆成一堆没有触发词的空词条）；.n 不是普通脚本，禁止「无触发词、逐行罗列、行间留空行」的写法，写进文件的每一段代码都必须能归属到某个触发词之下；
+3. 正文若要包含空行，整条需改写为「触发词 #{ ... }#」或「触发词 <?n ... ?>」，只有这两种写法允许块内空行。
+
+二、触发词与取值
+1. 触发词即用户消息文本，行首 [类别] 前缀决定角色：[函数]名称、[内部]名称（用 $回调 名称$ 触发）、[函数:类名]方法、[内部:类名]方法；无前缀即普通触发词；
+2. 触发词按正则匹配（不含正则元字符时按纯文本全等匹配）。%参数0% 是消息按空格切分后的第 1 个词（%参数N% 即第 N+1 个词）；%括号0% 是整体消息文本，%括号N% 是正则第 N 个捕获组（从 1 开始）；
+3. 普通词条与函数中直接输出的文本就是回复内容，无需再调用 $发送文本$。
+
+三、变量
+1. 赋值写「变量名:值」，变量名裸写、不带 %；读取才写 %变量名%。同名追加用 变量+:值，相减用 变量-:值；变量::值 表示原样文本不解析；赋值行里的变量名写成 %变量%: 无效（实测：整行被当普通文本输出，变量根本没生成，后续读 %变量名% 会报「变量不存在」）；
+2. 读 JSON 路径用 %@变量.键.键%；三目与回退只在赋值中生效：条件?真值:假值、值?:回退值；
+3. 变量名不超过 32 字节；跨函数读写用 $全局变量 名 值$ / $全局变量 名$，线程级用 $线程变量$；
+4. 算术与计算必须「先取中间变量、再参与运算」：函数参数里、算术表达式 [...] 里都不能再嵌套 $函数$。错误：$JSON存 %背包% 草鱼 %$JSON解析 ...$ + 1$、$延迟 [1000*$随机数 1 3$]$；正确：先 旧数量:$JSON解析 %背包% 草鱼$、秒:$随机数 1 3$ 拿到中间值，再 $JSON存 %背包% 草鱼 $计算 %旧数量% + 1$$、$延迟 [1000*%秒%]$。
+
+四、调用内置函数与对象方法
+1. $ 必须首尾成对：$函数名 参数...$。最常见的错误是漏掉开头的 $（只写结尾）：画布.设置颜色 #f0d9b5$ 、玩家.存 字符串(行) 字符串(列) 颜色$ 都是错的，必须写成 $画布.设置颜色 #f0d9b5$、$玩家.存 ...$；参数以空格分隔，参数本身含空格时用双引号包裹整段（如 $发送文本 "你好 世界"$）。凡是写「函数名/变量.方法 后跟参数」，就要先检查行首有没有 $；
+2. 实例必须先由「创建类」的全局函数赋值得到（如 画布:$创建画布 600 600$，注意右端 $创建画布 600 600$ 首尾都要有 $），再调用其方法，写作 $变量.方法 参数$（如 $画布.设置颜色 #f00$）；禁止把创建类函数当成实例方法（$画布.创建画布 ...$ 是错的），类内也可写 $.类名 方法 参数$；
+3. $...$ 不能嵌套：既不能写在另一个 $...$ 的参数里，也不能写在 [...] 算术或取值表达式里；需要中间值先「临时变量:$函数$」，再用 %临时变量% 参与运算；
+4. 实参个数必须与函数声明的规则一致，不符会报「参数数量错误」并中止；写成 $!函数名 参数$ 可把错误写入 %报错% 而不中止后续执行。
+
+五、函数与类
+1. 定义函数用 [函数]名称；函数体取参只能用 %参数N%，且定义处必须声明参数规则（如 [函数|1]名称、[函数|1|2]名称、[函数|2..]名称；不写规则等价于 [函数|0]，带参调用会报「参数数量错误」）。%参数0% 是函数名本身，第一个实参是 %参数1%、第二个是 %参数2%，依次类推；
+2. 严禁把形参名字当变量用：[函数]名称->变量1,变量2 里的「变量1,变量2」是传出变量（计算结果回写外部），不是形参；函数体里读 %行%/%列% 这类未定义的裸变量会报「变量不存在」。要接收实参就必须写成 [函数|N]名称，并在体内通过 %参数1%…%参数N% 取值；
+3. 函数体内的赋值默认只在函数内生效，不回写外部；要带回结果，在定义处写传出列表：[函数]名称->变量1,变量2（只声明「回写外部」，与传入参数无关）；
+4. 调用函数统一写 $函数名 参数...$（例：$绘制棋子 画布 当前玩家 %行% %列% 颜色$）；禁止写成 绘制棋子->画布,...$ 这类把传出列表当调用的形式；
+5. 定义类用 [函数:类名]方法、[内部:类名]方法；实例化用 $new 类名$（若存在则自动执行构造函数 [函数:类名]new）；读成员 %变量.成员%（类内可用 %自己.成员%），类内写成员 .成员:值。
+
+六、流程控制（两种判断写法不能混用）
+1. 行内判断：如果:条件 … 否则如果:条件 … 否则 … 如果尾（结尾是 如果尾，不是 <如果）；
+2. 判断框：如果>条件 … >否则如果:条件 … >否则 … <如果（闭合为 <如果、不带 >，可嵌套）；
+3. 匹配框：匹配>表达式 … 如果是:值 … 如果不是 … <匹配；
+4. 循环框：循环>i=次数、循环>i=起始~结束、判断循环>条件，闭合 <循环；遍历框：遍历>键,值=JSON，闭合 <遍历；循环体内可用 >跳过、>中断、>终止循环、>终止遍历。
+   范围分隔符只有 ~（例：循环>i=0~14），写成 ..（0..14）会报「循环框未闭合」；
+   所有闭合标记必须精确写成 <循环、<遍历、<如果、<匹配、<函数（结尾不带 >），写成 <循环> 不会被识别，同样报「循环框未闭合」；
+   嵌套时每层开启都要各有一条闭合行，闭合行数必须与开启行数相等。正确示例：
+   循环>i=0~14
+       循环>j=0~14
+           如果:%@棋盘.i.j%==1
+               $画布.绘制圆形 %i% %j% 18$
+           <如果
+       <循环
+   <循环
+5. 条件判断可用 $判断 a 等于 b$ 返回 true/false；块的开启/闭合行必须与代码紧贴，行尾不要加 // 注释。
+
+七、注释与换行（本语言没有 # 注释）
+1. 注释只能用 //（单行）和 /* */（多行）。严禁把 # 当注释：# 只属于 #引入=xxx.n、#引入=@QQBot 等预编译指令，写成「# 初始化棋盘」会被当普通正文解析而报错；分段标题用 //，如 // 初始化棋盘；
+2. 空行是词条的硬边界：文件开头到第一个空行是头部，空行之后全是词条。正文里绝不能出现空行——空行会立即结束当前词条，把它之后的代码变成「新的触发词」，整段功能静默失效；
+3. 下列位置一律不得有空行：正文行之间、块结构（如果>/<如果、循环>/<循环、匹配>/<匹配、遍历>/<遍历、文本>/<文本、函数>/<函数）内部、块开启行之前、块闭合行之后；用 // 注释做分段标题时注释必须紧贴前后代码，多个块之间连续书写，闭合行（如 <如果）之后直接接下一段；
+4. 唯一例外：整条写成「触发词 #{ ... }#」或「触发词 <?n ... ?>」时，块内允许空行；
+5. 正文与函数体的多行输出直接拼接、不会自动换行，换行用行尾 \r 或 %换行%（赋值行里的 \r 不转义，按字面存）；
+6. 行首缩进默认无语义，//@关闭缩进 后才保留缩进；缩进只是美观，绝不能靠空行来分段。
+
+八、高频易错点
+1. [函数] 未声明参数规则（[函数|N]）时不能带参调用；形参只能靠 %参数1%…%参数N% 取，定义处 ->变量1,变量2 只是传出列表，不是形参；
+2. 文本块（文本>、三引号文本框、变量:{、变量:[）里的 $函数$ 不会执行，会原样输出；
+3. 不要套用其它语言写法：.n 没有 def/class/for/while/return 等关键字，也没有字符串字面量类型，一切靠「键:值」「%变量%」「$函数 参数$」与 [类别] 触发词前缀；
+4. 不要给类实例编造方法名或参数个数：以文档或已有示例为准，拿不准就如实说明「不确定」并请用户确认，禁止用一串坐标/数字硬凑参数（如给只收颜色的 $画布.设置颜色$ 传矩形参数）。
+
+事实约束：
+1. 当前词库的函数、变量、类、触发词与语法，一律以用户提供的「当前词库代码 / 编译诊断」为准；未出现在其中、也未出现在下方【可用内置函数】清单中的名称，视为不存在；
+2. 只能调用下方【可用内置函数】清单里列出的全局函数，禁止编造或用品名相近的顶替；清单没有所需能力时如实说「没有该内置函数」；
+3. 清单只含全局函数，不含实例方法的名称与签名：实例（$创建画布$、$new 类名$ 得到）的方法必须写 $变量.方法 参数$（如 $变量.设置颜色 ...$），不得写成全局函数形式；实例方法的参数个数不在清单中，禁止臆测，需以文档或示例为准，拿不准就说「不确定」；
+4. 若本次未附带「当前词库代码」，而问题又取决于具体词库内容，应先说明缺少代码并请用户提供，或只作一般性讲解并标注不确定，禁止凭空猜测词库内容；
+5. 无法确定时如实说明，不要编造。
+输出要求：
+1. 只输出与词库开发相关的内容，简洁直接；
+2. 需要给出代码时使用 Markdown 围栏代码块包裹，代码必须符合 Nebula 词库语法；
+3. 若用户提供了编译错误或警告信息，优先逐条修复，并简要说明每处修改的原因。`
+
+// aiCompleteSystemPrompt AI 内联补全内置系统提示词：要求只输出待插入的代码片段。
+const aiCompleteSystemPrompt = `你是 Nebula 词库（.n 文件）代码补全引擎。根据用户给出的上下文，在【光标处】续写最符合语境的词库代码。
+要求：
+1. 只输出需要插入到【光标处】的代码，禁止输出任何解释、注释说明或 Markdown 代码围栏；
+2. 保持与上下文一致的语言风格与缩进；
+3. 若无法确定合适的补全内容，输出空字符串。`
+
+// aiBuiltinFuncsHeader 内置函数清单的说明头（完整清单用）。
+const aiBuiltinFuncsHeader = "【可用内置函数】词库中可直接调用以下内置函数，调用格式为 $函数名 参数...$；" +
+	"名称后括号内为该函数允许的参数个数（如 1|2 表示 1 或 2 个参数，2.. 表示 2 个及以上，0 表示无参数），未标注括号时为 1 个参数。\n"
+
+// aiBuiltinFuncsHeaderUsed 按需注入（仅当前代码已调用函数）时的说明头。
+const aiBuiltinFuncsHeaderUsed = "【当前代码已调用的内置函数】调用格式为 $函数名 参数...$；" +
+	"名称后括号内为该函数允许的参数个数，未标注括号时为 1 个参数。\n"
+
+// aiBuiltinFuncsEntry 缓存的函数清单文本及其对应的注册表版本号。
+type aiBuiltinFuncsEntry struct {
+	rev  int64
+	text string
+}
+
+// aiBuiltinFuncsCache 缓存函数清单文本：注册表未变更时直接复用，避免每次请求重建 300+ 函数列表，
+// 同时保持 system 提示词稳定，便于上游接口做前缀缓存。
+var aiBuiltinFuncsCache atomic.Value // aiBuiltinFuncsEntry
+
+// aiFormatFuncNames 将函数名格式化为「名称(参数规则)」文本；无规则时仅输出名称。
+func aiFormatFuncNames(names []string) string {
+	parts := make([]string, 0, len(names))
+	for _, n := range names {
+		if rule, ok := dto.GetFuncRule(n); ok && rule != "" {
+			parts = append(parts, n+"("+rule+")")
+			continue
+		}
+		parts = append(parts, n)
+	}
+	return strings.Join(parts, " ")
+}
+
+// aiBuiltinFuncsText 汇总当前已注册的全部内置函数（名称 + 参数个数规则），
+// 供 AI 对话时了解可用函数。ListFuncs 读取运行期注册表，新注册（含云工具注入）的函数会实时出现。
+func aiBuiltinFuncsText() string {
+	infos := dic_funcs.ListFuncs()
+	if len(infos) == 0 {
+		return ""
+	}
+	names := make([]string, 0, len(infos))
+	for _, info := range infos {
+		names = append(names, info.Name)
+	}
+	return aiBuiltinFuncsHeader + aiFormatFuncNames(names)
+}
+
+// aiBuiltinFuncsTextCached 返回带缓存的内置函数完整清单。
+func aiBuiltinFuncsTextCached() string {
+	rev := dic_funcs.Revision()
+	if v, ok := aiBuiltinFuncsCache.Load().(aiBuiltinFuncsEntry); ok && v.rev == rev {
+		return v.text
+	}
+	text := aiBuiltinFuncsText()
+	aiBuiltinFuncsCache.Store(aiBuiltinFuncsEntry{rev: rev, text: text})
+	return text
+}
+
+// aiBuiltinFuncsTextUsed 仅汇总 code 中实际调用的内置函数，用于高频的内联补全按需注入，
+// 避免每次补全都下发完整函数清单造成 token 与延迟浪费。
+func aiBuiltinFuncsTextUsed(code string) string {
+	names := aiReferencedFuncs(code)
+	if len(names) == 0 {
+		return ""
+	}
+	return aiBuiltinFuncsHeaderUsed + aiFormatFuncNames(names)
+}
+
+// aiReferencedFuncs 扫描词库代码，按出现顺序提取其中已注册的内置函数名（形如 $函数名 参数$）。
+func aiReferencedFuncs(code string) []string {
+	if code == "" {
+		return nil
+	}
+	seen := make(map[string]struct{})
+	names := make([]string, 0)
+	for i := 0; i < len(code); i++ {
+		if code[i] != '$' {
+			continue
+		}
+		j := i + 1
+		for j < len(code) && !strings.ContainsRune("$ \t\r\n", rune(code[j])) {
+			j++
+		}
+		name := code[i+1 : j]
+		if _, ok := seen[name]; !ok {
+			if _, registered := dto.GetFuncRule(name); registered {
+				seen[name] = struct{}{}
+				names = append(names, name)
+			}
+		}
+		i = j
+	}
+	return names
+}
+
+// aiToolCall 模型返回的工具（函数）调用请求（OpenAI 兼容格式）。
+type aiToolCall struct {
+	ID       string `json:"id"`
+	Type     string `json:"type"`
+	Function struct {
+		Name      string `json:"name"`
+		Arguments string `json:"arguments"`
+	} `json:"function"`
+}
+
+// aiChatMessage 单条对话消息（OpenAI 兼容格式）。
+// 工具调用链中：assistant 消息可携带 ToolCalls；tool 消息通过 ToolCallID 回填执行结果。
+type aiChatMessage struct {
+	Role       string       `json:"role"`
+	Content    string       `json:"content"`
+	ToolCalls  []aiToolCall `json:"tool_calls,omitempty"`
+	ToolCallID string       `json:"tool_call_id,omitempty"`
+	Name       string       `json:"name,omitempty"`
+}
+
+// aiConfigJSON 将 AI 配置转为前端 JSON 结构。
+// 密钥已加密存储在配置文件中，不下发明文，每个模型仅告知是否已配置密钥。
+func aiConfigJSON(c *dto.AIConfig) map[string]any {
+	if c == nil {
+		return defaultAIConfigJSON()
+	}
+	models := make([]map[string]any, 0, len(c.Models))
+	for _, m := range c.Models {
+		if m == nil {
+			continue
+		}
+		models = append(models, map[string]any{
+			"id":               m.ID,
+			"name":             m.Name,
+			"base_url":         m.BaseURL,
+			"api_key_set":      strings.TrimSpace(m.APIKey) != "",
+			"model":            m.Model,
+			"reasoning":        m.Reasoning,
+			"reasoning_effort": m.ReasoningEffort,
+			"reasoning_model":  m.ReasoningModel,
+		})
+	}
+	return map[string]any{
+		"open":            c.Open,
+		"current_id":      c.CurrentID,
+		"models":          models,
+		"system_prompt":   c.SystemPrompt,
+		"timeout":         c.Timeout,
+		"inline_complete": c.InlineComplete,
+		// 兼容既有调用方（如词库调试的模型候选）：附带当前模型的解析结果
+		"base_url":         c.BaseURL,
+		"model":            c.Model,
+		"reasoning":        c.Reasoning,
+		"reasoning_effort": c.ReasoningEffort,
+		"reasoning_model":  c.ReasoningModel,
+	}
+}
+
+// defaultAIConfigJSON 返回 AI 配置的默认值（配置文件缺失时使用）。
+func defaultAIConfigJSON() map[string]any {
+	return map[string]any{
+		"open":             false,
+		"current_id":       "",
+		"models":           []map[string]any{},
+		"system_prompt":    "",
+		"timeout":          60,
+		"inline_complete":  true,
+		"base_url":         "",
+		"model":            dto.DefaultAIModel,
+		"reasoning":        false,
+		"reasoning_effort": "",
+		"reasoning_model":  "",
+	}
+}
+
+// aiResolveConfig 返回当前 AI 配置：优先取运行期内存值，缺失时回退读取配置文件。
+func aiResolveConfig() *dto.AIConfig {
+	if c := dto.ServerConfig.AI; c != nil {
+		return c
+	}
+	cfg, err := dto.LoadConfigFile()
+	if err != nil {
+		return &dto.AIConfig{Model: dto.DefaultAIModel, Timeout: 60, InlineComplete: true}
+	}
+	return dto.LoadConfig_ai(cfg.Section("AI"))
+}
+
+// aiCheckReady 校验 AI 配置是否可用于发起请求；forComplete 为 true 时额外要求开启内联补全。
+func aiCheckReady(c *dto.AIConfig, forComplete bool) error {
+	if c == nil || !c.Open {
+		return errors.New("AI 未启用，请先在「基础配置 → AI」中开启")
+	}
+	if strings.TrimSpace(c.BaseURL) == "" {
+		return errors.New("未配置 AI 接口地址，请先在「基础配置 → AI」中填写")
+	}
+	if forComplete && !c.InlineComplete {
+		return errors.New("未开启代码补全")
+	}
+	return nil
+}
+
+// aiChatOnce 调用 OpenAI 兼容的 chat/completions 接口，返回首个候选的文本内容。
+func aiChatOnce(c *dto.AIConfig, model string, messages []aiChatMessage) (string, error) {
+	content, _, err := aiChatOnceReasoning(c, model, messages, "")
+	return content, err
+}
+
+// aiChatOnceReasoning 调用 chat/completions 接口，返回首个候选的文本内容与思维链（不启用工具）。
+func aiChatOnceReasoning(c *dto.AIConfig, model string, messages []aiChatMessage, reasoningEffort string) (string, string, error) {
+	content, reasoning, _, err := aiChatOnceTools(c, model, messages, reasoningEffort, nil, "", "")
+	return content, reasoning, err
+}
+
+// ============== AI 上游限流/过载自动重试 ==============
+//
+// 服务商高峰期常返回 HTTP 429 或「该模型当前访问量过大，请您稍后再试」等瞬时错误，
+// 这类失败稍后重试即可恢复，不应直接抛给用户。退避等待期间会经 WS 推送重试状态，
+// 避免前端看起来像卡死。
+
+const (
+	// aiRetryMaxAttempts 遇到限流/过载时的最大尝试次数（含首次请求）
+	aiRetryMaxAttempts = 5
+	// aiRetryBaseDelay 一般瞬时故障（网关抖动、过载）首次重试前的等待时长，之后按 2 倍退避
+	aiRetryBaseDelay = time.Second
+	// aiRetryRateLimitBaseDelay 账户级限流（按分钟窗口计费）首次重试前的等待时长，
+	// 这类错误需要更长的冷却时间，退避序列为 3s→6s→12s→24s
+	aiRetryRateLimitBaseDelay = 3 * time.Second
+)
+
+// aiRetryableError 标记可重试的上游错误（限流、过载、网关抖动等）。
+type aiRetryableError struct{ msg string }
+
+func (e *aiRetryableError) Error() string { return e.msg }
+
+// aiRetryableByMessage 判断错误文案是否属于可重试的限流/过载类错误。
+func aiRetryableByMessage(msg string) bool {
+	lower := strings.ToLower(msg)
+	for _, kw := range []string{
+		"访问量过大", "稍后再试", "请稍后重试", "请求过于频繁", "限流",
+		"速率限制", "请求频率", "频率限制", "配额已满",
+		"rate limit", "too many requests", "overloaded", "temporarily unavailable", "server busy",
+	} {
+		if strings.Contains(lower, kw) {
+			return true
+		}
+	}
+	return false
+}
+
+// aiRetryRateLimitByMessage 判断错误文案是否属于账户/接口级限流（按分钟窗口类），
+// 这类错误需要比网关抖动更长的冷却时间，重试时采用更大的退避基数。
+func aiRetryRateLimitByMessage(msg string) bool {
+	lower := strings.ToLower(msg)
+	for _, kw := range []string{
+		"速率限制", "请求频率", "频率限制", "配额已满", "限流", "请求过于频繁",
+		"rate limit", "too many requests",
+	} {
+		if strings.Contains(lower, kw) {
+			return true
+		}
+	}
+	return false
+}
+
+// aiRetryableByStatus 判断 HTTP 状态码是否属于可重试的瞬时故障。
+func aiRetryableByStatus(code int) bool {
+	switch code {
+	case http.StatusTooManyRequests, http.StatusInternalServerError,
+		http.StatusBadGateway, http.StatusServiceUnavailable, http.StatusGatewayTimeout:
+		return true
+	}
+	return false
+}
+
+// aiNewRetryableError 构造可重试错误。
+func aiNewRetryableError(msg string) error { return &aiRetryableError{msg: msg} }
+
+// aiRetryable 报告错误是否应触发自动重试。
+func aiRetryable(err error) bool {
+	if err == nil {
+		return false
+	}
+	var re *aiRetryableError
+	if errors.As(err, &re) {
+		return true
+	}
+	return aiRetryableByMessage(err.Error())
+}
+
+// aiChatOnceTools 在 aiChatOnceToolsOnce 基础上，对限流/过载类错误做自动退避重试。
+func aiChatOnceTools(c *dto.AIConfig, model string, messages []aiChatMessage, reasoningEffort string, tools []map[string]any, toolChoice, streamID string) (string, string, []aiToolCall, error) {
+	var lastErr error
+	delay := aiRetryBaseDelay
+	for attempt := 1; attempt <= aiRetryMaxAttempts; attempt++ {
+		content, reasoning, calls, err := aiChatOnceToolsOnce(c, model, messages, reasoningEffort, tools, toolChoice, streamID)
+		if err == nil {
+			return content, reasoning, calls, nil
+		}
+		lastErr = err
+		if attempt >= aiRetryMaxAttempts || !aiRetryable(err) {
+			break
+		}
+		// 账户级限流按分钟窗口计费，需要比网关抖动更长的冷却时间
+		rateLimited := aiRetryRateLimitByMessage(err.Error())
+		if attempt == 1 && rateLimited {
+			delay = aiRetryRateLimitBaseDelay
+		}
+		// 让前端知道正处于退避等待中，而不是卡死（streamID 为空时该调用自动忽略）。
+		// 这里只给出秒数与次数，由前端自行倒计时，文案才能逐秒跳动。
+		reason := "上游繁忙"
+		if rateLimited {
+			reason = "触发限流"
+		}
+		aiStreamNotify(streamID, "ai_stream_delta", map[string]any{
+			"kind":    "retry",
+			"reason":  reason,
+			"attempt": attempt,
+			"seconds": int(delay / time.Second),
+		})
+		time.Sleep(delay)
+		delay *= 2
+	}
+	return "", "", nil, lastErr
+}
+
+// aiChatOnceToolsOnce 以流式（SSE）方式调用 OpenAI 兼容的 chat/completions 接口（单次尝试），
+// 边解析上游增量边推送思维链（ai_stream_delta，kind=reasoning），最后聚合返回首个候选的
+// 文本内容、思维链与工具调用请求。tools 非空时随请求下发工具清单；
+// 模型请求调用工具时正文通常为空、tool_calls 非空。
+// reasoningEffort 非空时附加 reasoning_effort 参数（适配 OpenAI o 系列等），并解析增量中的
+// reasoning_content / reasoning 字段作为思维链；未开启思考模式时思维链为空。
+// toolChoice 为空时不下发 tool_choice 字段（部分服务商不支持该字段）。
+// streamID 非空时，思维链增量即时经 WS 推送给前端，实现逐字显示。
+func aiChatOnceToolsOnce(c *dto.AIConfig, model string, messages []aiChatMessage, reasoningEffort string, tools []map[string]any, toolChoice, streamID string) (string, string, []aiToolCall, error) {
+	// 接口地址可只填到版本号（如 https://api.deepseek.com/v1），也可直接填完整的 chat/completions 地址
+	endpoint := strings.TrimRight(strings.TrimSpace(c.BaseURL), "/")
+	if endpoint == "" {
+		return "", "", nil, errors.New("未配置 AI 接口地址")
+	}
+	if !strings.HasSuffix(endpoint, "/chat/completions") {
+		endpoint += "/chat/completions"
+	}
+	if model == "" {
+		model = c.Model
+	}
+	if model == "" {
+		model = dto.DefaultAIModel
+	}
+
+	// 统一走流式：思维链才能边产生边推送；工具调用分片在解析时按 index 归并
+	payload := map[string]any{
+		"model":    model,
+		"messages": messages,
+		"stream":   true,
+	}
+	if effort := dto.NormalizeReasoningEffort(reasoningEffort); effort != "" {
+		payload["reasoning_effort"] = effort
+	}
+	if len(tools) > 0 {
+		payload["tools"] = tools
+		if toolChoice != "" {
+			payload["tool_choice"] = toolChoice
+		}
+	}
+	body, err := json.Marshal(payload)
+	if err != nil {
+		return "", "", nil, err
+	}
+
+	timeout := c.Timeout
+	if timeout <= 0 {
+		timeout = 60
+	}
+	// 建连阶段用配置超时兜底；进入流式读取后改用空闲超时并在收到数据时续期，
+	// 避免长思维链生成被「总时长」上限误杀（见 aiStreamIdleTimeout）。
+	// 父上下文来自流式取消注册表：用户点击「终止」时随之取消本次请求。
+	parent := aiStreamParentCtx(streamID)
+	ctx, cancel := context.WithCancel(parent)
+	defer cancel()
+	watchdog := time.AfterFunc(time.Duration(timeout)*time.Second, cancel)
+	defer watchdog.Stop()
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(body))
+	if err != nil {
+		return "", "", nil, fmt.Errorf("AI 接口地址不合法: %v", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Accept", "text/event-stream")
+	if c.APIKey != "" {
+		req.Header.Set("Authorization", "Bearer "+c.APIKey)
+	}
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		if parent.Err() != nil {
+			return "", "", nil, errAIStreamCancelled
+		}
+		return "", "", nil, fmt.Errorf("AI 接口请求失败: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		// 非 200 时上游返回的是 JSON 错误体，尽量解析出可读原因
+		msg := fmt.Sprintf("AI 接口返回 HTTP %d", resp.StatusCode)
+		var out struct {
+			Error *struct {
+				Message string `json:"message"`
+			} `json:"error"`
+		}
+		if json.NewDecoder(resp.Body).Decode(&out) == nil && out.Error != nil && strings.TrimSpace(out.Error.Message) != "" {
+			msg = strings.TrimSpace(out.Error.Message)
+		}
+		if aiRetryableByStatus(resp.StatusCode) || aiRetryableByMessage(msg) {
+			return "", "", nil, aiNewRetryableError(msg)
+		}
+		return "", "", nil, errors.New(msg)
+	}
+
+	var content, reasoning strings.Builder
+	var calls []aiToolCall
+
+	// 已建立连接：看门狗改按空闲超时续期，只要上游持续产出就不中断
+	idleTimeout := aiStreamIdleTimeout(timeout)
+	watchdog.Reset(idleTimeout)
+	scanner := bufio.NewScanner(resp.Body)
+	scanner.Buffer(make([]byte, 0, 64*1024), 4*1024*1024)
+	for scanner.Scan() {
+		watchdog.Reset(idleTimeout)
+		line := strings.TrimSpace(scanner.Text())
+		if !strings.HasPrefix(line, "data:") {
+			continue
+		}
+		chunk := strings.TrimSpace(strings.TrimPrefix(line, "data:"))
+		if chunk == "" {
+			continue
+		}
+		if chunk == "[DONE]" {
+			break
+		}
+		var part struct {
+			Choices []struct {
+				Delta struct {
+					Content          string `json:"content"`
+					ReasoningContent string `json:"reasoning_content"`
+					Reasoning        string `json:"reasoning"`
+					Text             string `json:"text"`
+					ToolCalls        []struct {
+						Index    int    `json:"index"`
+						ID       string `json:"id"`
+						Type     string `json:"type"`
+						Function struct {
+							Name      string `json:"name"`
+							Arguments string `json:"arguments"`
+						} `json:"function"`
+					} `json:"tool_calls"`
+				} `json:"delta"`
+			} `json:"choices"`
+			Error *struct {
+				Message string `json:"message"`
+			} `json:"error"`
+		}
+		if err := json.Unmarshal([]byte(chunk), &part); err != nil {
+			continue // 跳过无法解析的心跳/注释行
+		}
+		if part.Error != nil && strings.TrimSpace(part.Error.Message) != "" {
+			msg := strings.TrimSpace(part.Error.Message)
+			if aiRetryableByMessage(msg) {
+				return content.String(), reasoning.String(), nil, aiNewRetryableError(msg)
+			}
+			return content.String(), reasoning.String(), nil, errors.New(msg)
+		}
+		if len(part.Choices) == 0 {
+			continue
+		}
+		d := part.Choices[0].Delta
+		// 思维链增量：累积并即时推送，前端据此逐字渲染
+		if t := d.ReasoningContent; t != "" {
+			reasoning.WriteString(t)
+			aiStreamNotify(streamID, "ai_stream_delta", map[string]any{"kind": "reasoning", "text": t})
+		} else if t := d.Reasoning; t != "" {
+			reasoning.WriteString(t)
+			aiStreamNotify(streamID, "ai_stream_delta", map[string]any{"kind": "reasoning", "text": t})
+		}
+		// 正文增量即时推送，前端据此逐字渲染；若本轮最终转为工具调用，
+		// 泄漏的过渡文本会在收尾时被 ai_stream_end 的最终答复整体覆盖
+		if t := d.Content; t != "" {
+			content.WriteString(t)
+			aiStreamNotify(streamID, "ai_stream_delta", map[string]any{"kind": "content", "text": t})
+		} else if t := d.Text; t != "" {
+			content.WriteString(t)
+			aiStreamNotify(streamID, "ai_stream_delta", map[string]any{"kind": "content", "text": t})
+		}
+		// 工具调用分片：id/name/arguments 可能分散在多个增量中，按 index 归并
+		for _, tc := range d.ToolCalls {
+			for len(calls) <= tc.Index {
+				calls = append(calls, aiToolCall{})
+			}
+			if tc.ID != "" {
+				calls[tc.Index].ID = tc.ID
+			}
+			if tc.Type != "" {
+				calls[tc.Index].Type = tc.Type
+			}
+			calls[tc.Index].Function.Name += tc.Function.Name
+			calls[tc.Index].Function.Arguments += tc.Function.Arguments
+		}
+	}
+	if err := scanner.Err(); err != nil {
+		if parent.Err() != nil {
+			return content.String(), reasoning.String(), calls, errAIStreamCancelled
+		}
+		if ctx.Err() != nil {
+			return content.String(), reasoning.String(), calls, fmt.Errorf("AI 流式读取超时：超过 %v 未收到上游数据", idleTimeout)
+		}
+		return content.String(), reasoning.String(), calls, fmt.Errorf("AI 流式读取失败: %v", err)
+	}
+	// 剔除空槽，兼容部分服务商 index 不连续的情况
+	filtered := calls[:0]
+	for _, call := range calls {
+		if call.Function.Name != "" || call.ID != "" {
+			filtered = append(filtered, call)
+		}
+	}
+	return strings.TrimSpace(content.String()), strings.TrimSpace(reasoning.String()), filtered, nil
+}
+
+// aiStreamNotify 经 WS 广播一条 AI 流式事件（无 id，走前端 onPush 推送通道）。
+// streamID 为空时不做任何事；调用方需保证 streamID 在前端可唯一匹配当前消息。
+func aiStreamNotify(streamID, eventType string, data map[string]any) {
+	if streamID == "" {
+		return
+	}
+	if data == nil {
+		data = map[string]any{}
+	}
+	data["id"] = streamID
+	// 思考/正文增量同步写入会话草稿，页面刷新后仍可恢复已产生的部分
+	if eventType == "ai_stream_delta" {
+		kind, _ := data["kind"].(string)
+		if kind == "reasoning" || kind == "content" {
+			if text, _ := data["text"].(string); text != "" {
+				aiSessionAppendDraftDelta(streamID, kind, text)
+			}
+		}
+	}
+	msg, err := json.Marshal(map[string]any{"type": eventType, "data": data})
+	if err != nil {
+		return
+	}
+	broadcastOpuiNotify(msg)
+}
+
+// aiStreamIdleTimeout 流式读取阶段的空闲超时：只要上游持续产出数据就不中断，
+// 仅当连续这段时间没有收到任何新数据才终止请求。取「配置超时」与 3 分钟中的较大值，
+// 避免长思维链生成被总时长上限（默认 60 秒）误杀。
+func aiStreamIdleTimeout(timeoutSec int) time.Duration {
+	d := time.Duration(timeoutSec) * time.Second
+	if d < 3*time.Minute {
+		d = 3 * time.Minute
+	}
+	return d
+}
+
+// ---- AI 流式请求取消注册表：支持用户在生成中途「终止」 ----
+//
+// 每个流式请求（streamID 非空）在上游调用前登记一个可取消上下文，该流内的所有上游请求
+// （工具多轮、降级纯对话、审批等待）都从它派生；用户点击「终止」时统一取消，请求随即结束，
+// 已产生的思考与正文由调用方收尾保留。
+var (
+	aiStreamCancelMu sync.Mutex
+	aiStreamCancels  = map[string]*aiStreamCancelEntry{}
+)
+
+type aiStreamCancelEntry struct {
+	ctx    context.Context
+	cancel context.CancelFunc
+}
+
+// errAIStreamCancelled 标记「用户主动终止」，与超时、上游错误区分开。
+var errAIStreamCancelled = errors.New("用户已终止本次生成")
+
+// aiRegisterStreamCancel 为某流登记取消函数并返回其上下文；streamID 为空时返回独立背景上下文。
+func aiRegisterStreamCancel(streamID string) (context.Context, context.CancelFunc) {
+	ctx, cancel := context.WithCancel(context.Background())
+	if strings.TrimSpace(streamID) == "" {
+		return ctx, cancel
+	}
+	aiStreamCancelMu.Lock()
+	if old := aiStreamCancels[streamID]; old != nil {
+		old.cancel()
+	}
+	aiStreamCancels[streamID] = &aiStreamCancelEntry{ctx: ctx, cancel: cancel}
+	aiStreamCancelMu.Unlock()
+	return ctx, cancel
+}
+
+// aiUnregisterStreamCancel 注销某流的取消函数并释放其上下文（请求收尾时调用）。
+func aiUnregisterStreamCancel(streamID string) {
+	if strings.TrimSpace(streamID) == "" {
+		return
+	}
+	aiStreamCancelMu.Lock()
+	if e := aiStreamCancels[streamID]; e != nil {
+		e.cancel()
+		delete(aiStreamCancels, streamID)
+	}
+	aiStreamCancelMu.Unlock()
+}
+
+// aiStreamParentCtx 返回某流已登记的父上下文；未登记（如无 streamID）时返回背景上下文。
+func aiStreamParentCtx(streamID string) context.Context {
+	if strings.TrimSpace(streamID) == "" {
+		return context.Background()
+	}
+	aiStreamCancelMu.Lock()
+	defer aiStreamCancelMu.Unlock()
+	if e := aiStreamCancels[streamID]; e != nil {
+		return e.ctx
+	}
+	return context.Background()
+}
+
+// aiCancelStream 取消某流的在途生成并返回是否命中；streamID 未命中时按 sessionID 回退查找
+// （页面刷新后前端只剩任务 id，拿不到流 id）。
+func aiCancelStream(streamID, sessionID string) bool {
+	aiStreamCancelMu.Lock()
+	defer aiStreamCancelMu.Unlock()
+	if id := strings.TrimSpace(streamID); id != "" {
+		if e := aiStreamCancels[id]; e != nil {
+			e.cancel()
+			return true
+		}
+	}
+	if sid := strings.TrimSpace(sessionID); sid != "" {
+		for id, e := range aiStreamCancels {
+			if aiStreamSessionOf(id) == sid {
+				e.cancel()
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// aiChatStreamReasoning 以流式方式调用 OpenAI 兼容的 chat/completions 接口，
+// 边解析上游 SSE 增量边经 WS 推送（ai_stream_delta），并返回累计的正文与思维链。
+// 不同服务商的思维链字段不一：优先 delta.reasoning_content，回退 delta.reasoning。
+func aiChatStreamReasoning(c *dto.AIConfig, model string, messages []aiChatMessage, reasoningEffort, streamID string) (string, string, error) {
+	endpoint := strings.TrimRight(strings.TrimSpace(c.BaseURL), "/")
+	if endpoint == "" {
+		return "", "", errors.New("未配置 AI 接口地址")
+	}
+	if !strings.HasSuffix(endpoint, "/chat/completions") {
+		endpoint += "/chat/completions"
+	}
+	if model == "" {
+		model = c.Model
+	}
+	if model == "" {
+		model = dto.DefaultAIModel
+	}
+
+	payload := map[string]any{
+		"model":    model,
+		"messages": messages,
+		"stream":   true,
+	}
+	if effort := dto.NormalizeReasoningEffort(reasoningEffort); effort != "" {
+		payload["reasoning_effort"] = effort
+	}
+	body, err := json.Marshal(payload)
+	if err != nil {
+		return "", "", err
+	}
+
+	timeout := c.Timeout
+	if timeout <= 0 {
+		timeout = 60
+	}
+	// 建连阶段用配置超时兜底；进入流式读取后改用空闲超时并在收到数据时续期，
+	// 避免长思维链生成被「总时长」上限误杀（见 aiStreamIdleTimeout）。
+	// 父上下文来自流式取消注册表：用户点击「终止」时随之取消本次请求。
+	parent := aiStreamParentCtx(streamID)
+	ctx, cancel := context.WithCancel(parent)
+	defer cancel()
+	watchdog := time.AfterFunc(time.Duration(timeout)*time.Second, cancel)
+	defer watchdog.Stop()
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(body))
+	if err != nil {
+		return "", "", fmt.Errorf("AI 接口地址不合法: %v", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Accept", "text/event-stream")
+	if c.APIKey != "" {
+		req.Header.Set("Authorization", "Bearer "+c.APIKey)
+	}
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		if parent.Err() != nil {
+			return "", "", errAIStreamCancelled
+		}
+		return "", "", fmt.Errorf("AI 接口请求失败: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		// 尽量解析上游返回的错误信息，便于前端提示
+		var out struct {
+			Error *struct {
+				Message string `json:"message"`
+			} `json:"error"`
+		}
+		if json.NewDecoder(resp.Body).Decode(&out) == nil && out.Error != nil && strings.TrimSpace(out.Error.Message) != "" {
+			return "", "", errors.New(out.Error.Message)
+		}
+		return "", "", fmt.Errorf("AI 接口返回 HTTP %d", resp.StatusCode)
+	}
+
+	var content, reasoning strings.Builder
+	// 已建立连接：看门狗改按空闲超时续期，只要上游持续产出就不中断
+	idleTimeout := aiStreamIdleTimeout(timeout)
+	watchdog.Reset(idleTimeout)
+	scanner := bufio.NewScanner(resp.Body)
+	scanner.Buffer(make([]byte, 0, 64*1024), 4*1024*1024)
+	for scanner.Scan() {
+		watchdog.Reset(idleTimeout)
+		line := strings.TrimSpace(scanner.Text())
+		if !strings.HasPrefix(line, "data:") {
+			continue
+		}
+		chunk := strings.TrimSpace(strings.TrimPrefix(line, "data:"))
+		if chunk == "" || chunk == "[DONE]" {
+			if chunk == "[DONE]" {
+				break
+			}
+			continue
+		}
+		var part struct {
+			Choices []struct {
+				Delta struct {
+					Content          string `json:"content"`
+					ReasoningContent string `json:"reasoning_content"`
+					Reasoning        string `json:"reasoning"`
+				} `json:"delta"`
+			} `json:"choices"`
+			Error *struct {
+				Message string `json:"message"`
+			} `json:"error"`
+		}
+		if err := json.Unmarshal([]byte(chunk), &part); err != nil {
+			continue // 跳过无法解析的心跳/注释行
+		}
+		if part.Error != nil && strings.TrimSpace(part.Error.Message) != "" {
+			return content.String(), reasoning.String(), errors.New(part.Error.Message)
+		}
+		if len(part.Choices) == 0 {
+			continue
+		}
+		d := part.Choices[0].Delta
+		if t := d.ReasoningContent; t != "" {
+			reasoning.WriteString(t)
+			aiStreamNotify(streamID, "ai_stream_delta", map[string]any{"kind": "reasoning", "text": t})
+		} else if t := d.Reasoning; t != "" {
+			reasoning.WriteString(t)
+			aiStreamNotify(streamID, "ai_stream_delta", map[string]any{"kind": "reasoning", "text": t})
+		}
+		if t := d.Content; t != "" {
+			content.WriteString(t)
+			aiStreamNotify(streamID, "ai_stream_delta", map[string]any{"kind": "content", "text": t})
+		}
+	}
+	if err := scanner.Err(); err != nil {
+		if parent.Err() != nil {
+			return content.String(), reasoning.String(), errAIStreamCancelled
+		}
+		if ctx.Err() != nil {
+			return content.String(), reasoning.String(), fmt.Errorf("AI 流式读取超时：超过 %v 未收到上游数据", idleTimeout)
+		}
+		return content.String(), reasoning.String(), fmt.Errorf("AI 流式读取失败: %v", err)
+	}
+	return strings.TrimSpace(content.String()), strings.TrimSpace(reasoning.String()), nil
+}
+
+// aiBuildCompletePrompt 依据光标前后的词库代码拼装补全提示词。
+// 仅截取靠近光标的片段以控制上下文长度；上下文过短（无有效内容）时返回空串跳过本次补全。
+func aiBuildCompletePrompt(path, prefix, suffix string) string {
+	prefix = aiTailLines(prefix, 120)
+	suffix = aiHeadLines(suffix, 30)
+	if strings.TrimSpace(prefix) == "" && strings.TrimSpace(suffix) == "" {
+		return ""
+	}
+	name := filepath.ToSlash(strings.TrimSpace(path))
+	if name == "" {
+		name = "词库文件"
+	}
+	var sb strings.Builder
+	sb.WriteString("词库文件：")
+	sb.WriteString(name)
+	sb.WriteString("\n\n")
+	if prefix != "" {
+		sb.WriteString("光标之前的代码：\n```\n")
+		sb.WriteString(prefix)
+		sb.WriteString("\n```\n\n")
+	}
+	if suffix != "" {
+		sb.WriteString("光标之后的代码：\n```\n")
+		sb.WriteString(suffix)
+		sb.WriteString("\n```\n\n")
+	}
+	sb.WriteString("请只输出应插入到【光标处】的代码。")
+	return sb.String()
+}
+
+// aiTailLines 返回文本末尾的至多 n 行。
+func aiTailLines(s string, n int) string {
+	if n <= 0 {
+		return ""
+	}
+	lines := strings.Split(s, "\n")
+	if len(lines) > n {
+		lines = lines[len(lines)-n:]
+	}
+	return strings.Join(lines, "\n")
+}
+
+// aiHeadLines 返回文本开头的至多 n 行。
+func aiHeadLines(s string, n int) string {
+	if n <= 0 {
+		return ""
+	}
+	lines := strings.Split(s, "\n")
+	if len(lines) > n {
+		lines = lines[:n]
+	}
+	return strings.Join(lines, "\n")
+}
+
+// aiCleanComplete 清洗补全结果：去除模型可能附带的代码围栏，避免虚影插入多余内容。
+func aiCleanComplete(s string) string {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return ""
+	}
+	// 去掉开头/结尾的 Markdown 代码围栏
+	if strings.HasPrefix(s, "```") {
+		if i := strings.Index(s, "\n"); i >= 0 {
+			s = s[i+1:]
+		} else {
+			s = ""
+		}
+		s = strings.TrimSuffix(strings.TrimSpace(s), "```")
+		s = strings.TrimSpace(s)
+	}
+	// 模型有时会把整段上下文回显，出现光标占位标记时只取其后的内容
+	for _, marker := range []string{"<|光标|>", "【光标处】", "[光标]"} {
+		if i := strings.LastIndex(s, marker); i >= 0 {
+			s = strings.TrimSpace(s[i+len(marker):])
+		}
+	}
+	return s
 }
