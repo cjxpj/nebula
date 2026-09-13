@@ -1,6 +1,7 @@
 package qqbot
 
 import (
+	"bytes"
 	"encoding/base64"
 	"fmt"
 	"regexp"
@@ -143,6 +144,9 @@ func stripReplyTags(s string) (string, []string, string) {
 			data, err = dataURLBytes(src)
 		case strings.HasPrefix(src, "http://") || strings.HasPrefix(src, "https://"):
 			data, err = utils.Get(src)
+		case isReplyImageData([]byte(src)):
+			// 标记值本身就是图片二进制（如 ±img=%画布数据%±）
+			data = src
 		default:
 			data, err = utils.NewFileQueue(src).ReadFile()
 		}
@@ -153,7 +157,103 @@ func stripReplyTags(s string) (string, []string, string) {
 
 	// 去掉首尾空白：±img=/±atMsg= 标记移除后可能残留空格/换行，
 	// 纯空白视为空消息，交由上层「空消息不发送」判断拦截。
-	return strings.TrimSpace(s), imgs, atMsgID
+	s = strings.TrimSpace(s)
+	// 词库正文里直接输出的图片二进制（如 $画布.获取$ 返回的 PNG/JPEG 字节）
+	// 会与文本混在一起，这里按文件头魔数拆分，避免把二进制当文本发出。
+	s, imgs = splitReplyImages(s, imgs)
+	return s, imgs, atMsgID
+}
+
+// isReplyImageData 按文件头判断数据是否为常见图片格式。
+// 注意不能用 http.DetectContentType：它把任何以 "BM" 开头的文本都判成 image/bmp，
+// 会导致正文里普通文字被误当成图片切走，因此这里按真实文件头结构校验。
+func isReplyImageData(data []byte) bool {
+	switch {
+	case bytes.HasPrefix(data, []byte{0x89, 'P', 'N', 'G', 0x0D, 0x0A, 0x1A, 0x0A}): // PNG
+		return true
+	case bytes.HasPrefix(data, []byte{0xFF, 0xD8, 0xFF}): // JPEG
+		return true
+	case bytes.HasPrefix(data, []byte("GIF87a")), bytes.HasPrefix(data, []byte("GIF89a")): // GIF
+		return true
+	case bytes.HasPrefix(data, []byte("RIFF")) && len(data) >= 12 && bytes.Equal(data[8:12], []byte("WEBP")): // WebP
+		return true
+	case bytes.HasPrefix(data, []byte{0x00, 0x00, 0x01, 0x00}), // ICO
+		bytes.HasPrefix(data, []byte{0x00, 0x00, 0x02, 0x00}): // CUR
+		return true
+	case len(data) >= 14 && data[0] == 'B' && data[1] == 'M' &&
+		data[6] == 0 && data[7] == 0 && data[8] == 0 && data[9] == 0: // BMP：保留字段（6~9 字节）必须为 0
+		return true
+	}
+	return false
+}
+
+// imageFirstBytes 可能是图片文件头首字节的集合，用于快速跳过普通文本
+var imageFirstBytes = [256]bool{
+	0x89: true, 0xFF: true, 'G': true, 'R': true, 0x00: true, 'B': true,
+}
+
+// findReplyImageStart 在文本中查找第一张图片二进制的起始位置，找不到返回 -1
+func findReplyImageStart(data []byte) int {
+	for i := 0; i < len(data); i++ {
+		if imageFirstBytes[data[i]] && isReplyImageData(data[i:]) {
+			return i
+		}
+	}
+	return -1
+}
+
+// findReplyImageEnd 返回从 start 开始图片二进制的结束位置（不含）。无法确定时返回 len(data)
+func findReplyImageEnd(data []byte, start int) int {
+	rest := data[start:]
+	switch {
+	case bytes.HasPrefix(rest, []byte{0x89, 'P', 'N', 'G', 0x0D, 0x0A, 0x1A, 0x0A}):
+		// PNG 以 IEND chunk（00 00 00 00 49 45 4E 44 AE 42 60 82）结束
+		if idx := bytes.Index(rest, []byte{0x00, 0x00, 0x00, 0x00, 0x49, 0x45, 0x4E, 0x44, 0xAE, 0x42, 0x60, 0x82}); idx >= 0 {
+			return start + idx + 12
+		}
+	case bytes.HasPrefix(rest, []byte{0xFF, 0xD8, 0xFF}):
+		// JPEG 以 FFD9 结束
+		if idx := bytes.Index(rest, []byte{0xFF, 0xD9}); idx >= 0 {
+			return start + idx + 2
+		}
+	case bytes.HasPrefix(rest, []byte("GIF87a")) || bytes.HasPrefix(rest, []byte("GIF89a")):
+		// GIF 以 0x3B 结束
+		if idx := bytes.IndexByte(rest, 0x3B); idx >= 0 {
+			return start + idx + 1
+		}
+	case bytes.HasPrefix(rest, []byte("RIFF")) && len(rest) >= 12 && bytes.Equal(rest[8:12], []byte("WEBP")):
+		// WebP：RIFF 头部 4~7 字节为整个文件长度（含 8 字节头）
+		size := int(rest[4]) | int(rest[5])<<8 | int(rest[6])<<16 | int(rest[7])<<24
+		if size >= 8 && len(rest) >= 8+size {
+			return start + 8 + size
+		}
+	}
+	return len(data)
+}
+
+// splitReplyImages 把回复文本中直接输出的图片二进制拆出来追加到 imgs，
+// 返回去掉图片后的文本。未识别到图片时原样返回，避免影响普通文本回复。
+func splitReplyImages(s string, imgs []string) (string, []string) {
+	data := []byte(s)
+	if findReplyImageStart(data) < 0 {
+		return s, imgs
+	}
+	var text bytes.Buffer
+	for {
+		imgStart := findReplyImageStart(data)
+		if imgStart < 0 {
+			text.Write(data)
+			break
+		}
+		text.Write(data[:imgStart])
+		imgEnd := findReplyImageEnd(data, imgStart)
+		imgs = append(imgs, string(data[imgStart:imgEnd]))
+		if imgEnd >= len(data) {
+			break
+		}
+		data = data[imgEnd:]
+	}
+	return strings.TrimSpace(text.String()), imgs
 }
 
 // dataURLBytes 把 data URL（如 data:image/png;base64,xxx）解码为图片原始字节。

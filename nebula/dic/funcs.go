@@ -1171,7 +1171,10 @@ func readDicFile(d *dto.DicInputs) (any, error) {
 		return nil, err
 	}
 
-	result := extractSectionStrict(lines, trigger, useRegex)
+	result, err := extractSectionStrict(lines, trigger, useRegex)
+	if err != nil {
+		return nil, err
+	}
 
 	jsonStr, err := toJSONString(result)
 	if err != nil {
@@ -1295,11 +1298,15 @@ func readFileLines(filePath string) ([]string, error) {
 }
 
 // 严格按段落匹配触发词提取内容块
-func extractSectionStrict(lines []string, trigger string, useRegex bool) []string {
+func extractSectionStrict(lines []string, trigger string, useRegex bool) ([]string, error) {
 	var result []string
 	var re *regexp.Regexp
 	if useRegex {
-		re = regexp.MustCompile(trigger)
+		var err error
+		re, err = regexp.Compile(trigger)
+		if err != nil {
+			return nil, err
+		}
 	}
 
 	for i := 0; i < len(lines); i++ {
@@ -1327,7 +1334,7 @@ func extractSectionStrict(lines []string, trigger string, useRegex bool) []strin
 		break // 只取第一个匹配段落
 	}
 
-	return result
+	return result, nil
 }
 
 // 转 JSON

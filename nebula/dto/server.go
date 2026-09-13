@@ -94,6 +94,8 @@ type AIConfig struct {
 	Timeout int
 	// 是否启用词库编辑器内联补全
 	InlineComplete bool
+	// 是否启用 AI 视觉能力：开启后词库运行输出中的图片会上传给模型查看（需当前模型支持多模态输入）
+	Vision bool
 	// 当前模型是否默认开启思考/推理模式（任务可单独覆盖）
 	Reasoning bool
 	// 当前模型的推理强度：low | medium | high | max，留空时由接口按模型默认处理
@@ -119,6 +121,8 @@ type AIModelConfig struct {
 	APIKey string `json:"api_key"`
 	// 模型名
 	Model string `json:"model"`
+	// 是否开启 AI 视觉能力：开启后词库运行输出中的图片会上传给该模型查看（需该模型支持多模态输入）
+	Vision bool `json:"vision"`
 	// 是否开启思考/推理模式
 	Reasoning bool `json:"reasoning"`
 	// 推理强度：low | medium | high | max
@@ -187,6 +191,7 @@ func LoadConfig_ai(sec *ConfigSection) *AIConfig {
 		cfg.BaseURL = cur.BaseURL
 		cfg.APIKey = cur.APIKey
 		cfg.Model = cur.Model
+		cfg.Vision = cur.Vision
 		cfg.Reasoning = cur.Reasoning
 		cfg.ReasoningEffort = cur.ReasoningEffort
 		cfg.ReasoningModel = cur.ReasoningModel

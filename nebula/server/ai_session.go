@@ -1000,7 +1000,9 @@ func aiChatWithSession(w http.ResponseWriter, aiCfg *dto.AIConfig, sessionID, me
 	// 词库调试 AI 具备文件/词库工具能力：补充工具使用与「改盘后同步编辑器」的约定
 	baseSystem += aiDicToolsPrompt
 	if dp := strings.TrimSpace(sess.DicPath); dp != "" {
-		baseSystem += "\n\n当前任务关联的词库文件：" + dp
+		baseSystem += "\n\n当前任务关联的词库文件：" + dp +
+			"\n（这是用户此刻在编辑器中打开的 .n 文件，是你默认的操作对象：需要阅读或修改词库时优先直接 read_dic / save_dic 这个文件，" +
+			"不要先用 list_files / search_files 满目录查找或读取无关文件；仅当用户明确指向其他文件时才切换。）"
 	}
 
 	if sessModel == "" {

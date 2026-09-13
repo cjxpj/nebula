@@ -216,11 +216,33 @@ func qqBOTGroupRun(payload *qqbot_msg.Payload, bot *qqbot_msg.RouterQQBot) {
 	qqBOTGroupRunEvent(m, bot)
 }
 
+// listBotDicFiles 返回本次需要执行的词库文件路径列表（相对应用目录）。
+// bot.DicFile 非空时只执行该词库文件（沙箱单文件测试），否则执行 FilePath/dic 目录下全部 .n 词库。
+func listBotDicFiles(bot *qqbot_msg.RouterQQBot) []string {
+	if bot.DicFile != "" {
+		if !strings.HasSuffix(strings.ToLower(bot.DicFile), ".n") {
+			return nil
+		}
+		return []string{bot.DicFile}
+	}
+	botDicList, err := utils.NewFileQueue(filepath.Join(bot.FilePath, "dic")).GetFileList()
+	if err != nil {
+		return nil
+	}
+	dicFiles := make([]string, 0, len(botDicList))
+	for _, v := range botDicList {
+		if !strings.HasSuffix(v, ".n") {
+			continue
+		}
+		dicFiles = append(dicFiles, filepath.Join(bot.FilePath, "dic", v))
+	}
+	return dicFiles
+}
+
 // qqBOTGroupRunEvent 处理一条已解析的群消息（沙箱测试也复用此入口）
 func qqBOTGroupRunEvent(m *qqbot_msg.GroupMessageEvent, bot *qqbot_msg.RouterQQBot) {
-	botDicPath := utils.NewFileQueue(filepath.Join(bot.FilePath, "dic"))
-	botDicList, err := botDicPath.GetFileList()
-	if err != nil {
+	botDicList := listBotDicFiles(bot)
+	if len(botDicList) == 0 {
 		return
 	}
 
@@ -319,11 +341,7 @@ func qqBOTGroupRunEvent(m *qqbot_msg.GroupMessageEvent, bot *qqbot_msg.RouterQQB
 	RecordUser(bot, userID, m.Author.Username)
 
 	// 词库
-	for _, v := range botDicList {
-		if !strings.HasSuffix(v, ".n") {
-			continue
-		}
-		dicPath := filepath.Join(bot.FilePath, "dic", v)
+	for _, dicPath := range botDicList {
 		FileData, err := utils.NewFileQueue(dicPath).ReadFromFile()
 		if err != nil {
 			continue
@@ -1190,9 +1208,8 @@ func qqBOTGroupPrivateRun(payload *qqbot_msg.Payload, bot *qqbot_msg.RouterQQBot
 
 // qqBOTGroupPrivateRunEvent 处理一条已解析的群私聊消息（沙箱测试也复用此入口）
 func qqBOTGroupPrivateRunEvent(m *qqbot_msg.GroupMessageEvent, bot *qqbot_msg.RouterQQBot) {
-	botDicPath := utils.NewFileQueue(filepath.Join(bot.FilePath, "dic"))
-	botDicList, err := botDicPath.GetFileList()
-	if err != nil {
+	botDicList := listBotDicFiles(bot)
+	if len(botDicList) == 0 {
 		return
 	}
 
@@ -1247,11 +1264,7 @@ func qqBOTGroupPrivateRunEvent(m *qqbot_msg.GroupMessageEvent, bot *qqbot_msg.Ro
 		Set("消息id", m.ID)
 
 	// 词库
-	for _, v := range botDicList {
-		if !strings.HasSuffix(v, ".n") {
-			continue
-		}
-		dicPath := filepath.Join(bot.FilePath, "dic", v)
+	for _, dicPath := range botDicList {
 		FileData, err := utils.NewFileQueue(dicPath).ReadFromFile()
 		if err != nil {
 			continue

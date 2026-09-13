@@ -18,6 +18,8 @@ type RouterQQBot struct {
 	Addr string
 	// 词库路径
 	FilePath string
+	// 仅执行指定词库文件（沙箱单文件测试用，空则执行 FilePath/dic 目录下全部词库）
+	DicFile string
 	// 缓存器-清重复数据
 	LastMsg *cache.Cache
 	// 接口

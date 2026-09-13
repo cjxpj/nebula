@@ -2170,7 +2170,8 @@ func parseOutputSegments(output string) []map[string]string {
 
 // dicRunResultPayload 汇总一次词库运行的输出、分段、错误行与变量快照。
 // 手动运行（dic_debug_run）与 AI 工具运行（run_dic）共用，保证前端「运行结果」面板展示一致。
-func dicRunResultPayload(dic *dic_dto.Dic, output string, timedOut bool) map[string]any {
+// fellBack=true（触发词未命中、走了线性脚本兜底）时，额外附一条黄色警告诊断。
+func dicRunResultPayload(dic *dic_dto.Dic, output string, timedOut bool, fellBack bool, trigger string) map[string]any {
 	pVars := make(map[string]any)
 	for k, v := range dic.Val.P.GetAll() {
 		pVars[k] = varDebugItem(v)
@@ -2201,10 +2202,78 @@ func dicRunResultPayload(dic *dic_dto.Dic, output string, timedOut bool) map[str
 			}
 		}
 	}
-	if len(dic.Data.Warnings) > 0 {
-		resp["warnings"] = dic.Data.Warnings
+	warnings := dic.Data.Warnings
+	if fellBack {
+		// 用新切片追加，避免就地扩容污染 dic.Data.Warnings
+		warnings = append(append([]dto.BuildWarning{}, dic.Data.Warnings...), dicTriggerMissWarning(dic, trigger))
+	}
+	if len(warnings) > 0 {
+		resp["warnings"] = warnings
 	}
 	return resp
+}
+
+// dicTriggerMissWarning 触发词未命中时生成一条黄色警告。
+// 改为警告诊断后，前端会在对应行整行标黄，悬浮气泡里给出原因。
+func dicTriggerMissWarning(dic *dic_dto.Dic, trigger string) dto.BuildWarning {
+	return dto.BuildWarning{
+		Line:  dicTriggerMissLine(dic),
+		Text:  dicTriggerMissHint(trigger),
+		Level: "warning",
+	}
+}
+
+// dicTriggerMissLine 把兜底警告定位到首个词条的触发词行；没有词条时退回第 1 行。
+func dicTriggerMissLine(dic *dic_dto.Dic) int {
+	if dic != nil && dic.Data != nil && len(dic.Data.Dic) > 0 {
+		if n := dic.Data.Dic[0].TriggerLine; n > 0 {
+			return n
+		}
+	}
+	return 1
+}
+
+// dicTriggerMissHint 触发词未命中任何词条时的提示文案。
+// 未命中时只跑头部（初始化代码）、不跑正文，也不会把触发词行当正文输出。
+// 手动运行与 AI 工具运行共用同一文案。
+func dicTriggerMissHint(trigger string) string {
+	if strings.TrimSpace(trigger) == "" {
+		return "触发词为空，未命中任何词条；如需执行某个词条，请在运行配置里把「触发文本」填成该词条的触发词。"
+	}
+	return "触发词「" + trigger + "」未命中任何词条；如需执行某个词条，请在运行配置里把「触发文本」改成该词条的触发词。"
+}
+
+// outputImages 从词库输出中提取图片地址（±img= / <img> / ![]() 标记与直接输出的图片二进制），
+// 返回可直接用于多模态上传的地址（data URI 或 http(s) URL）。无图片时返回 nil。
+func outputImages(output string) []string {
+	var imgs []string
+	for _, seg := range parseOutputSegments(output) {
+		if seg["type"] == "img" && seg["src"] != "" {
+			imgs = append(imgs, seg["src"])
+		}
+	}
+	return imgs
+}
+
+// aiVisionUserMessage 构造携带图片的多模态 user 消息：文本 + image_url 分段数组。
+func aiVisionUserMessage(text string, images []string) aiChatMessage {
+	parts := make([]map[string]any, 0, len(images)+1)
+	if strings.TrimSpace(text) != "" {
+		parts = append(parts, map[string]any{"type": "text", "text": text})
+	}
+	for _, src := range images {
+		parts = append(parts, map[string]any{
+			"type":      "image_url",
+			"image_url": map[string]any{"url": src},
+		})
+	}
+	return aiChatMessage{Role: "user", Content: parts}
+}
+
+// aiVisionDisabledHint 视觉能力未开启、本次运行又输出过图片时的提示文案。
+// 同时用于回灌给模型（让它知道自己看不到图片、不要凭空臆测内容）与前端面板黄色警告。
+func aiVisionDisabledHint(n int) string {
+	return fmt.Sprintf("本次运行输出中包含 %d 张图片，但当前模型的「AI 视觉能力」未开启，AI 无法查看图片内容；如需让 AI 查看，请在「基础配置 → AI」中为当前模型开启视觉能力后重试。", n)
 }
 
 // loadDicDebugDefaults 读取合并配置中 [词库调试] 节的配置（运行配置的唯一存储位置）
@@ -5223,7 +5292,9 @@ func opuiHandleApi(w http.ResponseWriter, r *http.Request) {
 			Section string `json:"section"`
 			// Dic 自定义词库路径（优先于 section，无需选择实例即可测试）
 			Dic string `json:"dic"`
-			Msg string `json:"msg"`
+			// DicFile 只执行该词库文件（沙箱单文件测试），空则执行 Dic/dic 目录下全部词库
+			DicFile string `json:"dic_file"`
+			Msg     string `json:"msg"`
 			// Private 按群私聊模拟（词库 #私聊# 触发词生效），默认群聊
 			Private bool `json:"private"`
 			// ReplyID 前端右键回复指定的被引用消息 ID，空则回退为本次消息自身
@@ -5273,6 +5344,13 @@ func opuiHandleApi(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
+		// 单文件测试：仅执行前端选中的词库文件（校验路径合法性，避免越权读取）
+		dicFile := strings.TrimSpace(j.DicFile)
+		if dicFile != "" && !checkDicPath(dicFile) {
+			http.Error(w, `{"status":"error","error":"测试词库路径不合法"}`, http.StatusBadRequest)
+			return
+		}
+
 		capture := qqbot_msg.NewSandboxCapture()
 		api := qqbot_msg.NewQQBot(appid, secret)
 		api.Debug = debug
@@ -5280,6 +5358,7 @@ func opuiHandleApi(w http.ResponseWriter, r *http.Request) {
 
 		bot := &qqbot_msg.RouterQQBot{
 			FilePath:    dicPath,
+			DicFile:     dicFile,
 			API:         api,
 			AtCompat:    atCompat,
 			FilterSlash: filterSlash,
@@ -5980,6 +6059,7 @@ func opuiHandleApi(w http.ResponseWriter, r *http.Request) {
 				APIKey          string `json:"api_key"`
 				ClearAPIKey     bool   `json:"clear_api_key"`
 				Model           string `json:"model"`
+				Vision          bool   `json:"vision"`
 				Reasoning       bool   `json:"reasoning"`
 				ReasoningEffort string `json:"reasoning_effort"`
 				ReasoningModel  string `json:"reasoning_model"`
@@ -6020,6 +6100,7 @@ func opuiHandleApi(w http.ResponseWriter, r *http.Request) {
 				BaseURL:         strings.TrimSpace(m.BaseURL),
 				APIKey:          apiKey,
 				Model:           strings.TrimSpace(m.Model),
+				Vision:          m.Vision,
 				Reasoning:       m.Reasoning,
 				ReasoningEffort: dto.NormalizeReasoningEffort(m.ReasoningEffort),
 				ReasoningModel:  strings.TrimSpace(m.ReasoningModel),
@@ -7033,6 +7114,11 @@ func opuiHandleApi(w http.ResponseWriter, r *http.Request) {
 		aiSessionHandle(w, h)
 		return
 
+	case "list_ai_agents", "save_ai_agent", "delete_ai_agent", "switch_ai_agent":
+		// AI 智能体管理：预设的增删改查，以及「切换到某智能体的独立任务」
+		aiAgentHandle(w, h)
+		return
+
 	case "ai_complete":
 		// AI 内联补全：根据光标前后代码续写，供编辑器以虚影（ghost text）形式提示
 		var j struct {
@@ -7271,10 +7357,11 @@ func opuiHandleApi(w http.ResponseWriter, r *http.Request) {
 		}
 
 		// 触发词命中则正常执行；未命中（如调试脚本没有写触发词）则整体按线性脚本执行
-		output, timedOut := dic_api.Api.DicRunScript(dic, j.Trigger, time.Duration(j.Timeout)*time.Second)
+		output, timedOut, fellBack := dic_api.Api.DicRunScript(dic, j.Trigger, time.Duration(j.Timeout)*time.Second)
 
-		// 输出/分段/错误行/变量/警告统一组装（与 AI 工具运行共用同一实现）
-		resp := dicRunResultPayload(dic, output, timedOut)
+		// 输出/分段/错误行/变量/警告统一组装（与 AI 工具运行共用同一实现）；
+		// 兜底分支额外附一条黄色警告，提示触发词未命中、触发词行被当正文输出
+		resp := dicRunResultPayload(dic, output, timedOut, fellBack, j.Trigger)
 		jsonResp, _ := json.Marshal(resp)
 		w.Write(jsonResp)
 		return
@@ -7761,20 +7848,21 @@ const aiDicSystemPrompt = `你是 Nebula 词库（.n 文件）开发助手。回
 
 【Nebula 词库语法速览】写 .n 代码时必须遵守：
 一、文件结构
-1. .n 是 UTF-8 文本，全文分「头部」与「正文词条」两段：文件开头到第一个空行为止是头部（一般只放 #引入=xxx.n、初始化赋值、$重定向触发词 ...$ 等），空行之后全部是词条；$设置工作目录 ...$ 只允许出现在启动词库 start.n 的头部且仅一次，普通 .n 文件（含绘制类）一律禁止写它；
+1. .n 是 UTF-8 文本，全文分「头部」与「正文词条」两段：文件开头到第一个空行为止是头部（一般只放 #引入=xxx.n、初始化赋值、$重定向触发词 ...$ 等），空行之后全部是词条；头部为空（没有 #引入= 等头部内容）时，文件必须以一个空行开头，即第一个词条上方也要留一个空行，否则第一个词条会被并入头部、不再作为词条生效（表现为「运行没反应」）；$设置工作目录 ...$ 只允许出现在启动词库 start.n 的头部且仅一次，普通 .n 文件（含绘制类）一律禁止写它；
 2. 一条词条 = 触发词独占一行 + 紧接其下的正文行，正文行之间必须紧贴、不能有空行（空行会立即结束该词条，把后续内容拆成一堆没有触发词的空词条）；.n 不是普通脚本，禁止「无触发词、逐行罗列、行间留空行」的写法，写进文件的每一段代码都必须能归属到某个触发词之下；
 3. 正文若要包含空行，整条需改写为「触发词 #{ ... }#」或「触发词 <?n ... ?>」，只有这两种写法允许块内空行。
 
 二、触发词与取值
-1. 触发词即用户消息文本，行首 [类别] 前缀决定角色：[函数]名称、[内部]名称（用 $回调 名称$ 触发）、[函数:类名]方法、[内部:类名]方法；无前缀即普通触发词；
-2. 触发词按正则匹配（不含正则元字符时按纯文本全等匹配）。%参数0% 是消息按空格切分后的第 1 个词（%参数N% 即第 N+1 个词）；%括号0% 是整体消息文本，%括号N% 是正则第 N 个捕获组（从 1 开始）；
-3. 普通词条与函数中直接输出的文本就是回复内容，无需再调用 $发送文本$。
+1. 触发词不要默认写 Main：Main 只是「无参数主动执行入口」（网页被访问、定时任务、$执行词库$ 等主动执行场景）的专用触发词，功能 / 娱乐类词库靠用户发消息唤起（如「五子棋」「钓鱼」「签到」），一律不写 Main，写了是死代码（机器人收到消息是按文本精确/正则匹配触发词，匹配不到不回复，永远轮不到 Main），还容易把使用说明、菜单等不该展示的内容塞进去；用户没有明确指定触发词时，按该词条功能自行命名一个简短、贴合语义的触发词（如 画九宫格、签到、下子），并保证词条之间触发词不重复；只有用户明确要求用 Main、或确属主动执行入口时才写 Main；
+2. 触发词即用户消息文本，行首 [类别] 前缀决定角色：[函数]名称、[内部]名称（用 $回调 名称$ 触发）、[函数:类名]方法、[内部:类名]方法；无前缀即普通触发词；
+3. 触发词按正则匹配（不含正则元字符时按纯文本全等匹配）。%参数0% 是消息按空格切分后的第 1 个词（%参数N% 即第 N+1 个词）；%括号0% 是整体消息文本，%括号N% 是正则第 N 个捕获组（从 1 开始）；
+4. 普通词条与函数中直接输出的文本就是回复内容，无需再调用 $发送文本$。
 
 三、变量
-1. 赋值写「变量名:值」，变量名裸写、不带 %；读取才写 %变量名%。同名追加用 变量+:值，相减用 变量-:值；变量::值 表示原样文本不解析；赋值行里的变量名写成 %变量%: 无效（实测：整行被当普通文本输出，变量根本没生成，后续读 %变量名% 会报「变量不存在」）；
+1. 赋值写「变量名:值」，变量名裸写、不带 %；读取才写 %变量名%。同名追加用 变量+:值，相减用 变量-:值；变量::值 表示原样文本不解析；赋值行里的变量名写成 %变量%: 无效（实测：整行被当普通文本输出，变量根本没生成，后续读 %变量名% 会报「变量不存在」）；函数调用会直接返回结果（返回值就地替换在行内），只是为了输出结果时不要把「$函数 参数$」先赋值给变量再写一行 %变量%，直接写 $函数 参数$ 即可，只有结果还要复用（再输出、当参数、参与运算、写进文本块）时才赋值存起来；
 2. 读 JSON 路径用 %@变量.键.键%；三目与回退只在赋值中生效：条件?真值:假值、值?:回退值；
 3. 变量名不超过 32 字节；跨函数读写用 $全局变量 名 值$ / $全局变量 名$，线程级用 $线程变量$；
-4. 算术与计算必须「先取中间变量、再参与运算」：函数参数里、算术表达式 [...] 里都不能再嵌套 $函数$。错误：$JSON存 %背包% 草鱼 %$JSON解析 ...$ + 1$、$延迟 [1000*$随机数 1 3$]$；正确：先 旧数量:$JSON解析 %背包% 草鱼$、秒:$随机数 1 3$ 拿到中间值，再 $JSON存 %背包% 草鱼 $计算 %旧数量% + 1$$、$延迟 [1000*%秒%]$。
+4. 算术与计算必须「先取中间变量、再参与运算」：函数参数里、算术表达式 [...] 里都不能再嵌套 $函数$。错误：$JSON存 %背包% 草鱼 %$JSON解析 ...$ + 1$、$延迟 [1000*$随机数 1 3$]$；正确：先 旧数量:$JSON解析 %背包% 草鱼$、秒:$随机数 1 3$ 拿到中间值，再 $JSON存 %背包% 草鱼 $计算 %旧数量% + 1$$、$延迟 [1000*%秒%]$；算术表达式 [...] 内不要写空格（整个 [...] 会被当成一个参数，但参数是按空格切分的）：错误 $延迟 [1000 * %秒%]$、$写 a.txt 值 [%旧值% + 1]$，正确 $延迟 [1000*%秒%]$、$写 a.txt 值 [%旧值%+1]$。
 
 四、调用内置函数与对象方法
 1. $ 必须首尾成对：$函数名 参数...$。最常见的错误是漏掉开头的 $（只写结尾）：画布.设置颜色 #f0d9b5$ 、玩家.存 字符串(行) 字符串(列) 颜色$ 都是错的，必须写成 $画布.设置颜色 #f0d9b5$、$玩家.存 ...$；参数以空格分隔，参数本身含空格时用双引号包裹整段（如 $发送文本 "你好 世界"$）。凡是写「函数名/变量.方法 后跟参数」，就要先检查行首有没有 $；
@@ -7820,6 +7908,22 @@ const aiDicSystemPrompt = `你是 Nebula 词库（.n 文件）开发助手。回
 3. 不要套用其它语言写法：.n 没有 def/class/for/while/return 等关键字，也没有字符串字面量类型，一切靠「键:值」「%变量%」「$函数 参数$」与 [类别] 触发词前缀；
 4. 不要给类实例编造方法名或参数个数：以文档或已有示例为准，拿不准就如实说明「不确定」并请用户确认，禁止用一串坐标/数字硬凑参数（如给只收颜色的 $画布.设置颜色$ 传矩形参数）。
 
+九、画布（$创建画布$ 得到的对象，方法写作 $画布.方法 参数$）
+1. 创建需赋值：画布:$创建画布 <高> <宽>$（也可 $创建画布 <高> <宽> <#十六进制|颜色地址>$、$创建画布 <URL|文件路径|图片数据> <高> <宽>$）；
+2. 展示画布不需要保存成文件：把图片原数据直接输出到正文，运行结果面板会自动识别并显示：
+   画布:$创建画布 100 100$
+   $画布.绘制方形 0 0 20 20 0 #ff0000$
+   图:$画布.获取 png$          // .获取 可取 png|jpg|jpeg，默认 png，返回图片原始数据
+   %图%                        // 图片原数据单独输出到正文即可显示，无需落盘
+   画布没有保存 / 导出 / 转 / 输出图片的方法，禁止写 $画布.保存图片 1.png$ / $画布.导出图片 1.png$ / $画布.转图片$ / $画布.输出图片$ / $画布.写文件 1.png$（这些方法都不存在）；
+   禁止用 $写图片 <文件路径> %图%$ 「导出」画布：$写图片$ 是把数据隐写进一张「已存在」的图片，目标文件不存在会报「无法打开或解码图片文件」，与展示画布无关；
+3. 画布方法（绘制类统一带「绘制」前缀，旧名仍可用作别名）：
+   画笔：$画布.设置颜色 <随机|#十六进制|颜色地址|R G B A>$、$画布.字体 <字体文件名>$、$画布.大小 <大小>$；
+   绘制：$画布.绘制文本 <X1> <Y1> <文本> <旋转|0.0> <颜色> <描边颜色> <描边宽度>$、$画布.绘制点 <X> <Y> <颜色>$、$画布.绘制线 <X1> <Y1> <X2> <Y2> <颜色>$、$画布.绘制方形 <X> <Y> <宽> <高> <圆润> <颜色>$、$画布.绘制方形描边$、$画布.绘制椭圆 <X1> <Y1> <X2> <Y2>$、$画布.绘制椭圆描边$、$画布.绘制圆形 <X> <Y> <半径> <起始> <结束> <颜色>$、$画布.绘制圆形描边$、$画布.绘制多边形 <X1>,<Y1> <X2>,<Y2> ...$、$画布.绘制多边形描边$、$画布.绘制圆弧 <X> <Y> <半径> <起始> <结束> <颜色>$、$画布.绘制图片 <图片> <高> <宽> <旋转> <x> <y> <透明度> <半径>$、$画布.绘制喷漆$、$画布.绘制波浪$、$画布.绘制油漆桶 <X> <Y> <颜色>$、$画布.绘制随机点 <数量>$、$画布.绘制随机线条 <数量>$、$画布.绘制马赛克 <X1> <Y1> <X2> <Y2>$、$画布.高斯模糊 <半径>$；
+   重构：$画布.旋转 <旋转>$、$画布.圆角 <半径>$、$画布.全图马赛克 <半径>$、$画布.灰度$；
+4. 相关全局函数：$创建画布 ...$、颜色:$获取画笔颜色 <#十六进制|R G B A>$（颜色对象不依赖画布）、$写图片 <文件路径> <数据>$（隐写进已有图片，不是导出）、$读图片 <文件路径>$；注意 $绘图 <JSON>$ 的参数是图片 JSON 数据、不是画布对象，别用 $绘图 画布$ 当输出；
+5. 遇到不熟悉的函数或对象方法，不要靠猜：优先查阅应用根目录的语法文档 dic.md（可用 read_dic_doc 工具读取），或直接向用户求证，禁止往 .n 文件里批量写 u1/u2/xxx1/xxx2 这类试探词条来「试」API 名（既不生效又会污染用户词库）。
+
 事实约束：
 1. 当前词库的函数、变量、类、触发词与语法，一律以用户提供的「当前词库代码 / 编译诊断」为准；未出现在其中、也未出现在下方【可用内置函数】清单中的名称，视为不存在；
 2. 只能调用下方【可用内置函数】清单里列出的全局函数，禁止编造或用品名相近的顶替；清单没有所需能力时如实说「没有该内置函数」；
@@ -7836,7 +7940,8 @@ const aiCompleteSystemPrompt = `你是 Nebula 词库（.n 文件）代码补全�
 要求：
 1. 只输出需要插入到【光标处】的代码，禁止输出任何解释、注释说明或 Markdown 代码围栏；
 2. 保持与上下文一致的语言风格与缩进；
-3. 若无法确定合适的补全内容，输出空字符串。`
+3. 新增词条时，触发词默认写 Main（词库调试默认按 Main 运行），除非上下文已明确其它触发词；
+4. 若无法确定合适的补全内容，输出空字符串。`
 
 // aiBuiltinFuncsHeader 内置函数清单的说明头（完整清单用）。
 const aiBuiltinFuncsHeader = "【可用内置函数】词库中可直接调用以下内置函数，调用格式为 $函数名 参数...$；" +
@@ -7943,9 +8048,11 @@ type aiToolCall struct {
 
 // aiChatMessage 单条对话消息（OpenAI 兼容格式）。
 // 工具调用链中：assistant 消息可携带 ToolCalls；tool 消息通过 ToolCallID 回填执行结果。
+// Content 为 any：普通消息是字符串；视觉能力开启时需携带图片的消息为多模态分段数组
+// （text / image_url），直接序列化即可被上游识别。
 type aiChatMessage struct {
 	Role       string       `json:"role"`
-	Content    string       `json:"content"`
+	Content    any          `json:"content"`
 	ToolCalls  []aiToolCall `json:"tool_calls,omitempty"`
 	ToolCallID string       `json:"tool_call_id,omitempty"`
 	Name       string       `json:"name,omitempty"`
@@ -7968,6 +8075,7 @@ func aiConfigJSON(c *dto.AIConfig) map[string]any {
 			"base_url":         m.BaseURL,
 			"api_key_set":      strings.TrimSpace(m.APIKey) != "",
 			"model":            m.Model,
+			"vision":           m.Vision,
 			"reasoning":        m.Reasoning,
 			"reasoning_effort": m.ReasoningEffort,
 			"reasoning_model":  m.ReasoningModel,
@@ -7980,6 +8088,7 @@ func aiConfigJSON(c *dto.AIConfig) map[string]any {
 		"system_prompt":   c.SystemPrompt,
 		"timeout":         c.Timeout,
 		"inline_complete": c.InlineComplete,
+		"vision":          c.Vision,
 		// 兼容既有调用方（如词库调试的模型候选）：附带当前模型的解析结果
 		"base_url":         c.BaseURL,
 		"model":            c.Model,
@@ -7998,6 +8107,7 @@ func defaultAIConfigJSON() map[string]any {
 		"system_prompt":    "",
 		"timeout":          60,
 		"inline_complete":  true,
+		"vision":           false,
 		"base_url":         "",
 		"model":            dto.DefaultAIModel,
 		"reasoning":        false,
@@ -8252,6 +8362,10 @@ func aiChatOnceToolsOnce(c *dto.AIConfig, model string, messages []aiChatMessage
 	var content, reasoning strings.Builder
 	var calls []aiToolCall
 
+	// 正文里可能混入文本形式的工具调用（<tool_call>…</tool_call>，见 aiParseTextToolCalls）：
+	// 这类片段不应当出现在答复正文里，流式推送时改路由到思考区。
+	var callText aiToolCallTextRouter
+
 	// 已建立连接：看门狗改按空闲超时续期，只要上游持续产出就不中断
 	idleTimeout := aiStreamIdleTimeout(timeout)
 	watchdog.Reset(idleTimeout)
@@ -8315,13 +8429,14 @@ func aiChatOnceToolsOnce(c *dto.AIConfig, model string, messages []aiChatMessage
 			aiStreamNotify(streamID, "ai_stream_delta", map[string]any{"kind": "reasoning", "text": t})
 		}
 		// 正文增量即时推送，前端据此逐字渲染；若本轮最终转为工具调用，
-		// 泄漏的过渡文本会在收尾时被 ai_stream_end 的最终答复整体覆盖
+		// 泄漏的过渡文本会在收尾时被 ai_stream_end 的最终答复整体覆盖。
+		// 其中文本形式的工具调用片段改走思考区，避免正文出现裸 JSON。
 		if t := d.Content; t != "" {
 			content.WriteString(t)
-			aiStreamNotify(streamID, "ai_stream_delta", map[string]any{"kind": "content", "text": t})
+			aiPushRoutedDelta(streamID, &callText, &reasoning, t)
 		} else if t := d.Text; t != "" {
 			content.WriteString(t)
-			aiStreamNotify(streamID, "ai_stream_delta", map[string]any{"kind": "content", "text": t})
+			aiPushRoutedDelta(streamID, &callText, &reasoning, t)
 		}
 		// 工具调用分片：id/name/arguments 可能分散在多个增量中，按 index 归并
 		for _, tc := range d.ToolCalls {
@@ -8336,6 +8451,16 @@ func aiChatOnceToolsOnce(c *dto.AIConfig, model string, messages []aiChatMessage
 			}
 			calls[tc.Index].Function.Name += tc.Function.Name
 			calls[tc.Index].Function.Arguments += tc.Function.Arguments
+		}
+	}
+	// 流结束：吐出路由器滞留的尾部文本（可能是被拆散、未闭合的调用片段）
+	if body, thought := callText.aiRouteFlush(); body != "" || thought != "" {
+		if body != "" {
+			aiStreamNotify(streamID, "ai_stream_delta", map[string]any{"kind": "content", "text": body})
+		}
+		if thought != "" {
+			reasoning.WriteString(thought)
+			aiStreamNotify(streamID, "ai_stream_delta", map[string]any{"kind": "reasoning", "text": thought})
 		}
 	}
 	if err := scanner.Err(); err != nil {
@@ -8381,6 +8506,20 @@ func aiStreamNotify(streamID, eventType string, data map[string]any) {
 		return
 	}
 	broadcastOpuiNotify(msg)
+}
+
+// aiPushRoutedDelta 推送一段上游正文增量：普通文本走 kind=content 进答复正文，
+// 文本形式的工具调用片段（<tool_call>…</tool_call>）改走 kind=reasoning 计入思考过程，
+// 既避免正文出现裸 JSON，也保证 ai_stream_end 覆盖思考区后这些片段不会丢失。
+func aiPushRoutedDelta(streamID string, router *aiToolCallTextRouter, reasoning *strings.Builder, text string) {
+	body, thought := router.aiRouteFeed(text)
+	if thought != "" {
+		reasoning.WriteString(thought)
+		aiStreamNotify(streamID, "ai_stream_delta", map[string]any{"kind": "reasoning", "text": thought})
+	}
+	if body != "" {
+		aiStreamNotify(streamID, "ai_stream_delta", map[string]any{"kind": "content", "text": body})
+	}
 }
 
 // aiStreamIdleTimeout 流式读取阶段的空闲超时：只要上游持续产出数据就不中断，
