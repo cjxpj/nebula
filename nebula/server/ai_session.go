@@ -54,6 +54,10 @@ type AISessionMessage struct {
 	// 内容可能不完整；前端据此提示，避免把半截回复当成正常回复
 	Interrupted bool  `json:"interrupted,omitempty"`
 	Time        int64 `json:"time,omitempty"`
+	// DurationMs 本轮生成总耗时（毫秒，自本轮开始计时），随消息持久化，刷新页面后仍可展示
+	DurationMs int64 `json:"duration_ms,omitempty"`
+	// ReasoningMs 本轮思考阶段耗时（毫秒），首个正文增量到达时定格
+	ReasoningMs int64 `json:"reasoning_ms,omitempty"`
 }
 
 // AISession AI 任务（会话）：独立记忆 + 独立配置。
@@ -64,7 +68,7 @@ type AISession struct {
 	System      string `json:"system"`
 	Model       string `json:"model"`
 	ContextMode string `json:"context_mode"` // auto | always | never
-	// 任务级工具权限：manual 每次调用都需人工审批 | auto 只读与词库写入放行、其它写改删需审批 | full 全部放行
+	// 任务级工具权限：manual 每次调用都需人工审批 | auto 应用目录内读写与运行词库放行、删除/移动/重命名需审批 | full 全部放行
 	PermissionMode string `json:"permission_mode"`
 	Memory         string `json:"memory"`
 	// 任务级思考/推理模式：inherit 跟随全局 | on 开启 | off 关闭
@@ -112,13 +116,13 @@ func aiNormalizeContextMode(m string) string {
 	}
 }
 
-// aiNormalizePermissionMode 归一化任务级工具权限，缺省为人工审批。
+// aiNormalizePermissionMode 归一化任务级工具权限，缺省为自动审批。
 func aiNormalizePermissionMode(m string) string {
 	switch strings.TrimSpace(m) {
-	case "auto", "full":
+	case "manual", "full":
 		return strings.TrimSpace(m)
 	default:
-		return "manual"
+		return "auto"
 	}
 }
 
@@ -348,6 +352,10 @@ func aiSessionAppendDraftDelta(streamID, kind, text string) {
 	if kind == "reasoning" {
 		draft.Reasoning += text
 	} else {
+		// 首个正文增量到达即视为思考阶段结束，把思考耗时定格（与前端展示口径一致）
+		if draft.ReasoningMs == 0 && draft.Reasoning != "" && draft.Time > 0 {
+			draft.ReasoningMs = time.Now().UnixMilli() - draft.Time*1000
+		}
 		draft.Content += text
 	}
 	sess.UpdatedAt = time.Now().Unix()
@@ -406,6 +414,16 @@ func aiSessionFinishDraft(sessionID, content, reasoning string, err error) {
 		return
 	}
 	msg.Code = aiExtractCode(msg.Content)
+	if hasDraft {
+		// 以本轮开始时间（草稿创建时间）为起点定格总耗时，中断/失败时同样记录已花费时间
+		if msg.Time > 0 {
+			msg.DurationMs = time.Now().UnixMilli() - msg.Time*1000
+		}
+		if msg.ReasoningMs == 0 && msg.Reasoning != "" {
+			// 尚未产生正文（中断在思考阶段）：思考耗时以总耗时兜底
+			msg.ReasoningMs = msg.DurationMs
+		}
+	}
 	msg.Draft = false
 	// 失败保留的部分内容不完整：打标记让前端提示；用户主动终止是有意为之，不打标记
 	msg.Interrupted = failed && !errors.Is(err, errAIStreamCancelled)
@@ -623,7 +641,7 @@ func aiSessionHandle(w http.ResponseWriter, h *HttpOpUiData) {
 			System:         strings.TrimSpace(j.System),
 			Model:          strings.TrimSpace(j.Model),
 			ContextMode:    "auto",
-			PermissionMode: "manual",
+			PermissionMode: "auto",
 			ReasoningMode:  "inherit",
 			Messages:       []AISessionMessage{},
 			CreatedAt:      now,
@@ -712,6 +730,8 @@ func aiSessionHandle(w http.ResponseWriter, h *HttpOpUiData) {
 		delete(aiSessions, j.ID)
 		saveAISessionsLocked()
 		aiSessionsMu.Unlock()
+		// 任务删除后其文件改动记录失去归属，一并清理
+		aiFileChangeRemoveSession(j.ID)
 		aiWriteJSON(w, map[string]any{"status": "ok"})
 		return
 
@@ -734,6 +754,40 @@ func aiSessionHandle(w http.ResponseWriter, h *HttpOpUiData) {
 		}
 		aiSessionsMu.Unlock()
 		aiWriteJSON(w, map[string]any{"status": "ok"})
+		return
+
+	case "list_ai_file_changes":
+		// 列出当前任务编辑过的文件（按最近改动时间倒序）
+		var j struct {
+			SessionID string `json:"session_id"`
+		}
+		_ = json.Unmarshal(h.Data, &j)
+		aiWriteJSON(w, map[string]any{"status": "ok", "list": aiFileChangeList(strings.TrimSpace(j.SessionID))})
+		return
+
+	case "revert_ai_file_changes":
+		// 回撤本任务改动过的文件：给定 path 回撤单个，未给定则回撤全部
+		var j struct {
+			SessionID string `json:"session_id"`
+			Path      string `json:"path"`
+		}
+		_ = json.Unmarshal(h.Data, &j)
+		sessionID := strings.TrimSpace(j.SessionID)
+		if sessionID == "" {
+			aiWriteError(w, "缺少任务标识")
+			return
+		}
+		path := strings.TrimSpace(j.Path)
+		if path != "" {
+			if err := aiFileChangeRevert(sessionID, path); err != nil {
+				aiWriteError(w, err.Error())
+				return
+			}
+			aiWriteJSON(w, map[string]any{"status": "ok", "reverted": []string{path}})
+			return
+		}
+		done, fails := aiFileChangesRevertAll(sessionID)
+		aiWriteJSON(w, map[string]any{"status": "ok", "reverted_count": done, "fails": fails})
 		return
 
 	case "list_ai_approvals":

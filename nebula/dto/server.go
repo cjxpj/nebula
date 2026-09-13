@@ -102,6 +102,10 @@ type AIConfig struct {
 	ReasoningEffort string
 	// 当前模型的推理模型名，如 deepseek-reasoner；填写后开启思考模式时改用此模型
 	ReasoningModel string
+	// 当前模型的上下文输入长度上限（token）
+	ContextLength int
+	// 当前模型的最大输出长度（token），请求时作为 max_tokens 下发
+	MaxTokens int
 	// 当前选中模型的 ID
 	CurrentID string
 	// 模型列表（每项为独立完整配置）
@@ -129,10 +133,21 @@ type AIModelConfig struct {
 	ReasoningEffort string `json:"reasoning_effort"`
 	// 推理模型名
 	ReasoningModel string `json:"reasoning_model"`
+	// 上下文输入长度上限（token）：模型可接收的最大输入量，用于展示并约束最大输出长度
+	ContextLength int `json:"context_length"`
+	// 最大输出长度（token）：请求时作为 max_tokens 下发，非正数时使用默认最佳值
+	MaxTokens int `json:"max_tokens"`
 }
 
 // DefaultAIModel AI 默认模型名（未配置模型时使用）。
 const DefaultAIModel = "deepseek-flash"
+
+// AI 模型长度默认最佳值（token）：上下文输入 512K、最大输出 16K。
+// 取值兼顾长上下文与稳定输出，且几乎被所有 OpenAI 兼容服务商接受；单模型可在管理面板调整。
+const (
+	DefaultAIContextLength = 512 * 1024
+	DefaultAIMaxTokens     = 16 * 1024
+)
 
 // AI 模型列表在 [AI] 节中的存储键：模型列表为 JSON 数组字符串，当前模型为选中项 ID。
 const (
@@ -195,7 +210,11 @@ func LoadConfig_ai(sec *ConfigSection) *AIConfig {
 		cfg.Reasoning = cur.Reasoning
 		cfg.ReasoningEffort = cur.ReasoningEffort
 		cfg.ReasoningModel = cur.ReasoningModel
+		cfg.ContextLength = cur.ContextLength
+		cfg.MaxTokens = cur.MaxTokens
 	}
+	// 长度限制：无模型或配置缺失时回退默认最佳值，输出长度不得超过上下文长度
+	cfg.ContextLength, cfg.MaxTokens = NormalizeModelLimits(cfg.ContextLength, cfg.MaxTokens)
 	if cfg.Model == "" {
 		cfg.Model = DefaultAIModel
 	}
@@ -251,6 +270,7 @@ func LoadAIModels(sec *ConfigSection) []*AIModelConfig {
 		m.Model = strings.TrimSpace(m.Model)
 		m.ReasoningEffort = NormalizeReasoningEffort(m.ReasoningEffort)
 		m.ReasoningModel = strings.TrimSpace(m.ReasoningModel)
+		m.ContextLength, m.MaxTokens = NormalizeModelLimits(m.ContextLength, m.MaxTokens)
 		out = append(out, m)
 	}
 	return out
@@ -299,6 +319,21 @@ func legacyAIModel(sec *ConfigSection) *AIModelConfig {
 		ReasoningEffort: NormalizeReasoningEffort(sec.Key("推理强度").String()),
 		ReasoningModel:  strings.TrimSpace(sec.Key("推理模型").String()),
 	}
+}
+
+// NormalizeModelLimits 归一化模型的上下文输入长度与最大输出长度：
+// 非正数（含未配置）回退默认最佳值；输出长度超过上下文长度时收敛到上下文长度，避免请求被服务商拒绝。
+func NormalizeModelLimits(contextLength, maxTokens int) (int, int) {
+	if contextLength <= 0 {
+		contextLength = DefaultAIContextLength
+	}
+	if maxTokens <= 0 {
+		maxTokens = DefaultAIMaxTokens
+	}
+	if maxTokens > contextLength {
+		maxTokens = contextLength
+	}
+	return contextLength, maxTokens
 }
 
 // NormalizeReasoningEffort 归一化推理强度，仅接受 low/medium/high/max，其余（含留空）返回空串。

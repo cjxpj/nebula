@@ -6063,6 +6063,8 @@ func opuiHandleApi(w http.ResponseWriter, r *http.Request) {
 				Reasoning       bool   `json:"reasoning"`
 				ReasoningEffort string `json:"reasoning_effort"`
 				ReasoningModel  string `json:"reasoning_model"`
+				ContextLength   int    `json:"context_length"`
+				MaxTokens       int    `json:"max_tokens"`
 			} `json:"models"`
 		}
 		if err := json.Unmarshal(h.Data, &j); err != nil {
@@ -6094,6 +6096,8 @@ func opuiHandleApi(w http.ResponseWriter, r *http.Request) {
 			if apiKey == "" && !m.ClearAPIKey {
 				apiKey = oldKeys[id]
 			}
+			// 长度限制归一化：未配置时回退默认最佳值，输出长度不超过上下文长度
+			contextLength, maxTokens := dto.NormalizeModelLimits(m.ContextLength, m.MaxTokens)
 			models = append(models, &dto.AIModelConfig{
 				ID:              id,
 				Name:            strings.TrimSpace(m.Name),
@@ -6104,6 +6108,8 @@ func opuiHandleApi(w http.ResponseWriter, r *http.Request) {
 				Reasoning:       m.Reasoning,
 				ReasoningEffort: dto.NormalizeReasoningEffort(m.ReasoningEffort),
 				ReasoningModel:  strings.TrimSpace(m.ReasoningModel),
+				ContextLength:   contextLength,
+				MaxTokens:       maxTokens,
 			})
 		}
 		// 当前模型：未指定或已不存在时回退列表首项
@@ -7109,8 +7115,10 @@ func opuiHandleApi(w http.ResponseWriter, r *http.Request) {
 
 	case "list_ai_sessions", "get_ai_session", "create_ai_session", "save_ai_session",
 		"delete_ai_session", "clear_ai_session", "truncate_ai_messages",
-		"compress_ai_session", "export_ai_sessions", "import_ai_sessions", "cancel_ai_chat":
-		// AI 多任务会话管理：任务的增删改查、记忆压缩与导入导出、终止在途生成
+		"compress_ai_session", "export_ai_sessions", "import_ai_sessions", "cancel_ai_chat",
+		"list_ai_file_changes", "revert_ai_file_changes":
+		// AI 多任务会话管理：任务的增删改查、记忆压缩与导入导出、终止在途生成、
+		// 以及「本任务编辑过的文件」列表与回撤
 		aiSessionHandle(w, h)
 		return
 
@@ -8079,6 +8087,8 @@ func aiConfigJSON(c *dto.AIConfig) map[string]any {
 			"reasoning":        m.Reasoning,
 			"reasoning_effort": m.ReasoningEffort,
 			"reasoning_model":  m.ReasoningModel,
+			"context_length":   m.ContextLength,
+			"max_tokens":       m.MaxTokens,
 		})
 	}
 	return map[string]any{
@@ -8095,6 +8105,8 @@ func aiConfigJSON(c *dto.AIConfig) map[string]any {
 		"reasoning":        c.Reasoning,
 		"reasoning_effort": c.ReasoningEffort,
 		"reasoning_model":  c.ReasoningModel,
+		"context_length":   c.ContextLength,
+		"max_tokens":       c.MaxTokens,
 	}
 }
 
@@ -8113,6 +8125,8 @@ func defaultAIConfigJSON() map[string]any {
 		"reasoning":        false,
 		"reasoning_effort": "",
 		"reasoning_model":  "",
+		"context_length":   dto.DefaultAIContextLength,
+		"max_tokens":       dto.DefaultAIMaxTokens,
 	}
 }
 
@@ -8150,7 +8164,7 @@ func aiChatOnce(c *dto.AIConfig, model string, messages []aiChatMessage) (string
 
 // aiChatOnceReasoning 调用 chat/completions 接口，返回首个候选的文本内容与思维链（不启用工具）。
 func aiChatOnceReasoning(c *dto.AIConfig, model string, messages []aiChatMessage, reasoningEffort string) (string, string, error) {
-	content, reasoning, _, err := aiChatOnceTools(c, model, messages, reasoningEffort, nil, "", "")
+	content, reasoning, _, _, err := aiChatOnceTools(c, model, messages, reasoningEffort, nil, "", "")
 	return content, reasoning, err
 }
 
@@ -8231,13 +8245,13 @@ func aiRetryable(err error) bool {
 }
 
 // aiChatOnceTools 在 aiChatOnceToolsOnce 基础上，对限流/过载类错误做自动退避重试。
-func aiChatOnceTools(c *dto.AIConfig, model string, messages []aiChatMessage, reasoningEffort string, tools []map[string]any, toolChoice, streamID string) (string, string, []aiToolCall, error) {
+func aiChatOnceTools(c *dto.AIConfig, model string, messages []aiChatMessage, reasoningEffort string, tools []map[string]any, toolChoice, streamID string) (string, string, []aiToolCall, string, error) {
 	var lastErr error
 	delay := aiRetryBaseDelay
 	for attempt := 1; attempt <= aiRetryMaxAttempts; attempt++ {
-		content, reasoning, calls, err := aiChatOnceToolsOnce(c, model, messages, reasoningEffort, tools, toolChoice, streamID)
+		content, reasoning, calls, finishReason, err := aiChatOnceToolsOnce(c, model, messages, reasoningEffort, tools, toolChoice, streamID)
 		if err == nil {
-			return content, reasoning, calls, nil
+			return content, reasoning, calls, finishReason, nil
 		}
 		lastErr = err
 		if attempt >= aiRetryMaxAttempts || !aiRetryable(err) {
@@ -8263,7 +8277,7 @@ func aiChatOnceTools(c *dto.AIConfig, model string, messages []aiChatMessage, re
 		time.Sleep(delay)
 		delay *= 2
 	}
-	return "", "", nil, lastErr
+	return "", "", nil, "", lastErr
 }
 
 // aiChatOnceToolsOnce 以流式（SSE）方式调用 OpenAI 兼容的 chat/completions 接口（单次尝试），
@@ -8274,11 +8288,13 @@ func aiChatOnceTools(c *dto.AIConfig, model string, messages []aiChatMessage, re
 // reasoning_content / reasoning 字段作为思维链；未开启思考模式时思维链为空。
 // toolChoice 为空时不下发 tool_choice 字段（部分服务商不支持该字段）。
 // streamID 非空时，思维链增量即时经 WS 推送给前端，实现逐字显示。
-func aiChatOnceToolsOnce(c *dto.AIConfig, model string, messages []aiChatMessage, reasoningEffort string, tools []map[string]any, toolChoice, streamID string) (string, string, []aiToolCall, error) {
+// 返回值中的 finishReason 为上游给出的结束原因（如 "stop" / "length" / "tool_calls"），
+// 供上层判断本轮答复是否为「被长度截断的半截话」。
+func aiChatOnceToolsOnce(c *dto.AIConfig, model string, messages []aiChatMessage, reasoningEffort string, tools []map[string]any, toolChoice, streamID string) (string, string, []aiToolCall, string, error) {
 	// 接口地址可只填到版本号（如 https://api.deepseek.com/v1），也可直接填完整的 chat/completions 地址
 	endpoint := strings.TrimRight(strings.TrimSpace(c.BaseURL), "/")
 	if endpoint == "" {
-		return "", "", nil, errors.New("未配置 AI 接口地址")
+		return "", "", nil, "", errors.New("未配置 AI 接口地址")
 	}
 	if !strings.HasSuffix(endpoint, "/chat/completions") {
 		endpoint += "/chat/completions"
@@ -8296,6 +8312,10 @@ func aiChatOnceToolsOnce(c *dto.AIConfig, model string, messages []aiChatMessage
 		"messages": messages,
 		"stream":   true,
 	}
+	// 输出长度上限：取当前模型配置（未配置时为默认最佳值）
+	if c.MaxTokens > 0 {
+		payload["max_tokens"] = c.MaxTokens
+	}
 	if effort := dto.NormalizeReasoningEffort(reasoningEffort); effort != "" {
 		payload["reasoning_effort"] = effort
 	}
@@ -8307,7 +8327,7 @@ func aiChatOnceToolsOnce(c *dto.AIConfig, model string, messages []aiChatMessage
 	}
 	body, err := json.Marshal(payload)
 	if err != nil {
-		return "", "", nil, err
+		return "", "", nil, "", err
 	}
 
 	timeout := c.Timeout
@@ -8325,7 +8345,7 @@ func aiChatOnceToolsOnce(c *dto.AIConfig, model string, messages []aiChatMessage
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(body))
 	if err != nil {
-		return "", "", nil, fmt.Errorf("AI 接口地址不合法: %v", err)
+		return "", "", nil, "", fmt.Errorf("AI 接口地址不合法: %v", err)
 	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Accept", "text/event-stream")
@@ -8336,9 +8356,9 @@ func aiChatOnceToolsOnce(c *dto.AIConfig, model string, messages []aiChatMessage
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		if parent.Err() != nil {
-			return "", "", nil, errAIStreamCancelled
+			return "", "", nil, "", errAIStreamCancelled
 		}
-		return "", "", nil, fmt.Errorf("AI 接口请求失败: %v", err)
+		return "", "", nil, "", fmt.Errorf("AI 接口请求失败: %v", err)
 	}
 	defer resp.Body.Close()
 
@@ -8354,13 +8374,15 @@ func aiChatOnceToolsOnce(c *dto.AIConfig, model string, messages []aiChatMessage
 			msg = strings.TrimSpace(out.Error.Message)
 		}
 		if aiRetryableByStatus(resp.StatusCode) || aiRetryableByMessage(msg) {
-			return "", "", nil, aiNewRetryableError(msg)
+			return "", "", nil, "", aiNewRetryableError(msg)
 		}
-		return "", "", nil, errors.New(msg)
+		return "", "", nil, "", errors.New(msg)
 	}
 
 	var content, reasoning strings.Builder
 	var calls []aiToolCall
+	// finishReason 记录上游给出的结束原因，最后一片增量里的 finish_reason 为准
+	var finishReason string
 
 	// 正文里可能混入文本形式的工具调用（<tool_call>…</tool_call>，见 aiParseTextToolCalls）：
 	// 这类片段不应当出现在答复正文里，流式推送时改路由到思考区。
@@ -8401,6 +8423,9 @@ func aiChatOnceToolsOnce(c *dto.AIConfig, model string, messages []aiChatMessage
 						} `json:"function"`
 					} `json:"tool_calls"`
 				} `json:"delta"`
+				// finish_reason 用于区分正常收尾与「输出被长度截断」：
+				// 截断时模型往往只输出了「我先…然后…」式计划前言就中断，必须识别出来。
+				FinishReason string `json:"finish_reason"`
 			} `json:"choices"`
 			Error *struct {
 				Message string `json:"message"`
@@ -8412,14 +8437,18 @@ func aiChatOnceToolsOnce(c *dto.AIConfig, model string, messages []aiChatMessage
 		if part.Error != nil && strings.TrimSpace(part.Error.Message) != "" {
 			msg := strings.TrimSpace(part.Error.Message)
 			if aiRetryableByMessage(msg) {
-				return content.String(), reasoning.String(), nil, aiNewRetryableError(msg)
+				return content.String(), reasoning.String(), nil, finishReason, aiNewRetryableError(msg)
 			}
-			return content.String(), reasoning.String(), nil, errors.New(msg)
+			return content.String(), reasoning.String(), nil, finishReason, errors.New(msg)
 		}
 		if len(part.Choices) == 0 {
 			continue
 		}
 		d := part.Choices[0].Delta
+		// 结束原因可能随任意一片增量下发，取最后一次非空值
+		if fr := part.Choices[0].FinishReason; fr != "" {
+			finishReason = fr
+		}
 		// 思维链增量：累积并即时推送，前端据此逐字渲染
 		if t := d.ReasoningContent; t != "" {
 			reasoning.WriteString(t)
@@ -8465,12 +8494,12 @@ func aiChatOnceToolsOnce(c *dto.AIConfig, model string, messages []aiChatMessage
 	}
 	if err := scanner.Err(); err != nil {
 		if parent.Err() != nil {
-			return content.String(), reasoning.String(), calls, errAIStreamCancelled
+			return content.String(), reasoning.String(), calls, finishReason, errAIStreamCancelled
 		}
 		if ctx.Err() != nil {
-			return content.String(), reasoning.String(), calls, fmt.Errorf("AI 流式读取超时：超过 %v 未收到上游数据", idleTimeout)
+			return content.String(), reasoning.String(), calls, finishReason, fmt.Errorf("AI 流式读取超时：超过 %v 未收到上游数据", idleTimeout)
 		}
-		return content.String(), reasoning.String(), calls, fmt.Errorf("AI 流式读取失败: %v", err)
+		return content.String(), reasoning.String(), calls, finishReason, fmt.Errorf("AI 流式读取失败: %v", err)
 	}
 	// 剔除空槽，兼容部分服务商 index 不连续的情况
 	filtered := calls[:0]
@@ -8479,7 +8508,7 @@ func aiChatOnceToolsOnce(c *dto.AIConfig, model string, messages []aiChatMessage
 			filtered = append(filtered, call)
 		}
 	}
-	return strings.TrimSpace(content.String()), strings.TrimSpace(reasoning.String()), filtered, nil
+	return strings.TrimSpace(content.String()), strings.TrimSpace(reasoning.String()), filtered, finishReason, nil
 }
 
 // aiStreamNotify 经 WS 广播一条 AI 流式事件（无 id，走前端 onPush 推送通道）。
@@ -8614,13 +8643,70 @@ func aiCancelStream(streamID, sessionID string) bool {
 	return false
 }
 
-// aiChatStreamReasoning 以流式方式调用 OpenAI 兼容的 chat/completions 接口，
+// aiChatStreamReasoning 流式对话（无工具）并兜底「输出被长度截断」：
+// 上游因长度上限中断（finish_reason=length）时，把已生成的半截正文作为 assistant 消息回灌，
+// 提示模型紧接上文续写，最多 aiToolMaxContinues 轮，避免用户看到「话说到一半突然没了」。
+func aiChatStreamReasoning(c *dto.AIConfig, model string, messages []aiChatMessage, reasoningEffort, streamID string) (string, string, error) {
+	work := append([]aiChatMessage(nil), messages...)
+	var contentAll, reasoningAll strings.Builder
+	// 续写提示写入思考区，让用户知道正文为何被拆成多段
+	appendReasoning := func(text string) {
+		if text == "" {
+			return
+		}
+		reasoningAll.WriteString(text)
+		aiStreamNotify(streamID, "ai_stream_delta", map[string]any{"kind": "reasoning", "text": text})
+	}
+	for i := 0; i <= aiToolMaxContinues; i++ {
+		content, reasoning, finishReason, err := aiChatStreamReasoningOnce(c, model, work, reasoningEffort, streamID)
+		// 思维链已由单次请求在流式解析时逐片推送，此处仅累积，避免重复推送
+		if r := strings.TrimSpace(reasoning); r != "" {
+			reasoningAll.WriteString(r + "\n")
+		}
+		if err != nil {
+			if contentAll.Len() == 0 {
+				return content, reasoningAll.String(), err
+			}
+			contentAll.WriteString(content)
+			return contentAll.String(), reasoningAll.String(), err
+		}
+		trimmed := strings.TrimSpace(content)
+		// 正常收尾：拼接此前续写的片段一并返回，前端在 ai_stream_end 用返回值整体覆盖正文
+		if finishReason != "length" || trimmed == "" {
+			contentAll.WriteString(content)
+			// 上游偶尔返回空正文（例如输出预算被思维链吃满）：给出可读提示，避免前端出现空白气泡
+			if contentAll.Len() == 0 {
+				return "（AI 未返回内容，请重试或换个说法再问一次。）", reasoningAll.String(), nil
+			}
+			return contentAll.String(), reasoningAll.String(), nil
+		}
+		contentAll.WriteString(content)
+		if i < aiToolMaxContinues {
+			// 被长度截断且仍有续写额度：回灌半截正文，请模型紧接上文继续
+			appendReasoning("\n⚠ 输出达到上游长度上限被截断，已自动续写\n")
+			work = append(work, aiChatMessage{Role: "assistant", Content: content})
+			work = append(work, aiChatMessage{
+				Role: "user",
+				Content: "你上一条回复因长度上限被截断了。请紧接上文继续输出剩余内容：" +
+					"不要重复已经写过的部分，不要重新开头或重新总结。",
+			})
+			continue
+		}
+		// 续写额度用尽仍被截断：明确告知，避免用户误以为答复已经完整
+		contentAll.WriteString("\n\n（提示：本次输出多次触达模型长度上限，内容可能仍不完整。可回复「继续」让我接着补全。）")
+		return contentAll.String(), reasoningAll.String(), nil
+	}
+	return contentAll.String(), reasoningAll.String(), nil
+}
+
+// aiChatStreamReasoningOnce 以流式方式调用 OpenAI 兼容的 chat/completions 接口（单次尝试），
 // 边解析上游 SSE 增量边经 WS 推送（ai_stream_delta），并返回累计的正文与思维链。
 // 不同服务商的思维链字段不一：优先 delta.reasoning_content，回退 delta.reasoning。
-func aiChatStreamReasoning(c *dto.AIConfig, model string, messages []aiChatMessage, reasoningEffort, streamID string) (string, string, error) {
+// 返回值中的 finishReason 为上游给出的结束原因（"stop" / "length" 等），供上层判断是否被长度截断。
+func aiChatStreamReasoningOnce(c *dto.AIConfig, model string, messages []aiChatMessage, reasoningEffort, streamID string) (string, string, string, error) {
 	endpoint := strings.TrimRight(strings.TrimSpace(c.BaseURL), "/")
 	if endpoint == "" {
-		return "", "", errors.New("未配置 AI 接口地址")
+		return "", "", "", errors.New("未配置 AI 接口地址")
 	}
 	if !strings.HasSuffix(endpoint, "/chat/completions") {
 		endpoint += "/chat/completions"
@@ -8637,12 +8723,16 @@ func aiChatStreamReasoning(c *dto.AIConfig, model string, messages []aiChatMessa
 		"messages": messages,
 		"stream":   true,
 	}
+	// 输出长度上限：取当前模型配置（未配置时为默认最佳值）
+	if c.MaxTokens > 0 {
+		payload["max_tokens"] = c.MaxTokens
+	}
 	if effort := dto.NormalizeReasoningEffort(reasoningEffort); effort != "" {
 		payload["reasoning_effort"] = effort
 	}
 	body, err := json.Marshal(payload)
 	if err != nil {
-		return "", "", err
+		return "", "", "", err
 	}
 
 	timeout := c.Timeout
@@ -8660,7 +8750,7 @@ func aiChatStreamReasoning(c *dto.AIConfig, model string, messages []aiChatMessa
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(body))
 	if err != nil {
-		return "", "", fmt.Errorf("AI 接口地址不合法: %v", err)
+		return "", "", "", fmt.Errorf("AI 接口地址不合法: %v", err)
 	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Accept", "text/event-stream")
@@ -8671,9 +8761,9 @@ func aiChatStreamReasoning(c *dto.AIConfig, model string, messages []aiChatMessa
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		if parent.Err() != nil {
-			return "", "", errAIStreamCancelled
+			return "", "", "", errAIStreamCancelled
 		}
-		return "", "", fmt.Errorf("AI 接口请求失败: %v", err)
+		return "", "", "", fmt.Errorf("AI 接口请求失败: %v", err)
 	}
 	defer resp.Body.Close()
 
@@ -8685,12 +8775,14 @@ func aiChatStreamReasoning(c *dto.AIConfig, model string, messages []aiChatMessa
 			} `json:"error"`
 		}
 		if json.NewDecoder(resp.Body).Decode(&out) == nil && out.Error != nil && strings.TrimSpace(out.Error.Message) != "" {
-			return "", "", errors.New(out.Error.Message)
+			return "", "", "", errors.New(out.Error.Message)
 		}
-		return "", "", fmt.Errorf("AI 接口返回 HTTP %d", resp.StatusCode)
+		return "", "", "", fmt.Errorf("AI 接口返回 HTTP %d", resp.StatusCode)
 	}
 
 	var content, reasoning strings.Builder
+	// finishReason 记录上游给出的结束原因（"length" 表示输出被长度上限截断）
+	var finishReason string
 	// 已建立连接：看门狗改按空闲超时续期，只要上游持续产出就不中断
 	idleTimeout := aiStreamIdleTimeout(timeout)
 	watchdog.Reset(idleTimeout)
@@ -8716,6 +8808,7 @@ func aiChatStreamReasoning(c *dto.AIConfig, model string, messages []aiChatMessa
 					ReasoningContent string `json:"reasoning_content"`
 					Reasoning        string `json:"reasoning"`
 				} `json:"delta"`
+				FinishReason string `json:"finish_reason"`
 			} `json:"choices"`
 			Error *struct {
 				Message string `json:"message"`
@@ -8725,12 +8818,16 @@ func aiChatStreamReasoning(c *dto.AIConfig, model string, messages []aiChatMessa
 			continue // 跳过无法解析的心跳/注释行
 		}
 		if part.Error != nil && strings.TrimSpace(part.Error.Message) != "" {
-			return content.String(), reasoning.String(), errors.New(part.Error.Message)
+			return content.String(), reasoning.String(), finishReason, errors.New(part.Error.Message)
 		}
 		if len(part.Choices) == 0 {
 			continue
 		}
 		d := part.Choices[0].Delta
+		// 结束原因可能随任意一片增量下发，取最后一次非空值
+		if fr := part.Choices[0].FinishReason; fr != "" {
+			finishReason = fr
+		}
 		if t := d.ReasoningContent; t != "" {
 			reasoning.WriteString(t)
 			aiStreamNotify(streamID, "ai_stream_delta", map[string]any{"kind": "reasoning", "text": t})
@@ -8745,14 +8842,14 @@ func aiChatStreamReasoning(c *dto.AIConfig, model string, messages []aiChatMessa
 	}
 	if err := scanner.Err(); err != nil {
 		if parent.Err() != nil {
-			return content.String(), reasoning.String(), errAIStreamCancelled
+			return content.String(), reasoning.String(), finishReason, errAIStreamCancelled
 		}
 		if ctx.Err() != nil {
-			return content.String(), reasoning.String(), fmt.Errorf("AI 流式读取超时：超过 %v 未收到上游数据", idleTimeout)
+			return content.String(), reasoning.String(), finishReason, fmt.Errorf("AI 流式读取超时：超过 %v 未收到上游数据", idleTimeout)
 		}
-		return content.String(), reasoning.String(), fmt.Errorf("AI 流式读取失败: %v", err)
+		return content.String(), reasoning.String(), finishReason, fmt.Errorf("AI 流式读取失败: %v", err)
 	}
-	return strings.TrimSpace(content.String()), strings.TrimSpace(reasoning.String()), nil
+	return strings.TrimSpace(content.String()), strings.TrimSpace(reasoning.String()), finishReason, nil
 }
 
 // aiBuildCompletePrompt 依据光标前后的词库代码拼装补全提示词。

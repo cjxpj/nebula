@@ -28,7 +28,7 @@ const aiDicToolsPrompt = `
 【工具能力】
 你可以直接调用工具读写本应用目录下的文件（含 .n 词库），不再只是给建议：
 1. 默认操作对象是「当前任务关联的词库文件」（下方会给出该路径，即用户此刻在编辑器中打开的文件）：需要阅读或修改词库时优先直接 read_dic / save_dic 这个文件，不要先用 list_files / search_files 满目录查找，也不要读取无关文件；仅当用户明确指向其他文件时才切换；
-2. 修改文件前先读取最新内容；.n 词库请用专用工具（read_dic / save_dic / check_dic / run_dic），保存后工具会返回编译诊断，存在 error 级诊断时应先修复再保存；
+2. 修改文件前先读取最新内容；.n 词库请用专用工具（read_dic / save_dic / check_dic / run_dic）。save_dic 保存后会自动重新编译并返回诊断：errors 非空（error 级诊断）说明词库跑不起来，必须逐条修复并用完整内容再次调用 save_dic，直到 error 级清零再收尾，不要只在答复里罗列问题；warnings 属于可运行的警告，属本次改动引入的也应一并修掉，并在答复里汇报本轮保存后的诊断结果（有几个错误 / 几条警告、是否已清零）；
 3. 用户要求「修改 / 新增词库内容」时必须真正调用写入工具完成修改，不要只输出代码让用户手动粘贴，也不要先反问「是否需要我帮你修改」——直接执行，完成后汇报结果；
 4. 新增 / 插入词条时保证词条边界：触发词必须独占一行，且其上方留一个空行与头部或上一条词条分隔（空行是词条的硬边界，直接贴在上一条正文或头部后面会被并入上一条，导致该触发词完全失效）；头部与第一个词条之间同样要空行分隔。触发词的取舍：功能 / 娱乐类词库（用户以后会发消息反复唤起，如五子棋、签到）不要写 Main，按功能自行命名一个简短贴合的触发词；但「一次性脚本」——你写完马上就要用 run_dic 运行并回报结果（如「画个九宫格」、临时生成 / 计算）——触发词一律写 Main（run_dic 默认用 Main 触发，写 Main 才能直接跑通，别自创触发词导致默认触发跑不出来）；只有用户明确要求其他触发词时才另写；
 5. 工具调用必须走函数调用通道（tool_calls），禁止把调用写成 <tool_call>工具名<arg_key>参数名</arg_key><arg_value>参数值</arg_value></tool_call> 这类文本混进正文（那样不会真正执行），也不要只回复「已保存 / 已重写」却不调用工具；若本轮提示「工具调用不可用」，说明当前模型或接口不支持 function calling，此时只能给出代码与建议，并明确告知用户「未能直接写入文件」，不得谎称已修改；
@@ -51,6 +51,19 @@ const (
 	aiToolMaxRounds = 30
 	// aiToolTotalBudget 单轮对话内工具调用的总时间预算，超出后不再允许调用工具，强制模型基于已有信息收尾
 	aiToolTotalBudget = 180 * time.Second
+	// aiToolMaxNudges 模型只回「我这就去做 X」式计划前言、却没真正发起工具调用时，
+	// 最多补几轮「请直接执行」的提醒。设上限避免与模型互相空转；用尽后按普通答复收尾。
+	aiToolMaxNudges = 2
+	// aiToolMaxContinues 上游因输出长度上限截断（finish_reason=length）时的最大自动续写轮数。
+	// 截断会让用户看到「话说到一半突然没了」，把已生成部分回灌并请模型续写即可补全；
+	// 设上限避免上游反复截断、模型反复续写导致空转。
+	aiToolMaxContinues = 3
+	// aiToolMaxEmptyRetries 上游偶发「只产出思考、正文为空」时的最大自动重试次数。
+	// 此前这种情况直接以「AI 未返回内容」报错、整轮生成中断，用户只能手动重发；
+	// 改为撤下工具后自动重试，逼迫模型用文字作答。
+	aiToolMaxEmptyRetries = 2
+	// aiToolEmptyRetryDelay 空回复重试前的等待时长（按重试次数递增），给上游一点恢复时间
+	aiToolEmptyRetryDelay = 2 * time.Second
 	// aiToolReadMaxRunes 工具单次返回的文本最大字符数（超出截断，避免撑爆模型上下文）
 	aiToolReadMaxRunes = 60000
 	// aiToolOutputMaxRunes 词库运行输出回灌给模型时的最大字符数
@@ -144,7 +157,7 @@ func aiToolDefinitions() []map[string]any {
 		aiTool("read_dic", "读取 .n 词库文件的完整代码，并返回编译诊断（error/warning），修改词库前先用它查看最新内容。",
 			map[string]any{"path": str("词库路径（相对应用目录，.n 结尾）")}, "path"),
 		aiTool("read_dic_doc", "读取内置的 Nebula 词库语法文档（dic.md）全文，用于查阅词库语法、内置函数与对象实例（如画布）的准确用法与参数。遇到不确定的语法 / API 时优先调用它，不要靠猜、也不要往词库写试探词条。", nil),
-		aiTool("save_dic", "保存 .n 词库文件（覆盖写入）并返回编译诊断。保存前会做语法规范校验（如把 # 当注释、块结构内空行），不合格会拒绝写入并返回问题列表，需修正后重新保存；若返回 error 级诊断，应继续修复后再次保存。",
+		aiTool("save_dic", "保存 .n 词库文件（覆盖写入），保存后自动重新编译并返回编译报错（errors）与警告（warnings）。保存前会做语法规范校验（如把 # 当注释、块结构内空行），不合格会拒绝写入并返回问题列表，需修正后重新保存；返回的 errors 非空时必须继续修复后再次保存，直到无 error 级诊断。",
 			map[string]any{
 				"path":    str("词库路径（相对应用目录，.n 结尾）"),
 				"content": str("要保存的完整词库代码"),
@@ -657,7 +670,9 @@ func aiDicBlockClose(line string) bool {
 	return false
 }
 
-// aiToolSaveDic 保存词库并返回编译诊断。保存前先做语法规范检查，不合格则拒绝写入。
+// aiToolSaveDic 保存词库并返回编译诊断。保存前先做语法规范检查，不合格则拒绝写入；
+// 写入后自动重新编译，把诊断（error/warning）回灌给模型并推送给前端，
+// 用户无需再手动运行一次才能看到警告/报错。
 func aiToolSaveDic(argsJSON string) (string, string) {
 	var a struct {
 		Path    string `json:"path"`
@@ -680,10 +695,36 @@ func aiToolSaveDic(argsJSON string) (string, string) {
 		}), fmt.Sprintf("词库内容不规范，已拒绝保存（%d 处问题）", len(problems))
 	}
 	utils.NewFileQueue(p).WriteToFile(a.Content)
+
+	// 保存后自动重新编译：诊断一并回灌给模型（据此继续修复）并推送给前端（据此高亮行号并提示用户）
 	warnings := aiDicWarnings(p)
-	aiNotifyFileChanged("save", p, nil)
-	return aiToolResult(map[string]any{"status": "ok", "path": p, "warnings": warnings}),
-		fmt.Sprintf("已保存词库 %s（%d 条编译诊断）", p, len(warnings))
+	errors := make([]dto.BuildWarning, 0, len(warnings))
+	for _, w := range warnings {
+		if w.Level == "error" {
+			errors = append(errors, w)
+		}
+	}
+	aiNotifyFileChanged("save", p, map[string]any{"warnings": warnings})
+
+	resp := map[string]any{"status": "ok", "path": p, "warnings": warnings, "errorCount": len(errors)}
+	brief := fmt.Sprintf("已保存词库 %s（无编译诊断）", p)
+	switch {
+	case len(errors) > 0:
+		// error 级诊断意味着词库实际跑不起来：明确要求模型继续修复，而不是就此收尾
+		resp["status"] = "saved_with_errors"
+		resp["errors"] = errors
+		resp["nextStep"] = fmt.Sprintf(
+			"本次内容已写入磁盘，但编译存在 %d 个 error 级诊断（见 errors），词库无法正常运行。"+
+				"必须逐条修复后用完整内容再次调用 save_dic 覆盖保存，直到 error 级诊断清零再收尾。"+
+				"不要只在答复里说明问题而不修复。", len(errors))
+		brief = fmt.Sprintf("已保存词库 %s（%d 个编译错误，%d 条警告）", p, len(errors), len(warnings)-len(errors))
+	case len(warnings) > 0:
+		resp["nextStep"] = fmt.Sprintf(
+			"本次内容已写入磁盘，编译有 %d 条 warning 级诊断（见 warnings），词库可以运行；"+
+				"若属于本次改动引入的问题，请修复后再次保存，并在答复里说明。", len(warnings))
+		brief = fmt.Sprintf("已保存词库 %s（%d 条编译警告）", p, len(warnings))
+	}
+	return aiToolResult(resp), brief
 }
 
 // aiToolCheckDic 仅编译检查词库。
@@ -1191,6 +1232,74 @@ func aiNewTextToolCall(name, argsJSON string) aiToolCall {
 	return call
 }
 
+// aiNormalizeToolCalls 规整本轮拿到的工具调用，保证 assistant(tool_calls) 与随后的 tool 消息
+// 一定能一一配对——这是上游的硬性结构约束，配不上就会整轮拒绝请求。
+// 部分服务商/网关在流式响应里不下发 tool_call 的 id（只给 index/name/arguments），若照原样回灌：
+// assistant 消息会带着 id 为空的 tool_calls，而 tool 消息的 tool_call_id 又因空值被序列化时省略，
+// 上游便返回「An assistant message with 'tool_calls' must be followed by tool messages responding to
+// each 'tool_call_id'. (insufficient tool messages following tool_calls message)」。
+// 这里为缺失 id 的调用补一个本地唯一 id、补全 type，并剔除没有工具名的残缺口（无法执行，
+// 留着只会让 assistant 多出一条永远没有对应结果的调用）。
+func aiNormalizeToolCalls(calls []aiToolCall) []aiToolCall {
+	if len(calls) == 0 {
+		return calls
+	}
+	out := make([]aiToolCall, 0, len(calls))
+	for _, call := range calls {
+		if strings.TrimSpace(call.Function.Name) == "" {
+			continue
+		}
+		if call.Type == "" {
+			call.Type = "function"
+		}
+		if strings.TrimSpace(call.ID) == "" {
+			call.ID = fmt.Sprintf("call_gen_%d", aiToolCallSeq.Add(1))
+		}
+		out = append(out, call)
+	}
+	return out
+}
+
+// aiActionPreambleMarkers 计划/承诺式前言的典型措辞：模型用这些词表态「接下来要做什么」，
+// 却在本轮没有发起任何工具调用。
+var aiActionPreambleMarkers = []string{
+	"我这就", "我马上", "我先", "让我先", "让我来", "接下来我", "然后我", "随后我",
+	"我会", "我将", "我准备", "我打算", "我来看", "我来修", "我来改", "我来写",
+	"先修复", "先修正", "先读取", "先看", "然后跑", "然后运行", "再运行",
+}
+
+// aiActionDoneMarkers 完成/汇报式措辞：出现这些说明模型在陈述已经做完的事，属正常收尾，不应再提醒。
+var aiActionDoneMarkers = []string{
+	"已完成", "已保存", "已修复", "已修正", "已修改", "已写入", "已更新", "已经", "完毕",
+	"成功", "通过", "结果如下", "如下所示", "检查结果",
+}
+
+// aiLooksLikeActionPreamble 判断模型正文是否像「我先做 X，然后做 Y」式的计划前言：
+// 这类正文不是最终答复，模型本应随之发起工具调用，却因上游截断或自身空转在此停住。
+// 识别出来后可补一轮「请直接执行」的提醒，避免出现「说要去做、随后没反应」。
+// 判断偏保守：仅对简短且不含完成/汇报措辞的正文生效，避免打断正常的文字答复。
+func aiLooksLikeActionPreamble(text string) bool {
+	t := strings.TrimSpace(text)
+	if t == "" {
+		return false
+	}
+	// 计划前言通常很简短；长正文多为正式答复，误判会造成多余往返
+	if utf8.RuneCountInString(t) > 400 {
+		return false
+	}
+	for _, m := range aiActionDoneMarkers {
+		if strings.Contains(t, m) {
+			return false
+		}
+	}
+	for _, m := range aiActionPreambleMarkers {
+		if strings.Contains(t, m) {
+			return true
+		}
+	}
+	return false
+}
+
 // aiChatWithTools 执行「带工具能力」的多轮对话：模型请求工具调用时本地执行并把结果回灌，
 // 直至模型给出最终答复；达到轮数上限时追加一次不带工具的收尾请求强制模型基于已有信息作答，
 // 不再以错误中止整轮回复。
@@ -1219,32 +1328,55 @@ func aiChatWithTools(c *dto.AIConfig, model string, msgs []aiChatMessage, effort
 
 	// 首轮优先下发 tool_choice=auto；若服务商不接受该字段导致失败，去掉后重试一次
 	toolChoice := "auto"
+	// 提醒计数：模型只回「我这就去做 X」式前言、未发起工具调用时，最多补 aiToolMaxNudges 轮促其真正执行
+	nudgeCount := 0
+	// 续写计数：上游因输出长度上限截断（finish_reason=length）时最多自动续写 aiToolMaxContinues 轮
+	continueCount := 0
+	// 空回复重试计数：上游只产出思考、正文为空时最多自动重试 aiToolMaxEmptyRetries 次
+	emptyRetryCount := 0
+	// plainOnly 置位后不再下发工具（空回复重试后的轮次），避免模型又陷入「要不要调工具」的长思考
+	plainOnly := false
+	// contentAll 累积因截断而分段产出的正文：续写会把答复拆成多轮，
+	// 最终以它拼接为准返回，前端在 ai_stream_end 用返回值覆盖正文，避免只剩最后一段。
+	var contentAll strings.Builder
+	// mergeContent 把累积的续写片段与本轮正文拼成完整答复；本轮无正文时只返回累积片段。
+	// 所有「返回最终答复」的分支都必须经它收口，否则续写的中间段会被后续轮次覆盖丢失。
+	mergeContent := func(cur string) string {
+		if contentAll.Len() == 0 {
+			return cur
+		}
+		if strings.TrimSpace(cur) == "" {
+			return contentAll.String()
+		}
+		contentAll.WriteString(cur)
+		return contentAll.String()
+	}
 	// 收尾轮由时间预算驱动：预算用尽（或触及 aiToolMaxRounds 安全上限）后不再下发工具，
 	// 强制模型基于已获得的信息给出最终答复——不能直接报错中止整轮回复，否则用户只能重试。
 	// 轮数上限只是防死循环的安全网，正常任务应在预算内自然收尾，避免中途撤掉工具。
 	for round := 0; ; round++ {
 		final := round >= aiToolMaxRounds || (round > 0 && time.Now().After(deadline))
-		// 收尾轮不下发工具，强制模型基于已有信息给出最终答复
+		// 收尾轮不下发工具，强制模型基于已有信息给出最终答复；空回复重试后的轮次同样不带工具
 		roundTools := tools
-		if final {
+		if final || plainOnly {
 			roundTools = nil
 		}
-		content, reasoning, calls, err := aiChatOnceTools(c, model, work, effort, roundTools, toolChoice, streamID)
+		content, reasoning, calls, finishReason, err := aiChatOnceTools(c, model, work, effort, roundTools, toolChoice, streamID)
 		// 用户主动终止：保留本轮已流出的思考与正文，交由上层收尾
 		if errors.Is(err, errAIStreamCancelled) {
 			if r := strings.TrimSpace(reasoning); r != "" {
 				reasoningAll.WriteString(r + "\n")
 			}
-			return content, reasoningAll.String(), err
+			return mergeContent(content), reasoningAll.String(), err
 		}
 		if err != nil && round == 0 && toolChoice != "" {
 			toolChoice = ""
-			content, reasoning, calls, err = aiChatOnceTools(c, model, work, effort, roundTools, "", streamID)
+			content, reasoning, calls, finishReason, err = aiChatOnceTools(c, model, work, effort, roundTools, "", streamID)
 			if errors.Is(err, errAIStreamCancelled) {
 				if r := strings.TrimSpace(reasoning); r != "" {
 					reasoningAll.WriteString(r + "\n")
 				}
-				return content, reasoningAll.String(), err
+				return mergeContent(content), reasoningAll.String(), err
 			}
 		}
 		if err != nil {
@@ -1276,19 +1408,100 @@ func aiChatWithTools(c *dto.AIConfig, model string, msgs []aiChatMessage, effort
 			}
 			content = rest
 		}
+		// 规整为可配对的调用列表：补齐缺失的 id、剔除残缺口，避免下游上游因
+		// assistant(tool_calls) 与 tool 消息配不上对而拒绝整轮请求（见 aiNormalizeToolCalls）
+		calls = aiNormalizeToolCalls(calls)
 		if len(calls) == 0 {
-			if strings.TrimSpace(content) == "" {
-				if !final {
-					return "", "", errors.New("AI 未返回内容")
+			trimmed := strings.TrimSpace(content)
+			// 根治输出截断：上游因长度上限中断（finish_reason=length）时，本轮正文是「半截话」，
+			// 直接返回会让用户看到答复说到一半突然消失。把已生成部分作为 assistant 消息回灌，
+			// 提示模型紧接上文续写，直到自然收尾或达到 aiToolMaxContinues 上限。
+			// 本轮无正文（如输出预算被思维链吃满）时无法回灌 assistant 消息续写，交由下方提醒兜底
+			if finishReason == "length" && trimmed != "" && continueCount < aiToolMaxContinues {
+				continueCount++
+				appendReasoning("\n⚠ 输出达到上游长度上限被截断，已自动续写\n")
+				contentAll.WriteString(content)
+				work = append(work, aiChatMessage{Role: "assistant", Content: content})
+				work = append(work, aiChatMessage{
+					Role: "user",
+					Content: "你上一条回复因长度上限被截断了。请紧接上文继续输出剩余内容：" +
+						"不要重复已经写过的部分，不要重新开头或重新总结；" +
+						"若剩余内容是文件改动，请直接通过工具调用（tool_calls）执行，而不是继续用文字描述。",
+				})
+				continue
+			}
+			// 「说了要做、却没真做」：本轮有正文但没发起任何工具调用，且正文像
+			// 「我先…然后…」式的计划前言（正文为空也算）。
+			// 直接 return 会让用户看到一句承诺后彻底没反应，这里补一轮提醒促使模型真正执行。
+			stuck := trimmed == "" || aiLooksLikeActionPreamble(trimmed)
+			if !final && nudgeCount < aiToolMaxNudges && stuck {
+				nudgeCount++
+				appendReasoning("\n⚠ 本轮只返回了文字描述、未发起工具调用，已提醒模型直接执行\n")
+				if trimmed != "" {
+					// 保留该轮前言为 assistant 消息，使模型能接着往下做
+					work = append(work, aiChatMessage{Role: "assistant", Content: content})
 				}
-				// 收尾轮仍无正文：给出可读提示，而不是报错中止
-				content = "（本次工具调用已达到轮数/时间上限，未能生成完整答复。可以回复「继续」让我接着处理。）"
+				work = append(work, aiChatMessage{
+					Role: "user",
+					Content: "如果你上面描述的是你准备执行的操作，请立刻通过工具调用（tool_calls）真正执行，" +
+						"不要只用文字描述计划，也不要仅声称「已完成」；需要改动文件时先读取最新内容再写入，保存后运行验证。" +
+						"如果你上面已经给出了完整结论、确实无事可做，请直接说明这一点作为最终答复。",
+				})
+				continue
+			}
+			// 本轮与累积片段均为空才算无正文，避免把续写累积的内容误判为空
+			if trimmed == "" && contentAll.Len() == 0 {
+				// 上游偶发「只产出思考、正文为空」（思考过程吃满输出预算时尤其常见）：
+				// 此前直接以「AI 未返回内容」报错、整轮生成中断，用户只能手动重发。
+				// 这里改为自动重试——撤下工具并要求直接用文字作答，同时把重试状态推给前端倒计时展示。
+				if !final && emptyRetryCount < aiToolMaxEmptyRetries {
+					emptyRetryCount++
+					wait := aiToolEmptyRetryDelay * time.Duration(emptyRetryCount)
+					appendReasoning(fmt.Sprintf("\n⚠ 上游本轮只返回了思考、未返回正文，%v 后自动重试（第 %d/%d 次）\n",
+						wait, emptyRetryCount, aiToolMaxEmptyRetries))
+					aiStreamNotify(streamID, "ai_stream_delta", map[string]any{
+						"kind":    "retry",
+						"reason":  "上游未返回内容",
+						"attempt": emptyRetryCount,
+						"seconds": int(wait / time.Second),
+					})
+					select {
+					case <-time.After(wait):
+					case <-parentCtx.Done():
+						return mergeContent(content), reasoningAll.String(), errAIStreamCancelled
+					}
+					plainOnly = true
+					work = append(work, aiChatMessage{
+						Role: "user",
+						Content: "你上一条回复只产出了思考过程，没有输出任何正文。请直接用文字给出答复：" +
+							"本轮不要调用工具、不要重复思考过程，也不要只描述你打算做什么。",
+					})
+					continue
+				}
+				if final {
+					// 收尾轮仍无正文：给出可读提示，而不是报错中止
+					content = "（本次工具调用已达到轮数/时间上限，未能生成完整答复。可以回复「继续」让我接着处理。）"
+				} else {
+					// 重试用尽仍无正文：不再以错误中断整轮生成（历史版本会报「AI 未返回内容」），
+					// 给出可读提示并保留已产生的思考，用户可直接点「重试」再次发起。
+					content = "（上游多次未返回正文内容，可能是思考过程占满了输出预算。可以点「重试」或回复「继续」再试一次。）"
+				}
+			}
+			content = mergeContent(content)
+			// 续写用尽后仍被截断：明确告知用户，避免误以为答复已经完整
+			if finishReason == "length" {
+				content += "\n\n（提示：本次输出多次触达模型长度上限，内容可能仍不完整。可回复「继续」让我接着补全。）"
 			}
 			// 正文已在 aiChatOnceTools 流式解析时逐片推送，此处不再重复推整段
 			return content, reasoningAll.String(), nil
 		}
 		// 保留本轮工具请求，作为后续上下文；content 需原样回传以保持消息结构完整
 		work = append(work, aiChatMessage{Role: "assistant", Content: content, ToolCalls: calls})
+		// 本轮工具捕获到的图片先收集，待全部 tool 消息回灌完毕后再统一补发：
+		// assistant(tool_calls) 之后必须紧跟一一对应的 tool 消息，若在中间插入 role=user
+		// 的图片消息，上游会把 tool 消息块截断，判为「insufficient tool messages following
+		// tool_calls message」并拒绝整轮请求（多工具并行时必然触发）。
+		var roundImages []string
 		for _, call := range calls {
 			appendReasoning("\n▸ 调用工具 " + call.Function.Name + "\n")
 			// 权限闸门：按任务级权限档位决定是否需用户审批；被拒绝时把结果回灌给模型，让其调整后再收尾
@@ -1302,22 +1515,31 @@ func aiChatWithTools(c *dto.AIConfig, model string, msgs []aiChatMessage, effort
 				})
 				continue
 			}
+			// 文件改动前的快照：解析本工具会改动的文件目标并在执行前抓取，供回撤与逐行标注
+			fileTargets := aiFileToolTargets(call.Function.Name, call.Function.Arguments)
+			aiFileToolCapture(fileTargets)
 			result, brief, images := aiToolExecute(call.Function.Name, call.Function.Arguments, streamID, c.Vision)
+			// 执行后按实际落盘状态登记「本任务改过的文件」并推送逐行标注
+			if len(fileTargets) > 0 {
+				aiFileToolRecord(sessionID, call.Function.Name, fileTargets)
+			}
 			appendReasoning("  " + brief + "\n")
 			work = append(work, aiChatMessage{Role: "tool", ToolCallID: call.ID, Name: call.Function.Name, Content: result})
-			// 视觉能力开启且工具捕获到图片：以多模态 user 消息补发图片，供模型查看
-			if len(images) > 0 {
-				work = append(work, aiVisionUserMessage(
-					"以下图片来自上面 run_dic 的运行输出，请结合运行结果查看：", images))
-			}
+			roundImages = append(roundImages, images...)
 		}
 		// 收尾轮：最后一批调用已就地执行完，不再回灌模型（否则又开启新一轮调用），
 		// 直接以已剥离标记的正文收尾；正文为空时给出可读提示。
 		if final {
-			if strings.TrimSpace(content) == "" {
+			if strings.TrimSpace(content) == "" && contentAll.Len() == 0 {
 				content = "（本次工具调用已达到轮数/时间上限，未能生成完整答复。可以回复「继续」让我接着处理。）"
 			}
-			return content, reasoningAll.String(), nil
+			// 若此前发生过截断续写，累积片段必须一并返回，否则收尾答复只剩最后一段
+			return mergeContent(content), reasoningAll.String(), nil
+		}
+		// 视觉能力开启且工具捕获到图片：以多模态 user 消息补发图片，供模型查看
+		if len(roundImages) > 0 {
+			work = append(work, aiVisionUserMessage(
+				"以下图片来自上面 run_dic 的运行输出，请结合运行结果查看：", roundImages))
 		}
 	}
 }
@@ -1326,7 +1548,7 @@ func aiChatWithTools(c *dto.AIConfig, model string, msgs []aiChatMessage, effort
 //
 // 任务级权限档位（盾牌菜单）：
 //   manual 手动审批：除查阅文档（read_dic_doc）外，其余工具调用都需用户在对话流内联卡片中确认
-//   auto   自动审批：只读工具与词库写入（save_dic）自动放行，其余写入/删除类工具需确认
+//   auto   自动审批（默认）：应用目录（当前项目）内的读取、写入与运行词库自动放行，删除/移动/重命名类工具需确认
 //   full   完全访问：全部工具自动放行
 // read_dic_doc 在任何档位下都免审批（见 aiToolAlwaysAllow）。
 // 审批请求经 WS 推送 ai_tool_approval，前端在对话流内联卡片中答复后回传
@@ -1345,12 +1567,18 @@ var aiToolReadOnly = map[string]bool{
 	"check_dic":    true,
 }
 
-// aiToolAutoAllow auto（自动审批）档位下额外免审批的写入工具。
-// save_dic 是词库调试的核心动作，用户已在对话里明确要求改词库；若继续弹卡片，
+// aiToolAutoAllow auto（自动审批，默认档位）下额外免审批的写入与执行工具。
+// 这些工具都经 checkFilePath / checkDicPath 校验，路径被限制在应用目录（当前项目）内，
+// 越权路径（绝对路径、../）会被直接拒绝，因此项目内的读写与运行无需再让用户逐次放行。
+// save_dic、write_file 是词库调试的核心动作，用户已在对话里明确要求改文件；若继续弹卡片，
 // 一旦用户没及时答复（切走 / 超时），模型就会退化成「让用户手动复制粘贴」，文件根本没写入。
-// 其余写文件、删除、移动、重命名类工具在 auto 档下仍需确认。
+// run_dic 只读地执行词库并返回输出，是「改完即验证」的收尾动作，同样不该中断。
+// 词库运行期自身的删除请求另有 dic_delete_confirm 确认流程，不受此处影响。
+// 删除、移动、重命名属破坏性操作，在 auto 档下仍保留确认卡片。
 var aiToolAutoAllow = map[string]bool{
-	"save_dic": true,
+	"save_dic":   true,
+	"write_file": true,
+	"run_dic":    true,
 }
 
 // aiToolAlwaysAllow 任何权限档位（含手动审批）都免审批的只读工具。

@@ -116,6 +116,23 @@ func parseFuncSegments(str string) []funcSeg {
 	return segs
 }
 
+// findUnclosedFuncOpen 返回行内「没有配对的结尾 $」的那个起始 $ 的下标；全部配对时返回 -1。
+// 配对扫描与 parseFuncSegments 完全一致（跳过被反斜杠转义的 $），供编译期检查缺尾 $ 使用。
+func findUnclosedFuncOpen(str string) int {
+	start := 0
+	for {
+		openIndex := findUnescaped(str, "$", start)
+		if openIndex == -1 {
+			return -1
+		}
+		closeIndex := findUnescaped(str, "$", openIndex+1)
+		if closeIndex == -1 {
+			return openIndex
+		}
+		start = closeIndex + 1
+	}
+}
+
 // getFuncSegments 返回字符串的预编译分段（带缓存）。
 func getFuncSegments(str string) []funcSeg {
 	if v, ok := funcStrCache.Load(str); ok {

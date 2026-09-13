@@ -181,13 +181,13 @@ func Funcs(d *dic_dto.DicFunc, dic_i *utils.DicInputs) (any, error) {
 
 		if isV {
 			if dic_i.LenOk(3) {
-				resVT := utils.AnyIsString(d.Val.Text(count.RunCountText(d.Val, dic_i.String(1))))
-				resVTs := utils.AnyIsString(d.Val.Text(count.RunCountText(d.Val, dic_i.String(2))))
+				resVT := utils.AnyIsString(d.Val.Text(count.RunCountText(d.Val, dic_i.String(1), d)))
+				resVTs := utils.AnyIsString(d.Val.Text(count.RunCountText(d.Val, dic_i.String(2), d)))
 				classData.LocalValue.Set(resVT, resVTs)
 				return "", nil
 			}
 			if dic_i.LenOk(2) {
-				resVT := utils.AnyIsString(d.Val.Text(count.RunCountText(d.Val, dic_i.String(1))))
+				resVT := utils.AnyIsString(d.Val.Text(count.RunCountText(d.Val, dic_i.String(1), d)))
 				resV, _ := classData.LocalValue.Get(resVT).(string)
 				return resV, nil
 			}
@@ -225,7 +225,7 @@ func Funcs(d *dic_dto.DicFunc, dic_i *utils.DicInputs) (any, error) {
 			funcv.Set("触发", Tstr)
 			funcv.Set("触发词", text)
 			// 参数需先求值 [算术]（如 [%参数1%+1]）与 %变量%，再拆分写入 参数N，保证递归/传参语义正确
-			dto.ValRunTrigger(utils.AnyToString(count.RunCountText(d.Val, text)), Tstr, d.Val.NewDicVal(funcv), d.Val)
+			dto.ValRunTrigger(utils.AnyToString(count.RunCountText(d.Val, text, d)), Tstr, d.Val.NewDicVal(funcv), d.Val)
 			RunDic := dic_dto.NewRunDicEntry().
 				CloseTrigger().
 				SetGlobal_v(d.Val.G).
@@ -254,7 +254,7 @@ func Funcs(d *dic_dto.DicFunc, dic_i *utils.DicInputs) (any, error) {
 	inputs.Set(make([]any, dic_i.Len()+1))
 
 	for i, line := range dic_i.List {
-		inputs.List[i] = d.Val.Text(count.RunCountText(d.Val, line))
+		inputs.List[i] = d.Val.Text(count.RunCountText(d.Val, line, d))
 	}
 
 	if funcName := dic_i.String(0); strings.HasPrefix(funcName, "%") && strings.HasSuffix(funcName, "%") && len(funcName) > 2 {
@@ -395,7 +395,7 @@ func runClassMethod(d *dic_dto.DicFunc, classData *dto.DicClass, methodArgs []st
 		list := make([]any, len(methodArgs))
 		list[0] = methodArgs[0]
 		for i := 1; i < len(methodArgs); i++ {
-			list[i] = d.Val.Text(count.RunCountText(d.Val, methodArgs[i]))
+			list[i] = d.Val.Text(count.RunCountText(d.Val, methodArgs[i], d))
 		}
 		inputs.Set(list)
 		if !inputs.LenOk(fn.L) {

@@ -15,9 +15,11 @@ import (
 func runCompileChecks(v *dto.BuildValue, stack *importStack) {
 	checkBlockPairs(v, stack)
 	checkTriggerRegex(v, stack)
+	checkFuncClosed(v, stack)
 	checkFuncParams(v, stack)
 	checkFuncNameConflict(v, stack)
 	checkUndefinedVars(v, stack)
+	checkUnusedAssignment(v, stack)
 }
 
 // allBuildDics 收集编译产物中全部词条（正文、全局函数、类内函数），按指针去重，
@@ -239,6 +241,153 @@ func checkTriggerRegex(v *dto.BuildValue, stack *importStack) {
 			stack.addError(e.TriggerLine, "触发词正则语法错误："+err.Error())
 		}
 	}
+}
+
+// ============ 函数 $ 闭合检查 ============
+
+// funcSkipFrame 记录「内容行不做 $函数$ 插值」的叶子框，用于跳过其内部行。
+type funcSkipFrame struct {
+	byMark bool   // true：按关闭标记行闭合；false：按括号平衡闭合
+	mark   string // 关闭标记行
+	depth  int    // 括号平衡深度
+}
+
+// funcSkipOpen 识别「内容行不做 $函数$ 插值」的框开启行：
+// 文本>/纯文本>/JSON>/JSON>{/[ /变量:{/[ /变量:"""/”' /--js。
+// 这些框的内容原样（或仅做 %变量% 插值）输出，$ 不参与函数解析，故其中的 $ 不应报未闭合。
+func funcSkipOpen(line string) (funcSkipFrame, bool) {
+	switch {
+	case strings.HasPrefix(line, "纯文本>"):
+		return funcSkipFrame{byMark: true, mark: "<文本"}, true
+	case strings.HasPrefix(line, "文本>"):
+		return funcSkipFrame{byMark: true, mark: "<文本"}, true
+	case line == "JSON>[" || line == "JSON>{":
+		return funcSkipFrame{depth: 1}, true
+	case strings.HasPrefix(line, "JSON>"):
+		return funcSkipFrame{byMark: true, mark: "<JSON"}, true
+	case line == "--js":
+		return funcSkipFrame{byMark: true, mark: "--end"}, true
+	}
+	if vt, vp, vs := build.ValTextTest(line); vt == 6 {
+		switch {
+		case vs == `"""`:
+			return funcSkipFrame{byMark: true, mark: `"""`}, true
+		case vs == `'''`:
+			return funcSkipFrame{byMark: true, mark: `'''`}, true
+		case (vs == "{" || vs == "[") && !strings.Contains(vp, "->"):
+			// 变量:{ / 变量:[ 多行 JSON 赋值框（含 -> 路径的是单行 JSON 赋值，非框）。
+			return funcSkipFrame{depth: 1}, true
+		}
+	}
+	return funcSkipFrame{}, false
+}
+
+// checkFuncClosed 静态检查「$函数$」是否缺少结尾 $。
+// 缺结尾 $ 时 parseFuncSegments 会把该行剩余部分整段按字面量输出：函数不执行，也没有任何提示；
+// 这里在编译期补一条警告，定位这种静默失效。
+func checkFuncClosed(v *dto.BuildValue, stack *importStack) {
+	checkFuncClosedLines(v.Head, v.HeadLineNums, stack)
+	for _, e := range allBuildDics(v) {
+		checkFuncClosedLines(e.Text, e.LineNums, stack)
+	}
+}
+
+func checkFuncClosedLines(lines []string, lineNums []int, stack *importStack) {
+	var frames []funcSkipFrame
+	for i, line := range lines {
+		ln := 0
+		if i < len(lineNums) {
+			ln = lineNums[i]
+		}
+
+		// 原样框内：内容不做 $ 解析，只识别各自的关闭（叶子框语义）。
+		if n := len(frames); n > 0 {
+			top := &frames[n-1]
+			if top.byMark {
+				if line == top.mark {
+					frames = frames[:n-1]
+				}
+			} else {
+				if strings.HasSuffix(line, "{") || strings.HasSuffix(line, "[") {
+					top.depth++
+				}
+				if line == "}" || line == "]" || line == "}," || line == "]," {
+					top.depth--
+					if top.depth == 0 && (line == "}" || line == "]") {
+						frames = frames[:n-1]
+					}
+				}
+			}
+			continue
+		}
+
+		if f, ok := funcSkipOpen(line); ok {
+			frames = append(frames, f)
+			continue
+		}
+
+		issue := assignKeyIssue(line)
+		if issue == "" && findUnclosedFuncOpen(assignOpValue(line)) >= 0 {
+			stack.addWarning(ln, "函数未闭合：$ 缺少配对的结尾 $，该行会按原样输出且函数不会执行")
+			continue
+		}
+		if issue != "" {
+			stack.addWarning(ln, issue)
+		}
+	}
+}
+
+// assignKeyIssue 判断一行是否为「疑似赋值但键名不符合变量命名规范」，返回告警文案；空串表示不是。
+// 依据 dic.md 变量命名规范：键名只能是中英文/数字/下划线，且长度不超过 32 字节（UTF-8）。
+// 这类行既不被识别为赋值也不是函数调用，编译后按原样输出、变量不会被赋值，属于静默失效。
+func assignKeyIssue(line string) string {
+	if marker := headVarMarker(line); marker != "" {
+		return "赋予值键名不能包含特殊字符 " + marker + "，该行会按原样输出、变量不会被赋值"
+	}
+	key, rest := build.ValTextKeyScan(line)
+	if len(key) > 32 && isAssignOpPrefix(rest) {
+		return "变量名过长：键名最多 32 字节（UTF-8），该行会按原样输出、变量不会被赋值"
+	}
+	return ""
+}
+
+// headVarMarker 判断行首是否多写了变量标记，命中返回该标记（$ 或 %）：
+// $名:值、%名:值、%名%:值（如 $a:a、%随机数%:abc）。
+func headVarMarker(line string) string {
+	if strings.HasPrefix(line, "$") {
+		if vt, _, _ := build.ValTextTest(line[1:]); vt != 0 {
+			return "$"
+		}
+	}
+	if strings.HasPrefix(line, "%") {
+		rest := line[1:]
+		if vt, _, _ := build.ValTextTest(rest); vt != 0 {
+			return "%"
+		}
+		if j := strings.IndexByte(rest, '%'); j > 0 {
+			if vt, _, _ := build.ValTextTest(rest[j+1:]); vt != 0 {
+				return "%"
+			}
+		}
+	}
+	return ""
+}
+
+// isAssignOpPrefix 判断 rest 是否以赋值操作符开头：: / :: / :$: / :%: / -: / +: / *: / /:。
+func isAssignOpPrefix(rest string) bool {
+	if rest == "" {
+		return false
+	}
+	if rest[0] == ':' {
+		return true
+	}
+	if len(rest) >= 2 && rest[1] == ':' {
+		switch rest[0] {
+		case '-', '+', '*', '/':
+			return true
+		}
+	}
+	return false
 }
 
 // ============ 函数参数数量检查 ============
@@ -580,6 +729,144 @@ func collectBlockVars(line string, defined map[string]bool) {
 		}
 		defined[name] = true
 	}
+}
+
+// ============ 赋值后变量未被使用检查 ============
+
+// unusedAssign 记录一条赋值行（目标变量名、行号与原始行文本）。
+type unusedAssign struct {
+	name string
+	line int
+	text string
+}
+
+// checkUnusedAssignment 静态检查赋值行：目标变量在整个编译产物中都未被引用时给出警告。
+// 正文行一旦以「名字+半角冒号」开头就会被解析成赋予值（见 dic.md「赋予值」），该行不输出；
+// 若本意是输出带冒号的文本，这是一种静默失效，提示时一并给出转义冒号的修正写法。
+func checkUnusedAssignment(v *dto.BuildValue, stack *importStack) {
+	used := make(map[string]bool)          // 全产物中被引用过的变量名
+	first := make(map[string]unusedAssign) // 变量 -> 首次赋值
+	var order []string                     // 赋值出现顺序，保证告警顺序稳定
+
+	scan := func(lines []string, lineNums []int) {
+		var rawClosers []string
+		for i, line := range lines {
+			ln := 0
+			if i < len(lineNums) {
+				ln = lineNums[i]
+			}
+			// 关闭原样文本框
+			if n := len(rawClosers); n > 0 && line == rawClosers[n-1] {
+				rawClosers = rawClosers[:n-1]
+				continue
+			}
+			closer, isRawOpen := rawTextCloser(line)
+			// 原样文本框内容行：原样输出，%变量% 不做插值，既不算引用也不是赋值。
+			if !isRawOpen && len(rawClosers) > 0 {
+				continue
+			}
+			if !strings.HasPrefix(line, "//") {
+				vt, vp, _ := build.ValTextTest(line)
+				isAssign := vt != 0 && vp != ""
+				// 赋值行右侧读取自身时不算该变量的「引用」：若再无其他用途即视为未被使用。
+				for _, name := range lineVarRefs(line) {
+					if isAssign && name == vp {
+						continue
+					}
+					used[name] = true
+				}
+				if isAssign && !isMagicVar(vp) {
+					if _, ok := first[vp]; !ok {
+						first[vp] = unusedAssign{name: vp, line: ln, text: line}
+						order = append(order, vp)
+					}
+				}
+			}
+			if isRawOpen {
+				rawClosers = append(rawClosers, closer)
+			}
+		}
+	}
+
+	scan(v.Head, v.HeadLineNums)
+	for _, e := range allBuildDics(v) {
+		if e == nil {
+			continue
+		}
+		scan(e.Text, e.LineNums)
+	}
+
+	// 函数传出变量（[函数]触发词的 name->变量）由运行时写回，隐式被使用。
+	outVars := make(map[string]bool)
+	for _, m := range collectFuncOutVars(v) {
+		for name := range m {
+			outVars[name] = true
+		}
+	}
+
+	for _, name := range order {
+		if used[name] || outVars[name] {
+			continue
+		}
+		a := first[name]
+		stack.addWarning(a.line, "变量未使用："+name+" 赋值后未被任何地方引用；若此处是要输出文本，应写成 "+escapeAssignColon(a.text, name))
+	}
+}
+
+// lineVarRefs 提取一行中被引用的变量名：
+//   - %变量% 形式（含 %实例.成员% 按 . 拆分，实例变量本身也算被引用）
+//   - $实例.方法$ 形式的实例方法调用（点号前的实例变量名）
+func lineVarRefs(line string) []string {
+	var names []string
+	add := func(name string) {
+		if name == "" {
+			return
+		}
+		if strings.Contains(name, ".") {
+			for _, part := range strings.Split(name, ".") {
+				if part != "" {
+					names = append(names, part)
+				}
+			}
+			return
+		}
+		names = append(names, name)
+	}
+	// 执行函数(:$:)/只读取变量(:%:)操作符内含相邻的 $/% 与 :，需取操作符后的值再切分。
+	val := assignOpValue(line)
+	for _, name := range extractVarRefs(val) {
+		add(name)
+	}
+	if strings.Contains(val, "$") {
+		for _, seg := range parseFuncSegments(val) {
+			if !seg.isFunc || len(seg.args) == 0 {
+				continue
+			}
+			name := strings.TrimPrefix(seg.args[0], "!")
+			if !strings.Contains(name, ".") {
+				continue
+			}
+			for _, part := range strings.Split(name, ".") {
+				add(part)
+			}
+		}
+	}
+	return names
+}
+
+// escapeAssignColon 在赋值行的操作符冒号前插入转义反斜杠，得到「按原样文本输出」的写法。
+func escapeAssignColon(line, key string) string {
+	if key == "" || !strings.HasPrefix(line, key) {
+		return line
+	}
+	rest := line[len(key):]
+	if strings.HasPrefix(rest, ":") {
+		return key + `\:` + rest[1:]
+	}
+	if len(rest) >= 2 && rest[1] == ':' {
+		return key + rest[:1] + `\:` + rest[2:]
+	}
+	return line
 }
 
 // isParamVar 判断变量名是否为 参数N / 括号N 形式的运行时参数变量。

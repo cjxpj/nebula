@@ -213,7 +213,7 @@ func runNumOperand(d *dic_dto.DicFunc, vSuffix string) any {
 			}
 		}
 	}
-	return Runs(d, utils.AnyToString(count.RunCountText(d.Val, vSuffix)))
+	return Runs(d, utils.AnyToString(count.RunCountText(d.Val, vSuffix, d)))
 }
 
 // loopVarChangedFromValue 根据已读取的循环变量值判断步进（字符串/整数兼容），

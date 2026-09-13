@@ -1,6 +1,10 @@
 package dic_dto
 
-import "github.com/cjxpj/nebula/dto"
+import (
+	"fmt"
+
+	"github.com/cjxpj/nebula/dto"
+)
 
 type Dic struct {
 	Data      *dto.BuildValue
@@ -60,4 +64,12 @@ type DicFunc struct {
 	Dic    *dto.BuildValue
 	// 当前执行行号（1-based），用于调试报错定位
 	CurLine int
+}
+
+// ReportCountError 实现 count.CountErrorReporter：算术表达式（[...]）求值出错时
+// 中断执行、清空已累积输出并写入错误信息，避免静默输出 [原文] 掩盖问题。
+func (d *DicFunc) ReportCountError(err error, raw string) {
+	d.Sys.Stop.Store(true)
+	d.Output.Clear()
+	d.Output.Add(fmt.Sprintf("[%s](line:%d)：算术表达式 [%s] 求值失败：%v", d.Val.G.GetStr("_词库路径_"), d.CurLine, raw, err))
 }

@@ -5,7 +5,6 @@ import (
 	"math/big"
 	"strings"
 
-	"github.com/cjxpj/nebula/debugLog"
 	"github.com/cjxpj/nebula/dto"
 	"github.com/cjxpj/nebula/run"
 )
@@ -498,7 +497,15 @@ func Count(text string) (any, error) {
 
 /* ===================== 文本处理 ===================== */
 
-func RunCountText(v *dto.DicVal, content any) any {
+// CountErrorReporter 算术表达式（[...]）求值出错时的拦截上报接口，
+// 由词库运行时的 *dic_dto.DicFunc 实现：置位停止、清空已累积输出并写入错误信息。
+// RunCountText 未传入 reporter 时保持旧行为：吞掉错误并原样返回 "[原文]"。
+type CountErrorReporter interface {
+	// ReportCountError 拦截一次算术表达式求值错误，raw 为出错的表达式内容（不含外层方括号）。
+	ReportCountError(err error, raw string)
+}
+
+func RunCountText(v *dto.DicVal, content any, reporter ...CountErrorReporter) any {
 	text, ok := content.(string)
 	if !ok || text == "" {
 		return text
@@ -519,10 +526,10 @@ func RunCountText(v *dto.DicVal, content any) any {
 			case "非法字符", "Factor 错误":
 				return "[" + val + "]"
 			}
-			if strings.HasPrefix(text, "[") && strings.HasSuffix(text, "]") {
-				debugLog.Infof("Count 报错内容：%v", val)
-				debugLog.Errorf("Count 失败: %v", err)
-				return "[" + val + "]"
+			// 有上报上下文时拦截：中断执行并写入错误输出（避免静默输出 [原文]）
+			if len(reporter) > 0 && reporter[0] != nil {
+				reporter[0].ReportCountError(err, val)
+				return ""
 			}
 			return "[" + val + "]"
 		}

@@ -51,8 +51,9 @@ func TestCheckBlockPairsBalanced(t *testing.T) {
 			"<遍历",
 			"<循环",
 			"<函数",
+			"%f%", // 引用函数框变量，避免触发「变量未使用」告警
 		},
-		LineNums: []int{2, 3, 4, 5, 6, 7, 8, 9},
+		LineNums: []int{2, 3, 4, 5, 6, 7, 8, 9, 10},
 	}}
 	s := newTestStack()
 	runCompileChecks(v, s)
@@ -265,8 +266,8 @@ func TestCheckFuncParamsExecFuncAssign(t *testing.T) {
 	v.Dic = []*dto.BuildDic{{
 		Trigger:     "测试",
 		TriggerLine: 1,
-		Text:        []string{"x:$:$执行函数$"},
-		LineNums:    []int{3},
+		Text:        []string{"x:$:$执行函数$", "%x%"},
+		LineNums:    []int{3, 4},
 	}}
 	s := newTestStack()
 	runCompileChecks(v, s)
@@ -302,8 +303,8 @@ func TestCheckUndefinedVarExecVarAssign(t *testing.T) {
 	v.Dic = []*dto.BuildDic{{
 		Trigger:     "测试",
 		TriggerLine: 1,
-		Text:        []string{"y:1", "x:%:%y%"},
-		LineNums:    []int{2, 3},
+		Text:        []string{"y:1", "x:%:%y%", "%x%"},
+		LineNums:    []int{2, 3, 4},
 	}}
 	s := newTestStack()
 	runCompileChecks(v, s)
@@ -567,5 +568,225 @@ func TestCheckUndefinedVarSkipRawTextBlocksInHead(t *testing.T) {
 			strings.Contains(w.Text, "变量不存在：不存在2") {
 			t.Fatalf("头部原样文本框内的变量不应告警，实际：%v", warningsText(s.warnings))
 		}
+	}
+}
+
+func TestCheckFuncClosed(t *testing.T) {
+	v := newTestBuildValue()
+	v.Dic = []*dto.BuildDic{{
+		Trigger:     "测试",
+		TriggerLine: 1,
+		Text: []string{
+			"$线程变量 对局中 1$",  // 闭合，正常
+			"$线程变量 模式 %模式%", // 缺结尾 $，应告警
+			"$复读 你好$，共 $价格 1$ 元",
+		},
+		LineNums: []int{2, 3, 4},
+	}}
+	s := newTestStack()
+	runCompileChecks(v, s)
+	if !containsText(s.warnings, "函数未闭合") {
+		t.Fatalf("缺结尾 $ 应告警，实际：%v", warningsText(s.warnings))
+	}
+	// 只应有一条：第 3 行的两个调用都闭合，第 4 行也闭合。
+	closeWarn := 0
+	for _, w := range s.warnings {
+		if strings.Contains(w.Text, "函数未闭合") {
+			closeWarn++
+			if w.Line != 3 {
+				t.Fatalf("告警行号应为 3，实际：%d", w.Line)
+			}
+		}
+	}
+	if closeWarn != 1 {
+		t.Fatalf("期望仅 1 条未闭合告警，实际：%d，全部：%v", closeWarn, warningsText(s.warnings))
+	}
+}
+
+func TestCheckFuncClosedSkipRawBlocks(t *testing.T) {
+	v := newTestBuildValue()
+	v.Dic = []*dto.BuildDic{{
+		Trigger:     "测试",
+		TriggerLine: 1,
+		Text: []string{
+			"文本>",
+			"价格$100",
+			"<文本",
+			"纯文本>",
+			"$复读 你好$",
+			"<文本",
+			"JSON>a",
+			"k=值$",
+			"<JSON",
+			`变量:"""`,
+			"$未闭合",
+			`"""`,
+			`变量:'''`,
+			"$未闭合",
+			`'''`,
+			"a:{",
+			`"k":"v$"`,
+			"}",
+			"--js",
+			"const s = `$ {x}`",
+			"--end",
+			`价格\$100`, // 转义 $：不算函数起始，不告警
+		},
+		LineNums: []int{2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23},
+	}}
+	s := newTestStack()
+	runCompileChecks(v, s)
+	for _, w := range s.warnings {
+		if strings.Contains(w.Text, "函数未闭合") {
+			t.Fatalf("原样框内/转义 $ 不应告警，实际：%v", warningsText(s.warnings))
+		}
+	}
+}
+
+func TestCheckFuncClosedInFuncBlock(t *testing.T) {
+	v := newTestBuildValue()
+	v.Dic = []*dto.BuildDic{{
+		Trigger:     "测试",
+		TriggerLine: 1,
+		Text: []string{
+			"f:函数>",
+			"$线程变量 模式 %模式",
+			"<函数",
+		},
+		LineNums: []int{2, 3, 4},
+	}}
+	s := newTestStack()
+	runCompileChecks(v, s)
+	if !containsText(s.warnings, "函数未闭合") {
+		t.Fatalf("函数框内缺结尾 $ 应告警，实际：%v", warningsText(s.warnings))
+	}
+}
+
+func TestCheckAssignKeySpecialChar(t *testing.T) {
+	v := newTestBuildValue()
+	v.Dic = []*dto.BuildDic{{
+		Trigger:     "测试",
+		TriggerLine: 1,
+		Text: []string{
+			"$a:a",      // 键名混入 $：报键名特殊字符，不报函数未闭合
+			"%随机数%:abc", // 键名混入 %：报键名特殊字符
+			"价格:100",    // 正常赋值，不告警
+			"%价格%元",     // 正常插值，不告警
+			"我的变量名字超过了三十二个字节上限:100",    // 键名超 32 字节：报变量名过长
+			"这是一段很长的普通文本没有冒号所以不会被当成赋值", // 无操作符，不告警
+		},
+		LineNums: []int{2, 3, 4, 5, 6, 7},
+	}}
+	s := newTestStack()
+	runCompileChecks(v, s)
+	if containsText(s.warnings, "函数未闭合") {
+		t.Fatalf("$a:a 不应报函数未闭合，实际：%v", warningsText(s.warnings))
+	}
+	markerLines := map[int]bool{}
+	longLines := map[int]bool{}
+	for _, w := range s.warnings {
+		if strings.Contains(w.Text, "键名不能包含特殊字符") {
+			markerLines[w.Line] = true
+		}
+		if strings.Contains(w.Text, "变量名过长") {
+			longLines[w.Line] = true
+		}
+	}
+	if len(markerLines) != 2 || !markerLines[2] || !markerLines[3] {
+		t.Fatalf("期望第 2、3 行各一条键名特殊字符告警，实际：%v", warningsText(s.warnings))
+	}
+	if len(longLines) != 1 || !longLines[6] {
+		t.Fatalf("期望第 6 行一条变量名过长告警，实际：%v", warningsText(s.warnings))
+	}
+}
+
+func TestCheckUnusedAssignment(t *testing.T) {
+	v := newTestBuildValue()
+	v.Dic = []*dto.BuildDic{{
+		Trigger:     "测试",
+		TriggerLine: 1,
+		Text: []string{
+			"伤害:%伤害%",     // 赋值后右侧仅读取自身，且变量全程未被引用：应告警并给出转义写法
+			"未被引用的变量:100", // 赋值后未被引用：应告警
+			"被引用变量:1",     // 赋值后被 %被引用变量% 引用：不告警
+			"%被引用变量%",
+		},
+		LineNums: []int{2, 3, 4, 5},
+	}}
+	s := newTestStack()
+	runCompileChecks(v, s)
+	if !containsText(s.warnings, "变量未使用：伤害") {
+		t.Fatalf("赋值后未被引用的变量应告警，实际：%v", warningsText(s.warnings))
+	}
+	if !containsText(s.warnings, `伤害\:%伤害%`) {
+		t.Fatalf("告警应给出转义冒号的修正写法，实际：%v", warningsText(s.warnings))
+	}
+	if !containsText(s.warnings, "变量未使用：未被引用的变量") {
+		t.Fatalf("未被引用的赋值应告警，实际：%v", warningsText(s.warnings))
+	}
+	if containsText(s.warnings, "变量未使用：被引用变量") {
+		t.Fatalf("被引用的变量不应告警，实际：%v", warningsText(s.warnings))
+	}
+	for _, w := range s.warnings {
+		if strings.Contains(w.Text, "变量未使用") && w.Line != 2 && w.Line != 3 {
+			t.Fatalf("告警行号应为 2/3，实际：%v", warningsText(s.warnings))
+		}
+	}
+}
+
+func TestCheckUnusedAssignmentSkips(t *testing.T) {
+	v := newTestBuildValue()
+	// 函数传出变量由运行时写回，函数体内赋值即隐式被使用。
+	v.DicFuncs["函数"] = []*dto.BuildDic{{
+		Trigger:   "f->结果",
+		ParamRule: "0",
+		Text:      []string{"结果:1"},
+		LineNums:  []int{2},
+	}}
+	v.Dic = []*dto.BuildDic{
+		{
+			Trigger:     "甲",
+			TriggerLine: 1,
+			Text:        []string{"跨词条变量:1"},
+			LineNums:    []int{2},
+		},
+		{
+			Trigger:     "乙",
+			TriggerLine: 5,
+			Text: []string{
+				"实例:x",
+				"$实例.方法$", // 实例方法调用：实例变量被使用
+				"%跨词条变量%", // 跨词条引用
+			},
+			LineNums: []int{6, 7, 8},
+		},
+	}
+	s := newTestStack()
+	runCompileChecks(v, s)
+	for _, w := range s.warnings {
+		if strings.Contains(w.Text, "变量未使用") {
+			t.Fatalf("函数传出变量/跨词条引用/实例方法调用不应告警，实际：%v", warningsText(s.warnings))
+		}
+	}
+}
+
+func TestCheckUnusedAssignmentSkipsRawTextAndComment(t *testing.T) {
+	v := newTestBuildValue()
+	v.Dic = []*dto.BuildDic{{
+		Trigger:     "测试",
+		TriggerLine: 1,
+		Text: []string{
+			"a:1",
+			"纯文本>",
+			"%a%", // 原样框内容行不做插值，%a% 不算引用
+			"<文本",
+			"// %a%", // 注释不执行，%a% 不算引用
+		},
+		LineNums: []int{2, 3, 4, 5, 6},
+	}}
+	s := newTestStack()
+	runCompileChecks(v, s)
+	if !containsText(s.warnings, "变量未使用：a") {
+		t.Fatalf("原样框/注释中的 %%a%% 不应算作引用，实际：%v", warningsText(s.warnings))
 	}
 }

@@ -24,6 +24,53 @@ func ValTextTest(text string) (int8, string, string) {
 	}
 
 	// 1️⃣ 扫描键名
+	i := scanKeyPrefix(text)
+
+	// 没有操作符
+	if i >= n {
+		return 0, "", ""
+	}
+
+	prefix := text[:i]
+
+	// 2️⃣ prefix 长度限制
+	if len(prefix) > 32 {
+		return 0, "", ""
+	}
+
+	rest := text[i:]
+
+	// 3️⃣ 操作符解析（最短路径）
+	switch {
+	case len(rest) >= 2 && rest[0] == '-' && rest[1] == ':':
+		return 1, prefix, rest[2:]
+	case len(rest) >= 2 && rest[0] == '+' && rest[1] == ':':
+		return 2, prefix, rest[2:]
+	case len(rest) >= 2 && rest[0] == '*' && rest[1] == ':':
+		return 7, prefix, rest[2:]
+	case len(rest) >= 2 && rest[0] == '/' && rest[1] == ':':
+		return 8, prefix, rest[2:]
+
+	case len(rest) >= 3 && rest[0] == ':' && rest[1] == '$' && rest[2] == ':':
+		return 3, prefix, rest[3:]
+	case len(rest) >= 3 && rest[0] == ':' && rest[1] == '%' && rest[2] == ':':
+		return 4, prefix, rest[3:]
+
+	case len(rest) >= 2 && rest[0] == ':' && rest[1] == ':':
+		return 5, prefix, rest[2:]
+
+	case rest[0] == ':':
+		return 6, prefix, rest[1:]
+	}
+
+	return 0, "", ""
+}
+
+// scanKeyPrefix 扫描 text 开头的键名，返回操作符起始下标（即键名结束位置）。
+// 键名字符：ASCII 字母/数字/下划线，以及 Unicode 字母/数字（含汉字）；
+// 另支持 JSON 多键前缀 -键名>，并与自减操作符 -: 区分。
+func scanKeyPrefix(text string) int {
+	n := len(text)
 	i := 0
 	jsonHead := false
 
@@ -70,43 +117,12 @@ func ValTextTest(text string) (int8, string, string) {
 
 		break
 	}
+	return i
+}
 
-	// 没有操作符
-	if i >= n {
-		return 0, "", ""
-	}
-
-	prefix := text[:i]
-
-	// 2️⃣ prefix 长度限制
-	if len(prefix) > 32 {
-		return 0, "", ""
-	}
-
-	rest := text[i:]
-
-	// 3️⃣ 操作符解析（最短路径）
-	switch {
-	case len(rest) >= 2 && rest[0] == '-' && rest[1] == ':':
-		return 1, prefix, rest[2:]
-	case len(rest) >= 2 && rest[0] == '+' && rest[1] == ':':
-		return 2, prefix, rest[2:]
-	case len(rest) >= 2 && rest[0] == '*' && rest[1] == ':':
-		return 7, prefix, rest[2:]
-	case len(rest) >= 2 && rest[0] == '/' && rest[1] == ':':
-		return 8, prefix, rest[2:]
-
-	case len(rest) >= 3 && rest[0] == ':' && rest[1] == '$' && rest[2] == ':':
-		return 3, prefix, rest[3:]
-	case len(rest) >= 3 && rest[0] == ':' && rest[1] == '%' && rest[2] == ':':
-		return 4, prefix, rest[3:]
-
-	case len(rest) >= 2 && rest[0] == ':' && rest[1] == ':':
-		return 5, prefix, rest[2:]
-
-	case rest[0] == ':':
-		return 6, prefix, rest[1:]
-	}
-
-	return 0, "", ""
+// ValTextKeyScan 按变量名规则扫描 text 开头的键名，返回键名及紧随其后的剩余部分（含操作符）。
+// 与 ValTextTest 的区别是不做 32 字节长度限制，便于调用方自行诊断键名是否合法。
+func ValTextKeyScan(text string) (key, rest string) {
+	i := scanKeyPrefix(text)
+	return text[:i], text[i:]
 }

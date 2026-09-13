@@ -122,7 +122,7 @@ questionCycle:
 		if strings.HasPrefix(GetIfKey, "@") {
 			keys := strings.Split(GetIfKey, "->")
 			if len(keys) < 2 {
-				runText, stopSetVal := RunsVal(funcV, utils.AnyToString(count.RunCountText(r.Val, GetIfKey)), vPrefix)
+				runText, stopSetVal := RunsVal(funcV, utils.AnyToString(count.RunCountText(r.Val, GetIfKey, funcV)), vPrefix)
 				if stopSetVal {
 					break
 				}

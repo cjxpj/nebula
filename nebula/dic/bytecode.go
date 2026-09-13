@@ -228,7 +228,7 @@ func (a *dicRuntime) runLeaf(line int, text string) string {
 			if str, ok := r.Val.P.Get(vp).(string); ok {
 				if j := utils.IsJSONResult(str); j != nil {
 					if j, ok := j.(map[string]any); ok {
-						vSetData := utils.AnyToString(Runs(funcV, utils.AnyToString(count.RunCountText(r.Val, vs))))
+						vSetData := utils.AnyToString(Runs(funcV, utils.AnyToString(count.RunCountText(r.Val, vs, funcV))))
 						j := funcs.JsonSetValue(j, setJsonHead, vSetData, false)
 						if j, err := json.Marshal(j); err == nil {
 							r.Val.P.Set(vp, string(j))
@@ -237,7 +237,7 @@ func (a *dicRuntime) runLeaf(line int, text string) string {
 						r.Val.P.Set(vp, vSetData)
 					}
 					if j, ok := j.([]any); ok {
-						vSetData := utils.AnyToString(Runs(funcV, utils.AnyToString(count.RunCountText(r.Val, vs))))
+						vSetData := utils.AnyToString(Runs(funcV, utils.AnyToString(count.RunCountText(r.Val, vs, funcV))))
 						j := funcs.JsonSetValue(j, setJsonHead, vSetData, false)
 						if j, err := json.Marshal(j); err == nil {
 							r.Val.P.Set(vp, string(j))
@@ -250,7 +250,7 @@ func (a *dicRuntime) runLeaf(line int, text string) string {
 		}
 		// [计算]
 		if strings.HasPrefix(vs, "[") && strings.HasSuffix(vs, "]") {
-			r.Val.P.Set(vp, count.RunCountText(r.Val, Runs(funcV, vs)))
+			r.Val.P.Set(vp, count.RunCountText(r.Val, Runs(funcV, vs), funcV))
 			return r.Output.Get()
 		}
 		runValSet(r, funcV, vp, vs)
@@ -291,7 +291,7 @@ func (a *dicRuntime) Cond(expr string) bool {
 // Resolve 求值表达式为字符串（%变量%/$函数$/[算术] 等），供 匹配> 框一次性求值主体与 case 值。
 // 与 LoopCount/loopBound 的表达式求值路径一致。
 func (a *dicRuntime) Resolve(expr string) string {
-	return utils.AnyToString(Runs(a.funcV, utils.AnyToString(count.RunCountText(a.r.Val, expr))))
+	return utils.AnyToString(Runs(a.funcV, utils.AnyToString(count.RunCountText(a.r.Val, expr, a.funcV))))
 }
 
 // SetLine 设置当前执行语句的行号，供 %行数% 变量读取。
@@ -302,7 +302,7 @@ func (a *dicRuntime) SetLine(line int) {
 // JumpAbsOffset 求值 $跳行 行号表达式（可为 [算术]/%变量%/字面量），返回目标行号与是否成功。
 // 语义与 LoopCount 的表达式求值路径一致：先 [算术] 展开，再 %变量%/$函数$ 求值，最后按整数解析。
 func (a *dicRuntime) JumpAbsOffset(expr string) (int, bool) {
-	runText := utils.AnyToString(Runs(a.funcV, utils.AnyToString(count.RunCountText(a.r.Val, expr))))
+	runText := utils.AnyToString(Runs(a.funcV, utils.AnyToString(count.RunCountText(a.r.Val, expr, a.funcV))))
 	n, err := strconv.Atoi(runText)
 	if err != nil {
 		return 0, false
@@ -328,7 +328,7 @@ func (a *dicRuntime) GetVar(name string) string {
 // 表达式经 %变量% 插值/$函数$ 执行后按整数解析，解析失败回退为 1。
 // 负数次数等价 0 次（解释器 for i:=1; i<=count 不执行），避免与字节码无限循环哨兵冲突。
 func (a *dicRuntime) LoopCount(expr string) int {
-	runText := utils.AnyToString(Runs(a.funcV, utils.AnyToString(count.RunCountText(a.r.Val, expr))))
+	runText := utils.AnyToString(Runs(a.funcV, utils.AnyToString(count.RunCountText(a.r.Val, expr, a.funcV))))
 	if n, err := strconv.Atoi(runText); err == nil {
 		if n < 0 {
 			return 0
@@ -350,7 +350,7 @@ func (a *dicRuntime) LoopRange(expr string) (int, int) {
 
 // loopBound 求值范围循环的单个边界表达式（保留负数，解析失败回退 1）。
 func (a *dicRuntime) loopBound(expr string) int {
-	runText := utils.AnyToString(Runs(a.funcV, utils.AnyToString(count.RunCountText(a.r.Val, expr))))
+	runText := utils.AnyToString(Runs(a.funcV, utils.AnyToString(count.RunCountText(a.r.Val, expr, a.funcV))))
 	if n, err := strconv.Atoi(runText); err == nil {
 		return n
 	}
@@ -798,7 +798,7 @@ func (a *dicRuntime) ForEachInit(depth int, text string) int {
 
 	// 求值遍历源：对象 → 保序逐键物化，数组 → 逐项物化；两者都失败则视为空（无迭代）。
 	if valueExpr != "" {
-		runText := utils.AnyToString(Runs(a.funcV, utils.AnyToString(count.RunCountText(r.Val, valueExpr))))
+		runText := utils.AnyToString(Runs(a.funcV, utils.AnyToString(count.RunCountText(r.Val, valueExpr, a.funcV))))
 		var testjs map[string]any
 		if json.Unmarshal([]byte(runText), &testjs) == nil {
 			jsonparser.ObjectEach([]byte(runText), func(keyByte []byte, valueByte []byte, dataType jsonparser.ValueType, offset int) error {

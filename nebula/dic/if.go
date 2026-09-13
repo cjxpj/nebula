@@ -11,7 +11,7 @@ import (
 // 操作数经 %变量%/[算术]/$函数$ 解析后参与比较。
 func Pd(dic *dic_dto.DicFunc, str string) bool {
 	res, err := cond.Eval(str, func(operand string) string {
-		return utils.AnyToString(Runs(dic, utils.AnyToString(count.RunCountText(dic.Val, operand))))
+		return utils.AnyToString(Runs(dic, utils.AnyToString(count.RunCountText(dic.Val, operand, dic))))
 	})
 	if err != nil {
 		dic.Output.Add(err.Error())
