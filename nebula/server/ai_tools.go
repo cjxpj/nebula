@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -74,9 +75,7 @@ const (
 // 前端据此刷新编辑器内容、同步标签路径与文件树，避免编辑器停留在旧内容、随后又被自动保存覆盖。
 func aiNotifyFileChanged(action, path string, extra map[string]any) {
 	data := map[string]any{"action": action, "path": path}
-	for k, v := range extra {
-		data[k] = v
-	}
+	maps.Copy(data, extra)
 	msg, err := json.Marshal(map[string]any{"type": "ai_file_changed", "data": data})
 	if err != nil {
 		return
@@ -157,6 +156,7 @@ func aiToolDefinitions() []map[string]any {
 		aiTool("read_dic", "读取 .n 词库文件的完整代码，并返回编译诊断（error/warning），修改词库前先用它查看最新内容。",
 			map[string]any{"path": str("词库路径（相对应用目录，.n 结尾）")}, "path"),
 		aiTool("read_dic_doc", "读取内置的 Nebula 词库语法文档（dic.md）全文，用于查阅词库语法、内置函数与对象实例（如画布）的准确用法与参数。遇到不确定的语法 / API 时优先调用它，不要靠猜、也不要往词库写试探词条。", nil),
+		aiTool("read_skill", "读取指定技能的完整内容（步骤与约定）。每轮系统提示的「可用技能」清单只给出技能名称与描述；当任务与某个技能的描述相符时，先调用本工具读取该技能全文，再严格按其中的步骤执行。", map[string]any{"name": str("技能名称（与「可用技能」清单中的名称一致）")}, "name"),
 		aiTool("save_dic", "保存 .n 词库文件（覆盖写入），保存后自动重新编译并返回编译报错（errors）与警告（warnings）。保存前会做语法规范校验（如把 # 当注释、块结构内空行），不合格会拒绝写入并返回问题列表，需修正后重新保存；返回的 errors 非空时必须继续修复后再次保存，直到无 error 级诊断。",
 			map[string]any{
 				"path":    str("词库路径（相对应用目录，.n 结尾）"),
@@ -232,6 +232,8 @@ func aiToolExecute(name, argsJSON, streamID string, vision bool) (result string,
 		return aiToolPair(aiToolReadDic(argsJSON))
 	case "read_dic_doc":
 		return aiToolPair(aiToolReadDicDoc())
+	case "read_skill":
+		return aiToolPair(aiToolReadSkill(argsJSON))
 	case "save_dic":
 		return aiToolPair(aiToolSaveDic(argsJSON))
 	case "check_dic":
@@ -579,6 +581,32 @@ func aiToolReadDicDoc() (string, string) {
 		fmt.Sprintf("阅读语法文档 dic.md（%d 字符）", len([]rune(content)))
 }
 
+// aiToolReadSkill 按名称读取某个技能的完整内容（系统提示只注入技能名称与描述，正文按需读取）。
+func aiToolReadSkill(argsJSON string) (string, string) {
+	var a struct {
+		Name string `json:"name"`
+	}
+	if err := aiToolDecode(argsJSON, &a); err != nil {
+		return aiToolFail("参数解析失败: " + err.Error()), "参数错误"
+	}
+	name := strings.TrimSpace(a.Name)
+	if name == "" {
+		return aiToolFail("请提供技能名称"), "缺少技能名称"
+	}
+	skill, ok := aiSkillFindByName(name)
+	if !ok {
+		return aiToolFail("技能不存在：" + name + "（请使用「可用技能」清单中的名称）"), "技能不存在"
+	}
+	content := skill.Content
+	truncated := false
+	if len([]rune(content)) > aiToolReadMaxRunes {
+		content = aiClipRunes(content, aiToolReadMaxRunes)
+		truncated = true
+	}
+	return aiToolResult(map[string]any{"name": skill.Name, "content": content, "truncated": truncated}),
+		fmt.Sprintf("读取技能「%s」（%d 字符）", skill.Name, len([]rune(content)))
+}
+
 // aiDicLintContent 保存词库前的静态规范检查。
 // 只拦截「编译器不报错、却会让代码静默失效」的写法，正常的词条分隔空行不在此列：
 //  1. 行首拿 # 当注释：# 只属于 #引入= / #: / #{ 等指令，注释必须写 // 或 /* */；
@@ -895,15 +923,13 @@ func aiParseTextToolCalls(content string) ([]aiToolCall, string) {
 			break
 		}
 		rest.WriteString(content[:start])
-		body := content[start+len("<tool_call>"):]
-		end := strings.Index(body, "</tool_call>")
-		if end < 0 {
+		inner, after, ok := strings.Cut(content[start+len("<tool_call>"):], "</tool_call>")
+		if !ok {
 			// 未闭合：整体保留，避免误删正常正文
 			rest.WriteString(content[start:])
 			break
 		}
-		inner := body[:end]
-		content = body[end+len("</tool_call>"):]
+		content = after
 		if call, ok := aiParseTextToolCall(inner); ok {
 			calls = append(calls, call)
 		}
@@ -1143,11 +1169,8 @@ func (r *aiToolCallTextRouter) aiRouteFlush() (body, thought string) {
 
 // aiMarkerPrefixSuffix 返回 s 中最长的、可作为 marker 不完整前缀的后缀（用于跨增量拼接标记）。
 func aiMarkerPrefixSuffix(s, marker string) string {
-	max := len(marker) - 1
-	if max > len(s) {
-		max = len(s)
-	}
-	for n := max; n > 0; n-- {
+	limit := min(len(marker)-1, len(s))
+	for n := limit; n > 0; n-- {
 		if strings.HasPrefix(marker, s[len(s)-n:]) {
 			return s[len(s)-n:]
 		}
@@ -1182,10 +1205,7 @@ func aiParseTextToolCall(inner string) (aiToolCall, bool) {
 		}
 	}
 	// 形式二：工具名 + 重复的 <arg_key>键</arg_key><arg_value>值</arg_value>
-	name := inner
-	if i := strings.Index(inner, "<arg_key>"); i >= 0 {
-		name = inner[:i]
-	}
+	name, _, _ := strings.Cut(inner, "<arg_key>")
 	name = strings.TrimSpace(name)
 	if name == "" {
 		return aiToolCall{}, false
@@ -1197,23 +1217,20 @@ func aiParseTextToolCall(inner string) (aiToolCall, bool) {
 		if ks < 0 {
 			break
 		}
-		afterK := remain[ks+len("<arg_key>"):]
-		ke := strings.Index(afterK, "</arg_key>")
-		if ke < 0 {
+		keyPart, tail, ok := strings.Cut(remain[ks+len("<arg_key>"):], "</arg_key>")
+		if !ok {
 			break
 		}
-		key := strings.TrimSpace(afterK[:ke])
-		afterV := afterK[ke+len("</arg_key>"):]
-		if !strings.HasPrefix(afterV, "<arg_value>") {
+		key := strings.TrimSpace(keyPart)
+		if !strings.HasPrefix(tail, "<arg_value>") {
 			break
 		}
-		afterV = afterV[len("<arg_value>"):]
-		ve := strings.Index(afterV, "</arg_value>")
-		if ve < 0 {
+		valPart, next, ok := strings.Cut(tail[len("<arg_value>"):], "</arg_value>")
+		if !ok {
 			break
 		}
-		args[key] = afterV[:ve]
-		remain = afterV[ve+len("</arg_value>"):]
+		args[key] = valPart
+		remain = next
 	}
 	buf, err := json.Marshal(args)
 	if err != nil {
@@ -1365,7 +1382,8 @@ func aiChatWithTools(c *dto.AIConfig, model string, msgs []aiChatMessage, effort
 		// 用户主动终止：保留本轮已流出的思考与正文，交由上层收尾
 		if errors.Is(err, errAIStreamCancelled) {
 			if r := strings.TrimSpace(reasoning); r != "" {
-				reasoningAll.WriteString(r + "\n")
+				reasoningAll.WriteString(r)
+				reasoningAll.WriteByte('\n')
 			}
 			return mergeContent(content), reasoningAll.String(), err
 		}
@@ -1374,7 +1392,8 @@ func aiChatWithTools(c *dto.AIConfig, model string, msgs []aiChatMessage, effort
 			content, reasoning, calls, finishReason, err = aiChatOnceTools(c, model, work, effort, roundTools, "", streamID)
 			if errors.Is(err, errAIStreamCancelled) {
 				if r := strings.TrimSpace(reasoning); r != "" {
-					reasoningAll.WriteString(r + "\n")
+					reasoningAll.WriteString(r)
+					reasoningAll.WriteByte('\n')
 				}
 				return mergeContent(content), reasoningAll.String(), err
 			}
@@ -1396,7 +1415,8 @@ func aiChatWithTools(c *dto.AIConfig, model string, msgs []aiChatMessage, effort
 		}
 		// 思维链已由 aiChatOnceTools 在流式解析时逐字推送，此处仅累积，避免重复推送
 		if r := strings.TrimSpace(reasoning); r != "" {
-			reasoningAll.WriteString(r + "\n")
+			reasoningAll.WriteString(r)
+			reasoningAll.WriteByte('\n')
 		}
 		// 兜底：模型有时把工具调用写成 <tool_call> 文本混进正文、不走原生 tool_calls，
 		// 不解析就会出现「模型声称已按正确语法重写，实际从未调用 save_dic、文件没变」。
@@ -1564,6 +1584,7 @@ var aiToolReadOnly = map[string]bool{
 	"read_file":    true,
 	"read_dic":     true,
 	"read_dic_doc": true,
+	"read_skill":   true,
 	"check_dic":    true,
 }
 
@@ -1582,10 +1603,11 @@ var aiToolAutoAllow = map[string]bool{
 }
 
 // aiToolAlwaysAllow 任何权限档位（含手动审批）都免审批的只读工具。
-// 查阅文档不产生磁盘副作用，也不改动词库，弹审批卡片只会卡住模型求证语法的路；
+// 查阅文档/技能不产生磁盘副作用，也不改动词库，弹审批卡片只会卡住模型求证语法的路；
 // 模型求证不了就退化成猜 API、往词库里写试探词条，破坏性反而更大。
 var aiToolAlwaysAllow = map[string]bool{
 	"read_dic_doc": true,
+	"read_skill":   true,
 }
 
 // aiToolNeedsApproval 判断某次工具调用在当前权限档位下是否需要人工审批。

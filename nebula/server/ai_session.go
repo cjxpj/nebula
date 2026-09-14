@@ -2,11 +2,15 @@ package dic_server
 
 import (
 	crand "crypto/rand"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
+	"os"
+	"path"
+	"path/filepath"
 	"regexp"
 	"sort"
 	"strings"
@@ -39,13 +43,28 @@ const (
 	aiSessionReasoningMaxRunes = 8000
 	// aiSessionDraftMinInterval 流式草稿落盘的最小间隔：内存实时更新，磁盘按此间隔节流
 	aiSessionDraftMinInterval = 3 * time.Second
+
+	// aiSessionImagesDir 对话图片的存储目录（程序私有目录，按任务分子目录）
+	aiSessionImagesDir = "private/ai/images"
+	// aiSessionImageMaxBytes 单张上传图片的大小上限
+	aiSessionImageMaxBytes = 20 << 20
+	// aiSessionImageMaxPerMessage 单条消息可附带的图片数量上限
+	aiSessionImageMaxPerMessage = 6
+
+	// aiProjectMemoryFile 全局「项目记忆」的持久化文件（程序私有目录，所有任务共享一份）
+	aiProjectMemoryFile = "private/ai/memory.json"
+	// aiProjectMemoryMaxRunes 项目记忆的最大字符数（超出截断）
+	aiProjectMemoryMaxRunes = 20000
 )
 
 // AISessionMessage 单条对话消息。
 type AISessionMessage struct {
 	Role    string `json:"role"`
 	Content string `json:"content"`
-	Code    string `json:"code,omitempty"`
+	// Images 本条消息附带的图片（相对应用目录的路径）：供多模态模型查看与刷新后回显，
+	// 图片本体存在私有目录，不进入会话 JSON，避免会话文件被 base64 撑大
+	Images []string `json:"images,omitempty"`
+	Code   string   `json:"code,omitempty"`
 	// Reasoning 本轮的思考/工具过程，随消息持久化，刷新页面后可恢复
 	Reasoning string `json:"reasoning,omitempty"`
 	// Draft 标记该消息正在进行中（由流式增量实时写入），收尾后清除
@@ -94,6 +113,67 @@ var (
 	aiSessionsLoaded bool
 )
 
+// ---------- 全局项目记忆 ----------
+//
+// 「项目记忆」是一份所有任务共享的长期说明（项目背景、约定、常用路径等），
+// 与每个任务自身的「任务记忆」（较早对话的摘要）相互独立：项目记忆由用户手工维护、
+// 全局一份，任务记忆由系统按对话自动压缩生成。
+
+// aiProjectMemoryStore 项目记忆的持久化文件结构。
+type aiProjectMemoryStore struct {
+	Version   int    `json:"version"`
+	Content   string `json:"content"`
+	UpdatedAt int64  `json:"updated_at"`
+}
+
+var (
+	aiProjectMemoryMu     sync.Mutex
+	aiProjectMemoryLoaded bool
+	aiProjectMemoryText   string
+	aiProjectMemoryAt     int64
+)
+
+// ensureAIProjectMemoryLoadedLocked 首次访问时从私有目录加载项目记忆；调用方需持有 aiProjectMemoryMu。
+func ensureAIProjectMemoryLoadedLocked() {
+	if aiProjectMemoryLoaded {
+		return
+	}
+	aiProjectMemoryLoaded = true
+	data, err := utils.NewFileQueue(aiProjectMemoryFile).ReadFromFile()
+	if err != nil || strings.TrimSpace(data) == "" {
+		return
+	}
+	store := aiProjectMemoryStore{}
+	if json.Unmarshal([]byte(data), &store) != nil {
+		return
+	}
+	aiProjectMemoryText = strings.TrimSpace(store.Content)
+	aiProjectMemoryAt = store.UpdatedAt
+}
+
+// aiProjectMemory 返回全局项目记忆的文本快照与更新时间。
+func aiProjectMemory() (string, int64) {
+	aiProjectMemoryMu.Lock()
+	ensureAIProjectMemoryLoadedLocked()
+	text, at := aiProjectMemoryText, aiProjectMemoryAt
+	aiProjectMemoryMu.Unlock()
+	return text, at
+}
+
+// saveAIProjectMemory 保存全局项目记忆（超出上限截断），返回新的更新时间。
+func saveAIProjectMemory(content string) int64 {
+	text := aiClipRunes(strings.TrimSpace(content), aiProjectMemoryMaxRunes)
+	aiProjectMemoryMu.Lock()
+	ensureAIProjectMemoryLoadedLocked()
+	aiProjectMemoryText = text
+	aiProjectMemoryAt = time.Now().Unix()
+	at := aiProjectMemoryAt
+	data, _ := json.Marshal(aiProjectMemoryStore{Version: 1, Content: text, UpdatedAt: at})
+	utils.NewFileQueue(aiProjectMemoryFile).WriteToFile(string(data))
+	aiProjectMemoryMu.Unlock()
+	return at
+}
+
 // aiCodeBlockRe 匹配 Markdown 围栏代码块（与前端 extractAICode 行为一致）。
 var aiCodeBlockRe = regexp.MustCompile("(?s)```[a-zA-Z0-9_-]*\\n(.*?)```")
 
@@ -124,6 +204,23 @@ func aiNormalizePermissionMode(m string) string {
 	default:
 		return "auto"
 	}
+}
+
+// aiGlobalPermissionMode 返回全局默认审批模式（[AI]「审批模式」），用于新建任务与新建智能体未指定时的缺省值。
+func aiGlobalPermissionMode() string {
+	if cfg := dto.ServerConfig.AI; cfg != nil {
+		return dto.NormalizeAIPermissionMode(cfg.ApprovalMode)
+	}
+	return dto.DefaultAIPermissionMode
+}
+
+// aiDefaultModelName 返回全局默认模型名（[AI]「当前模型」解析出的模型名）。
+// 任务不再保留「跟随服务端默认」的空值语义：未指定模型时直接落成该值。
+func aiDefaultModelName() string {
+	if cfg := dto.ServerConfig.AI; cfg != nil && strings.TrimSpace(cfg.Model) != "" {
+		return strings.TrimSpace(cfg.Model)
+	}
+	return dto.DefaultAIModel
 }
 
 // aiNormalizeReasoningMode 归一化任务级思考模式，默认跟随全局。
@@ -569,6 +666,146 @@ func compressAISessionByID(id string) (bool, error) {
 	return true, nil
 }
 
+// ---------- 对话图片 ----------
+
+// aiImageExtByType 图片内容类型到扩展名的映射：保存时按内容嗅探命名，不信任前端传来的文件名
+var aiImageExtByType = map[string]string{
+	"image/png":    ".png",
+	"image/jpeg":   ".jpg",
+	"image/gif":    ".gif",
+	"image/webp":   ".webp",
+	"image/bmp":    ".bmp",
+	"image/x-icon": ".ico",
+}
+
+// aiUploadImageHandle 保存输入框上传/粘贴/拖入的图片，返回可随消息提交的相对路径。
+// 前端把图片读成 data URI 提交，这里只做校验与落盘：图片本体不进会话 JSON，避免会话文件被撑大。
+func aiUploadImageHandle(w http.ResponseWriter, h *HttpOpUiData) {
+	var j struct {
+		SessionID string `json:"session_id"`
+		Data      string `json:"data"`
+	}
+	if err := json.Unmarshal(h.Data, &j); err != nil {
+		http.Error(w, `{"status":"error","error":"invalid json"}`, http.StatusBadRequest)
+		return
+	}
+	raw := strings.TrimSpace(j.Data)
+	// 兼容 data URI 形式：data:image/png;base64,xxxx
+	if strings.HasPrefix(raw, "data:") {
+		if i := strings.Index(raw, ","); i > 0 {
+			raw = raw[i+1:]
+		}
+	}
+	data, err := base64.StdEncoding.DecodeString(raw)
+	if err != nil || len(data) == 0 {
+		aiWriteError(w, "图片数据解析失败")
+		return
+	}
+	if !isImageData(data) {
+		aiWriteError(w, "仅支持图片文件")
+		return
+	}
+	if len(data) > aiSessionImageMaxBytes {
+		aiWriteError(w, fmt.Sprintf("单张图片不能超过 %dMB", aiSessionImageMaxBytes>>20))
+		return
+	}
+	rel, err := aiSaveSessionImage(j.SessionID, data)
+	if err != nil {
+		aiWriteError(w, err.Error())
+		return
+	}
+	aiWriteJSON(w, map[string]any{"status": "ok", "path": rel})
+}
+
+// aiSaveSessionImage 把图片字节写入任务图片目录，返回相对应用目录的路径（斜杠分隔）。
+func aiSaveSessionImage(sessionID string, data []byte) (string, error) {
+	ext := aiImageExtByType[http.DetectContentType(data)]
+	if ext == "" {
+		return "", errors.New("不支持的图片格式")
+	}
+	var b [4]byte
+	_, _ = crand.Read(b[:])
+	name := fmt.Sprintf("img%d_%s%s", time.Now().UnixMilli(), hex.EncodeToString(b[:]), ext)
+	rel := path.Join(aiSessionImagesDir, aiSessionImageSubDir(sessionID), name)
+	utils.NewFileQueue(rel).WriteFileByte(data)
+	if !utils.NewFileQueue(rel).FileExists() {
+		return "", errors.New("图片保存失败")
+	}
+	return rel, nil
+}
+
+// aiSessionImageSubDir 任务图片的子目录名：仅保留安全字符，避免任务标识里的特殊字符影响路径
+func aiSessionImageSubDir(sessionID string) string {
+	var b strings.Builder
+	for _, r := range strings.TrimSpace(sessionID) {
+		if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') || r == '-' || r == '_' {
+			b.WriteRune(r)
+			if b.Len() >= 64 {
+				break
+			}
+		}
+	}
+	if b.Len() == 0 {
+		return "common" // 尚未建任务时先落到共享目录
+	}
+	return b.String()
+}
+
+// aiRemoveSessionImages 删除任务对应的图片目录（任务删除 / 消息清空时调用）
+func aiRemoveSessionImages(sessionID string) {
+	dir := aiSessionImageSubDir(sessionID)
+	if dir == "common" {
+		return // 共享目录可能被其它尚未建任务的消息引用
+	}
+	_ = os.RemoveAll(filepath.Join(opuiAppDir(), filepath.FromSlash(path.Join(aiSessionImagesDir, dir))))
+}
+
+// aiNormalizeMessageImages 过滤消息附带的图片路径：仅保留应用目录内确实存在的相对路径，去重并限量
+func aiNormalizeMessageImages(paths []string) []string {
+	if len(paths) == 0 {
+		return nil
+	}
+	out := make([]string, 0, len(paths))
+	seen := map[string]bool{}
+	for _, p := range paths {
+		rel := strings.TrimSpace(filepath.ToSlash(p))
+		if rel == "" || seen[rel] || !checkFilePath(rel) {
+			continue
+		}
+		if !utils.NewFileQueue(rel).FileExists() {
+			continue
+		}
+		seen[rel] = true
+		out = append(out, rel)
+		if len(out) >= aiSessionImageMaxPerMessage {
+			break
+		}
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
+// aiSessionImageDataURIs 读取消息附带的图片并转为 data URI，供多模态消息引用；读取失败的跳过
+func aiSessionImageDataURIs(paths []string) []string {
+	out := make([]string, 0, len(paths))
+	for _, p := range paths {
+		data, err := utils.NewFileQueue(p).ReadFileByte()
+		if err != nil || len(data) == 0 {
+			continue
+		}
+		out = append(out, toDataURI(data))
+	}
+	return out
+}
+
+// aiUserImagesVisionHint 用户随消息发来图片、但当前模型未开启视觉能力时给模型的提示：
+// 明确告知看不到图片，避免模型凭空臆测图片内容。
+func aiUserImagesVisionHint(n int) string {
+	return fmt.Sprintf("（用户随消息发送了 %d 张图片，但当前模型的「AI 视觉能力」未开启，你无法查看图片内容；请如实说明，不要猜测图片里有什么。）", n)
+}
+
 // ---------- 接口处理 ----------
 
 // aiSessionHandle 处理 AI 任务会话相关的 OPUI 请求。
@@ -585,6 +822,25 @@ func aiSessionHandle(w http.ResponseWriter, h *HttpOpUiData) {
 			return
 		}
 		aiWriteJSON(w, map[string]any{"status": "ok", "cancelled": aiCancelStream(j.StreamID, j.SessionID)})
+		return
+
+	case "get_ai_memory":
+		// 读取全局项目记忆（所有任务共享一份），供管理面板编辑
+		text, at := aiProjectMemory()
+		aiWriteJSON(w, map[string]any{"status": "ok", "content": text, "updated_at": at})
+		return
+
+	case "save_ai_memory":
+		// 保存全局项目记忆（超出上限截断），保存后立即对后续对话生效
+		var j struct {
+			Content string `json:"content"`
+		}
+		if err := json.Unmarshal(h.Data, &j); err != nil {
+			http.Error(w, `{"status":"error","error":"invalid json"}`, http.StatusBadRequest)
+			return
+		}
+		at := saveAIProjectMemory(j.Content)
+		aiWriteJSON(w, map[string]any{"status": "ok", "updated_at": at})
 		return
 
 	case "list_ai_sessions":
@@ -633,15 +889,20 @@ func aiSessionHandle(w http.ResponseWriter, h *HttpOpUiData) {
 			Model   string `json:"model"`
 		}
 		_ = json.Unmarshal(h.Data, &j)
+		// 新建任务即写入具体模型：未指定时直接落为全局默认模型名，不再保留空值表示「跟随服务端默认」
+		model := strings.TrimSpace(j.Model)
+		if model == "" {
+			model = aiDefaultModelName()
+		}
 		now := time.Now().Unix()
 		sess := &AISession{
 			ID:             newAISessionID(),
 			Title:          aiSessionTitle(j.Title, ""),
 			DicPath:        strings.TrimSpace(j.DicPath),
 			System:         strings.TrimSpace(j.System),
-			Model:          strings.TrimSpace(j.Model),
+			Model:          model,
 			ContextMode:    "auto",
-			PermissionMode: "auto",
+			PermissionMode: aiGlobalPermissionMode(),
 			ReasoningMode:  "inherit",
 			Messages:       []AISessionMessage{},
 			CreatedAt:      now,
@@ -673,6 +934,8 @@ func aiSessionHandle(w http.ResponseWriter, h *HttpOpUiData) {
 			http.Error(w, `{"status":"error","error":"invalid json"}`, http.StatusBadRequest)
 			return
 		}
+		// 待同步到全局默认配置的值（在会话锁内收集，解锁后再落盘，避免持锁做文件 IO）
+		var syncModel, syncPermission string
 		aiSessionsMu.Lock()
 		ensureAISessionsLoadedLocked()
 		sess := aiSessions[j.ID]
@@ -692,6 +955,12 @@ func aiSessionHandle(w http.ResponseWriter, h *HttpOpUiData) {
 		}
 		if j.Model != nil {
 			sess.Model = strings.TrimSpace(*j.Model)
+			// 已去掉「跟随服务端默认」的空值语义：空值直接落为全局默认模型名
+			if sess.Model == "" {
+				sess.Model = aiDefaultModelName()
+			}
+			// 任务侧记录模型名：同步设置为全局默认模型（写到 [AI]「当前模型」）
+			syncModel = sess.Model
 		}
 		if j.ContextMode != nil {
 			sess.ContextMode = aiNormalizeContextMode(*j.ContextMode)
@@ -701,6 +970,8 @@ func aiSessionHandle(w http.ResponseWriter, h *HttpOpUiData) {
 		}
 		if j.PermissionMode != nil {
 			sess.PermissionMode = aiNormalizePermissionMode(*j.PermissionMode)
+			// 审批模式同步为全局默认（写到 [AI]「审批模式」），新建任务与新建智能体默认使用它
+			syncPermission = sess.PermissionMode
 		}
 		if j.ReasoningMode != nil {
 			sess.ReasoningMode = aiNormalizeReasoningMode(*j.ReasoningMode)
@@ -714,6 +985,17 @@ func aiSessionHandle(w http.ResponseWriter, h *HttpOpUiData) {
 		sess.UpdatedAt = time.Now().Unix()
 		saveAISessionsLocked()
 		aiSessionsMu.Unlock()
+		// 同步全局默认模型与默认审批模式：失败仅记日志，不影响任务自身配置的保存结果
+		if syncModel != "" {
+			if err := dto.ApplyAICurrentModelByName(syncModel); err != nil {
+				debugLog.Warnf("[AI 会话] 同步全局默认模型失败: session_id=%s model=%s err=%v", j.ID, syncModel, err)
+			}
+		}
+		if syncPermission != "" {
+			if err := dto.ApplyAIApprovalMode(syncPermission); err != nil {
+				debugLog.Warnf("[AI 会话] 同步全局默认审批模式失败: session_id=%s mode=%s err=%v", j.ID, syncPermission, err)
+			}
+		}
 		aiWriteJSON(w, map[string]any{"status": "ok"})
 		return
 
@@ -732,6 +1014,7 @@ func aiSessionHandle(w http.ResponseWriter, h *HttpOpUiData) {
 		aiSessionsMu.Unlock()
 		// 任务删除后其文件改动记录失去归属，一并清理
 		aiFileChangeRemoveSession(j.ID)
+		aiRemoveSessionImages(j.ID)
 		aiWriteJSON(w, map[string]any{"status": "ok"})
 		return
 
@@ -753,7 +1036,14 @@ func aiSessionHandle(w http.ResponseWriter, h *HttpOpUiData) {
 			saveAISessionsLocked()
 		}
 		aiSessionsMu.Unlock()
+		// 消息已清空，随消息附带的图片不再被引用，一并清理
+		aiRemoveSessionImages(j.ID)
 		aiWriteJSON(w, map[string]any{"status": "ok"})
+		return
+
+	case "ai_upload_image":
+		// 保存输入框上传/粘贴/拖入的图片，返回可随消息提交的相对路径
+		aiUploadImageHandle(w, h)
 		return
 
 	case "list_ai_file_changes":
@@ -788,6 +1078,28 @@ func aiSessionHandle(w http.ResponseWriter, h *HttpOpUiData) {
 		}
 		done, fails := aiFileChangesRevertAll(sessionID)
 		aiWriteJSON(w, map[string]any{"status": "ok", "reverted_count": done, "fails": fails})
+		return
+
+	case "confirm_ai_file_changes":
+		// 确认本任务改动过的文件无误：接受改动并移出待确认列表（不改动磁盘内容）；
+		// 给定 path 确认单个，未给定则确认全部
+		var j struct {
+			SessionID string `json:"session_id"`
+			Path      string `json:"path"`
+		}
+		_ = json.Unmarshal(h.Data, &j)
+		sessionID := strings.TrimSpace(j.SessionID)
+		if sessionID == "" {
+			aiWriteError(w, "缺少任务标识")
+			return
+		}
+		path := strings.TrimSpace(j.Path)
+		confirmed := aiFileChangeConfirm(sessionID, path)
+		if path != "" && confirmed == 0 {
+			aiWriteError(w, "该文件没有待确认的改动")
+			return
+		}
+		aiWriteJSON(w, map[string]any{"status": "ok", "confirmed_count": confirmed})
 		return
 
 	case "list_ai_approvals":
@@ -940,6 +1252,7 @@ func aiChatHandle(w http.ResponseWriter, h *HttpOpUiData) {
 	var j struct {
 		SessionID string          `json:"session_id"`
 		Message   string          `json:"message"`
+		Images    []string        `json:"images"`
 		Messages  []aiChatMessage `json:"messages"`
 		System    string          `json:"system"`
 		Model     string          `json:"model"`
@@ -963,7 +1276,7 @@ func aiChatHandle(w http.ResponseWriter, h *HttpOpUiData) {
 		aiChatStateless(w, aiCfg, j.Messages, j.System, j.Model)
 		return
 	}
-	aiChatWithSession(w, aiCfg, j.SessionID, j.Message, j.Title, j.DicPath, j.Context, j.System, j.Model, j.StreamID)
+	aiChatWithSession(w, aiCfg, j.SessionID, j.Message, j.Images, j.Title, j.DicPath, j.Context, j.System, j.Model, j.StreamID)
 }
 
 // aiChatStateless 无状态单轮对话（兼容连接测试等调用）。
@@ -994,22 +1307,29 @@ func aiChatStateless(w http.ResponseWriter, aiCfg *dto.AIConfig, messages []aiCh
 }
 
 // aiChatWithSession 基于任务的对话：读取历史与记忆、追加消息、持久化并按需压缩。
-// streamID 非空时以流式方式请求上游，并经由 WS 推送思考/正文增量（多轮思考实时呈现）。
-func aiChatWithSession(w http.ResponseWriter, aiCfg *dto.AIConfig, sessionID, message, title, dicPath, context, system, model, streamID string) {
+// images 为本轮用户消息附带的图片（已落盘、相对应用目录的路径）；streamID 非空时以流式方式请求上游，
+// 并经由 WS 推送思考/正文增量（多轮思考实时呈现）。
+func aiChatWithSession(w http.ResponseWriter, aiCfg *dto.AIConfig, sessionID, message string, images []string, title, dicPath, context, system, model, streamID string) {
+	// 图片路径先做校验（应用目录内、确实存在、去重限量），再随消息一并落盘
+	images = aiNormalizeMessageImages(images)
 	aiSessionsMu.Lock()
 	ensureAISessionsLoadedLocked()
 	sess := aiSessions[sessionID]
 	if sess == nil {
 		// 前端通常已先行创建；此处兜底新建，保证不丢消息
 		now := time.Now().Unix()
-		sess = &AISession{ID: sessionID, ContextMode: "auto", Messages: []AISessionMessage{}, CreatedAt: now, UpdatedAt: now}
+		sess = &AISession{ID: sessionID, ContextMode: "auto", Model: aiDefaultModelName(), PermissionMode: aiGlobalPermissionMode(), Messages: []AISessionMessage{}, CreatedAt: now, UpdatedAt: now}
 		aiSessions[sess.ID] = sess
 	}
-	if t := strings.TrimSpace(message); t != "" {
-		sess.Messages = append(sess.Messages, AISessionMessage{Role: "user", Content: t, Time: time.Now().Unix()})
-		// 首次发送消息时用消息内容作为任务标题
+	if t := strings.TrimSpace(message); t != "" || len(images) > 0 {
+		sess.Messages = append(sess.Messages, AISessionMessage{Role: "user", Content: t, Images: images, Time: time.Now().Unix()})
+		// 首次发送消息时用消息内容作为任务标题（只发图片没有文字时用「图片消息」）
 		if sess.Title == "" || sess.Title == "新任务" {
-			sess.Title = aiSessionTitle(title, t)
+			first := t
+			if first == "" {
+				first = "图片消息"
+			}
+			sess.Title = aiSessionTitle(title, first)
 		}
 	}
 	if dp := strings.TrimSpace(dicPath); dp != "" && sess.DicPath == "" {
@@ -1048,6 +1368,14 @@ func aiChatWithSession(w http.ResponseWriter, aiCfg *dto.AIConfig, sessionID, me
 	if m := strings.TrimSpace(memory); m != "" {
 		baseSystem += "\n\n【任务记忆（较早对话的摘要，供持续参考）】\n" + m
 	}
+	// 全局项目记忆：用户手工维护、所有任务共享，与任务自身记忆相互独立
+	if pm, _ := aiProjectMemory(); strings.TrimSpace(pm) != "" {
+		baseSystem += "\n\n【项目记忆（全局，所有任务共享，供持续参考）】\n" + strings.TrimSpace(pm)
+	}
+	// 技能清单：只给名称 + 描述，模型按需调用 read_skill 读取技能全文
+	if sk := aiSkillsPromptText(); sk != "" {
+		baseSystem += "\n\n" + sk
+	}
 	if f := aiBuiltinFuncsTextCached(); f != "" {
 		baseSystem += "\n\n" + f
 	}
@@ -1079,6 +1407,18 @@ func aiChatWithSession(w http.ResponseWriter, aiCfg *dto.AIConfig, sessionID, me
 		role := m.Role
 		if role != "assistant" {
 			role = "user"
+		}
+		// 用户消息带图时按多模态消息回传（文本 + image_url）；未开启视觉能力则只回灌文字并明确告知看不到图
+		if role == "user" && len(m.Images) > 0 {
+			if aiCfg.Vision {
+				if imgs := aiSessionImageDataURIs(m.Images); len(imgs) > 0 {
+					msgs = append(msgs, aiVisionUserMessage(m.Content, imgs))
+					continue
+				}
+			} else {
+				msgs = append(msgs, aiChatMessage{Role: role, Content: aiUserImagesVisionHint(len(m.Images)) + "\n" + m.Content})
+				continue
+			}
 		}
 		msgs = append(msgs, aiChatMessage{Role: role, Content: m.Content})
 	}

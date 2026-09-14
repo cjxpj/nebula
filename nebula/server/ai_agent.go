@@ -83,6 +83,10 @@ func aiNormalizeAgent(a *AIAgent) {
 	a.System = aiClipRunes(strings.TrimSpace(a.System), aiAgentSystemMaxRunes)
 	a.Model = strings.TrimSpace(a.Model)
 	a.ContextMode = aiNormalizeContextMode(a.ContextMode)
+	// 未指定审批模式时使用全局默认（[AI]「审批模式」）
+	if strings.TrimSpace(a.PermissionMode) == "" {
+		a.PermissionMode = aiGlobalPermissionMode()
+	}
 	a.PermissionMode = aiNormalizePermissionMode(a.PermissionMode)
 	a.ReasoningMode = aiNormalizeReasoningMode(a.ReasoningMode)
 	a.ReasoningEffort = dto.NormalizeReasoningEffort(a.ReasoningEffort)
@@ -165,6 +169,10 @@ func aiSwitchAgent(id, dicPath string) (*AIAgent, *AISession, error) {
 	// 套用智能体预设：每次切换都以智能体配置为准，保证编辑智能体后立即生效
 	sess.System = agent.System
 	sess.Model = agent.Model
+	// 智能体未指定模型时落为全局默认模型名（任务不再保留「跟随服务端默认」的空值语义）
+	if sess.Model == "" {
+		sess.Model = aiDefaultModelName()
+	}
 	sess.ContextMode = agent.ContextMode
 	sess.PermissionMode = agent.PermissionMode
 	sess.ReasoningMode = agent.ReasoningMode

@@ -35,6 +35,7 @@ import (
 	"github.com/cjxpj/nebula/bot/qqbot"
 	qqbot_msg "github.com/cjxpj/nebula/bot/qqbot/msg"
 	"github.com/cjxpj/nebula/bot/secludedbot"
+	"github.com/cjxpj/nebula/build"
 	"github.com/cjxpj/nebula/debugLog"
 	dic_api "github.com/cjxpj/nebula/dic/api"
 	dic_dto "github.com/cjxpj/nebula/dic/dto"
@@ -1693,7 +1694,7 @@ func opuiPasswordHash() (string, bool, error) {
 	if err != nil {
 		return "", false, err
 	}
-	if err := dic_funcs.EnsureFsTable(db, opuiAuthTable); err != nil {
+	if err = dic_funcs.EnsureFsTable(db, opuiAuthTable); err != nil {
 		return "", false, err
 	}
 	var hash string
@@ -1736,7 +1737,7 @@ func opuiQuickTokenHash() (string, bool, error) {
 	if err != nil {
 		return "", false, err
 	}
-	if err := dic_funcs.EnsureFsTable(db, opuiAuthTable); err != nil {
+	if err = dic_funcs.EnsureFsTable(db, opuiAuthTable); err != nil {
 		return "", false, err
 	}
 	var hash string
@@ -1762,7 +1763,7 @@ func opuiSetQuickToken(token string) error {
 	if err != nil {
 		return err
 	}
-	if err := dic_funcs.EnsureFsTable(db, opuiAuthTable); err != nil {
+	if err = dic_funcs.EnsureFsTable(db, opuiAuthTable); err != nil {
 		return err
 	}
 	hash, err := bcrypt.GenerateFromPassword([]byte(token), bcrypt.DefaultCost)
@@ -1845,7 +1846,7 @@ func opuiSetPassword(password string) error {
 	if err != nil {
 		return err
 	}
-	if err := dic_funcs.EnsureFsTable(db, opuiAuthTable); err != nil {
+	if err = dic_funcs.EnsureFsTable(db, opuiAuthTable); err != nil {
 		return err
 	}
 	hash, err := bcrypt.GenerateFromPassword([]byte(password), bcrypt.DefaultCost)
@@ -6047,11 +6048,12 @@ func opuiHandleApi(w http.ResponseWriter, r *http.Request) {
 	case "save_ai_config":
 		// 保存 AI 模型列表与全局配置到 [AI] 节，并同步运行期内存配置（无需重启）
 		var j struct {
-			Open           bool   `json:"open"`
-			CurrentID      string `json:"current_id"`
-			SystemPrompt   string `json:"system_prompt"`
-			Timeout        int    `json:"timeout"`
-			InlineComplete bool   `json:"inline_complete"`
+			Open           bool    `json:"open"`
+			CurrentID      string  `json:"current_id"`
+			SystemPrompt   string  `json:"system_prompt"`
+			Timeout        int     `json:"timeout"`
+			InlineComplete bool    `json:"inline_complete"`
+			ApprovalMode   *string `json:"approval_mode"`
 			Models         []struct {
 				ID              string `json:"id"`
 				Name            string `json:"name"`
@@ -6130,6 +6132,10 @@ func opuiHandleApi(w http.ResponseWriter, r *http.Request) {
 		sec.Key("系统提示").SetValue(j.SystemPrompt)
 		sec.Key("超时").SetValue(strconv.Itoa(timeout))
 		sec.Key("代码补全").SetValue(strconv.FormatBool(j.InlineComplete))
+		// 全局默认审批模式：仅在前端显式下发时更新，未下发时保持既有值（兼容旧版前端）
+		if j.ApprovalMode != nil {
+			sec.Key(dto.AIApprovalKey).SetValue(dto.NormalizeAIPermissionMode(*j.ApprovalMode))
+		}
 		// 清除旧版单模型键，避免与模型列表重复
 		for _, k := range []string{"接口地址", "密钥", "模型", "思考模式", "推理强度", "推理模型"} {
 			sec.DeleteKey(k)
@@ -6294,6 +6300,33 @@ func opuiHandleApi(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 		jsonResp, _ := json.Marshal(resp)
+		w.Write(jsonResp)
+		return
+
+	case "dic_format":
+		// 词库格式化：按块结构自动缩进（4 空格/层），与命令行 -format 共用 build.FormatDic 实现
+		var j struct {
+			Path    string `json:"path"`
+			Content string `json:"content"`
+		}
+		if err := json.Unmarshal(h.Data, &j); err != nil {
+			http.Error(w, `{"status":"error","error":"invalid json"}`, http.StatusBadRequest)
+			return
+		}
+		if j.Path == "" {
+			http.Error(w, `{"status":"error","error":"词库路径不能为空"}`, http.StatusBadRequest)
+			return
+		}
+		if !checkDicPath(j.Path) {
+			http.Error(w, `{"status":"error","error":"词库路径不合法"}`, http.StatusBadRequest)
+			return
+		}
+		formatted := build.FormatDic(j.Content)
+		jsonResp, _ := json.Marshal(map[string]any{
+			"status":  "ok",
+			"content": formatted,
+			"changed": formatted != j.Content,
+		})
 		w.Write(jsonResp)
 		return
 
@@ -7116,15 +7149,23 @@ func opuiHandleApi(w http.ResponseWriter, r *http.Request) {
 	case "list_ai_sessions", "get_ai_session", "create_ai_session", "save_ai_session",
 		"delete_ai_session", "clear_ai_session", "truncate_ai_messages",
 		"compress_ai_session", "export_ai_sessions", "import_ai_sessions", "cancel_ai_chat",
-		"list_ai_file_changes", "revert_ai_file_changes":
+		"list_ai_file_changes", "revert_ai_file_changes", "confirm_ai_file_changes",
+		"ai_upload_image", "get_ai_memory", "save_ai_memory":
 		// AI 多任务会话管理：任务的增删改查、记忆压缩与导入导出、终止在途生成、
-		// 以及「本任务编辑过的文件」列表与回撤
+		// 「本任务改动过的文件」列表、确认无误与回撤（驳回）、输入框图片的上传落盘，
+		// 以及全局「项目记忆」的读取与保存（所有任务共享一份）
 		aiSessionHandle(w, h)
 		return
 
 	case "list_ai_agents", "save_ai_agent", "delete_ai_agent", "switch_ai_agent":
 		// AI 智能体管理：预设的增删改查，以及「切换到某智能体的独立任务」
 		aiAgentHandle(w, h)
+		return
+
+	case "list_ai_skills", "save_ai_skill", "delete_ai_skill":
+		// AI 技能管理：技能（名称 + 描述 + 正文）的增删改查；
+		// 系统提示只注入技能清单，模型按需调用 read_skill 读取正文
+		aiSkillHandle(w, h)
 		return
 
 	case "ai_complete":
@@ -8094,6 +8135,7 @@ func aiConfigJSON(c *dto.AIConfig) map[string]any {
 	return map[string]any{
 		"open":            c.Open,
 		"current_id":      c.CurrentID,
+		"approval_mode":   c.ApprovalMode,
 		"models":          models,
 		"system_prompt":   c.SystemPrompt,
 		"timeout":         c.Timeout,
@@ -8115,6 +8157,7 @@ func defaultAIConfigJSON() map[string]any {
 	return map[string]any{
 		"open":             false,
 		"current_id":       "",
+		"approval_mode":    dto.DefaultAIPermissionMode,
 		"models":           []map[string]any{},
 		"system_prompt":    "",
 		"timeout":          60,
@@ -8137,7 +8180,7 @@ func aiResolveConfig() *dto.AIConfig {
 	}
 	cfg, err := dto.LoadConfigFile()
 	if err != nil {
-		return &dto.AIConfig{Model: dto.DefaultAIModel, Timeout: 60, InlineComplete: true}
+		return &dto.AIConfig{Model: dto.DefaultAIModel, Timeout: 60, InlineComplete: true, ApprovalMode: dto.DefaultAIPermissionMode}
 	}
 	return dto.LoadConfig_ai(cfg.Section("AI"))
 }
@@ -8237,8 +8280,7 @@ func aiRetryable(err error) bool {
 	if err == nil {
 		return false
 	}
-	var re *aiRetryableError
-	if errors.As(err, &re) {
+	if _, ok := errors.AsType[*aiRetryableError](err); ok {
 		return true
 	}
 	return aiRetryableByMessage(err.Error())
@@ -8555,11 +8597,7 @@ func aiPushRoutedDelta(streamID string, router *aiToolCallTextRouter, reasoning 
 // 仅当连续这段时间没有收到任何新数据才终止请求。取「配置超时」与 3 分钟中的较大值，
 // 避免长思维链生成被总时长上限（默认 60 秒）误杀。
 func aiStreamIdleTimeout(timeoutSec int) time.Duration {
-	d := time.Duration(timeoutSec) * time.Second
-	if d < 3*time.Minute {
-		d = 3 * time.Minute
-	}
-	return d
+	return max(time.Duration(timeoutSec)*time.Second, 3*time.Minute)
 }
 
 // ---- AI 流式请求取消注册表：支持用户在生成中途「终止」 ----
@@ -8661,7 +8699,8 @@ func aiChatStreamReasoning(c *dto.AIConfig, model string, messages []aiChatMessa
 		content, reasoning, finishReason, err := aiChatStreamReasoningOnce(c, model, work, reasoningEffort, streamID)
 		// 思维链已由单次请求在流式解析时逐片推送，此处仅累积，避免重复推送
 		if r := strings.TrimSpace(reasoning); r != "" {
-			reasoningAll.WriteString(r + "\n")
+			reasoningAll.WriteString(r)
+			reasoningAll.WriteByte('\n')
 		}
 		if err != nil {
 			if contentAll.Len() == 0 {

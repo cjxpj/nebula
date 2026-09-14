@@ -108,6 +108,8 @@ type AIConfig struct {
 	MaxTokens int
 	// 当前选中模型的 ID
 	CurrentID string
+	// 全局默认审批模式：manual | auto | full，新建任务与新建智能体未指定时使用
+	ApprovalMode string
 	// 模型列表（每项为独立完整配置）
 	Models []*AIModelConfig
 }
@@ -149,11 +151,87 @@ const (
 	DefaultAIMaxTokens     = 16 * 1024
 )
 
+// 全局默认审批模式取值：手动审批 / 自动审批 / 完全访问，默认自动审批。
+const (
+	DefaultAIPermissionMode = "auto"
+)
+
+// NormalizeAIPermissionMode 归一化审批模式：仅接受 manual/auto/full，其余回退默认值。
+func NormalizeAIPermissionMode(m string) string {
+	switch strings.TrimSpace(m) {
+	case "manual", "full":
+		return strings.TrimSpace(m)
+	default:
+		return DefaultAIPermissionMode
+	}
+}
+
 // AI 模型列表在 [AI] 节中的存储键：模型列表为 JSON 数组字符串，当前模型为选中项 ID。
 const (
-	AIModelsKey  = "模型列表"
-	AICurrentKey = "当前模型"
+	AIModelsKey   = "模型列表"
+	AICurrentKey  = "当前模型"
+	AIApprovalKey = "审批模式"
 )
+
+// PickAIModelByName 按模型名从模型列表中查找（任务侧记录的是模型名，全局默认记录的是模型 ID）；未命中返回 nil。
+func PickAIModelByName(models []*AIModelConfig, name string) *AIModelConfig {
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return nil
+	}
+	for _, m := range models {
+		if m != nil && m.Model == name {
+			return m
+		}
+	}
+	return nil
+}
+
+// ApplyAICurrentModelByName 按模型名把全局默认模型（[AI]「当前模型」）切换到对应模型项，并热更新运行期配置。
+// 任务侧记录的是模型名，全局默认记录的是模型 ID，故此处按模型名匹配后写入其 ID；模型名留空或不在列表中时不改动。
+func ApplyAICurrentModelByName(name string) error {
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return nil
+	}
+	cfg, err := LoadConfigFile()
+	if err != nil {
+		return err
+	}
+	sec := cfg.Section("AI")
+	m := PickAIModelByName(LoadAIModels(sec), name)
+	if m == nil || m.ID == "" {
+		return nil
+	}
+	if strings.TrimSpace(sec.Key(AICurrentKey).String()) == m.ID {
+		return nil
+	}
+	sec.Key(AICurrentKey).SetValue(m.ID)
+	if err := cfg.Save(); err != nil {
+		return err
+	}
+	ServerConfig.AI = LoadConfig_ai(sec)
+	return nil
+}
+
+// ApplyAIApprovalMode 把全局默认审批模式写入 [AI]「审批模式」，并热更新运行期配置。
+func ApplyAIApprovalMode(mode string) error {
+	mode = NormalizeAIPermissionMode(mode)
+	cfg, err := LoadConfigFile()
+	if err != nil {
+		return err
+	}
+	sec := cfg.Section("AI")
+	if strings.TrimSpace(sec.Key(AIApprovalKey).String()) == mode {
+		return nil
+	}
+	sec.Key(AIApprovalKey).SetValue(mode)
+	if err := cfg.Save(); err != nil {
+		return err
+	}
+	ServerConfig.AI = LoadConfig_ai(sec)
+	return nil
+}
 
 // aiKeyPrefix AI 密钥在配置文件中的密文前缀：用于识别密文，并兼容历史明文值。
 const aiKeyPrefix = "enc:"
@@ -199,6 +277,7 @@ func LoadConfig_ai(sec *ConfigSection) *AIConfig {
 		SystemPrompt:   strings.TrimSpace(sec.Key("系统提示").String()),
 		Timeout:        sec.Key("超时").MustInt(60),
 		InlineComplete: sec.Key("代码补全").MustBool(true),
+		ApprovalMode:   NormalizeAIPermissionMode(sec.Key(AIApprovalKey).String()),
 		Models:         models,
 	}
 	if cur != nil {

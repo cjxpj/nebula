@@ -28,6 +28,11 @@ import (
 )
 
 func main() {
+	// 退出码由命令行分支设置；此 defer 注册在最前，故最后执行，
+	// 保证 extloader/进程清理等 defer 都跑完后再决定进程退出码。
+	exitCode := 0
+	defer func() { os.Exit(exitCode) }()
+
 	ctx, cancel := context.WithCancel(context.Background())
 	defer extloader.CloseAll()
 	defer cancel()
@@ -66,10 +71,22 @@ func main() {
 		return output, err
 	})
 
-	args := os.Args
-	argsLen := len(args)
+	// -json/--json 开关可出现在任意位置，先剥离再解析命令，便于脚本与外部 AI 消费结构化结果
+	cmdArgs, jsonOut := dic.ExtractJSONFlag(os.Args[1:])
 
-	if argsLen == 1 {
+	// 命令行模式下进程随即退出，而 server 包已把 os.Stdout 接管为异步回显的日志管道，
+	// 输出可能来不及回显就被丢弃；此处恢复为真实标准输出，保证帮助/版本/执行结果稳定可见。
+	if len(cmdArgs) > 0 {
+		os.Stdout = dic.CLIStdout()
+	}
+
+	if len(cmdArgs) == 0 {
+		// 只给了 -json/--json 而没有实际命令：视作参数不合法，避免误启动服务
+		if len(os.Args) > 1 {
+			fmt.Println("未知命令")
+			exitCode = 2
+			return
+		}
 		// 启动
 		dic.Start()
 		if dto.FuncServers.Len() == 0 {
@@ -81,52 +98,29 @@ func main() {
 		return
 	}
 
-	switch args[1] {
+	switch cmdArgs[0] {
 	case "-help":
 		fmt.Println("-help               		（显示帮助）")
 		fmt.Println("-v                  		（显示版本）")
-		fmt.Println("-run <文件>         		（执行指定词库文件）")
-		fmt.Println("-check <文件>       		（预编译检测，输出警告与报错）")
+		fmt.Println("-run <文件> [触发词] [超时秒]	（执行词库，触发词默认 Main，超时 0 表示不限制）")
+		fmt.Println("-check <文件>       		（预编译检测，输出诊断与错误/警告汇总）")
+		fmt.Println("-format <文件> [-w] 		（格式化词库：自动缩进块结构，默认打印，-w 写回原文件）")
+		fmt.Println("-json               		（与 -run/-check/-format 组合，输出 JSON 结构化结果）")
 	case "-v":
 		fmt.Print(appfiles.Version)
 		return
 	case "-run":
-		if argsLen < 3 {
-			fmt.Println("用法：-run <词库文件路径>")
-			return
-		}
-		res, err := dic.RunFile(args[2])
-		if err != nil {
-			fmt.Println("执行失败:", err)
-			return
-		}
-		if res != "" {
-			fmt.Println(res)
-		}
+		exitCode = dic.RunCLI("run", cmdArgs[1:], jsonOut)
 		return
 	case "-check":
-		if argsLen < 3 {
-			fmt.Println("用法：-check <词库文件路径>")
-			return
-		}
-		warns, errs, err := dic.CheckFile(args[2])
-		if err != nil {
-			fmt.Println("检测失败:", err)
-			return
-		}
-		if len(errs) == 0 && len(warns) == 0 {
-			fmt.Println("检测通过：无警告，无报错")
-			return
-		}
-		for _, e := range errs {
-			fmt.Printf("[错误] 第 %d 行：%s\n", e.Line, e.Text)
-		}
-		for _, w := range warns {
-			fmt.Printf("[警告] 第 %d 行：%s\n", w.Line, w.Text)
-		}
+		exitCode = dic.RunCLI("check", cmdArgs[1:], jsonOut)
+		return
+	case "-format":
+		exitCode = dic.RunCLI("format", cmdArgs[1:], jsonOut)
 		return
 	default:
 		fmt.Println("未知命令")
+		exitCode = 2
 		return
 	}
 }

@@ -615,11 +615,16 @@ func extractVarRefs(s string) []string {
 
 // assignOpValue 返回赋予值行中需参与函数/变量静态检查的「值」部分。
 // 执行函数(:$:)与只读取变量(:%:)的操作符内含有相邻的 $/% 与 :，整行按 $/% 切分会被误判为
-// 空函数「$:$」或空变量「%:%」，故返回操作符后的值；其余行返回原行。
+// 空函数「$:$」或空变量「%:%」，故返回操作符后的值；
+// 纯文本赋值(::)的值原样写入、不执行 $函数$ 与 %变量%，返回空串表示该值不参与检查；
+// 其余行返回原行。
 func assignOpValue(line string) string {
 	vt, _, vs := build.ValTextTest(line)
-	if vt == 3 || vt == 4 {
+	switch vt {
+	case 3, 4:
 		return vs
+	case 5:
+		return ""
 	}
 	return line
 }

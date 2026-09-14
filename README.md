@@ -29,6 +29,7 @@
 - **云工具服务端**：内置账号、余额、白名单、在线时长管理的云函数服务，词库函数即云端 API
 - **跨平台部署**：Windows 独立客户端 / Linux & macOS Docker 容器化部署
 - **自动配置管理**：首次启动自动生成配置目录和默认文件
+- **命令行工具**：`-run` 执行词库、`-check` 预编译检测、`-format` 格式化词库，支持 JSON 结构化输出
 - **健康检查监控**：内置服务健康检查和资源监控
 
 ### 🤖 机器人功能
@@ -84,12 +85,45 @@
    # 显示版本
    .\nebula\app\win\nebulaApp.exe -v
    
+   # 执行词库（触发词默认 Main，超时 0 表示不限制）
+   .\nebula\app\win\nebulaApp.exe -run public\hello.n
+   .\nebula\app\win\nebulaApp.exe -run public\hello.n Main 10
+   
+   # 预编译检测词库（只编译不执行）
+   .\nebula\app\win\nebulaApp.exe -check public\hello.n
+   
+   # 格式化词库（默认打印，-w 写回原文件）
+   .\nebula\app\win\nebulaApp.exe -format public\hello.n
+   .\nebula\app\win\nebulaApp.exe -format public\hello.n -w
+   
+   # 与 -run / -check / -format 组合，输出 JSON 结构化结果
+   .\nebula\app\win\nebulaApp.exe -check public\hello.n -json
+   
    # 设置开机自启
    .\nebula\app\win\nebulaApp.exe -autostart
    
    # 取消开机自启
    .\nebula\app\win\nebulaApp.exe -noautostart
    ```
+
+#### 命令行工具（CLI）
+
+除图形界面外，Nebula 客户端还提供命令行能力，可直接**执行词库**、**预编译检测词库**与**格式化词库**，便于在脚本、CI 流程或外部 AI 中调用。
+
+| 命令 | 说明 |
+|------|------|
+| `-run <文件> [触发词] [超时秒]` | 执行词库，触发词默认 `Main`，超时 0 表示不限制 |
+| `-check <文件>` | 预编译检测词库，输出诊断与错误/警告汇总 |
+| `-format <文件> [-w]` | 格式化词库：自动缩进块结构，默认打印，`-w` 写回原文件 |
+| `-json` | 与 `-run` / `-check` / `-format` 组合，输出 JSON 结构化结果 |
+
+- `-run` 编译存在 error 级诊断时拒绝执行；触发词未命中、执行超时同样视为失败。
+- `-check` 只编译不执行，适合提交前自检与批量校验。
+- `-format` 与词库调试界面的格式化共用同一套后端算法，按块结构逐层缩进（每层 4 个空格），`//@关闭缩进` 区间原样保留；内容无变化时不写回。
+- `-json` 输出字段：`-run` 为 `path`/`trigger`/`output`/`timedOut`/`fellBack`/`compileError`/`errorCount`/`warnings`；`-check` 为 `path`/`passed`/`errorCount`/`warnCount`/`warnings`；`-format` 为 `path`/`changed`/`written`/`formatted`；失败时输出 `{"path": "...", "error": "..."}`。
+- 退出码：`0` 成功；`1` 执行/检测/格式化失败；`2` 参数不合法。
+
+完整说明见词库文档 `dic.md` → 「二、快速入门 → 命令行工具（CLI）」。
 
 ### Linux/macOS 平台（Docker 部署）
 

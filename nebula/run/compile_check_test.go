@@ -770,6 +770,70 @@ func TestCheckUnusedAssignmentSkips(t *testing.T) {
 	}
 }
 
+func TestCheckRawAssignSkipsFuncAndVar(t *testing.T) {
+	// :: 纯文本赋值（绝对文本）的值原样写入，不执行 $函数$、不解析 %变量%，
+	// 故其中的 $...$ / %...% 不应被误报为「函数不存在」「变量不存在」。
+	v := newTestBuildValue()
+	v.Dic = []*dto.BuildDic{{
+		Trigger:     "测试",
+		TriggerLine: 1,
+		Text: []string{
+			"a::$不存在的函数 参数$%未定义%",
+			"%a%", // 引用 a，避免触发「变量未使用」
+		},
+		LineNums: []int{2, 3},
+	}}
+	s := newTestStack()
+	runCompileChecks(v, s)
+	if containsText(s.warnings, "函数不存在：不存在的函数") {
+		t.Fatalf(":: 赋值不应报函数不存在，实际：%v", warningsText(s.warnings))
+	}
+	if containsText(s.warnings, "变量不存在：未定义") {
+		t.Fatalf(":: 赋值不应报变量不存在，实际：%v", warningsText(s.warnings))
+	}
+}
+
+func TestCheckFuncClosedSkipsRawAssign(t *testing.T) {
+	// :: 纯文本赋值的值不解析 $，即使缺少结尾 $ 也不应报「函数未闭合」。
+	v := newTestBuildValue()
+	v.Dic = []*dto.BuildDic{{
+		Trigger:     "测试",
+		TriggerLine: 1,
+		Text:        []string{"a::$价格100", "%a%"},
+		LineNums:    []int{2, 3},
+	}}
+	s := newTestStack()
+	runCompileChecks(v, s)
+	for _, w := range s.warnings {
+		if strings.Contains(w.Text, "函数未闭合") {
+			t.Fatalf(":: 赋值值不解析 $，不应报函数未闭合，实际：%v", warningsText(s.warnings))
+		}
+	}
+}
+
+func TestCheckNormalAssignStillParsed(t *testing.T) {
+	// 对照：普通赋值(:)仍会解析 $...$ 与 %...%，误报修复不应削弱该检查。
+	v := newTestBuildValue()
+	v.Dic = []*dto.BuildDic{{
+		Trigger:     "测试",
+		TriggerLine: 1,
+		Text: []string{
+			"a:$不存在的函数$", // 普通赋值：应报函数不存在
+			"b:%未定义%",     // 普通赋值：应报变量不存在
+			"%a%%b%",       // 引用 a/b，避免触发「变量未使用」
+		},
+		LineNums: []int{2, 3, 4},
+	}}
+	s := newTestStack()
+	runCompileChecks(v, s)
+	if !containsText(s.warnings, "函数不存在：不存在的函数") {
+		t.Fatalf("普通赋值仍应报函数不存在，实际：%v", warningsText(s.warnings))
+	}
+	if !containsText(s.warnings, "变量不存在：未定义") {
+		t.Fatalf("普通赋值仍应报变量不存在，实际：%v", warningsText(s.warnings))
+	}
+}
+
 func TestCheckUnusedAssignmentSkipsRawTextAndComment(t *testing.T) {
 	v := newTestBuildValue()
 	v.Dic = []*dto.BuildDic{{

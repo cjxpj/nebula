@@ -18,8 +18,9 @@ import (
 //
 // AI 通过工具改动磁盘文件时，本模块在落盘前抓取「改动前快照」，落盘后登记一条改动记录：
 //   1. 编辑器据此逐行标注「本任务内被 AI 改过的行」；
-//   2. 任务面板据此列出「当前任务编辑过的文件」；
-//   3. 用户可把某个文件一键回撤到本任务首次改动之前的内容。
+//   2. 任务面板据此列出「当前任务的待确认改动文件」；
+//   3. 用户可把某个文件一键回撤（驳回）到本任务首次改动之前的内容；
+//   4. 用户确认改动无误（保存）后，该记录移出待确认列表，不再标注、不可回撤。
 // 记录以「任务 + 当前路径」为粒度聚合：首次改动时定格回撤目标（是否存在 + 内容），后续改动只累加次数。
 
 const (
@@ -187,6 +188,37 @@ func aiFileChangeDrop(sessionID, path string) {
 		delete(aiFileChanges, key)
 		aiFileChangesSaveLocked()
 	}
+}
+
+// aiFileChangeConfirm 确认 AI 改动无误：接受该改动并把记录移出「待确认」列表，不改动磁盘内容。
+// path 为空表示确认该任务下全部待确认改动；返回确认的条数。
+// 确认后该文件的回撤基线一并清除：后续再被 AI 改动时，以本次确认后的内容为新基线。
+func aiFileChangeConfirm(sessionID, path string) int {
+	if sessionID == "" {
+		return 0
+	}
+	aiFileChangesMu.Lock()
+	defer aiFileChangesMu.Unlock()
+	aiFileChangesEnsureLoadedLocked()
+	confirmed := 0
+	if path != "" {
+		key := aiFileChangeKey(sessionID, path)
+		if _, ok := aiFileChanges[key]; ok {
+			delete(aiFileChanges, key)
+			confirmed = 1
+		}
+	} else {
+		for k, c := range aiFileChanges {
+			if c.SessionID == sessionID {
+				delete(aiFileChanges, k)
+				confirmed++
+			}
+		}
+	}
+	if confirmed > 0 {
+		aiFileChangesSaveLocked()
+	}
+	return confirmed
 }
 
 // aiFileAbsPath 把应用目录内的相对路径解析为绝对路径。
