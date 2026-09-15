@@ -748,10 +748,11 @@ type unusedAssign struct {
 // checkUnusedAssignment 静态检查赋值行：目标变量在整个编译产物中都未被引用时给出警告。
 // 正文行一旦以「名字+半角冒号」开头就会被解析成赋予值，该行不输出；
 // 若本意是输出带冒号的文本，这是一种静默失效，提示时一并给出转义冒号的修正写法。
+// 告警定位在最后一次赋值行：该处才是变量的最终值，此前的赋值都被覆盖。
 func checkUnusedAssignment(v *dto.BuildValue, stack *importStack) {
-	used := make(map[string]bool)          // 全产物中被引用过的变量名
-	first := make(map[string]unusedAssign) // 变量 -> 首次赋值
-	var order []string                     // 赋值出现顺序，保证告警顺序稳定
+	used := make(map[string]bool)         // 全产物中被引用过的变量名
+	last := make(map[string]unusedAssign) // 变量 -> 最后一次赋值（最终值所在行）
+	var order []string                    // 变量首次出现的顺序，保证告警顺序稳定
 
 	scan := func(lines []string, lineNums []int) {
 		var rawClosers []string
@@ -772,8 +773,10 @@ func checkUnusedAssignment(v *dto.BuildValue, stack *importStack) {
 			}
 			if !strings.HasPrefix(line, "//") {
 				vt, vp, _ := build.ValTextTest(line)
-				isAssign := vt != 0 && vp != ""
-				// 赋值行右侧读取自身时不算该变量的「引用」：若再无其他用途即视为未被使用。
+				// 行内判断（如果:/否则如果:/if:/elif:）由运行时按前缀拦截，不是变量赋值。
+				isAssign := vt != 0 && vp != "" && !isInlineControlLine(line)
+				// 自引用（赋值行右侧读取赋值目标自身，如 lis:%lis%%appid%）不算「使用」：
+				// 变量只有在自身赋值行之外被读取，才算真正被引用。
 				for _, name := range lineVarRefs(line) {
 					if isAssign && name == vp {
 						continue
@@ -781,10 +784,11 @@ func checkUnusedAssignment(v *dto.BuildValue, stack *importStack) {
 					used[name] = true
 				}
 				if isAssign && !isMagicVar(vp) {
-					if _, ok := first[vp]; !ok {
-						first[vp] = unusedAssign{name: vp, line: ln, text: line}
+					// 告警定位到最后一次赋值：变量的最终值死在那里，此前的赋值都被覆盖了。
+					if _, ok := last[vp]; !ok {
 						order = append(order, vp)
 					}
+					last[vp] = unusedAssign{name: vp, line: ln, text: line}
 				}
 			}
 			if isRawOpen {
@@ -813,9 +817,37 @@ func checkUnusedAssignment(v *dto.BuildValue, stack *importStack) {
 		if used[name] || outVars[name] {
 			continue
 		}
-		a := first[name]
-		stack.addWarning(a.line, "变量未使用："+name+" 赋值后未被任何地方引用；若此处是要输出文本，应写成 "+escapeAssignColon(a.text, name))
+		a := last[name]
+		msg := "变量未使用：" + name + " 赋值后未被任何地方引用"
+		// 多行 JSON 框（key:{ / key:[）本身就是块结构声明，冒号不是「想输出文本」的误写，
+		// 给出转义写法反而误导，只提示变量未被引用。
+		if !isJSONBoxAssign(a.text, name) {
+			msg += "；若此处是要输出文本，应写成 " + escapeAssignColon(a.text, name)
+		}
+		stack.addWarning(a.line, msg)
 	}
+}
+
+// isJSONBoxAssign 判断赋值行是否为多行 JSON 框声明（key:{ / key:[，键名不含 -> ），
+// 与 build.formatOpen 中 varNewJson 的判定保持一致。
+func isJSONBoxAssign(line, key string) bool {
+	if key == "" || strings.Contains(key, "->") || !strings.HasPrefix(line, key) {
+		return false
+	}
+	vt, _, vs := build.ValTextTest(line)
+	return vt == 6 && (strings.HasPrefix(vs, "{") || strings.HasPrefix(vs, "["))
+}
+
+// isInlineControlLine 判断该行是否为行内判断语句（如果:/if: 起始，否则如果:/elif: 分支）。
+// 运行时由 dic/bc 的 inlineIfStart/inlineElifCond 按前缀拦截，不会走赋值路径；
+// 静态检查需保持一致，否则「如果:/if:」会被当成名为「如果」「if」的变量赋值而误告警。
+func isInlineControlLine(line string) bool {
+	for _, p := range [...]string{"否则如果:", "如果:", "elif:", "if:"} {
+		if strings.HasPrefix(line, p) && len(line) > len(p) {
+			return true
+		}
+	}
+	return false
 }
 
 // lineVarRefs 提取一行中被引用的变量名：

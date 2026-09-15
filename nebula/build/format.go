@@ -208,18 +208,54 @@ func formatMultiline(region []string) bool {
 	return false
 }
 
+// IsHeadLine 判断一行是否为头部内容：预编译指令（//@）、#引入= 导入行或赋值行。
+func IsHeadLine(line string) bool {
+	line = strings.TrimSpace(line)
+	if line == "" {
+		return false
+	}
+	if strings.HasPrefix(line, "//@") {
+		return true
+	}
+	if strings.HasPrefix(line, "#引入=") || strings.Contains(line, ":#引入=") {
+		return true
+	}
+	vt, key, _ := ValTextTest(line)
+	return vt != 0 && key != ""
+}
+
+// FirstHeadLikeLine 判断「全文无空行」的文件是否应按头部初始化脚本解析：
+// 跳过空行与普通注释后，首个有效行是赋值/引入/预编译指令行时返回 true。
+// 词库编译（run 包）与这里的格式化共用该判定，保证解析与排版结果一致。
+func FirstHeadLikeLine(lines []string) bool {
+	for _, raw := range lines {
+		line := strings.TrimSpace(raw)
+		if line == "" || strings.HasPrefix(line, "/*") || (strings.HasPrefix(line, "//") && !strings.HasPrefix(line, "//@")) {
+			continue
+		}
+		return IsHeadLine(line)
+	}
+	return false
+}
+
 // formatBody 执行主体排版，等价内置算法的 Ss。
-// 首个空行之前为头部（初始化区），头部只做去缩进、不参与块缩进。
+// 首个空行之前为头部（初始化区），头部只做去缩进、不参与块缩进；
+// 全文无空行且开头是赋值/引入/指令行时，整篇按头部初始化脚本排版。
 func formatBody(lines []string) string {
 	out := make([]string, 0, len(lines))
 
 	// 存在头部：首个空行位于文件中间（下标大于 0）
 	inHead := false
+	hasBlank := false
 	for i := 0; i < len(lines); i++ {
 		if strings.TrimSpace(lines[i]) == "" {
+			hasBlank = true
 			inHead = i > 0
 			break
 		}
+	}
+	if !hasBlank && FirstHeadLikeLine(lines) {
+		inHead = true
 	}
 
 	i := 0

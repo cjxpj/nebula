@@ -16,6 +16,7 @@ import (
 	"sync"
 
 	"github.com/cjxpj/nebula/appfiles"
+	"github.com/cjxpj/nebula/build"
 	"github.com/cjxpj/nebula/debugLog"
 	"github.com/cjxpj/nebula/dto"
 	"github.com/cjxpj/nebula/utils"
@@ -1155,14 +1156,20 @@ func buildDic(dicPath string, lines []string, stack *importStack) *dto.BuildValu
 	)
 
 	// 头部区域：文件开头到第一个空行之间为头部（#引入= 与初始化语句），
-	// 空行之后为正文；注释行不参与分隔（仅被跳过）。无空行分隔时文件直接按正文解析
-	// （如被引入的 [函数] 文件）。
+	// 空行之后为正文；注释行不参与分隔（仅被跳过）。
+	// 全文无空行时：开头是赋值/引入/指令行则整篇按头部初始化脚本解析，
+	// 否则按正文解析（如被引入的 [函数] 文件）。
 	runhead = false
+	hasBlank := false
 	for i, l := range lines {
 		if strings.TrimSpace(l) == "" {
+			hasBlank = true
 			runhead = i > 0
 			break
 		}
+	}
+	if !hasBlank && build.FirstHeadLikeLine(lines) {
+		runhead = true
 	}
 
 	for dic_i, line := range lines {

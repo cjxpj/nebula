@@ -1,6 +1,8 @@
 package dic_server
 
 import (
+	"archive/zip"
+	"bytes"
 	"fmt"
 	"html"
 	"io"
@@ -354,4 +356,29 @@ func dicDocIndexText() string {
 		b.WriteString(fmt.Sprintf("- %s（%s，%d 字）\n", list[i].Title, list[i].Path, list[i].Chars))
 	}
 	return strings.TrimRight(b.String(), "\n")
+}
+
+// dicDocsZip 把全部内置文档打包成 zip。
+// 压缩包内沿用 docs 下的相对路径（如 1-内置函数/04-文件操作.md），保留原有的分组结构。
+func dicDocsZip() ([]byte, error) {
+	list := dicDocList()
+	if len(list) == 0 {
+		return nil, fmt.Errorf("内置文档资源缺失")
+	}
+	var buf bytes.Buffer
+	zw := zip.NewWriter(&buf)
+	for i := range list {
+		name := strings.TrimPrefix(list[i].Path, dicDocDir+"/")
+		f, err := zw.Create(name)
+		if err != nil {
+			return nil, err
+		}
+		if _, err := f.Write([]byte(list[i].content)); err != nil {
+			return nil, err
+		}
+	}
+	if err := zw.Close(); err != nil {
+		return nil, err
+	}
+	return buf.Bytes(), nil
 }

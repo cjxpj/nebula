@@ -6064,18 +6064,20 @@ func opuiHandleApi(w http.ResponseWriter, r *http.Request) {
 		w.Write(jsonResp)
 		return
 
-	case "get_dic_doc_raw":
-		var j struct {
-			Doc string `json:"doc"`
-		}
-		_ = json.Unmarshal(h.Data, &j)
-		doc, err := dicDocResolveOrFirst(j.Doc)
+	case "download_dic_docs":
+		// 打包全部内置文档为 zip 供下载（见 server/dic_doc.go）。
+		// WS 通道只传文本帧，二进制用 base64 承载（文档总共百来 KB，开销可忽略）。
+		data, err := dicDocsZip()
 		if err != nil {
-			http.Error(w, `{"status":"error","error":"embedded file not found"}`, http.StatusInternalServerError)
+			jsonResp, _ := json.Marshal(map[string]string{"status": "error", "error": err.Error()})
+			w.Write(jsonResp)
 			return
 		}
-		resp := map[string]any{"content": doc.content, "path": doc.Path, "title": doc.Title}
-		jsonResp, _ := json.Marshal(resp)
+		jsonResp, _ := json.Marshal(map[string]any{
+			"status":  "ok",
+			"name":    "nebula-docs.zip",
+			"content": base64.StdEncoding.EncodeToString(data),
+		})
 		w.Write(jsonResp)
 		return
 
