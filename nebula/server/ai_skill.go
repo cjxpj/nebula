@@ -11,6 +11,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/cjxpj/nebula/appfiles"
 	"github.com/cjxpj/nebula/utils"
 )
 
@@ -39,9 +40,11 @@ type AISkill struct {
 	// Description 技能的适用场景描述：随系统提示注入，供模型判断是否需要读取本技能
 	Description string `json:"description"`
 	// Content 技能正文（步骤与约定）：仅在模型调用 read_skill 时返回
-	Content   string `json:"content"`
-	CreatedAt int64  `json:"created_at"`
-	UpdatedAt int64  `json:"updated_at"`
+	Content string `json:"content"`
+	// Builtin 标记该技能为应用内置技能：随程序分发、不可编辑或删除，仅接口返回时使用（不落盘）
+	Builtin   bool  `json:"builtin,omitempty"`
+	CreatedAt int64 `json:"created_at"`
+	UpdatedAt int64 `json:"updated_at"`
 }
 
 // aiSkillStore 技能持久化文件结构。
@@ -135,7 +138,11 @@ func aiSkillList() []*AISkill {
 }
 
 // aiSkillFindByName 按名称查找技能（忽略首尾空白与大小写）。
+// 内置技能优先：同名时以随程序分发的内置技能为准，避免被用户技能遮蔽。
 func aiSkillFindByName(name string) (*AISkill, bool) {
+	if s, ok := aiBuiltinSkillFindByName(name); ok {
+		return s, true
+	}
 	key := strings.TrimSpace(name)
 	if key == "" {
 		return nil, false
@@ -154,18 +161,28 @@ func aiSkillFindByName(name string) (*AISkill, bool) {
 }
 
 // aiSkillsPromptText 生成注入系统提示的「技能清单」：仅名称 + 描述，提示模型按需调用 read_skill。
+// builtinNames 为当前任务所属智能体声明可用的内置技能名；用户自建技能始终全部列出。
 // 无技能时返回空串（不注入任何内容）。
-func aiSkillsPromptText() string {
-	list := aiSkillList()
+func aiSkillsPromptText(builtinNames []string) string {
+	list := make([]*AISkill, 0, len(builtinNames))
+	for _, name := range builtinNames {
+		if b, ok := aiBuiltinSkillFindByName(name); ok {
+			list = append(list, b)
+		}
+	}
+	list = append(list, aiSkillList()...)
 	if len(list) == 0 {
 		return ""
 	}
 	var sb strings.Builder
 	sb.WriteString("【可用技能】\n")
-	sb.WriteString("以下是用户为你配置的技能。当任务与某个技能的描述相符时，先调用 read_skill 读取该技能全文，再严格按其中的步骤与约定执行；与描述不符的技能无需读取。\n")
+	sb.WriteString("以下是本次任务可用的技能（含应用内置技能）。当任务与某个技能的描述相符时，先调用 read_skill 读取该技能全文，再严格按其中的步骤与约定执行；与描述不符的技能无需读取。\n")
 	for _, s := range list {
 		sb.WriteString("- ")
 		sb.WriteString(s.Name)
+		if s.Builtin {
+			sb.WriteString("（内置）")
+		}
 		if d := strings.TrimSpace(s.Description); d != "" {
 			sb.WriteString("：")
 			sb.WriteString(d)
@@ -175,13 +192,147 @@ func aiSkillsPromptText() string {
 	return strings.TrimRight(sb.String(), "\n")
 }
 
+// ============== 应用内置技能 ==============
+//
+// 「工具能力」「语法结构」这类过去常驻在系统提示里的内容，改为内置技能按需读取：
+// 只有任务所属智能体（见 ai_agent.go 的 AIAgent）声明的内置技能才进入「可用技能」清单，
+// 模型判断任务与描述相符时再调用 read_skill 读取正文，避免每轮把全部内容塞进上下文。
+// 内置技能随程序分发，不可编辑或删除（read_skill 始终可读取，不受智能体声明限制）。
+
+// 内置技能名称（read_skill 与「可用技能」清单共用）。
+const (
+	// aiBuiltinSkillIDPrefix 内置技能快照的 ID 前缀（用户技能 ID 形如 sk<时间戳><随机>，不会冲突）
+	aiBuiltinSkillIDPrefix = "builtin:"
+
+	// 按词库类型划分的三类技能（与内置智能体一一对应）
+	aiBuiltinSkillWeb = "网页词库开发"
+	aiBuiltinSkillBot = "机器人词库开发"
+	aiBuiltinSkillAPI = "API词库开发"
+	// 三类词库通用的技能
+	aiBuiltinSkillSceneDev = "词库场景开发"
+	aiBuiltinSkillTools    = "词库工具能力"
+	aiBuiltinSkillSyntax   = "词库语法结构"
+)
+
+// 内置技能正文不写死在 Go 代码里，而是作为 embed 资源随程序分发：
+// appfiles/static/skills/N-<技能名>.md，一个技能一篇 md，头部 front-matter 给出 name 与 description。
+// 上面的名称常量供内置智能体声明技能用，必须与对应 md 的 name 保持一致。
+
+// aiBuiltinSkillDir 内置技能资源目录（相对 embed 资源根）
+const aiBuiltinSkillDir = "skills"
+
+// aiBuiltinSkill 一条内置技能定义。
+type aiBuiltinSkill struct {
+	Name        string
+	Description string
+	Content     string
+}
+
+var (
+	aiBuiltinSkillsOnce sync.Once
+	// aiBuiltinSkills 全部内置技能：切片顺序（md 文件名序号）即「可用技能」清单中的展示顺序
+	aiBuiltinSkills []aiBuiltinSkill
+)
+
+// aiBuiltinSkillList 返回全部内置技能（进程内只解析一次）。
+func aiBuiltinSkillList() []aiBuiltinSkill {
+	aiBuiltinSkillsOnce.Do(func() {
+		files, err := appfiles.ListFiles(aiBuiltinSkillDir)
+		if err != nil {
+			return
+		}
+		for _, f := range files {
+			if !strings.HasSuffix(strings.ToLower(f), ".md") {
+				continue
+			}
+			data, err := appfiles.GetFile(f)
+			if err != nil {
+				continue
+			}
+			name, desc, body := aiParseSkillFile(string(data))
+			if name == "" || body == "" {
+				continue
+			}
+			aiBuiltinSkills = append(aiBuiltinSkills, aiBuiltinSkill{Name: name, Description: desc, Content: body})
+		}
+	})
+	return aiBuiltinSkills
+}
+
+// aiParseSkillFile 解析技能资源文件：头部 front-matter（--- 包裹的 name / description）+ 正文。
+// 缺 front-matter 或缺 name 时返回空名称，由调用方跳过该文件。
+func aiParseSkillFile(text string) (name, desc, body string) {
+	lines := strings.Split(strings.ReplaceAll(text, "\r\n", "\n"), "\n")
+	if len(lines) == 0 || strings.TrimSpace(lines[0]) != "---" {
+		return "", "", ""
+	}
+	end := -1
+	for i := 1; i < len(lines); i++ {
+		if strings.TrimSpace(lines[i]) == "---" {
+			end = i
+			break
+		}
+		key, value, ok := strings.Cut(lines[i], ":")
+		if !ok {
+			continue
+		}
+		switch strings.TrimSpace(key) {
+		case "name":
+			name = strings.TrimSpace(value)
+		case "description":
+			desc = strings.TrimSpace(value)
+		}
+	}
+	if end < 0 {
+		return "", "", ""
+	}
+	return name, desc, strings.TrimSpace(strings.Join(lines[end+1:], "\n"))
+}
+
+// aiBuiltinSkillFindByName 按名称查找内置技能（忽略首尾空白与大小写）。
+func aiBuiltinSkillFindByName(name string) (*AISkill, bool) {
+	key := strings.TrimSpace(name)
+	if key == "" {
+		return nil, false
+	}
+	list := aiBuiltinSkillList()
+	for i := range list {
+		if strings.EqualFold(list[i].Name, key) {
+			return aiBuiltinSkillSnapshot(&list[i]), true
+		}
+	}
+	return nil, false
+}
+
+// aiBuiltinSkillSnapshot 把内置技能定义转成技能快照（供读技能、技能清单与接口返回共用）。
+func aiBuiltinSkillSnapshot(b *aiBuiltinSkill) *AISkill {
+	return &AISkill{
+		ID:          aiBuiltinSkillIDPrefix + b.Name,
+		Name:        b.Name,
+		Description: b.Description,
+		Content:     b.Content,
+		Builtin:     true,
+	}
+}
+
+// aiAllSkillList 内置技能 + 用户技能（内置在前），供技能管理界面展示。
+func aiAllSkillList() []*AISkill {
+	list := aiBuiltinSkillList()
+	out := make([]*AISkill, 0, len(list))
+	for i := range list {
+		out = append(out, aiBuiltinSkillSnapshot(&list[i]))
+	}
+	return append(out, aiSkillList()...)
+}
+
 // ---------- 接口处理 ----------
 
 // aiSkillHandle 处理 AI 技能相关的 OPUI 请求。
 func aiSkillHandle(w http.ResponseWriter, h *HttpOpUiData) {
 	switch h.Type {
 	case "list_ai_skills":
-		aiWriteJSON(w, map[string]any{"status": "ok", "list": aiSkillList()})
+		// 内置技能在前（builtin=true，前端应禁止编辑 / 删除），用户技能在后
+		aiWriteJSON(w, map[string]any{"status": "ok", "list": aiAllSkillList()})
 		return
 
 	case "save_ai_skill":
@@ -197,6 +348,15 @@ func aiSkillHandle(w http.ResponseWriter, h *HttpOpUiData) {
 		}
 		if strings.TrimSpace(j.Name) == "" {
 			aiWriteError(w, "请填写技能名称")
+			return
+		}
+		// 内置技能不可修改：既不能按内置 ID 保存，也不能另存一个同名技能（同名会遮蔽内置技能）
+		if strings.HasPrefix(strings.TrimSpace(j.ID), aiBuiltinSkillIDPrefix) {
+			aiWriteError(w, "应用内置技能不可修改")
+			return
+		}
+		if _, ok := aiBuiltinSkillFindByName(j.Name); ok {
+			aiWriteError(w, "「"+strings.TrimSpace(j.Name)+"」是应用内置技能名称，请换一个名称")
 			return
 		}
 		aiSkillsMu.Lock()

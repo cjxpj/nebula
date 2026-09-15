@@ -148,6 +148,10 @@ func (m *dicImpl) WebDicRun(WD *dic_dto.WebDic) string {
 	dicRun := dic_dto.NewRunDicEntry().
 		SetV(WD.Val)
 
+	// 挂载调用方注入的内置函数（HTTP 链路的 设置头部 / GET / POST，本地调试注入的空实现）：
+	// 不挂载时脚本里的 $GET$ / $设置头部$ 会解析不到函数、被当成普通文本原样输出。
+	dicRun.Dic.MyFunc = WD.MyFunc
+
 	// 解析成节点树
 	doc, err := html.Parse(strings.NewReader(WD.Text))
 	if err != nil {

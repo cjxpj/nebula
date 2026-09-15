@@ -43,7 +43,6 @@ import (
 	"github.com/cjxpj/nebula/dto"
 	"github.com/cjxpj/nebula/run"
 	"github.com/cjxpj/nebula/utils"
-	"github.com/gomarkdown/markdown"
 	"github.com/gorilla/websocket"
 	"golang.org/x/crypto/bcrypt"
 )
@@ -2272,9 +2271,10 @@ func aiVisionUserMessage(text string, images []string) aiChatMessage {
 }
 
 // aiVisionDisabledHint 视觉能力未开启、本次运行又输出过图片时的提示文案。
-// 同时用于回灌给模型（让它知道自己看不到图片、不要凭空臆测内容）与前端面板黄色警告。
+// 同时用于回灌给模型（让它知道自己看不到画面内容、不要凭空臆测）与前端面板黄色警告；
+// 文案里点出「已附量化数据 + 可用 view_image 补看」，避免模型以为对图片一无所知。
 func aiVisionDisabledHint(n int) string {
-	return fmt.Sprintf("本次运行输出中包含 %d 张图片，但当前模型的「AI 视觉能力」未开启，AI 无法查看图片内容；如需让 AI 查看，请在「基础配置 → AI」中为当前模型开启视觉能力后重试。", n)
+	return fmt.Sprintf("本次运行输出中包含 %d 张图片，但当前模型的「AI 视觉能力」未开启，看不到图片的画面内容（已附尺寸、格式与颜色等量化数据，也可用 view_image 工具补看）；如需让 AI 真正看到画面，请在「基础配置 → AI」中为当前模型开启视觉能力后重试。", n)
 }
 
 // loadDicDebugDefaults 读取合并配置中 [词库调试] 节的配置（运行配置的唯一存储位置）
@@ -2303,6 +2303,8 @@ func loadDicDebugDefaults() map[string]any {
 	if b, err := sec.Key("实时保存").Bool(); err == nil {
 		def["autoSave"] = b
 	}
+	// 保存自动格式化：未配置过时默认启用
+	def["autoFormat"] = sec.Key("保存自动格式化").MustBool(true)
 	if n := sec.Key("超时").MustInt(0); n > 0 {
 		def["timeout"] = n
 	}
@@ -2333,6 +2335,15 @@ func loadDicDebugDefaults() map[string]any {
 	return def
 }
 
+// dicAutoFormatEnabled 读取运行配置的「保存自动格式化」开关，未配置时默认启用。
+func dicAutoFormatEnabled() bool {
+	cfg, err := dto.LoadConfigFile()
+	if err != nil {
+		return true
+	}
+	return cfg.Section("词库调试").Key("保存自动格式化").MustBool(true)
+}
+
 // defaultDebugDic 返回词库调试默认词库路径（未配置时回退 private/debug.n）。
 // 默认调试词库首次打开时若不存在会自动创建，避免报「词库文件不存在」。
 func defaultDebugDic() string {
@@ -2361,6 +2372,63 @@ func checkDicPath(path string) bool {
 	}
 	clean := filepath.ToSlash(filepath.Clean(path))
 	return clean != "." && clean != ".." && !strings.HasPrefix(clean, "../")
+}
+
+// checkWebDicPath 校验网页词库路径：仅允许应用目录内相对路径的 .wn 文件
+func checkWebDicPath(path string) bool {
+	if path == "" || filepath.IsAbs(path) {
+		return false
+	}
+	if strings.HasPrefix(path, "/") || strings.HasPrefix(path, "\\") {
+		return false
+	}
+	if strings.Contains(path, "..") {
+		return false
+	}
+	if !strings.HasSuffix(strings.ToLower(path), ".wn") {
+		return false
+	}
+	clean := filepath.ToSlash(filepath.Clean(path))
+	return clean != "." && clean != ".." && !strings.HasPrefix(clean, "../")
+}
+
+// checkDicOrWebPath 校验「词库文件」路径：.n 或 .wn，供读取 / 保存这类两类词库通用的操作用。
+func checkDicOrWebPath(path string) bool {
+	return checkDicPath(path) || checkWebDicPath(path)
+}
+
+// webDicLocalFuncs 本地执行网页词库时注入的 HTTP 函数空实现。
+// 词库调试与 AI 工具没有真实请求上下文：GET / POST 取默认值、设置头部 忽略，
+// 让含这些调用的 .wn 也能跑完并返回模板渲染结果，而不是因「函数不存在」中断。
+func webDicLocalFuncs() map[string]dto.DicFunc {
+	getDefault := func(d *dto.DicInputs) (any, error) {
+		if d.Inputs.LenOk(2) {
+			if s, ok := d.Inputs.Get(2).(string); ok {
+				return s, nil
+			}
+		}
+		return "", nil
+	}
+	return map[string]dto.DicFunc{
+		"设置头部": {L: "2", Fn: func(d *dto.DicInputs) (any, error) { return "", nil }},
+		"GET":  {L: "1|2", Fn: getDefault},
+		"POST": {L: "1|2", Fn: getDefault},
+	}
+}
+
+// runWebDicLocal 本地执行 .wn 网页词库：读文件 → 注入 HTTP 函数空实现与全局变量 →
+// 执行脚本块并完成模板渲染，返回最终 HTML。词库调试与 AI 的 run_web_dic 工具共用。
+func runWebDicLocal(path string, g map[string]string) (string, error) {
+	data, err := utils.NewFileQueue(path).ReadFileByte()
+	if err != nil {
+		return "", err
+	}
+	webdic := dic_dto.NewWebDic(path, string(data))
+	webdic.MyFunc = webDicLocalFuncs()
+	for k, v := range g {
+		webdic.Val.G.Set(k, v)
+	}
+	return dic_api.Api.WebDicRun(webdic), nil
 }
 
 // checkFilePath 校验文件管理路径：仅允许应用目录内的相对路径，
@@ -5963,25 +6031,50 @@ func opuiHandleApi(w http.ResponseWriter, r *http.Request) {
 		w.Write(jsonResp)
 		return
 
+	case "get_dic_doc_list":
+		// 内置说明文档清单（分篇 md，见 server/dic_doc.go）：供文档页左侧目录树使用
+		jsonResp, _ := json.Marshal(map[string]any{"status": "ok", "list": dicDocList()})
+		w.Write(jsonResp)
+		return
+
 	case "get_dic_doc":
-		data, err := appfiles.GetFile("dic.md")
+		var j struct {
+			Doc string `json:"doc"`
+		}
+		_ = json.Unmarshal(h.Data, &j)
+		doc, err := dicDocResolveOrFirst(j.Doc)
 		if err != nil {
 			http.Error(w, `{"status":"error","error":"embedded file not found"}`, http.StatusInternalServerError)
 			return
 		}
-		html := markdown.ToHTML(data, nil, nil)
-		resp := map[string]string{"content": string(html)}
+		html := dicDocRenderMarkdown(doc.content)
+		resp := map[string]any{"content": string(html), "path": doc.Path, "title": doc.Title, "group": doc.Group}
 		jsonResp, _ := json.Marshal(resp)
 		w.Write(jsonResp)
 		return
 
+	case "search_dic_doc":
+		// 跨篇搜索内置文档（见 server/dic_doc.go）：说明文档已拆成多篇，
+		// 搜索必须覆盖全部篇章，否则只能搜到当前篇，其它篇的内容就搜不到。
+		var j struct {
+			Keyword string `json:"keyword"`
+		}
+		_ = json.Unmarshal(h.Data, &j)
+		jsonResp, _ := json.Marshal(map[string]any{"status": "ok", "hits": dicDocSearch(j.Keyword)})
+		w.Write(jsonResp)
+		return
+
 	case "get_dic_doc_raw":
-		data, err := appfiles.GetFile("dic.md")
+		var j struct {
+			Doc string `json:"doc"`
+		}
+		_ = json.Unmarshal(h.Data, &j)
+		doc, err := dicDocResolveOrFirst(j.Doc)
 		if err != nil {
 			http.Error(w, `{"status":"error","error":"embedded file not found"}`, http.StatusInternalServerError)
 			return
 		}
-		resp := map[string]string{"content": string(data)}
+		resp := map[string]any{"content": doc.content, "path": doc.Path, "title": doc.Title}
 		jsonResp, _ := json.Marshal(resp)
 		w.Write(jsonResp)
 		return
@@ -6050,10 +6143,14 @@ func opuiHandleApi(w http.ResponseWriter, r *http.Request) {
 		var j struct {
 			Open           bool    `json:"open"`
 			CurrentID      string  `json:"current_id"`
-			SystemPrompt   string  `json:"system_prompt"`
 			Timeout        int     `json:"timeout"`
 			InlineComplete bool    `json:"inline_complete"`
 			ApprovalMode   *string `json:"approval_mode"`
+			AutoContinue   *bool   `json:"auto_continue"`
+			// 全局默认自动继续次数：0 表示不限制
+			AutoContinueMax *int `json:"auto_continue_max"`
+			// 全局默认智能体 ID：留空表示由调用方回退出厂默认智能体
+			DefaultAgentID *string `json:"default_agent_id"`
 			Models         []struct {
 				ID              string `json:"id"`
 				Name            string `json:"name"`
@@ -6067,6 +6164,8 @@ func opuiHandleApi(w http.ResponseWriter, r *http.Request) {
 				ReasoningModel  string `json:"reasoning_model"`
 				ContextLength   int    `json:"context_length"`
 				MaxTokens       int    `json:"max_tokens"`
+				RateLimit       int    `json:"rate_limit"`
+				Concurrency     int    `json:"concurrency"`
 			} `json:"models"`
 		}
 		if err := json.Unmarshal(h.Data, &j); err != nil {
@@ -6112,6 +6211,8 @@ func opuiHandleApi(w http.ResponseWriter, r *http.Request) {
 				ReasoningModel:  strings.TrimSpace(m.ReasoningModel),
 				ContextLength:   contextLength,
 				MaxTokens:       maxTokens,
+				RateLimit:       dto.NormalizeModelRate(m.RateLimit),
+				Concurrency:     dto.NormalizeModelConcurrency(m.Concurrency),
 			})
 		}
 		// 当前模型：未指定或已不存在时回退列表首项
@@ -6129,15 +6230,26 @@ func opuiHandleApi(w http.ResponseWriter, r *http.Request) {
 		sec.Key("启用").SetValue(strconv.FormatBool(j.Open))
 		sec.Key(dto.AIModelsKey).SetValue(stored)
 		sec.Key(dto.AICurrentKey).SetValue(currentID)
-		sec.Key("系统提示").SetValue(j.SystemPrompt)
 		sec.Key("超时").SetValue(strconv.Itoa(timeout))
 		sec.Key("代码补全").SetValue(strconv.FormatBool(j.InlineComplete))
 		// 全局默认审批模式：仅在前端显式下发时更新，未下发时保持既有值（兼容旧版前端）
 		if j.ApprovalMode != nil {
 			sec.Key(dto.AIApprovalKey).SetValue(dto.NormalizeAIPermissionMode(*j.ApprovalMode))
 		}
-		// 清除旧版单模型键，避免与模型列表重复
-		for _, k := range []string{"接口地址", "密钥", "模型", "思考模式", "推理强度", "推理模型"} {
+		// 全局默认自动继续：同样仅在前端显式下发时更新
+		if j.AutoContinue != nil {
+			sec.Key(dto.AIAutoContinueKey).SetValue(strconv.FormatBool(*j.AutoContinue))
+		}
+		// 全局默认自动继续次数：0 表示不限制，同样仅在前端显式下发时更新
+		if j.AutoContinueMax != nil {
+			sec.Key(dto.AIAutoContinueMaxKey).SetValue(strconv.Itoa(dto.NormalizeAIAutoContinueMax(*j.AutoContinueMax)))
+		}
+		// 全局默认智能体：保存其 ID，留空由调用方回退出厂默认智能体
+		if j.DefaultAgentID != nil {
+			sec.Key(dto.AIDefaultAgentKey).SetValue(strings.TrimSpace(*j.DefaultAgentID))
+		}
+		// 清除旧版单模型键，避免与模型列表重复；旧版全局「系统提示」键同样不再使用，一并清除
+		for _, k := range []string{"接口地址", "密钥", "模型", "思考模式", "推理强度", "推理模型", "系统提示"} {
 			sec.DeleteKey(k)
 		}
 		if err := cfg.Save(); err != nil {
@@ -6207,8 +6319,8 @@ func opuiHandleApi(w http.ResponseWriter, r *http.Request) {
 		entries := make([]dicEntry, 0, len(items))
 		for _, it := range items {
 			name := it.Name()
-			if !it.IsDir() && !strings.HasSuffix(strings.ToLower(name), ".n") {
-				continue // 只显示文件夹与 .n 词库文件
+			if !it.IsDir() && !strings.HasSuffix(strings.ToLower(name), ".n") && !checkWebDicPath(name) {
+				continue // 只显示文件夹与 .n / .wn 词库文件
 			}
 			entries = append(entries, dicEntry{
 				Name: name,
@@ -6239,7 +6351,7 @@ func opuiHandleApi(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, `{"status":"error","error":"词库路径不能为空"}`, http.StatusBadRequest)
 			return
 		}
-		if !checkDicPath(j.Path) {
+		if !checkDicOrWebPath(j.Path) {
 			http.Error(w, `{"status":"error","error":"词库路径不合法"}`, http.StatusBadRequest)
 			return
 		}
@@ -6260,12 +6372,15 @@ func opuiHandleApi(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 
-		// 编译检测：打开词库时也编译一次，返回编译问题（error 红色 / warning 黄色）供前端高亮
+		// 编译检测：打开词库时也编译一次，返回编译问题（error 红色 / warning 黄色）供前端高亮。
+		// 网页词库（.wn）是 HTML，不走 .n 编译，返回内容即可。
 		resp := map[string]any{"content": content}
-		if dicCheck, err := dic_dto.RunDicNoCache(j.Path); err == nil && dicCheck != nil {
-			defer dicCheck.Close()
-			if len(dicCheck.Data.Warnings) > 0 {
-				resp["warnings"] = dicCheck.Data.Warnings
+		if !checkWebDicPath(j.Path) {
+			if dicCheck, err := dic_dto.RunDicNoCache(j.Path); err == nil && dicCheck != nil {
+				defer dicCheck.Close()
+				if len(dicCheck.Data.Warnings) > 0 {
+					resp["warnings"] = dicCheck.Data.Warnings
+				}
 			}
 		}
 		jsonResp, _ := json.Marshal(resp)
@@ -6285,14 +6400,34 @@ func opuiHandleApi(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, `{"status":"error","error":"词库路径不能为空"}`, http.StatusBadRequest)
 			return
 		}
-		if !checkDicPath(j.Path) {
+		if !checkDicOrWebPath(j.Path) {
 			http.Error(w, `{"status":"error","error":"词库路径不合法"}`, http.StatusBadRequest)
 			return
 		}
-		utils.NewFileQueue(j.Path).WriteToFile(j.Content)
+		// 网页词库（.wn）：不参与 .n 的自动格式化与编译检测，原样写入即可
+		if checkWebDicPath(j.Path) {
+			utils.NewFileQueue(j.Path).WriteToFile(j.Content)
+			jsonResp, _ := json.Marshal(map[string]any{"status": "ok"})
+			w.Write(jsonResp)
+			return
+		}
+		// 保存自动格式化（运行配置开关，默认启用）：落盘前按块结构重新缩进
+		content := j.Content
+		formatted := false
+		if dicAutoFormatEnabled() {
+			if f := build.FormatDic(content); f != content {
+				content = f
+				formatted = true
+			}
+		}
+		utils.NewFileQueue(j.Path).WriteToFile(content)
 
 		// 编译检测：保存后重新编译词库，返回编译问题（error 红色 / warning 黄色）供前端高亮
 		resp := map[string]any{"status": "ok"}
+		if formatted {
+			// 回传格式化结果，供前端同步编辑器内容（避免界面与实际文件不一致）
+			resp["content"] = content
+		}
 		if dicCheck, err := dic_dto.RunDicNoCache(j.Path); err == nil && dicCheck != nil {
 			defer dicCheck.Close()
 			if len(dicCheck.Data.Warnings) > 0 {
@@ -7157,14 +7292,14 @@ func opuiHandleApi(w http.ResponseWriter, r *http.Request) {
 		aiSessionHandle(w, h)
 		return
 
-	case "list_ai_agents", "save_ai_agent", "delete_ai_agent", "switch_ai_agent":
-		// AI 智能体管理：预设的增删改查，以及「切换到某智能体的独立任务」
+	case "list_ai_agents", "save_ai_agent", "delete_ai_agent", "set_session_agent":
+		// AI 智能体管理：预设的增删改查，以及「给某个任务指定智能体」
 		aiAgentHandle(w, h)
 		return
 
 	case "list_ai_skills", "save_ai_skill", "delete_ai_skill":
-		// AI 技能管理：技能（名称 + 描述 + 正文）的增删改查；
-		// 系统提示只注入技能清单，模型按需调用 read_skill 读取正文
+		// AI 技能管理：技能（名称 + 描述 + 正文）的增删改查。各类词库场景由不同智能体负责，
+		// 智能体声明自己可用的内置技能；系统提示只注入「可用技能清单」，模型按需 read_skill 读取正文
 		aiSkillHandle(w, h)
 		return
 
@@ -7331,6 +7466,9 @@ func opuiHandleApi(w http.ResponseWriter, r *http.Request) {
 		if v, ok := cfg["autoSave"].(bool); ok {
 			sec.Key("实时保存").SetValue(strconv.FormatBool(v))
 		}
+		if v, ok := cfg["autoFormat"].(bool); ok {
+			sec.Key("保存自动格式化").SetValue(strconv.FormatBool(v))
+		}
 		if g, ok := cfg["g"].([]any); ok {
 			var items []string
 			for _, it := range g {
@@ -7367,8 +7505,31 @@ func opuiHandleApi(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, `{"status":"error","error":"词库路径不能为空"}`, http.StatusBadRequest)
 			return
 		}
-		if !checkDicPath(j.Path) {
+		if !checkDicPath(j.Path) && !checkWebDicPath(j.Path) {
 			http.Error(w, `{"status":"error","error":"词库路径不合法"}`, http.StatusBadRequest)
+			return
+		}
+		// 网页词库（.wn）：脚本块自上而下执行后做模板渲染，没有触发词与编译诊断，
+		// 走独立的执行分支，返回渲染后的 HTML 供前端展示
+		if checkWebDicPath(j.Path) {
+			// 与 .n 运行一致：运行期间启用删除操作人工确认，脚本删除文件时弹窗等待用户放行
+			ensureDicDeleteConfirm()
+			dicDeleteConfirmActive.Add(1)
+			defer dicDeleteConfirmActive.Add(-1)
+			output, err := runWebDicLocal(j.Path, j.G)
+			if err != nil {
+				http.Error(w, `{"status":"error","error":"词库加载失败: `+err.Error()+`"}`, http.StatusBadRequest)
+				return
+			}
+			jsonResp, _ := json.Marshal(map[string]any{
+				"path":     j.Path,
+				"output":   output,
+				"timedOut": false,
+				"segments": parseOutputSegments(output),
+				"vars":     map[string]any{"P": map[string]any{}, "G": map[string]any{}, "GV": map[string]any{}},
+				"webDic":   true,
+			})
+			w.Write(jsonResp)
 			return
 		}
 		dic, err := dic_dto.RunDic(j.Path)
@@ -7892,86 +8053,12 @@ func opuiHandleApi(w http.ResponseWriter, r *http.Request) {
 
 // ============== AI 对接（OpenAI 兼容，默认 DeepSeek） ==============
 
-// aiDicSystemPrompt AI 词库开发内置系统提示词（未配置「系统提示」时使用）。
-const aiDicSystemPrompt = `你是 Nebula 词库（.n 文件）开发助手。回答必须以本次对话实际提供的信息为准，不得臆造。
+// aiDicSystemPrompt AI 词库开发内置系统提示词（智能体未配置系统提示时使用）。
+// 只保留身份定位与事实约束：语法结构、工具能力已拆成内置技能（见 ai_skill.go），
+// 由系统提示的「可用技能」清单按当前智能体声明的内置技能列出，模型按需调用 read_skill 读取技能正文。
+const aiDicSystemPrompt = `你是 Nebula 词库（.n / .wn 文件）开发助手。回答必须以本次对话实际提供的信息为准，不得臆造。
 
-【Nebula 词库语法速览】写 .n 代码时必须遵守：
-一、文件结构
-1. .n 是 UTF-8 文本，全文分「头部」与「正文词条」两段：文件开头到第一个空行为止是头部（一般只放 #引入=xxx.n、初始化赋值、$重定向触发词 ...$ 等），空行之后全部是词条；头部为空（没有 #引入= 等头部内容）时，文件必须以一个空行开头，即第一个词条上方也要留一个空行，否则第一个词条会被并入头部、不再作为词条生效（表现为「运行没反应」）；$设置工作目录 ...$ 只允许出现在启动词库 start.n 的头部且仅一次，普通 .n 文件（含绘制类）一律禁止写它；
-2. 一条词条 = 触发词独占一行 + 紧接其下的正文行，正文行之间必须紧贴、不能有空行（空行会立即结束该词条，把后续内容拆成一堆没有触发词的空词条）；.n 不是普通脚本，禁止「无触发词、逐行罗列、行间留空行」的写法，写进文件的每一段代码都必须能归属到某个触发词之下；
-3. 正文若要包含空行，整条需改写为「触发词 #{ ... }#」或「触发词 <?n ... ?>」，只有这两种写法允许块内空行。
-
-二、触发词与取值
-1. 触发词不要默认写 Main：Main 只是「无参数主动执行入口」（网页被访问、定时任务、$执行词库$ 等主动执行场景）的专用触发词，功能 / 娱乐类词库靠用户发消息唤起（如「五子棋」「钓鱼」「签到」），一律不写 Main，写了是死代码（机器人收到消息是按文本精确/正则匹配触发词，匹配不到不回复，永远轮不到 Main），还容易把使用说明、菜单等不该展示的内容塞进去；用户没有明确指定触发词时，按该词条功能自行命名一个简短、贴合语义的触发词（如 画九宫格、签到、下子），并保证词条之间触发词不重复；只有用户明确要求用 Main、或确属主动执行入口时才写 Main；
-2. 触发词即用户消息文本，行首 [类别] 前缀决定角色：[函数]名称、[内部]名称（用 $回调 名称$ 触发）、[函数:类名]方法、[内部:类名]方法；无前缀即普通触发词；
-3. 触发词按正则匹配（不含正则元字符时按纯文本全等匹配）。%参数0% 是消息按空格切分后的第 1 个词（%参数N% 即第 N+1 个词）；%括号0% 是整体消息文本，%括号N% 是正则第 N 个捕获组（从 1 开始）；
-4. 普通词条与函数中直接输出的文本就是回复内容，无需再调用 $发送文本$。
-
-三、变量
-1. 赋值写「变量名:值」，变量名裸写、不带 %；读取才写 %变量名%。同名追加用 变量+:值，相减用 变量-:值；变量::值 表示原样文本不解析；赋值行里的变量名写成 %变量%: 无效（实测：整行被当普通文本输出，变量根本没生成，后续读 %变量名% 会报「变量不存在」）；函数调用会直接返回结果（返回值就地替换在行内），只是为了输出结果时不要把「$函数 参数$」先赋值给变量再写一行 %变量%，直接写 $函数 参数$ 即可，只有结果还要复用（再输出、当参数、参与运算、写进文本块）时才赋值存起来；
-2. 读 JSON 路径用 %@变量.键.键%；三目与回退只在赋值中生效：条件?真值:假值、值?:回退值；
-3. 变量名不超过 32 字节；跨函数读写用 $全局变量 名 值$ / $全局变量 名$，线程级用 $线程变量$；
-4. 算术与计算必须「先取中间变量、再参与运算」：函数参数里、算术表达式 [...] 里都不能再嵌套 $函数$。错误：$JSON存 %背包% 草鱼 %$JSON解析 ...$ + 1$、$延迟 [1000*$随机数 1 3$]$；正确：先 旧数量:$JSON解析 %背包% 草鱼$、秒:$随机数 1 3$ 拿到中间值，再 $JSON存 %背包% 草鱼 $计算 %旧数量% + 1$$、$延迟 [1000*%秒%]$；算术表达式 [...] 内不要写空格（整个 [...] 会被当成一个参数，但参数是按空格切分的）：错误 $延迟 [1000 * %秒%]$、$写 a.txt 值 [%旧值% + 1]$，正确 $延迟 [1000*%秒%]$、$写 a.txt 值 [%旧值%+1]$。
-
-四、调用内置函数与对象方法
-1. $ 必须首尾成对：$函数名 参数...$。最常见的错误是漏掉开头的 $（只写结尾）：画布.设置颜色 #f0d9b5$ 、玩家.存 字符串(行) 字符串(列) 颜色$ 都是错的，必须写成 $画布.设置颜色 #f0d9b5$、$玩家.存 ...$；参数以空格分隔，参数本身含空格时用双引号包裹整段（如 $发送文本 "你好 世界"$）。凡是写「函数名/变量.方法 后跟参数」，就要先检查行首有没有 $；
-2. 实例必须先由「创建类」的全局函数赋值得到（如 画布:$创建画布 600 600$，注意右端 $创建画布 600 600$ 首尾都要有 $），再调用其方法，写作 $变量.方法 参数$（如 $画布.设置颜色 #f00$）；禁止把创建类函数当成实例方法（$画布.创建画布 ...$ 是错的），类内也可写 $.类名 方法 参数$；
-3. $...$ 不能嵌套：既不能写在另一个 $...$ 的参数里，也不能写在 [...] 算术或取值表达式里；需要中间值先「临时变量:$函数$」，再用 %临时变量% 参与运算；
-4. 实参个数必须与函数声明的规则一致，不符会报「参数数量错误」并中止；写成 $!函数名 参数$ 可把错误写入 %报错% 而不中止后续执行。
-
-五、函数与类
-1. 定义函数用 [函数]名称；函数体取参只能用 %参数N%，且定义处必须声明参数规则（如 [函数|1]名称、[函数|1|2]名称、[函数|2..]名称；不写规则等价于 [函数|0]，带参调用会报「参数数量错误」）。%参数0% 是函数名本身，第一个实参是 %参数1%、第二个是 %参数2%，依次类推；
-2. 严禁把形参名字当变量用：[函数]名称->变量1,变量2 里的「变量1,变量2」是传出变量（计算结果回写外部），不是形参；函数体里读 %行%/%列% 这类未定义的裸变量会报「变量不存在」。要接收实参就必须写成 [函数|N]名称，并在体内通过 %参数1%…%参数N% 取值；
-3. 函数体内的赋值默认只在函数内生效，不回写外部；要带回结果，在定义处写传出列表：[函数]名称->变量1,变量2（只声明「回写外部」，与传入参数无关）；
-4. 调用函数统一写 $函数名 参数...$（例：$绘制棋子 画布 当前玩家 %行% %列% 颜色$）；禁止写成 绘制棋子->画布,...$ 这类把传出列表当调用的形式；
-5. 定义类用 [函数:类名]方法、[内部:类名]方法；实例化用 $new 类名$（若存在则自动执行构造函数 [函数:类名]new）；读成员 %变量.成员%（类内可用 %自己.成员%），类内写成员 .成员:值。
-
-六、流程控制（两种判断写法不能混用）
-1. 行内判断：如果:条件 … 否则如果:条件 … 否则 … 如果尾（结尾是 如果尾，不是 <如果）；
-2. 判断框：如果>条件 … >否则如果:条件 … >否则 … <如果（闭合为 <如果、不带 >，可嵌套）；
-3. 匹配框：匹配>表达式 … 如果是:值 … 如果不是 … <匹配；
-4. 循环框：循环>i=次数、循环>i=起始~结束、判断循环>条件，闭合 <循环；遍历框：遍历>键,值=JSON，闭合 <遍历；循环体内可用 >跳过、>中断、>终止循环、>终止遍历。
-   范围分隔符只有 ~（例：循环>i=0~14），写成 ..（0..14）会报「循环框未闭合」；
-   所有闭合标记必须精确写成 <循环、<遍历、<如果、<匹配、<函数（结尾不带 >），写成 <循环> 不会被识别，同样报「循环框未闭合」；
-   嵌套时每层开启都要各有一条闭合行，闭合行数必须与开启行数相等。正确示例：
-   循环>i=0~14
-       循环>j=0~14
-           如果:%@棋盘.i.j%==1
-               $画布.绘制圆形 %i% %j% 18$
-           <如果
-       <循环
-   <循环
-5. 条件判断可用 $判断 a 等于 b$ 返回 true/false；块的开启/闭合行必须与代码紧贴，行尾不要加 // 注释。
-
-七、注释与换行（本语言没有 # 注释）
-1. 注释只能用 //（单行）和 /* */（多行）。严禁把 # 当注释：# 只属于 #引入=xxx.n、#引入=@QQBot 等预编译指令，写成「# 初始化棋盘」会被当普通正文解析而报错；分段标题用 //，如 // 初始化棋盘；
-2. 空行是词条的硬边界：文件开头到第一个空行是头部，空行之后全是词条。正文里绝不能出现空行——空行会立即结束当前词条，把它之后的代码变成「新的触发词」，整段功能静默失效；
-3. 下列位置一律不得有空行：正文行之间、块结构（如果>/<如果、循环>/<循环、匹配>/<匹配、遍历>/<遍历、文本>/<文本、函数>/<函数）内部、块开启行之前、块闭合行之后；用 // 注释做分段标题时注释必须紧贴前后代码，多个块之间连续书写，闭合行（如 <如果）之后直接接下一段；
-4. 唯一例外：整条写成「触发词 #{ ... }#」或「触发词 <?n ... ?>」时，块内允许空行；
-5. 正文与函数体的多行输出直接拼接、不会自动换行，换行用行尾 \r 或 %换行%（赋值行里的 \r 不转义，按字面存）；
-6. 行首缩进默认无语义，//@关闭缩进 后才保留缩进；缩进只是美观，绝不能靠空行来分段。
-
-八、高频易错点
-1. [函数] 未声明参数规则（[函数|N]）时不能带参调用；形参只能靠 %参数1%…%参数N% 取，定义处 ->变量1,变量2 只是传出列表，不是形参；
-2. 文本块（文本>、三引号文本框、变量:{、变量:[）里的 $函数$ 不会执行，会原样输出；
-3. 不要套用其它语言写法：.n 没有 def/class/for/while/return 等关键字，也没有字符串字面量类型，一切靠「键:值」「%变量%」「$函数 参数$」与 [类别] 触发词前缀；
-4. 不要给类实例编造方法名或参数个数：以文档或已有示例为准，拿不准就如实说明「不确定」并请用户确认，禁止用一串坐标/数字硬凑参数（如给只收颜色的 $画布.设置颜色$ 传矩形参数）。
-
-九、画布（$创建画布$ 得到的对象，方法写作 $画布.方法 参数$）
-1. 创建需赋值：画布:$创建画布 <高> <宽>$（也可 $创建画布 <高> <宽> <#十六进制|颜色地址>$、$创建画布 <URL|文件路径|图片数据> <高> <宽>$）；
-2. 展示画布不需要保存成文件：把图片原数据直接输出到正文，运行结果面板会自动识别并显示：
-   画布:$创建画布 100 100$
-   $画布.绘制方形 0 0 20 20 0 #ff0000$
-   图:$画布.获取 png$          // .获取 可取 png|jpg|jpeg，默认 png，返回图片原始数据
-   %图%                        // 图片原数据单独输出到正文即可显示，无需落盘
-   画布没有保存 / 导出 / 转 / 输出图片的方法，禁止写 $画布.保存图片 1.png$ / $画布.导出图片 1.png$ / $画布.转图片$ / $画布.输出图片$ / $画布.写文件 1.png$（这些方法都不存在）；
-   禁止用 $写图片 <文件路径> %图%$ 「导出」画布：$写图片$ 是把数据隐写进一张「已存在」的图片，目标文件不存在会报「无法打开或解码图片文件」，与展示画布无关；
-3. 画布方法（绘制类统一带「绘制」前缀，旧名仍可用作别名）：
-   画笔：$画布.设置颜色 <随机|#十六进制|颜色地址|R G B A>$、$画布.字体 <字体文件名>$、$画布.大小 <大小>$；
-   绘制：$画布.绘制文本 <X1> <Y1> <文本> <旋转|0.0> <颜色> <描边颜色> <描边宽度>$、$画布.绘制点 <X> <Y> <颜色>$、$画布.绘制线 <X1> <Y1> <X2> <Y2> <颜色>$、$画布.绘制方形 <X> <Y> <宽> <高> <圆润> <颜色>$、$画布.绘制方形描边$、$画布.绘制椭圆 <X1> <Y1> <X2> <Y2>$、$画布.绘制椭圆描边$、$画布.绘制圆形 <X> <Y> <半径> <起始> <结束> <颜色>$、$画布.绘制圆形描边$、$画布.绘制多边形 <X1>,<Y1> <X2>,<Y2> ...$、$画布.绘制多边形描边$、$画布.绘制圆弧 <X> <Y> <半径> <起始> <结束> <颜色>$、$画布.绘制图片 <图片> <高> <宽> <旋转> <x> <y> <透明度> <半径>$、$画布.绘制喷漆$、$画布.绘制波浪$、$画布.绘制油漆桶 <X> <Y> <颜色>$、$画布.绘制随机点 <数量>$、$画布.绘制随机线条 <数量>$、$画布.绘制马赛克 <X1> <Y1> <X2> <Y2>$、$画布.高斯模糊 <半径>$；
-   重构：$画布.旋转 <旋转>$、$画布.圆角 <半径>$、$画布.全图马赛克 <半径>$、$画布.灰度$；
-4. 相关全局函数：$创建画布 ...$、颜色:$获取画笔颜色 <#十六进制|R G B A>$（颜色对象不依赖画布）、$写图片 <文件路径> <数据>$（隐写进已有图片，不是导出）、$读图片 <文件路径>$；注意 $绘图 <JSON>$ 的参数是图片 JSON 数据、不是画布对象，别用 $绘图 画布$ 当输出；
-5. 遇到不熟悉的函数或对象方法，不要靠猜：优先查阅应用根目录的语法文档 dic.md（可用 read_dic_doc 工具读取），或直接向用户求证，禁止往 .n 文件里批量写 u1/u2/xxx1/xxx2 这类试探词条来「试」API 名（既不生效又会污染用户词库）。
+写或修改词库代码前，先调用 read_skill 读取「词库语法结构」技能，严格按其中的语法约定书写；需要读取 / 写入文件、编译或运行词库时，先读取「词库工具能力」技能，按其中的调用通道与词条边界约定执行。
 
 事实约束：
 1. 当前词库的函数、变量、类、触发词与语法，一律以用户提供的「当前词库代码 / 编译诊断」为准；未出现在其中、也未出现在下方【可用内置函数】清单中的名称，视为不存在；
@@ -8130,17 +8217,21 @@ func aiConfigJSON(c *dto.AIConfig) map[string]any {
 			"reasoning_model":  m.ReasoningModel,
 			"context_length":   m.ContextLength,
 			"max_tokens":       m.MaxTokens,
+			"rate_limit":       m.RateLimit,
+			"concurrency":      m.Concurrency,
 		})
 	}
 	return map[string]any{
-		"open":            c.Open,
-		"current_id":      c.CurrentID,
-		"approval_mode":   c.ApprovalMode,
-		"models":          models,
-		"system_prompt":   c.SystemPrompt,
-		"timeout":         c.Timeout,
-		"inline_complete": c.InlineComplete,
-		"vision":          c.Vision,
+		"open":              c.Open,
+		"current_id":        c.CurrentID,
+		"approval_mode":     c.ApprovalMode,
+		"auto_continue":     c.AutoContinue,
+		"auto_continue_max": c.AutoContinueMax,
+		"default_agent_id":  c.DefaultAgentID,
+		"models":            models,
+		"timeout":           c.Timeout,
+		"inline_complete":   c.InlineComplete,
+		"vision":            c.Vision,
 		// 兼容既有调用方（如词库调试的模型候选）：附带当前模型的解析结果
 		"base_url":         c.BaseURL,
 		"model":            c.Model,
@@ -8155,21 +8246,23 @@ func aiConfigJSON(c *dto.AIConfig) map[string]any {
 // defaultAIConfigJSON 返回 AI 配置的默认值（配置文件缺失时使用）。
 func defaultAIConfigJSON() map[string]any {
 	return map[string]any{
-		"open":             false,
-		"current_id":       "",
-		"approval_mode":    dto.DefaultAIPermissionMode,
-		"models":           []map[string]any{},
-		"system_prompt":    "",
-		"timeout":          60,
-		"inline_complete":  true,
-		"vision":           false,
-		"base_url":         "",
-		"model":            dto.DefaultAIModel,
-		"reasoning":        false,
-		"reasoning_effort": "",
-		"reasoning_model":  "",
-		"context_length":   dto.DefaultAIContextLength,
-		"max_tokens":       dto.DefaultAIMaxTokens,
+		"open":              false,
+		"current_id":        "",
+		"approval_mode":     dto.DefaultAIPermissionMode,
+		"auto_continue":     true,
+		"auto_continue_max": dto.DefaultAIAutoContinueMax,
+		"default_agent_id":  "",
+		"models":            []map[string]any{},
+		"timeout":           60,
+		"inline_complete":   true,
+		"vision":            false,
+		"base_url":          "",
+		"model":             dto.DefaultAIModel,
+		"reasoning":         false,
+		"reasoning_effort":  "",
+		"reasoning_model":   "",
+		"context_length":    dto.DefaultAIContextLength,
+		"max_tokens":        dto.DefaultAIMaxTokens,
 	}
 }
 
@@ -8180,7 +8273,7 @@ func aiResolveConfig() *dto.AIConfig {
 	}
 	cfg, err := dto.LoadConfigFile()
 	if err != nil {
-		return &dto.AIConfig{Model: dto.DefaultAIModel, Timeout: 60, InlineComplete: true, ApprovalMode: dto.DefaultAIPermissionMode}
+		return &dto.AIConfig{Model: dto.DefaultAIModel, Timeout: 60, InlineComplete: true, ApprovalMode: dto.DefaultAIPermissionMode, AutoContinue: true, AutoContinueMax: dto.DefaultAIAutoContinueMax}
 	}
 	return dto.LoadConfig_ai(cfg.Section("AI"))
 }
@@ -8218,13 +8311,19 @@ func aiChatOnceReasoning(c *dto.AIConfig, model string, messages []aiChatMessage
 // 避免前端看起来像卡死。
 
 const (
-	// aiRetryMaxAttempts 遇到限流/过载时的最大尝试次数（含首次请求）
+	// aiRetryMaxAttempts 一般瞬时故障（网关抖动、网络断流）的最大尝试次数（含首次请求）
 	aiRetryMaxAttempts = 5
+	// aiRetryRateLimitMaxAttempts 模型过载 / 账户限流（如「该模型当前访问量过大，请您稍后再试」）
+	// 的最大尝试次数：上游高峰通常持续一两分钟，只重试几次会在十几秒内就被判失败，
+	// 这里放宽次数以便熬过高峰。
+	aiRetryRateLimitMaxAttempts = 8
 	// aiRetryBaseDelay 一般瞬时故障（网关抖动、过载）首次重试前的等待时长，之后按 2 倍退避
 	aiRetryBaseDelay = time.Second
 	// aiRetryRateLimitBaseDelay 账户级限流（按分钟窗口计费）首次重试前的等待时长，
-	// 这类错误需要更长的冷却时间，退避序列为 3s→6s→12s→24s
+	// 这类错误需要更长的冷却时间，退避序列为 3s→6s→12s→24s→30s…
 	aiRetryRateLimitBaseDelay = 3 * time.Second
+	// aiRetryMaxDelay 单次退避等待的上限：翻倍退避到很长时截断，避免前端长时间无进展
+	aiRetryMaxDelay = 30 * time.Second
 )
 
 // aiRetryableError 标记可重试的上游错误（限流、过载、网关抖动等）。
@@ -8247,13 +8346,16 @@ func aiRetryableByMessage(msg string) bool {
 	return false
 }
 
-// aiRetryRateLimitByMessage 判断错误文案是否属于账户/接口级限流（按分钟窗口类），
-// 这类错误需要比网关抖动更长的冷却时间，重试时采用更大的退避基数。
+// aiRetryRateLimitByMessage 判断错误文案是否属于账户/接口级限流与模型过载（按分钟窗口类），
+// 这类错误需要比网关抖动更长的冷却时间和更多次尝试，重试时采用更大的退避基数。
 func aiRetryRateLimitByMessage(msg string) bool {
 	lower := strings.ToLower(msg)
 	for _, kw := range []string{
 		"速率限制", "请求频率", "频率限制", "配额已满", "限流", "请求过于频繁",
-		"rate limit", "too many requests",
+		// 智谱等厂商高峰期返回的「该模型当前访问量过大，请您稍后再试」属于模型过载，
+		// 同属「等一会儿就好」的类型，按限流处理才能拿到足够长的退避与重试次数
+		"访问量过大", "稍后再试", "请稍后重试", "繁忙", "过载",
+		"rate limit", "too many requests", "overloaded",
 	} {
 		if strings.Contains(lower, kw) {
 			return true
@@ -8272,6 +8374,38 @@ func aiRetryableByStatus(code int) bool {
 	return false
 }
 
+// aiRetryableByNetError 判断错误是否属于网络层瞬时故障（连不上、连接被重置、读超时、
+// 连接中途断开等）。这类失败多由链路抖动或对端瞬时不可用引起，稍后重试通常即可恢复，
+// 不应直接判为生成失败——否则一次建连失败就会把前面等待的时间全部白费。
+func aiRetryableByNetError(err error) bool {
+	if err == nil {
+		return false
+	}
+	// 上下文被取消（用户点了「终止」）不属于网络故障，不应重试
+	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		return false
+	}
+	// 传输层超时（Dial / Read / TLS 握手超时）
+	var netErr net.Error
+	if errors.As(err, &netErr) && netErr.Timeout() {
+		return true
+	}
+	lower := strings.ToLower(err.Error())
+	for _, kw := range []string{
+		// Windows（wsarecv / wsasend）与类 Unix 的常见瞬时故障描述
+		"connection attempt failed", "connection reset", "connection refused",
+		"connection aborted", "connection timed out", "connection closed",
+		"broken pipe", "wsarecv", "wsasend",
+		"read tcp", "write tcp", "dial tcp", "i/o timeout", "tls handshake timeout",
+		"network is unreachable", "no such host", "eof",
+	} {
+		if strings.Contains(lower, kw) {
+			return true
+		}
+	}
+	return false
+}
+
 // aiNewRetryableError 构造可重试错误。
 func aiNewRetryableError(msg string) error { return &aiRetryableError{msg: msg} }
 
@@ -8283,32 +8417,174 @@ func aiRetryable(err error) bool {
 	if _, ok := errors.AsType[*aiRetryableError](err); ok {
 		return true
 	}
-	return aiRetryableByMessage(err.Error())
+	return aiRetryableByMessage(err.Error()) || aiRetryableByNetError(err)
 }
 
-// aiChatOnceTools 在 aiChatOnceToolsOnce 基础上，对限流/过载类错误做自动退避重试。
-func aiChatOnceTools(c *dto.AIConfig, model string, messages []aiChatMessage, reasoningEffort string, tools []map[string]any, toolChoice, streamID string) (string, string, []aiToolCall, string, error) {
+// ============== AI 每模型频率 / 并发限制 ==============
+//
+// 同一账户下不同模型往往有各自的调用配额（每分钟请求数、最大并发数），
+// 并发过高或短时间请求过密会被上游限流甚至封禁。这里按「模型配置项」维护一套限制：
+// 频率限制把相邻两次请求的发起时刻按最小间隔错开，并发限制约束同时进行中的请求数。
+// 频率上限可留空（0 表示不限制）；并发上限默认 1，即同一模型串行请求，可按模型上调。
+// 保存配置后立即生效。
+
+// aiModelLimiter 单个模型配置项对应的频率 / 并发限制状态。
+type aiModelLimiter struct {
+	mu sync.Mutex
+	// rateLimit 每分钟最大请求数（0 表示不限制），interval 为其换算出的相邻请求最小间隔
+	rateLimit int
+	interval  time.Duration
+	// nextStart 下一次允许发起请求的最早时刻
+	nextStart time.Time
+	// concLimit 最大并发请求数（0 表示不限制），concSem 为并发名额
+	concLimit int
+	concSem   chan struct{}
+}
+
+// configure 按最新配置调整限制；数值未变化时保持现状，不打断正在等待或进行中的请求。
+func (l *aiModelLimiter) configure(rateLimit, concurrency int) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if rateLimit != l.rateLimit {
+		l.rateLimit = rateLimit
+		l.nextStart = time.Time{}
+		if rateLimit > 0 {
+			l.interval = time.Minute / time.Duration(rateLimit)
+		} else {
+			l.interval = 0
+		}
+	}
+	if concurrency != l.concLimit {
+		l.concLimit = concurrency
+		if concurrency > 0 {
+			l.concSem = make(chan struct{}, concurrency)
+		} else {
+			l.concSem = nil
+		}
+	}
+}
+
+// acquire 申请一次请求配额：先按频率上限等到允许发起的时刻，再占用一个并发名额。
+// 返回的释放函数须在请求结束后调用，用于归还并发名额。
+// 等待超过 1 秒、或并发名额已满时经 WS 告知前端，避免界面看起来像卡死（streamID 为空时提示自动忽略）。
+func (l *aiModelLimiter) acquire(streamID string) func() {
+	l.mu.Lock()
+	var wait time.Duration
+	if l.interval > 0 {
+		now := time.Now()
+		start := now
+		if l.nextStart.After(now) {
+			start = l.nextStart
+			wait = start.Sub(now)
+		}
+		l.nextStart = start.Add(l.interval)
+	}
+	sem := l.concSem
+	l.mu.Unlock()
+
+	if wait > 0 {
+		if wait >= time.Second {
+			aiStreamNotify(streamID, "ai_stream_delta", map[string]any{
+				"kind":    "wait",
+				"reason":  "模型频率限制",
+				"seconds": int((wait + time.Second - 1) / time.Second),
+			})
+		}
+		time.Sleep(wait)
+	}
+	if sem == nil {
+		return func() {}
+	}
+	select {
+	case sem <- struct{}{}:
+	default:
+		// 并发名额已满：先告知前端正在排队，再等待名额释放
+		aiStreamNotify(streamID, "ai_stream_delta", map[string]any{
+			"kind":   "wait",
+			"reason": "模型并发已满",
+		})
+		sem <- struct{}{}
+	}
+	return func() { <-sem }
+}
+
+// aiModelLimiters 按模型配置项 ID 维护的限流器表
+var (
+	aiModelLimitersMu sync.Mutex
+	aiModelLimiters   = map[string]*aiModelLimiter{}
+)
+
+// aiModelLimiterFor 取（必要时创建）指定模型配置项对应的限流器，并按最新配置调整。
+func aiModelLimiterFor(id string, rateLimit, concurrency int) *aiModelLimiter {
+	aiModelLimitersMu.Lock()
+	defer aiModelLimitersMu.Unlock()
+	l := aiModelLimiters[id]
+	if l == nil {
+		l = &aiModelLimiter{}
+		aiModelLimiters[id] = l
+	}
+	l.configure(rateLimit, concurrency)
+	return l
+}
+
+// aiModelLimiterOf 解析本次请求实际所用模型对应的限流器：
+// 按模型名匹配模型列表中的某项（任务可单独指定模型，含推理模型），未匹配时回退当前选中模型；
+// 没有任何模型配置时返回 nil，表示不做限制。
+func aiModelLimiterOf(c *dto.AIConfig, model string) *aiModelLimiter {
+	if c == nil {
+		return nil
+	}
+	m := dto.PickAIModelByName(c.Models, model)
+	if m == nil {
+		m = dto.PickAIModel(c.Models, c.CurrentID)
+	}
+	if m == nil || m.ID == "" {
+		return nil
+	}
+	return aiModelLimiterFor(m.ID, m.RateLimit, m.Concurrency)
+}
+
+// aiRetryBackoff 按「可重试则指数退避重试」的策略执行一次上游请求，最多尝试
+// aiRetryMaxAttempts 次（模型过载 / 账户限流放宽到 aiRetryRateLimitMaxAttempts 次）。
+// 限流/过载、以及网络层瞬时故障（连不上、连接被重置、读超时、连接中途断开等）都属于
+// 稍后重试即可恢复的类型，交给这里统一退避重试；其它错误（参数错误、鉴权失败等）
+// 立即返回，不做无谓等待。
+// 退避等待期间会经 WS 推送重试状态，避免前端看起来像卡死；用户点「终止」时等待立即结束。
+func aiRetryBackoff(streamID string, fn func() error) error {
 	var lastErr error
 	delay := aiRetryBaseDelay
-	for attempt := 1; attempt <= aiRetryMaxAttempts; attempt++ {
-		content, reasoning, calls, finishReason, err := aiChatOnceToolsOnce(c, model, messages, reasoningEffort, tools, toolChoice, streamID)
+	attempts := aiRetryMaxAttempts
+	// 父上下文用于打断退避等待：否则用户点了「终止」还要把当前这轮退避睡满才停下
+	ctx := aiStreamParentCtx(streamID)
+	for attempt := 1; attempt <= attempts; attempt++ {
+		err := fn()
 		if err == nil {
-			return content, reasoning, calls, finishReason, nil
+			return nil
 		}
 		lastErr = err
-		if attempt >= aiRetryMaxAttempts || !aiRetryable(err) {
+		if !aiRetryable(err) {
 			break
 		}
-		// 账户级限流按分钟窗口计费，需要比网关抖动更长的冷却时间
+		// 「该模型当前访问量过大，请您稍后再试」这类模型过载要等上游高峰过去，
+		// 按限流处理：更长的冷却时间（3s 起）+ 更多次尝试，而不是 1s 起、5 次就放弃
 		rateLimited := aiRetryRateLimitByMessage(err.Error())
-		if attempt == 1 && rateLimited {
-			delay = aiRetryRateLimitBaseDelay
+		if rateLimited {
+			attempts = aiRetryRateLimitMaxAttempts
+			if attempt == 1 {
+				delay = aiRetryRateLimitBaseDelay
+			}
+		}
+		if attempt >= attempts {
+			break
 		}
 		// 让前端知道正处于退避等待中，而不是卡死（streamID 为空时该调用自动忽略）。
 		// 这里只给出秒数与次数，由前端自行倒计时，文案才能逐秒跳动。
 		reason := "上游繁忙"
-		if rateLimited {
+		switch {
+		case rateLimited:
 			reason = "触发限流"
+		case aiRetryableByNetError(err):
+			reason = "网络异常"
 		}
 		aiStreamNotify(streamID, "ai_stream_delta", map[string]any{
 			"kind":    "retry",
@@ -8316,10 +8592,53 @@ func aiChatOnceTools(c *dto.AIConfig, model string, messages []aiChatMessage, re
 			"attempt": attempt,
 			"seconds": int(delay / time.Second),
 		})
-		time.Sleep(delay)
+		if !aiRetrySleep(ctx, delay) {
+			// 等待期间用户终止了本次生成：按「用户终止」返回，不记为失败
+			return errAIStreamCancelled
+		}
 		delay *= 2
+		if delay > aiRetryMaxDelay {
+			delay = aiRetryMaxDelay
+		}
 	}
-	return "", "", nil, "", lastErr
+	return lastErr
+}
+
+// aiRetrySleep 可被「终止」打断的退避等待：返回 false 表示等待期间用户取消了本次生成。
+func aiRetrySleep(ctx context.Context, d time.Duration) bool {
+	if d <= 0 || ctx == nil {
+		return true
+	}
+	timer := time.NewTimer(d)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return false
+	case <-timer.C:
+		return true
+	}
+}
+
+// aiChatOnceTools 在 aiChatOnceToolsOnce 基础上，对限流/过载与网络层瞬时故障做自动退避重试。
+// 重试期间前一次尝试已流出的思考/正文会作废（重试请求会重新生成），因此失败时统一返回空内容。
+func aiChatOnceTools(c *dto.AIConfig, model string, messages []aiChatMessage, reasoningEffort string, tools []map[string]any, toolChoice, streamID string) (string, string, []aiToolCall, string, error) {
+	limiter := aiModelLimiterOf(c, model)
+	var content, reasoning, finishReason string
+	var calls []aiToolCall
+	err := aiRetryBackoff(streamID, func() error {
+		release := func() {}
+		if limiter != nil {
+			release = limiter.acquire(streamID)
+		}
+		defer release()
+		var e error
+		content, reasoning, calls, finishReason, e = aiChatOnceToolsOnce(c, model, messages, reasoningEffort, tools, toolChoice, streamID)
+		return e
+	})
+	if err != nil {
+		return "", "", nil, "", err
+	}
+	return content, reasoning, calls, finishReason, nil
 }
 
 // aiChatOnceToolsOnce 以流式（SSE）方式调用 OpenAI 兼容的 chat/completions 接口（单次尝试），
@@ -8376,13 +8695,15 @@ func aiChatOnceToolsOnce(c *dto.AIConfig, model string, messages []aiChatMessage
 	if timeout <= 0 {
 		timeout = 60
 	}
-	// 建连阶段用配置超时兜底；进入流式读取后改用空闲超时并在收到数据时续期，
-	// 避免长思维链生成被「总时长」上限误杀（见 aiStreamIdleTimeout）。
+	// 建连与「首个字节」阶段同样按空闲超时兜底（见 aiStreamIdleTimeout）：
+	// 上游在长上下文 / 长思考时可能数十秒才回响应头，若按配置超时掐断，会被误判成
+	// 「AI 接口请求失败: Post ...: context canceled」这类中断（并非用户终止，也非网络故障）。
 	// 父上下文来自流式取消注册表：用户点击「终止」时随之取消本次请求。
 	parent := aiStreamParentCtx(streamID)
 	ctx, cancel := context.WithCancel(parent)
 	defer cancel()
-	watchdog := time.AfterFunc(time.Duration(timeout)*time.Second, cancel)
+	idleTimeout := aiStreamIdleTimeout(timeout)
+	watchdog := time.AfterFunc(idleTimeout, cancel)
 	defer watchdog.Stop()
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(body))
@@ -8400,7 +8721,13 @@ func aiChatOnceToolsOnce(c *dto.AIConfig, model string, messages []aiChatMessage
 		if parent.Err() != nil {
 			return "", "", nil, "", errAIStreamCancelled
 		}
-		return "", "", nil, "", fmt.Errorf("AI 接口请求失败: %v", err)
+		// 取消源自本函数看门狗（父上下文未取消）：上游迟迟未响应，属超时而非网络故障
+		if ctx.Err() != nil {
+			return "", "", nil, "", fmt.Errorf("AI 接口建连超时：超过 %v 未收到上游响应", idleTimeout)
+		}
+		// 用 %w 保留底层错误链：网络层瞬时故障（连不上、连接被重置、读超时等）由此被
+		// aiRetryableByNetError 识别，交给 aiRetryBackoff 自动退避重试，而不是直接判失败
+		return "", "", nil, "", fmt.Errorf("AI 接口请求失败: %w", err)
 	}
 	defer resp.Body.Close()
 
@@ -8431,7 +8758,6 @@ func aiChatOnceToolsOnce(c *dto.AIConfig, model string, messages []aiChatMessage
 	var callText aiToolCallTextRouter
 
 	// 已建立连接：看门狗改按空闲超时续期，只要上游持续产出就不中断
-	idleTimeout := aiStreamIdleTimeout(timeout)
 	watchdog.Reset(idleTimeout)
 	scanner := bufio.NewScanner(resp.Body)
 	scanner.Buffer(make([]byte, 0, 64*1024), 4*1024*1024)
@@ -8563,6 +8889,13 @@ func aiStreamNotify(streamID, eventType string, data map[string]any) {
 		data = map[string]any{}
 	}
 	data["id"] = streamID
+	// 带上所属任务 id：后端自行接续的流（后台自动继续）在前端没有对应的本地请求，
+	// 前端据此判断该流是否属于当前打开的任务，从而接管展示
+	if _, ok := data["session_id"]; !ok {
+		if sid := aiStreamSessionOf(streamID); sid != "" {
+			data["session_id"] = sid
+		}
+	}
 	// 思考/正文增量同步写入会话草稿，页面刷新后仍可恢复已产生的部分
 	if eventType == "ai_stream_delta" {
 		kind, _ := data["kind"].(string)
@@ -8685,6 +9018,7 @@ func aiCancelStream(streamID, sessionID string) bool {
 // 上游因长度上限中断（finish_reason=length）时，把已生成的半截正文作为 assistant 消息回灌，
 // 提示模型紧接上文续写，最多 aiToolMaxContinues 轮，避免用户看到「话说到一半突然没了」。
 func aiChatStreamReasoning(c *dto.AIConfig, model string, messages []aiChatMessage, reasoningEffort, streamID string) (string, string, error) {
+	limiter := aiModelLimiterOf(c, model)
 	work := append([]aiChatMessage(nil), messages...)
 	var contentAll, reasoningAll strings.Builder
 	// 续写提示写入思考区，让用户知道正文为何被拆成多段
@@ -8696,7 +9030,19 @@ func aiChatStreamReasoning(c *dto.AIConfig, model string, messages []aiChatMessa
 		aiStreamNotify(streamID, "ai_stream_delta", map[string]any{"kind": "reasoning", "text": text})
 	}
 	for i := 0; i <= aiToolMaxContinues; i++ {
-		content, reasoning, finishReason, err := aiChatStreamReasoningOnce(c, model, work, reasoningEffort, streamID)
+		// 续写属新的一次上游请求，同样受该模型的频率 / 并发限制约束；
+		// 限流/过载与网络层瞬时故障在这里退避重试，避免一次抖动就丢掉整轮答复
+		var content, reasoning, finishReason string
+		err := aiRetryBackoff(streamID, func() error {
+			release := func() {}
+			if limiter != nil {
+				release = limiter.acquire(streamID)
+			}
+			defer release()
+			var e error
+			content, reasoning, finishReason, e = aiChatStreamReasoningOnce(c, model, work, reasoningEffort, streamID)
+			return e
+		})
 		// 思维链已由单次请求在流式解析时逐片推送，此处仅累积，避免重复推送
 		if r := strings.TrimSpace(reasoning); r != "" {
 			reasoningAll.WriteString(r)
@@ -8778,13 +9124,14 @@ func aiChatStreamReasoningOnce(c *dto.AIConfig, model string, messages []aiChatM
 	if timeout <= 0 {
 		timeout = 60
 	}
-	// 建连阶段用配置超时兜底；进入流式读取后改用空闲超时并在收到数据时续期，
-	// 避免长思维链生成被「总时长」上限误杀（见 aiStreamIdleTimeout）。
+	// 建连与「首个字节」阶段同样按空闲超时兜底（见 aiStreamIdleTimeout），
+	// 避免长上下文 / 长思考下响应头迟到被误判为「context canceled」中断。
 	// 父上下文来自流式取消注册表：用户点击「终止」时随之取消本次请求。
 	parent := aiStreamParentCtx(streamID)
 	ctx, cancel := context.WithCancel(parent)
 	defer cancel()
-	watchdog := time.AfterFunc(time.Duration(timeout)*time.Second, cancel)
+	idleTimeout := aiStreamIdleTimeout(timeout)
+	watchdog := time.AfterFunc(idleTimeout, cancel)
 	defer watchdog.Stop()
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(body))
@@ -8802,7 +9149,12 @@ func aiChatStreamReasoningOnce(c *dto.AIConfig, model string, messages []aiChatM
 		if parent.Err() != nil {
 			return "", "", "", errAIStreamCancelled
 		}
-		return "", "", "", fmt.Errorf("AI 接口请求失败: %v", err)
+		// 取消源自本函数看门狗（父上下文未取消）：上游迟迟未响应，属超时而非网络故障
+		if ctx.Err() != nil {
+			return "", "", "", fmt.Errorf("AI 接口建连超时：超过 %v 未收到上游响应", idleTimeout)
+		}
+		// 同 aiChatOnceToolsOnce：保留错误链，让网络层瞬时故障可被识别并重试
+		return "", "", "", fmt.Errorf("AI 接口请求失败: %w", err)
 	}
 	defer resp.Body.Close()
 
@@ -8823,7 +9175,6 @@ func aiChatStreamReasoningOnce(c *dto.AIConfig, model string, messages []aiChatM
 	// finishReason 记录上游给出的结束原因（"length" 表示输出被长度上限截断）
 	var finishReason string
 	// 已建立连接：看门狗改按空闲超时续期，只要上游持续产出就不中断
-	idleTimeout := aiStreamIdleTimeout(timeout)
 	watchdog.Reset(idleTimeout)
 	scanner := bufio.NewScanner(resp.Body)
 	scanner.Buffer(make([]byte, 0, 64*1024), 4*1024*1024)

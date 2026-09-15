@@ -3,10 +3,17 @@ package dic_server
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"image"
+	_ "image/gif"
+	_ "image/jpeg"
+	_ "image/png"
 	"maps"
+	"math"
+	"net/http"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -17,25 +24,11 @@ import (
 	"time"
 	"unicode/utf8"
 
-	"github.com/cjxpj/nebula/appfiles"
 	dic_api "github.com/cjxpj/nebula/dic/api"
 	dic_dto "github.com/cjxpj/nebula/dic/dto"
 	"github.com/cjxpj/nebula/dto"
 	"github.com/cjxpj/nebula/utils"
 )
-
-// aiDicToolsPrompt 启用工具能力时追加的系统提示词。
-const aiDicToolsPrompt = `
-【工具能力】
-你可以直接调用工具读写本应用目录下的文件（含 .n 词库），不再只是给建议：
-1. 默认操作对象是「当前任务关联的词库文件」（下方会给出该路径，即用户此刻在编辑器中打开的文件）：需要阅读或修改词库时优先直接 read_dic / save_dic 这个文件，不要先用 list_files / search_files 满目录查找，也不要读取无关文件；仅当用户明确指向其他文件时才切换；
-2. 修改文件前先读取最新内容；.n 词库请用专用工具（read_dic / save_dic / check_dic / run_dic）。save_dic 保存后会自动重新编译并返回诊断：errors 非空（error 级诊断）说明词库跑不起来，必须逐条修复并用完整内容再次调用 save_dic，直到 error 级清零再收尾，不要只在答复里罗列问题；warnings 属于可运行的警告，属本次改动引入的也应一并修掉，并在答复里汇报本轮保存后的诊断结果（有几个错误 / 几条警告、是否已清零）；
-3. 用户要求「修改 / 新增词库内容」时必须真正调用写入工具完成修改，不要只输出代码让用户手动粘贴，也不要先反问「是否需要我帮你修改」——直接执行，完成后汇报结果；
-4. 新增 / 插入词条时保证词条边界：触发词必须独占一行，且其上方留一个空行与头部或上一条词条分隔（空行是词条的硬边界，直接贴在上一条正文或头部后面会被并入上一条，导致该触发词完全失效）；头部与第一个词条之间同样要空行分隔。触发词的取舍：功能 / 娱乐类词库（用户以后会发消息反复唤起，如五子棋、签到）不要写 Main，按功能自行命名一个简短贴合的触发词；但「一次性脚本」——你写完马上就要用 run_dic 运行并回报结果（如「画个九宫格」、临时生成 / 计算）——触发词一律写 Main（run_dic 默认用 Main 触发，写 Main 才能直接跑通，别自创触发词导致默认触发跑不出来）；只有用户明确要求其他触发词时才另写；
-5. 工具调用必须走函数调用通道（tool_calls），禁止把调用写成 <tool_call>工具名<arg_key>参数名</arg_key><arg_value>参数值</arg_value></tool_call> 这类文本混进正文（那样不会真正执行），也不要只回复「已保存 / 已重写」却不调用工具；若本轮提示「工具调用不可用」，说明当前模型或接口不支持 function calling，此时只能给出代码与建议，并明确告知用户「未能直接写入文件」，不得谎称已修改；
-6. 遇到不熟悉的内置函数、对象方法或参数用法（如画布怎么导出图片），先用 read_dic_doc 读取内置语法文档 dic.md 求证，或直接向用户说明「不确定」并请其确认；严禁往 .n 词库文件里批量写入 u1/u2/xxx1/xxx2 之类「试探词条」去猜 API 名——这类写法既不生效，还会污染用户正在编辑的词库；
-7. 修改完成后说明改了哪个文件，并附上修改后的完整内容（Markdown 代码围栏）；前端编辑器会自动同步你写入的内容，无需提醒用户重新打开，仅当编辑器有未保存修改时才说明本次改动尚未同步；
-8. 路径一律用相对应用目录的相对路径，词库文件以 .n 结尾，不得访问应用目录之外的路径；工具返回的原始 JSON 无需复述，只汇报结论与必要改动。`
 
 // ============== AI 工具调用（词库调试 AI 的文件/词库能力） ==============
 //
@@ -43,6 +36,8 @@ const aiDicToolsPrompt = `
 // 应用目录下的文件（含 .n 词库），形成「读取 → 修改 → 校验 → 汇报」的闭环。
 // 复用 OPUI 文件管理既有的路径校验（checkFilePath / checkDicPath）与根目录（opuiAppDir），
 // 所有工具只能在应用目录内操作，禁止绝对路径与 .. 越权。
+// 工具的使用约定（调用通道、路径规则、词条边界、诊断修复等）不走常驻提示，
+// 而是作为内置技能「词库工具能力」按智能体声明注入清单、由模型按需 read_skill 读取（见 ai_skill.go）。
 
 const (
 	// aiToolMaxRounds 单轮对话内工具调用的硬上限，只作防死循环的安全网。
@@ -65,10 +60,21 @@ const (
 	aiToolMaxEmptyRetries = 2
 	// aiToolEmptyRetryDelay 空回复重试前的等待时长（按重试次数递增），给上游一点恢复时间
 	aiToolEmptyRetryDelay = 2 * time.Second
+	// aiToolMaxFixNudges 上一步工具明确报错（编译失败、保存后仍有 error、运行超时等）、
+	// 模型却准备收尾时的最大提醒轮数：提醒它继续修复并重新验证，而不是把问题罗列出来就结束。
+	// 设上限避免模型反复修不好时空转；用尽后仍如实收尾并说明未通过验证。
+	aiToolMaxFixNudges = 3
 	// aiToolReadMaxRunes 工具单次返回的文本最大字符数（超出截断，避免撑爆模型上下文）
 	aiToolReadMaxRunes = 60000
 	// aiToolOutputMaxRunes 词库运行输出回灌给模型时的最大字符数
 	aiToolOutputMaxRunes = 20000
+	// aiImageViewGrid 视图工具分区域网格的边长：把图片切成 N×N 块，每块给出平均色
+	aiImageViewGrid = 8
+	// aiImageViewMaxColors 视图工具返回的主色数量上限（按占比从高到低）
+	aiImageViewMaxColors = 8
+	// aiImageViewSampleSide 颜色统计（平均色 / 主色）的最长边采样上限：
+	// 超过后按步长抽样，使大图的统计耗时与输出规模保持稳定
+	aiImageViewSampleSide = 256
 )
 
 // aiNotifyFileChanged 通知前端：AI 已改动磁盘上的文件（写入 / 保存 / 删除 / 重命名 / 移动）。
@@ -96,7 +102,7 @@ func aiTool(name, desc string, props map[string]any, required ...string) map[str
 	if required == nil {
 		required = []string{}
 	}
-	// 无参工具（如 read_dic_doc）也必须给出空对象属性表：
+	// 参数全部可选的工具（如 read_dic_doc）也要给出属性表：
 	// 序列化成 "properties":null 会被服务商按非法 JSON Schema 拒绝整份工具定义，
 	// 进而导致首轮请求失败、降级为无工具对话（模型只能把调用写成正文，实际不执行）。
 	if props == nil {
@@ -153,13 +159,14 @@ func aiToolDefinitions() []map[string]any {
 				"paths":  strList("要移动的路径列表（相对应用目录）"),
 				"target": str("目标目录（相对应用目录），留空表示应用目录根"),
 			}, "paths"),
-		aiTool("read_dic", "读取 .n 词库文件的完整代码，并返回编译诊断（error/warning），修改词库前先用它查看最新内容。",
-			map[string]any{"path": str("词库路径（相对应用目录，.n 结尾）")}, "path"),
-		aiTool("read_dic_doc", "读取内置的 Nebula 词库语法文档（dic.md）全文，用于查阅词库语法、内置函数与对象实例（如画布）的准确用法与参数。遇到不确定的语法 / API 时优先调用它，不要靠猜、也不要往词库写试探词条。", nil),
-		aiTool("read_skill", "读取指定技能的完整内容（步骤与约定）。每轮系统提示的「可用技能」清单只给出技能名称与描述；当任务与某个技能的描述相符时，先调用本工具读取该技能全文，再严格按其中的步骤执行。", map[string]any{"name": str("技能名称（与「可用技能」清单中的名称一致）")}, "name"),
-		aiTool("save_dic", "保存 .n 词库文件（覆盖写入），保存后自动重新编译并返回编译报错（errors）与警告（warnings）。保存前会做语法规范校验（如把 # 当注释、块结构内空行），不合格会拒绝写入并返回问题列表，需修正后重新保存；返回的 errors 非空时必须继续修复后再次保存，直到无 error 级诊断。",
+		aiTool("read_dic", "读取词库文件的完整代码，并返回编译诊断（error/warning），修改词库前先用它查看最新内容。支持 .n 与网页词库 .wn（.wn 无编译诊断）。",
+			map[string]any{"path": str("词库路径（相对应用目录，.n 或 .wn 结尾）")}, "path"),
+		aiTool("read_dic_doc", "读取内置说明文档。不传 doc 时返回文档清单（分组 + 标题 + 资源路径 + 字数）；传 doc 时只返回那一篇的正文，用于查阅内置函数、数据库、机器人功能、JavaScript 集成、扩展开发与对象实例（如画布）的准确用法与参数。doc 可给资源路径（如 docs/1-内置函数/04-文件操作.md）或标题（如 文件操作）。遇到不确定的函数 / API 时优先调用它，不要靠猜、也不要往词库写试探词条。",
+			map[string]any{"doc": str("要读取的文档：资源路径或标题；留空则返回全部文档清单")}),
+		aiTool("read_skill", "读取指定技能的完整内容（步骤与约定）。每轮系统提示的「可用技能」清单只给出技能名称与描述（含应用内置技能）；当任务与某个技能的描述相符时，先调用本工具读取该技能全文，再严格按其中的步骤执行。", map[string]any{"name": str("技能名称（与「可用技能」清单中的名称一致）")}, "name"),
+		aiTool("save_dic", "保存词库文件（覆盖写入）。.n 保存后自动重新编译并返回编译报错（errors）与警告（warnings）；保存前会做语法规范校验（如把 # 当注释、块结构内空行），不合格会拒绝写入并返回问题列表，需修正后重新保存；返回的 errors 非空时必须继续修复后再次保存，直到无 error 级诊断。网页词库 .wn 直接写入，写入后用 run_web_dic 运行验证。",
 			map[string]any{
-				"path":    str("词库路径（相对应用目录，.n 结尾）"),
+				"path":    str("词库路径（相对应用目录，.n 或 .wn 结尾）"),
 				"content": str("要保存的完整词库代码"),
 			}, "path", "content"),
 		aiTool("check_dic", "编译检查 .n 词库并返回诊断（error/warning），不修改文件。",
@@ -170,12 +177,23 @@ func aiToolDefinitions() []map[string]any {
 				"trigger": str("触发词，默认 Main"),
 				"timeout": num("运行超时秒数，默认 15，最大 60"),
 			}, "path"),
+		aiTool("run_web_dic", "运行网页词库 .wn（本地模拟执行）：脚本块自上而下执行并完成模板渲染，返回最终 HTML，用于验证修改效果。.wn 没有触发词，不要传 trigger。",
+			map[string]any{
+				"path": str("网页词库路径（相对应用目录，.wn 结尾）"),
+			}, "path"),
+		aiTool("view_image", "查看一个图片来源：判断它是不是图片，并给出图片的格式、宽高、体积与颜色数据（平均色、各主色占比，grid=true 时另附分区域色块网格）。当「AI 视觉能力」未开启、图片无法直接上传给模型时，用它了解输出图片的尺寸与配色是否正常。",
+			map[string]any{
+				"source": str("图片来源：应用目录内的相对路径（如 public/a.png）、data URI（data:image/png;base64,...），或 http(s) 图片地址（远程地址只识别、不下载分析）"),
+				"grid":   boolean("是否输出分区域色块网格（整图切成 8×8 块、每格给出该块平均色）：看不清图片时用它判断画面布局与配色分布，默认 false"),
+			}, "source"),
 	}
 }
 
 // aiToolResult 把工具结果序列化为回灌给模型的文本。
+// 用 utils.Marshal（jsoniter，EscapeHTML=false）：标准库默认会把 < > & 写成 \u003c \u003e \u0026，
+// 词库代码里的比较符 / 泛型尖括号会被这样转义，模型据此写回文件会污染源码。
 func aiToolResult(v any) string {
-	b, err := json.Marshal(v)
+	b, err := utils.Marshal(v)
 	if err != nil {
 		return `{"error":"工具结果序列化失败"}`
 	}
@@ -185,6 +203,49 @@ func aiToolResult(v any) string {
 // aiToolFail 构造一条工具失败结果。
 func aiToolFail(msg string) string {
 	return aiToolResult(map[string]any{"error": msg})
+}
+
+// aiToolResultFailure 判断一次工具结果是否表示「这一步没成功」，返回可读原因（通过时返回空串）。
+// 依据是各工具实际返回的失败标记（见 aiToolSaveDic / aiToolCheckDic / aiToolRunDic）：
+// error / compileError / status=rejected / saved_with_errors / errorCount>0 / timedOut。
+// 工具轮循环据此在模型准备收尾时提醒它继续修，避免「执行没成功就结束问题」。
+func aiToolResultFailure(result string) string {
+	var m map[string]any
+	if err := json.Unmarshal([]byte(result), &m); err != nil {
+		return ""
+	}
+	if status, ok := m["status"].(string); ok {
+		switch status {
+		case "rejected":
+			return "内容未通过校验，已拒绝写入（磁盘文件未改动）"
+		case "saved_with_errors":
+			return "已保存但仍存在 error 级编译诊断，词库跑不起来"
+		}
+	}
+	if msg, ok := m["error"].(string); ok && strings.TrimSpace(msg) != "" {
+		return msg
+	}
+	if msg, ok := m["compileError"].(string); ok && strings.TrimSpace(msg) != "" {
+		return msg
+	}
+	if n, ok := m["errorCount"].(float64); ok && n > 0 {
+		return fmt.Sprintf("仍存在 %d 个 error 级编译诊断", int(n))
+	}
+	if timedOut, ok := m["timedOut"].(bool); ok && timedOut {
+		return "运行超时"
+	}
+	return ""
+}
+
+// aiToolResultIsVerification 判断一次工具调用是否属于「跑通验证」环节：
+// 保存 / 编译检查 / 运行词库。只有这些步骤的成败才算「本轮任务有没有跑通」，
+// 读取类工具的失败（如文件不存在）不在此列，避免把正常的「查不到」当成待修复项。
+func aiToolResultIsVerification(name string) bool {
+	switch name {
+	case "save_dic", "check_dic", "run_dic", "run_web_dic":
+		return true
+	}
+	return false
 }
 
 // aiToolDecode 解析工具调用参数（空参数视为零值）。
@@ -231,7 +292,7 @@ func aiToolExecute(name, argsJSON, streamID string, vision bool) (result string,
 	case "read_dic":
 		return aiToolPair(aiToolReadDic(argsJSON))
 	case "read_dic_doc":
-		return aiToolPair(aiToolReadDicDoc())
+		return aiToolPair(aiToolReadDicDoc(argsJSON))
 	case "read_skill":
 		return aiToolPair(aiToolReadSkill(argsJSON))
 	case "save_dic":
@@ -240,6 +301,10 @@ func aiToolExecute(name, argsJSON, streamID string, vision bool) (result string,
 		return aiToolPair(aiToolCheckDic(argsJSON))
 	case "run_dic":
 		return aiToolRunDic(argsJSON, streamID, vision)
+	case "run_web_dic":
+		return aiToolRunWebDic(argsJSON, streamID)
+	case "view_image":
+		return aiToolPair(aiToolViewImage(argsJSON))
 	default:
 		return aiToolFail("未知工具: " + name), "未知工具 " + name, nil
 	}
@@ -394,7 +459,7 @@ func aiToolReadFile(argsJSON string) (string, string) {
 	content := string(data)
 	truncated := false
 	if len([]rune(content)) > aiToolReadMaxRunes {
-		content = aiClipRunes(content, aiToolReadMaxRunes)
+		content = aiClipRunesHeadTail(content, aiToolReadMaxRunes)
 		truncated = true
 	}
 	return aiToolResult(map[string]any{"path": p, "size": len(data), "content": content, "truncated": truncated}),
@@ -540,8 +605,8 @@ func aiToolReadDic(argsJSON string) (string, string) {
 		return aiToolFail("参数解析失败: " + err.Error()), "参数错误"
 	}
 	p := strings.TrimSpace(a.Path)
-	if !checkDicPath(p) {
-		return aiToolFail("词库路径不合法，需为应用目录内的相对路径且以 .n 结尾"), "路径不合法"
+	if !checkDicOrWebPath(p) {
+		return aiToolFail("词库路径不合法，需为应用目录内的相对路径且以 .n / .wn 结尾"), "路径不合法"
 	}
 	content, err := utils.NewFileQueue(p).ReadFromFile()
 	if err != nil {
@@ -554,31 +619,48 @@ func aiToolReadDic(argsJSON string) (string, string) {
 			return aiToolFail("词库读取失败: " + err.Error()), "读取失败 " + p
 		}
 	}
-	warnings := aiDicWarnings(p)
+	// 网页词库（.wn）没有编译环节，只在被访问时解析脚本块，故不返回编译诊断
+	warnings := []dto.BuildWarning{}
+	if !checkWebDicPath(p) {
+		warnings = aiDicWarnings(p)
+	}
 	text := content
 	if len([]rune(text)) > aiToolReadMaxRunes {
-		text = aiClipRunes(text, aiToolReadMaxRunes)
+		text = aiClipRunesHeadTail(text, aiToolReadMaxRunes)
 	}
 	return aiToolResult(map[string]any{"path": p, "content": text, "warnings": warnings}),
 		fmt.Sprintf("读取词库 %s（%d 字符，%d 条编译诊断）", p, len([]rune(content)), len(warnings))
 }
 
-// aiToolReadDicDoc 读取内置的 Nebula 词库语法文档（dic.md）。
-// 该文档是语法、内置函数与对象实例方法的权威出处，供模型在不熟悉的 API 上求证，
-// 替代「往词库写试探词条猜方法名」的破坏性做法。
-func aiToolReadDicDoc() (string, string) {
-	data, err := appfiles.GetFile("dic.md")
-	if err != nil {
-		return aiToolFail("内置语法文档不可用: " + err.Error()), "语法文档不可用"
+// aiToolReadDicDoc 读取内置说明文档（appfiles/static/docs 下的分篇 md）。
+// 不传 doc 时返回文档清单（分组 / 标题 / 资源路径 / 字数），供模型按需挑篇；
+// 传 doc 时只返回该篇正文。分篇是内置函数、数据库 / 机器人与对象实例方法等平台能力的权威出处，
+// 供模型在不熟悉的 API 上求证，替代「往词库写试探词条猜方法名」的破坏性做法。
+func aiToolReadDicDoc(argsJSON string) (string, string) {
+	var a struct {
+		Doc string `json:"doc"`
 	}
-	content := string(data)
+	if err := aiToolDecode(argsJSON, &a); err != nil {
+		return aiToolFail("参数解析失败: " + err.Error()), "参数错误"
+	}
+	name := strings.TrimSpace(a.Doc)
+	if name == "" {
+		docs := dicDocList()
+		return aiToolResult(map[string]any{"docs": docs, "index": dicDocIndexText()}),
+			fmt.Sprintf("列出内置文档（%d 篇）", len(docs))
+	}
+	doc, err := dicDocFind(name)
+	if err != nil {
+		return aiToolFail(err.Error()), "文档不存在 " + name
+	}
+	content := doc.content
 	truncated := false
 	if len([]rune(content)) > aiToolReadMaxRunes {
-		content = aiClipRunes(content, aiToolReadMaxRunes)
+		content = aiClipRunesHeadTail(content, aiToolReadMaxRunes)
 		truncated = true
 	}
-	return aiToolResult(map[string]any{"doc": "dic.md", "content": content, "truncated": truncated}),
-		fmt.Sprintf("阅读语法文档 dic.md（%d 字符）", len([]rune(content)))
+	return aiToolResult(map[string]any{"doc": doc.Path, "title": doc.Title, "content": content, "truncated": truncated}),
+		fmt.Sprintf("阅读文档《%s》（%d 字符）", doc.Title, len([]rune(content)))
 }
 
 // aiToolReadSkill 按名称读取某个技能的完整内容（系统提示只注入技能名称与描述，正文按需读取）。
@@ -600,7 +682,7 @@ func aiToolReadSkill(argsJSON string) (string, string) {
 	content := skill.Content
 	truncated := false
 	if len([]rune(content)) > aiToolReadMaxRunes {
-		content = aiClipRunes(content, aiToolReadMaxRunes)
+		content = aiClipRunesHeadTail(content, aiToolReadMaxRunes)
 		truncated = true
 	}
 	return aiToolResult(map[string]any{"name": skill.Name, "content": content, "truncated": truncated}),
@@ -710,8 +792,16 @@ func aiToolSaveDic(argsJSON string) (string, string) {
 		return aiToolFail("参数解析失败: " + err.Error()), "参数错误"
 	}
 	p := strings.TrimSpace(a.Path)
-	if !checkDicPath(p) {
-		return aiToolFail("词库路径不合法，需为应用目录内的相对路径且以 .n 结尾"), "路径不合法"
+	if !checkDicOrWebPath(p) {
+		return aiToolFail("词库路径不合法，需为应用目录内的相对路径且以 .n / .wn 结尾"), "路径不合法"
+	}
+	// 网页词库（.wn）是 HTML 容器 + 脚本块，不参与 .n 语法规范校验，也没有编译环节，
+	// 直接写入即可，写入后由模型用 run_web_dic 运行验证。
+	if checkWebDicPath(p) {
+		utils.NewFileQueue(p).WriteToFile(a.Content)
+		aiNotifyFileChanged("save", p, nil)
+		return aiToolResult(map[string]any{"status": "ok", "path": p, "webDic": true}),
+			"已保存网页词库 " + p
 	}
 	// 保存前强校验：拦下编译查不出、却会让代码静默失效的写法，把问题回灌给模型让它改对再存
 	if problems := aiDicLintContent(a.Content); len(problems) > 0 {
@@ -864,12 +954,17 @@ func aiToolRunDic(argsJSON, streamID string, vision bool) (string, string, []str
 		modelOutput = dicTriggerMissHint(trigger) + "\n" + output
 	}
 	if len(images) > 0 && !vision {
-		// 视觉能力未开启：明确告知模型图片无法查看，避免其凭空臆测图片内容
-		modelOutput = aiVisionDisabledHint(len(images)) + "\n" + modelOutput
+		// 视觉能力未开启：先说明图片无法直接查看，再回灌可量化的观测结果
+		// （格式/宽高/体积/平均色/主色占比/分区域色块网格），
+		// 让模型至少能判断图片是否正常、配色是否符合预期，而不是只能凭空臆测。
+		view, _ := json.Marshal(aiImageViewList(images))
+		modelOutput = aiVisionDisabledHint(len(images)) +
+			"\n以下是这些图片的量化观测数据（由视图工具生成，只描述客观尺寸与颜色，不含画面语义）：\n" +
+			string(view) + "\n" + modelOutput
 	}
 
 	resp := map[string]any{
-		"output":   aiClipRunes(modelOutput, aiToolOutputMaxRunes),
+		"output":   aiClipRunesHeadTail(modelOutput, aiToolOutputMaxRunes),
 		"timedOut": timedOut,
 	}
 	if len(dic.Data.Warnings) > 0 {
@@ -891,6 +986,284 @@ func aiToolRunDic(argsJSON, streamID string, vision bool) (string, string, []str
 		upload = nil
 	}
 	return aiToolResult(resp), brief, upload
+}
+
+// aiToolRunWebDic 本地运行网页词库（.wn）：脚本块自上而下执行并完成模板渲染，
+// 返回最终 HTML（渲染后的整页内容），运行结果同步推送到前端「运行结果」面板。
+// .wn 没有触发词概念，也不需要编译，故不做编译诊断与触发词分支。
+func aiToolRunWebDic(argsJSON, streamID string) (string, string, []string) {
+	var a struct {
+		Path string            `json:"path"`
+		G    map[string]string `json:"g"`
+	}
+	if err := aiToolDecode(argsJSON, &a); err != nil {
+		return aiToolFail("参数解析失败: " + err.Error()), "参数错误", nil
+	}
+	p := strings.TrimSpace(a.Path)
+	if !checkWebDicPath(p) {
+		return aiToolFail("网页词库路径不合法，需为应用目录内的相对路径且以 .wn 结尾"), "路径不合法", nil
+	}
+
+	// 与词库调试运行一致：运行期间启用删除操作人工确认
+	ensureDicDeleteConfirm()
+	dicDeleteConfirmActive.Add(1)
+	defer dicDeleteConfirmActive.Add(-1)
+
+	output, err := runWebDicLocal(p, a.G)
+	if err != nil {
+		return aiToolFail("网页词库加载失败: " + err.Error()), "运行失败 " + p, nil
+	}
+
+	// 运行结果推送到前端「运行结果」面板（webDic 标记供前端区分渲染方式）
+	aiStreamNotify(streamID, "ai_stream_dic_run", map[string]any{
+		"path":     p,
+		"webDic":   true,
+		"output":   output,
+		"timedOut": false,
+		"segments": parseOutputSegments(output),
+		"vars":     map[string]any{"P": map[string]any{}, "G": map[string]any{}, "GV": map[string]any{}},
+	})
+
+	resp := map[string]any{
+		"output":   aiClipRunesHeadTail(output, aiToolOutputMaxRunes),
+		"timedOut": false,
+	}
+	return aiToolResult(resp), "已运行网页词库 " + p, nil
+}
+
+// ============== 视图工具（把图片变成可读的量化数据） ==============
+//
+// 「AI 视觉能力」是模型级开关（见 ai_session.go 的 Vision）：未开启时词库运行输出的图片
+// 不会上传给模型，模型只会收到一句「无法查看图片」，很容易据此凭空描述画面。
+// 视图工具用纯计算的方式把图片翻译成文本：是否图片、格式、宽高、体积、平均色、
+// 各主色占比，以及可选的分区域色块网格；run_dic 在视觉未开启时也会把同类信息一并回灌。
+// 它是「没有视觉」时的替代观测手段，不是画像识别——只能给出客观数据，给不出语义内容。
+
+// aiImageSource 视图工具的图片来源解析结果。
+type aiImageSource struct {
+	Label  string // 来源说明（相对路径 / data URI / 远程地址）
+	Data   []byte // 图片字节（远程地址不下载，为空）
+	Remote bool   // 是否为 http(s) 远程地址（只识别、不下载）
+	Note   string // 取不到字节时的原因说明（为空表示已取到字节）
+}
+
+// aiImageReadSource 读取图片来源：应用目录内的相对路径（与其它工具同一套路径校验）或 data URI；
+// http(s) 地址只做识别、不联网下载，避免把外部网络请求引入工具调用。
+func aiImageReadSource(source string) aiImageSource {
+	src := strings.TrimSpace(source)
+	switch {
+	case src == "":
+		return aiImageSource{Label: "（空）", Note: "source 为空：请给出应用目录内的相对路径、data URI 或 http(s) 图片地址"}
+	case strings.HasPrefix(src, "http://"), strings.HasPrefix(src, "https://"):
+		return aiImageSource{Label: src, Remote: true, Note: "远程图片地址，视图工具不联网下载，只能确认它是图片地址，无法给出宽高与颜色数据"}
+	case strings.HasPrefix(src, "data:"):
+		comma := strings.Index(src, ",")
+		if comma < 0 || !strings.Contains(strings.ToLower(src[:comma]), "base64") {
+			return aiImageSource{Label: "data URI", Note: "data URI 格式不合法：需形如 data:image/png;base64,<数据>"}
+		}
+		data, err := base64.StdEncoding.DecodeString(strings.TrimSpace(src[comma+1:]))
+		if err != nil {
+			return aiImageSource{Label: "data URI", Note: "data URI 的 base64 数据解析失败: " + err.Error()}
+		}
+		return aiImageSource{Label: "data URI", Data: data}
+	}
+	if !checkFilePath(src) {
+		return aiImageSource{Label: src, Note: "路径不合法：只能使用应用目录内的相对路径（不能是绝对路径或含 ..）"}
+	}
+	data, err := utils.NewFileQueue(src).ReadFileByte()
+	if err != nil {
+		return aiImageSource{Label: src, Note: "读取失败: " + err.Error()}
+	}
+	return aiImageSource{Label: src, Data: data}
+}
+
+// aiRGBHex 把 RGB 分量格式化为 #rrggbb。
+func aiRGBHex(r, g, b uint8) string {
+	return fmt.Sprintf("#%02x%02x%02x", r, g, b)
+}
+
+// aiImageTextHead 截取一段可读文本预览，用于向模型说明「这不是图片，而是文本」。
+func aiImageTextHead(data []byte) string {
+	if len(data) == 0 {
+		return ""
+	}
+	return aiClipRunes(strings.TrimSpace(strings.ToValidUTF8(string(data[:min(len(data), 256)]), "?")), 120)
+}
+
+// aiImageInspect 解析图片字节，汇总「看不到图也能读」的客观数据。
+// 返回的 ok 为 true 表示识别为图片且解码成功（含 width / height / colors / grid 等字段）；
+// ok 为 false 时按情况给出 isImage=false（不是图片）或 isImage=true + reason（是图片但解不开）。
+func aiImageInspect(data []byte, grid bool) (map[string]any, bool) {
+	if len(data) == 0 {
+		return map[string]any{"isImage": false, "reason": "内容为空，没有可分析的字节"}, false
+	}
+	ct := http.DetectContentType(data)
+	if !strings.HasPrefix(ct, "image/") {
+		return map[string]any{
+			"isImage": false,
+			"reason":  "按文件头识别不是图片（内容类型 " + ct + "）",
+			"bytes":   len(data),
+			"head":    aiImageTextHead(data),
+		}, false
+	}
+	img, format, err := image.Decode(bytes.NewReader(data))
+	if err != nil {
+		return map[string]any{
+			"isImage": true,
+			"reason":  "按文件头识别是图片（" + ct + "），但解码失败，无法给出宽高与颜色数据: " + err.Error(),
+			"bytes":   len(data),
+		}, false
+	}
+	b := img.Bounds()
+	w, h := b.Dx(), b.Dy()
+	if w <= 0 || h <= 0 {
+		return map[string]any{"isImage": true, "reason": "图片尺寸为 0，无法分析"}, false
+	}
+	// 采样步长：大图按步长抽样，统计耗时与输出规模不随图片大小失控
+	step := 1
+	if m := max(w, h); m > aiImageViewSampleSide {
+		step = m/aiImageViewSampleSide + 1
+	}
+
+	// 平均色、是否含透明通道，以及各颜色出现次数（用于取主色）
+	counts := map[uint32]uint64{}
+	var sumR, sumG, sumB uint64
+	var samples uint64
+	hasAlpha := false
+	for y := b.Min.Y; y < b.Max.Y; y += step {
+		for x := b.Min.X; x < b.Max.X; x += step {
+			r, g, bl, a := img.At(x, y).RGBA()
+			r8, g8, b8, a8 := uint8(r>>8), uint8(g>>8), uint8(bl>>8), uint8(a>>8)
+			sumR += uint64(r8)
+			sumG += uint64(g8)
+			sumB += uint64(b8)
+			samples++
+			if a8 < 0xff {
+				hasAlpha = true
+			}
+			counts[uint32(r8)<<16|uint32(g8)<<8|uint32(b8)]++
+		}
+	}
+
+	// 主色：按出现次数从高到低取前若干种；占比相同时按颜色值排序，保证输出稳定
+	keys := make([]uint32, 0, len(counts))
+	for k := range counts {
+		keys = append(keys, k)
+	}
+	sort.Slice(keys, func(i, j int) bool {
+		if counts[keys[i]] != counts[keys[j]] {
+			return counts[keys[i]] > counts[keys[j]]
+		}
+		return keys[i] < keys[j]
+	})
+	if len(keys) > aiImageViewMaxColors {
+		keys = keys[:aiImageViewMaxColors]
+	}
+	colors := make([]map[string]any, 0, len(keys))
+	for _, k := range keys {
+		colors = append(colors, map[string]any{
+			"hex":     aiRGBHex(uint8(k>>16), uint8(k>>8), uint8(k)),
+			"percent": math.Round(float64(counts[k])*1000/float64(samples)) / 10,
+		})
+	}
+
+	out := map[string]any{
+		"isImage":      true,
+		"format":       format,
+		"width":        w,
+		"height":       h,
+		"bytes":        len(data),
+		"hasAlpha":     hasAlpha,
+		"averageColor": aiRGBHex(uint8(sumR/samples), uint8(sumG/samples), uint8(sumB/samples)),
+		"colors":       colors,
+	}
+	if grid {
+		out["grid"] = aiImageColorGrid(img, b, step)
+		out["gridHint"] = fmt.Sprintf("分区域色块网格：图片被切成 %d×%d 块，每格是该块的平均色 #rrggbb"+
+			"（每行从左到右、第一行是图片顶部），据此判断画面布局与配色分布。", aiImageViewGrid, aiImageViewGrid)
+	}
+	return out, true
+}
+
+// aiImageColorGrid 把图片按 aiImageViewGrid×aiImageViewGrid 切块，返回每块平均色组成的网格（每行一条字符串）。
+func aiImageColorGrid(img image.Image, b image.Rectangle, step int) []string {
+	w, h := b.Dx(), b.Dy()
+	rows := make([]string, 0, aiImageViewGrid)
+	for gy := 0; gy < aiImageViewGrid; gy++ {
+		cells := make([]string, 0, aiImageViewGrid)
+		for gx := 0; gx < aiImageViewGrid; gx++ {
+			x0, x1 := b.Min.X+gx*w/aiImageViewGrid, b.Min.X+(gx+1)*w/aiImageViewGrid
+			y0, y1 := b.Min.Y+gy*h/aiImageViewGrid, b.Min.Y+(gy+1)*h/aiImageViewGrid
+			// 图片比网格还小时（宽或高不足 8 像素），补足 1 像素宽度避免取不到像素点
+			if x1 <= x0 {
+				x1 = x0 + 1
+			}
+			if y1 <= y0 {
+				y1 = y0 + 1
+			}
+			var sr, sg, sb, n uint64
+			for y := y0; y < y1; y += step {
+				for x := x0; x < x1; x += step {
+					r, g, bl, _ := img.At(x, y).RGBA()
+					sr += uint64(r >> 8)
+					sg += uint64(g >> 8)
+					sb += uint64(bl >> 8)
+					n++
+				}
+			}
+			cells = append(cells, aiRGBHex(uint8(sr/n), uint8(sg/n), uint8(sb/n)))
+		}
+		rows = append(rows, strings.Join(cells, " "))
+	}
+	return rows
+}
+
+// aiImageViewList 逐张汇总一组图片来源的量化信息，供视觉能力未开启时随工具结果回灌给模型。
+func aiImageViewList(images []string) []map[string]any {
+	list := make([]map[string]any, 0, len(images))
+	for i, src := range images {
+		s := aiImageReadSource(src)
+		info := map[string]any{"index": i + 1}
+		switch {
+		case s.Remote:
+			// 来源本身已被识别为图片（来自输出里的图片标记），只是没有下载分析
+			info["isImage"] = true
+			info["note"] = s.Note
+		case s.Note != "":
+			info["isImage"] = false
+			info["note"] = s.Note
+		default:
+			v, _ := aiImageInspect(s.Data, true)
+			maps.Copy(info, v)
+		}
+		list = append(list, info)
+	}
+	return list
+}
+
+// aiToolViewImage 视图工具：判断某来源是否为图片，并给出可量化「看」到的信息。
+func aiToolViewImage(argsJSON string) (string, string) {
+	var a struct {
+		Source string `json:"source"`
+		Grid   bool   `json:"grid"`
+	}
+	if err := aiToolDecode(argsJSON, &a); err != nil {
+		return aiToolFail("参数解析失败: " + err.Error()), "参数错误"
+	}
+	s := aiImageReadSource(a.Source)
+	if s.Note != "" {
+		out := map[string]any{"source": s.Label, "isImage": s.Remote, "note": s.Note}
+		return aiToolResult(out), "未取得图片内容：" + s.Label
+	}
+	info, ok := aiImageInspect(s.Data, a.Grid)
+	info["source"] = s.Label
+	if !ok {
+		if isImg, _ := info["isImage"].(bool); !isImg {
+			return aiToolResult(info), "不是图片：" + s.Label
+		}
+		return aiToolResult(info), "图片无法解码：" + s.Label
+	}
+	return aiToolResult(info), fmt.Sprintf("已查看图片 %s（%v×%v，%s）", s.Label, info["width"], info["height"], info["format"])
 }
 
 // aiToolCallSeq 为「文本形式工具调用」补全的调用编号，保证后续 tool 结果能按 id 正确回填。
@@ -972,7 +1345,7 @@ func aiCanonDSMLToolCalls(s string) string {
 // 该写法不光出现在 DSML（剥离分隔符后），Anthropic 风格的模型也会直接吐出这种裸标签，
 // 而且往往不带 <tool_call> 包裹：只认 <tool_call> 时整段调用会被当正文输出、实际从未执行。
 func aiCanonInvokeToolCalls(s string) string {
-	// 只要求出现 invoke 开标签：无参工具（如 read_dic_doc）的 invoke 块里没有 parameter，
+	// 只要求出现 invoke 开标签：无参数的工具调用（如 read_dic_doc 不带参数）的 invoke 块里没有 parameter，
 	// 若一并要求存在 <parameter，这类调用会被整体当成正文输出、永远不会执行。
 	if !strings.Contains(s, "<invoke") {
 		return s
@@ -1232,11 +1605,13 @@ func aiParseTextToolCall(inner string) (aiToolCall, bool) {
 		args[key] = valPart
 		remain = next
 	}
-	buf, err := json.Marshal(args)
+	// 同样用 utils.Marshal 关闭 HTML 转义：这份参数 JSON 会作为工具调用原样回灌给模型，
+	// 若把 < > & 写成 \u003c \u003e \u0026，模型会照着把转义序列写进词库源码。
+	b, err := utils.Marshal(args)
 	if err != nil {
 		return aiToolCall{}, false
 	}
-	return aiNewTextToolCall(name, string(buf)), true
+	return aiNewTextToolCall(name, string(b)), true
 }
 
 // aiNewTextToolCall 组装一个由文本形式工具调用还原出的结构化调用（补全 id 与 type）。
@@ -1334,7 +1709,10 @@ func aiChatWithTools(c *dto.AIConfig, model string, msgs []aiChatMessage, effort
 	// 本流的取消上下文：用户点击「终止」时连审批等待一起打断
 	parentCtx := aiStreamParentCtx(streamID)
 
-	// appendReasoning 累积思考内容并实时推送，保证收尾时思考区仍保留完整过程
+	// appendReasoning 累积思考内容并实时推送，保证收尾时思考区仍保留完整过程。
+	// 分块约定：思考文本以「连续空行」为块边界，前端据此把思考过程拆成「每轮思考 / 每次工具调用」
+	// 等多个可独立折叠的块。因此凡自成一块的内容（工具调用、提示）都必须前后各留一个空行，
+	// 否则会与相邻的思考文本粘成一块（边界随文本一起持久化，刷新后仍能还原分块）。
 	appendReasoning := func(text string) {
 		if text == "" {
 			return
@@ -1351,6 +1729,11 @@ func aiChatWithTools(c *dto.AIConfig, model string, msgs []aiChatMessage, effort
 	continueCount := 0
 	// 空回复重试计数：上游只产出思考、正文为空时最多自动重试 aiToolMaxEmptyRetries 次
 	emptyRetryCount := 0
+	// 修复提醒计数：上一步工具明确报错而模型准备收尾时，最多补 aiToolMaxFixNudges 轮提醒
+	fixNudgeCount := 0
+	// unresolvedIssue 最近一次未通过的步骤（工具结果里的失败标记），为空表示当前没有待修复项；
+	// 成功跑过词库 / 重新编译检查（aiToolResultVerified）后解除，据此拦截「没跑通就收尾」
+	unresolvedIssue := ""
 	// plainOnly 置位后不再下发工具（空回复重试后的轮次），避免模型又陷入「要不要调工具」的长思考
 	plainOnly := false
 	// contentAll 累积因截断而分段产出的正文：续写会把答复拆成多轮，
@@ -1367,6 +1750,15 @@ func aiChatWithTools(c *dto.AIConfig, model string, msgs []aiChatMessage, effort
 		}
 		contentAll.WriteString(cur)
 		return contentAll.String()
+	}
+	// pendingNote 在「上一步仍未通过验证」时给答复补一句说明：
+	// 提醒用尽（或时间预算耗尽）后只能如实收尾，不能让用户误以为已经跑通。
+	pendingNote := func(text string) string {
+		if unresolvedIssue == "" {
+			return text
+		}
+		return text + "\n\n（提示：上一次工具结果仍未通过 —— " + unresolvedIssue +
+			"。下面的结论基于未验证通过的中间状态，可以回复「继续」让我接着修。）"
 	}
 	// 收尾轮由时间预算驱动：预算用尽（或触及 aiToolMaxRounds 安全上限）后不再下发工具，
 	// 强制模型基于已获得的信息给出最终答复——不能直接报错中止整轮回复，否则用户只能重试。
@@ -1403,7 +1795,7 @@ func aiChatWithTools(c *dto.AIConfig, model string, msgs []aiChatMessage, effort
 				return "", "", err
 			}
 			// 模型或接口不支持工具调用：显式提示后降级为无工具流式对话
-			appendReasoning("\n⚠ 工具调用不可用，已降级为纯对话，本轮 AI 无法直接读写文件。\n原因：" + err.Error() + "\n")
+			appendReasoning("\n\n⚠ 工具调用不可用，已降级为纯对话，本轮 AI 无法直接读写文件。\n原因：" + err.Error() + "\n\n")
 			text, streamReasoning, streamErr := aiChatStreamReasoning(c, model, msgs, effort, streamID)
 			if streamErr != nil {
 				if errors.Is(streamErr, errAIStreamCancelled) {
@@ -1439,7 +1831,7 @@ func aiChatWithTools(c *dto.AIConfig, model string, msgs []aiChatMessage, effort
 			// 本轮无正文（如输出预算被思维链吃满）时无法回灌 assistant 消息续写，交由下方提醒兜底
 			if finishReason == "length" && trimmed != "" && continueCount < aiToolMaxContinues {
 				continueCount++
-				appendReasoning("\n⚠ 输出达到上游长度上限被截断，已自动续写\n")
+				appendReasoning("\n\n⚠ 输出达到上游长度上限被截断，已自动续写\n\n")
 				contentAll.WriteString(content)
 				work = append(work, aiChatMessage{Role: "assistant", Content: content})
 				work = append(work, aiChatMessage{
@@ -1450,13 +1842,31 @@ func aiChatWithTools(c *dto.AIConfig, model string, msgs []aiChatMessage, effort
 				})
 				continue
 			}
+			// 「没跑通就收尾」：上一批工具明确报错（编译失败、保存后仍有 error、运行超时等），
+			// 模型却准备结束本轮——按目标导向约定必须继续修，这里补一轮提醒促其修好并重新验证。
+			if !final && unresolvedIssue != "" && fixNudgeCount < aiToolMaxFixNudges {
+				fixNudgeCount++
+				appendReasoning("\n\n⚠ 上一步未通过（" + unresolvedIssue + "），已提醒模型继续修复并重新验证\n\n")
+				if trimmed != "" {
+					// 保留该轮正文为 assistant 消息，使模型能接着上下文继续修
+					work = append(work, aiChatMessage{Role: "assistant", Content: content})
+				}
+				work = append(work, aiChatMessage{
+					Role: "user",
+					Content: "你上一步的工具结果表示这一步没有成功（" + unresolvedIssue + "）。按约定此时不能收尾：" +
+						"请按返回的诊断继续修复，修完用完整内容重新保存，并重新运行验证（编译 error 清零、运行有正常输出）后再给结论；" +
+						"不要只把问题罗列出来就结束回答，也不要在没验证通过时声称「已完成 / 已修复」。" +
+						"若同一处已连续两次修不好，请说明卡在哪一步、试过什么、还需要什么信息。",
+				})
+				continue
+			}
 			// 「说了要做、却没真做」：本轮有正文但没发起任何工具调用，且正文像
 			// 「我先…然后…」式的计划前言（正文为空也算）。
 			// 直接 return 会让用户看到一句承诺后彻底没反应，这里补一轮提醒促使模型真正执行。
 			stuck := trimmed == "" || aiLooksLikeActionPreamble(trimmed)
 			if !final && nudgeCount < aiToolMaxNudges && stuck {
 				nudgeCount++
-				appendReasoning("\n⚠ 本轮只返回了文字描述、未发起工具调用，已提醒模型直接执行\n")
+				appendReasoning("\n\n⚠ 本轮只返回了文字描述、未发起工具调用，已提醒模型直接执行\n\n")
 				if trimmed != "" {
 					// 保留该轮前言为 assistant 消息，使模型能接着往下做
 					work = append(work, aiChatMessage{Role: "assistant", Content: content})
@@ -1477,7 +1887,7 @@ func aiChatWithTools(c *dto.AIConfig, model string, msgs []aiChatMessage, effort
 				if !final && emptyRetryCount < aiToolMaxEmptyRetries {
 					emptyRetryCount++
 					wait := aiToolEmptyRetryDelay * time.Duration(emptyRetryCount)
-					appendReasoning(fmt.Sprintf("\n⚠ 上游本轮只返回了思考、未返回正文，%v 后自动重试（第 %d/%d 次）\n",
+					appendReasoning(fmt.Sprintf("\n\n⚠ 上游本轮只返回了思考、未返回正文，%v 后自动重试（第 %d/%d 次）\n\n",
 						wait, emptyRetryCount, aiToolMaxEmptyRetries))
 					aiStreamNotify(streamID, "ai_stream_delta", map[string]any{
 						"kind":    "retry",
@@ -1513,7 +1923,8 @@ func aiChatWithTools(c *dto.AIConfig, model string, msgs []aiChatMessage, effort
 				content += "\n\n（提示：本次输出多次触达模型长度上限，内容可能仍不完整。可回复「继续」让我接着补全。）"
 			}
 			// 正文已在 aiChatOnceTools 流式解析时逐片推送，此处不再重复推整段
-			return content, reasoningAll.String(), nil
+			// 上一步仍未通过验证（提醒用尽或时间预算耗尽）：如实说明，不把未跑通当成完成
+			return pendingNote(content), reasoningAll.String(), nil
 		}
 		// 保留本轮工具请求，作为后续上下文；content 需原样回传以保持消息结构完整
 		work = append(work, aiChatMessage{Role: "assistant", Content: content, ToolCalls: calls})
@@ -1523,10 +1934,11 @@ func aiChatWithTools(c *dto.AIConfig, model string, msgs []aiChatMessage, effort
 		// tool_calls message」并拒绝整轮请求（多工具并行时必然触发）。
 		var roundImages []string
 		for _, call := range calls {
-			appendReasoning("\n▸ 调用工具 " + call.Function.Name + "\n")
+			// 每次工具调用自成一块：标题行 + 结果摘要同块，块首块尾各留空行与相邻思考分开
+			appendReasoning("\n\n▸ 调用工具 " + call.Function.Name + "\n")
 			// 权限闸门：按任务级权限档位决定是否需用户审批；被拒绝时把结果回灌给模型，让其调整后再收尾
 			if aiToolNeedsApproval(permissionMode, call.Function.Name) && !requestAIToolApproval(parentCtx, sessionID, call.Function.Name, call.Function.Arguments) {
-				appendReasoning("  用户未批准该操作，已跳过\n")
+				appendReasoning("  用户未批准该操作，已跳过\n\n")
 				work = append(work, aiChatMessage{
 					Role:       "tool",
 					ToolCallID: call.ID,
@@ -1543,7 +1955,16 @@ func aiChatWithTools(c *dto.AIConfig, model string, msgs []aiChatMessage, effort
 			if len(fileTargets) > 0 {
 				aiFileToolRecord(sessionID, call.Function.Name, fileTargets)
 			}
-			appendReasoning("  " + brief + "\n")
+			appendReasoning("  " + brief + "\n\n")
+			// 按本次工具结果更新「未通过」状态：跑通验证环节（保存 / 编译检查 / 运行）出现
+			// 失败标记即记下这一步没成功；同一环节跑通说明修复生效，解除该状态。
+			if aiToolResultIsVerification(call.Function.Name) {
+				if reason := aiToolResultFailure(result); reason != "" {
+					unresolvedIssue = call.Function.Name + "：" + reason
+				} else {
+					unresolvedIssue = ""
+				}
+			}
 			work = append(work, aiChatMessage{Role: "tool", ToolCallID: call.ID, Name: call.Function.Name, Content: result})
 			roundImages = append(roundImages, images...)
 		}
@@ -1554,7 +1975,7 @@ func aiChatWithTools(c *dto.AIConfig, model string, msgs []aiChatMessage, effort
 				content = "（本次工具调用已达到轮数/时间上限，未能生成完整答复。可以回复「继续」让我接着处理。）"
 			}
 			// 若此前发生过截断续写，累积片段必须一并返回，否则收尾答复只剩最后一段
-			return mergeContent(content), reasoningAll.String(), nil
+			return pendingNote(mergeContent(content)), reasoningAll.String(), nil
 		}
 		// 视觉能力开启且工具捕获到图片：以多模态 user 消息补发图片，供模型查看
 		if len(roundImages) > 0 {
@@ -1586,6 +2007,7 @@ var aiToolReadOnly = map[string]bool{
 	"read_dic_doc": true,
 	"read_skill":   true,
 	"check_dic":    true,
+	"view_image":   true,
 }
 
 // aiToolAutoAllow auto（自动审批，默认档位）下额外免审批的写入与执行工具。
@@ -1593,13 +2015,14 @@ var aiToolReadOnly = map[string]bool{
 // 越权路径（绝对路径、../）会被直接拒绝，因此项目内的读写与运行无需再让用户逐次放行。
 // save_dic、write_file 是词库调试的核心动作，用户已在对话里明确要求改文件；若继续弹卡片，
 // 一旦用户没及时答复（切走 / 超时），模型就会退化成「让用户手动复制粘贴」，文件根本没写入。
-// run_dic 只读地执行词库并返回输出，是「改完即验证」的收尾动作，同样不该中断。
+// run_dic / run_web_dic 只读地执行词库并返回输出，是「改完即验证」的收尾动作，同样不该中断。
 // 词库运行期自身的删除请求另有 dic_delete_confirm 确认流程，不受此处影响。
 // 删除、移动、重命名属破坏性操作，在 auto 档下仍保留确认卡片。
 var aiToolAutoAllow = map[string]bool{
-	"save_dic":   true,
-	"write_file": true,
-	"run_dic":    true,
+	"save_dic":    true,
+	"write_file":  true,
+	"run_dic":     true,
+	"run_web_dic": true,
 }
 
 // aiToolAlwaysAllow 任何权限档位（含手动审批）都免审批的只读工具。

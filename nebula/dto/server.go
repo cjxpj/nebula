@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/url"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 
@@ -88,8 +89,6 @@ type AIConfig struct {
 	APIKey string
 	// 当前模型名，默认 deepseek-flash
 	Model string
-	// 系统提示词，留空时使用内置词库开发提示词
-	SystemPrompt string
 	// 请求超时（秒）
 	Timeout int
 	// 是否启用词库编辑器内联补全
@@ -110,6 +109,12 @@ type AIConfig struct {
 	CurrentID string
 	// 全局默认审批模式：manual | auto | full，新建任务与新建智能体未指定时使用
 	ApprovalMode string
+	// 全局默认自动继续：新建任务未单独设置时使用，开启后 AI 因轮数/时间上限收尾会自动接着处理
+	AutoContinue bool
+	// 全局默认自动继续次数：新建任务未单独设置时使用，0 表示不限制
+	AutoContinueMax int
+	// 全局默认智能体 ID：新建任务与未指定智能体的任务使用；留空或已失效时回退出厂默认智能体（网页词库）
+	DefaultAgentID string
 	// 模型列表（每项为独立完整配置）
 	Models []*AIModelConfig
 }
@@ -139,10 +144,17 @@ type AIModelConfig struct {
 	ContextLength int `json:"context_length"`
 	// 最大输出长度（token）：请求时作为 max_tokens 下发，非正数时使用默认最佳值
 	MaxTokens int `json:"max_tokens"`
+	// 请求频率上限（每分钟请求数）：同一模型两次请求的最小间隔由其换算，非正数表示不限制
+	RateLimit int `json:"rate_limit"`
+	// 并发上限（同一模型同时进行中的请求数）：默认 1，即串行请求；可按模型上调，超出后排队等待
+	Concurrency int `json:"concurrency"`
 }
 
 // DefaultAIModel AI 默认模型名（未配置模型时使用）。
 const DefaultAIModel = "deepseek-flash"
+
+// DefaultAIModelConcurrency 模型默认并发上限：同一模型同一时刻只允许一个请求，未配置时使用。
+const DefaultAIModelConcurrency = 1
 
 // AI 模型长度默认最佳值（token）：上下文输入 512K、最大输出 16K。
 // 取值兼顾长上下文与稳定输出，且几乎被所有 OpenAI 兼容服务商接受；单模型可在管理面板调整。
@@ -168,10 +180,26 @@ func NormalizeAIPermissionMode(m string) string {
 
 // AI 模型列表在 [AI] 节中的存储键：模型列表为 JSON 数组字符串，当前模型为选中项 ID。
 const (
-	AIModelsKey   = "模型列表"
-	AICurrentKey  = "当前模型"
-	AIApprovalKey = "审批模式"
+	AIModelsKey       = "模型列表"
+	AICurrentKey      = "当前模型"
+	AIApprovalKey     = "审批模式"
+	AIAutoContinueKey = "自动继续"
+	// AIAutoContinueMaxKey 自动继续次数：0 表示不限制
+	AIAutoContinueMaxKey = "自动继续次数"
+	// AIDefaultAgentKey 默认智能体 ID：留空时回退出厂默认智能体
+	AIDefaultAgentKey = "默认智能体"
 )
+
+// DefaultAIAutoContinueMax 自动继续次数的出厂默认值：连续自动继续达到该次数仍未结束时暂停并提示。
+const DefaultAIAutoContinueMax = 8
+
+// NormalizeAIAutoContinueMax 归一化自动继续次数：负数一律视为 0（不限制），0 与正整数原样保留。
+func NormalizeAIAutoContinueMax(n int) int {
+	if n < 0 {
+		return 0
+	}
+	return n
+}
 
 // PickAIModelByName 按模型名从模型列表中查找（任务侧记录的是模型名，全局默认记录的是模型 ID）；未命中返回 nil。
 func PickAIModelByName(models []*AIModelConfig, name string) *AIModelConfig {
@@ -233,6 +261,24 @@ func ApplyAIApprovalMode(mode string) error {
 	return nil
 }
 
+// ApplyAIAutoContinue 把全局默认自动继续写入 [AI]「自动继续」，并热更新运行期配置。
+func ApplyAIAutoContinue(on bool) error {
+	cfg, err := LoadConfigFile()
+	if err != nil {
+		return err
+	}
+	sec := cfg.Section("AI")
+	if sec.Key(AIAutoContinueKey).String() == strconv.FormatBool(on) {
+		return nil
+	}
+	sec.Key(AIAutoContinueKey).SetValue(strconv.FormatBool(on))
+	if err := cfg.Save(); err != nil {
+		return err
+	}
+	ServerConfig.AI = LoadConfig_ai(sec)
+	return nil
+}
+
 // aiKeyPrefix AI 密钥在配置文件中的密文前缀：用于识别密文，并兼容历史明文值。
 const aiKeyPrefix = "enc:"
 
@@ -274,10 +320,15 @@ func LoadConfig_ai(sec *ConfigSection) *AIConfig {
 
 	cfg := &AIConfig{
 		Open:           sec.Key("启用").MustBool(false),
-		SystemPrompt:   strings.TrimSpace(sec.Key("系统提示").String()),
 		Timeout:        sec.Key("超时").MustInt(60),
 		InlineComplete: sec.Key("代码补全").MustBool(true),
 		ApprovalMode:   NormalizeAIPermissionMode(sec.Key(AIApprovalKey).String()),
+		// 自动继续默认开启：与既有的前端默认一致，配置缺失（旧版本配置）时不做行为变更
+		AutoContinue: sec.Key(AIAutoContinueKey).MustBool(true),
+		// 自动继续次数缺省为出厂默认值；0 表示不限制
+		AutoContinueMax: NormalizeAIAutoContinueMax(sec.Key(AIAutoContinueMaxKey).MustInt(DefaultAIAutoContinueMax)),
+		// 默认智能体：留空表示未指定，由调用方回退出厂默认智能体
+		DefaultAgentID: strings.TrimSpace(sec.Key(AIDefaultAgentKey).String()),
 		Models:         models,
 	}
 	if cur != nil {
@@ -350,6 +401,8 @@ func LoadAIModels(sec *ConfigSection) []*AIModelConfig {
 		m.ReasoningEffort = NormalizeReasoningEffort(m.ReasoningEffort)
 		m.ReasoningModel = strings.TrimSpace(m.ReasoningModel)
 		m.ContextLength, m.MaxTokens = NormalizeModelLimits(m.ContextLength, m.MaxTokens)
+		m.RateLimit = NormalizeModelRate(m.RateLimit)
+		m.Concurrency = NormalizeModelConcurrency(m.Concurrency)
 		out = append(out, m)
 	}
 	return out
@@ -413,6 +466,22 @@ func NormalizeModelLimits(contextLength, maxTokens int) (int, int) {
 		maxTokens = contextLength
 	}
 	return contextLength, maxTokens
+}
+
+// NormalizeModelRate 归一化模型的频率上限：非正数（含未配置）统一视为 0，即不限制。
+func NormalizeModelRate(v int) int {
+	if v <= 0 {
+		return 0
+	}
+	return v
+}
+
+// NormalizeModelConcurrency 归一化模型的并发上限：非正数（含未配置）统一取默认值 1，即同一模型串行请求。
+func NormalizeModelConcurrency(v int) int {
+	if v < 1 {
+		return DefaultAIModelConcurrency
+	}
+	return v
 }
 
 // NormalizeReasoningEffort 归一化推理强度，仅接受 low/medium/high/max，其余（含留空）返回空串。

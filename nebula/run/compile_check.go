@@ -338,7 +338,7 @@ func checkFuncClosedLines(lines []string, lineNums []int, stack *importStack) {
 }
 
 // assignKeyIssue 判断一行是否为「疑似赋值但键名不符合变量命名规范」，返回告警文案；空串表示不是。
-// 依据 dic.md 变量命名规范：键名只能是中英文/数字/下划线，且长度不超过 32 字节（UTF-8）。
+// 依据词库变量命名规范：键名只能是中英文/数字/下划线，且长度不超过 32 字节（UTF-8）。
 // 这类行既不被识别为赋值也不是函数调用，编译后按原样输出、变量不会被赋值，属于静默失效。
 func assignKeyIssue(line string) string {
 	if marker := headVarMarker(line); marker != "" {
@@ -746,7 +746,7 @@ type unusedAssign struct {
 }
 
 // checkUnusedAssignment 静态检查赋值行：目标变量在整个编译产物中都未被引用时给出警告。
-// 正文行一旦以「名字+半角冒号」开头就会被解析成赋予值（见 dic.md「赋予值」），该行不输出；
+// 正文行一旦以「名字+半角冒号」开头就会被解析成赋予值，该行不输出；
 // 若本意是输出带冒号的文本，这是一种静默失效，提示时一并给出转义冒号的修正写法。
 func checkUnusedAssignment(v *dto.BuildValue, stack *importStack) {
 	used := make(map[string]bool)          // 全产物中被引用过的变量名

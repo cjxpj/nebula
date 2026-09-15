@@ -1,0 +1,5 @@
+=== RUN   TestTmpOverloadRetry
+=== RUN   TestTmpDumpCanvas
+=== RUN   TestTmpDumpCanvas
+=== RUN   TestTmpBisectCanvas
+[01] len= 89 out="<h1>画布（$创建画布$ 得到的对象，方法写作 $画布.方法 参数$）</h1>"

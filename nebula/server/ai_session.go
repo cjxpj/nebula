@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"net/http"
 	"os"
 	"path"
@@ -31,10 +32,12 @@ const (
 	// aiSessionsFile AI 任务会话的持久化文件（程序私有目录）
 	aiSessionsFile = "private/ai/sessions.json"
 
-	// aiSessionKeepMessages 记忆压缩后保留的最近消息条数
+	// aiSessionKeepMessages 记忆压缩后仍以原文送入模型的最近消息条数：
+	// 更早的消息折叠进任务记忆，但原文始终保留在会话中（前端仍完整展示、可回看）
 	aiSessionKeepMessages = 20
-	// aiSessionCompressThreshold 消息条数超过该值时自动触发记忆压缩
-	aiSessionCompressThreshold = 40
+	// aiSessionCompressRatio 上下文压力阈值（占模型上下文长度的比例）：
+	// 每次调用模型前（pre-step）估算本次请求的 token 占用，超过该比例即把较早对话折叠进任务记忆
+	aiSessionCompressRatio = 0.7
 	// aiSessionMemoryMaxRunes 任务记忆的最大字符数（超出截断）
 	aiSessionMemoryMaxRunes = 4000
 	// aiSessionTitleMaxRunes 任务标题最大字符数
@@ -87,9 +90,18 @@ type AISession struct {
 	System      string `json:"system"`
 	Model       string `json:"model"`
 	ContextMode string `json:"context_mode"` // auto | always | never
+	// AgentID 本任务选用的智能体：其工作提示词与内置技能清单在每次对话时动态套用，
+	// 系统提示 / 模型等预设在「选中该智能体」时套用到本任务，之后可在任务设置里单独调整
+	AgentID string `json:"agent_id"`
 	// 任务级工具权限：manual 每次调用都需人工审批 | auto 应用目录内读写与运行词库放行、删除/移动/重命名需审批 | full 全部放行
 	PermissionMode string `json:"permission_mode"`
-	Memory         string `json:"memory"`
+	// 任务级自动继续：AI 因轮数/时间上限收尾时自动发送「继续」接着处理；
+	// 新建任务取全局默认值，之后由任务设置独立控制
+	AutoContinue bool `json:"auto_continue"`
+	// 任务级自动继续次数：连续自动继续的次数上限，0 表示不限制；
+	// nil 表示历史任务未设置过，加载时落为全局默认值
+	AutoContinueMax *int   `json:"auto_continue_max,omitempty"`
+	Memory          string `json:"memory"`
 	// 任务级思考/推理模式：inherit 跟随全局 | on 开启 | off 关闭
 	ReasoningMode string `json:"reasoning_mode"`
 	// 任务级推理强度：low | medium | high，留空跟随全局
@@ -97,8 +109,11 @@ type AISession struct {
 	// 任务级推理模型名：留空跟随全局
 	ReasoningModel string             `json:"reasoning_model"`
 	Messages       []AISessionMessage `json:"messages"`
-	CreatedAt      int64              `json:"created_at"`
-	UpdatedAt      int64              `json:"updated_at"`
+	// CompactedUpTo 已折叠进「任务记忆」的消息条数：前 N 条不再重复送模型（由记忆摘要代表），
+	// 但原文保留在 Messages 中，前端仍可完整回看与搜索
+	CompactedUpTo int   `json:"compacted_up_to,omitempty"`
+	CreatedAt     int64 `json:"created_at"`
+	UpdatedAt     int64 `json:"updated_at"`
 }
 
 // aiSessionStore 会话持久化文件结构。
@@ -186,6 +201,154 @@ func aiClipRunes(s string, max int) string {
 	return string(rs[:max]) + "\n…(内容过长已截断)"
 }
 
+// aiClipRunesHeadTail 头尾保留式截断：超出 max 时保留前 3/4 与后 1/4，中间以省略标记连接。
+// 工具输出常见「开头是结构/声明、结尾是错误或结论」，只留头部会把最有用的报错行丢掉。
+func aiClipRunesHeadTail(s string, max int) string {
+	rs := []rune(s)
+	if len(rs) <= max {
+		return s
+	}
+	head := max * 3 / 4
+	tail := max - head
+	return string(rs[:head]) + "\n…(中间内容过长已省略)\n" + string(rs[len(rs)-tail:])
+}
+
+// ---------- 上下文占用估算 ----------
+
+// aiEstimateTokens 粗略估算文本占用的 token 数（不引入分词依赖，按字符类型折算）：
+// ASCII 按 4 字符 1 token、其余（中文等）按 1 字符 1 token。估算刻意偏大，
+// 只用于触发上下文压缩的判断，不用于计费，宁可早压缩也不要撑爆上游。
+func aiEstimateTokens(s string) int {
+	if s == "" {
+		return 0
+	}
+	ascii, wide := 0, 0
+	for _, r := range s {
+		if r < 128 {
+			ascii++
+		} else {
+			wide++
+		}
+	}
+	return ascii/4 + wide
+}
+
+// aiVisionImageTokens 单张图片按固定开销估算的 token 数（各家差异大，取常见上限量级）。
+const aiVisionImageTokens = 1500
+
+// aiChatMessageTokens 估算单条模型消息占用的 token：
+// 文本按字符折算；多模态消息中的图片各按固定开销计，图片 base64 不计入字符量。
+func aiChatMessageTokens(m aiChatMessage) int {
+	total := 0
+	switch c := m.Content.(type) {
+	case nil:
+	case string:
+		total += aiEstimateTokens(c)
+	case []map[string]any:
+		for _, part := range c {
+			switch part["type"] {
+			case "image_url":
+				total += aiVisionImageTokens
+			default:
+				if t, ok := part["text"].(string); ok {
+					total += aiEstimateTokens(t)
+				}
+			}
+		}
+	default:
+		if b, err := json.Marshal(c); err == nil {
+			total += aiEstimateTokens(string(b))
+		}
+	}
+	for _, tc := range m.ToolCalls {
+		total += aiEstimateTokens(tc.Function.Name) + aiEstimateTokens(tc.Function.Arguments)
+	}
+	return total
+}
+
+// aiMessagesTokens 估算一组模型消息的总 token 占用。
+func aiMessagesTokens(msgs []aiChatMessage) int {
+	total := 0
+	for _, m := range msgs {
+		total += aiChatMessageTokens(m)
+	}
+	return total
+}
+
+// aiSessionContextLimit 返回会话所用模型的上下文输入长度上限（token）：
+// 按模型名在模型列表中查找，未命中时回退全局配置与默认值。
+func aiSessionContextLimit(cfg *dto.AIConfig, model string) int {
+	if cfg == nil {
+		cfg = aiResolveConfig()
+	}
+	if cfg == nil {
+		return dto.DefaultAIContextLength
+	}
+	if m := dto.PickAIModelByName(cfg.Models, model); m != nil && m.ContextLength > 0 {
+		return m.ContextLength
+	}
+	if cfg.ContextLength > 0 {
+		return cfg.ContextLength
+	}
+	return dto.DefaultAIContextLength
+}
+
+// aiSessionOverPressure 判断本次请求是否已超出上下文压力阈值（pre-step 检查入口）。
+func aiSessionOverPressure(cfg *dto.AIConfig, model string, msgs []aiChatMessage) bool {
+	limit := aiSessionContextLimit(cfg, model)
+	if limit <= 0 {
+		return false
+	}
+	return float64(aiMessagesTokens(msgs)) > float64(limit)*aiSessionCompressRatio
+}
+
+// aiSessionCompactedUpTo 返回会话已折叠的消息条数（越界时按消息总条数收口）。
+func aiSessionCompactedUpTo(s *AISession) int {
+	if s == nil {
+		return 0
+	}
+	if s.CompactedUpTo < 0 {
+		return 0
+	}
+	if s.CompactedUpTo > len(s.Messages) {
+		return len(s.Messages)
+	}
+	return s.CompactedUpTo
+}
+
+// aiSessionHistoryMessages 把会话历史投影为模型消息：跳过已折叠进任务记忆的前 upTo 条
+// （这些消息仍完整保留在会话里，只是不再重复送入模型，由任务记忆摘要代表）。
+func aiSessionHistoryMessages(hist []AISessionMessage, upTo int, vision bool) []aiChatMessage {
+	if upTo < 0 {
+		upTo = 0
+	}
+	if upTo > len(hist) {
+		upTo = len(hist)
+	}
+	hist = hist[upTo:]
+	out := make([]aiChatMessage, 0, len(hist))
+	for _, m := range hist {
+		role := m.Role
+		if role != "assistant" {
+			role = "user"
+		}
+		// 用户消息带图时按多模态消息回传（文本 + image_url）；未开启视觉能力则只回灌文字并明确告知看不到图
+		if role == "user" && len(m.Images) > 0 {
+			if vision {
+				if imgs := aiSessionImageDataURIs(m.Images); len(imgs) > 0 {
+					out = append(out, aiVisionUserMessage(m.Content, imgs))
+					continue
+				}
+			} else {
+				out = append(out, aiChatMessage{Role: role, Content: aiUserImagesVisionHint(len(m.Images)) + "\n" + m.Content})
+				continue
+			}
+		}
+		out = append(out, aiChatMessage{Role: role, Content: m.Content})
+	}
+	return out
+}
+
 // aiNormalizeContextMode 归一化上下文附带策略。
 func aiNormalizeContextMode(m string) string {
 	switch strings.TrimSpace(m) {
@@ -206,12 +369,35 @@ func aiNormalizePermissionMode(m string) string {
 	}
 }
 
-// aiGlobalPermissionMode 返回全局默认审批模式（[AI]「审批模式」），用于新建任务与新建智能体未指定时的缺省值。
+// aiGlobalPermissionMode 返回全局默认审批模式（[AI]「审批模式」），用于新建任务未指定时的缺省值。
 func aiGlobalPermissionMode() string {
 	if cfg := dto.ServerConfig.AI; cfg != nil {
 		return dto.NormalizeAIPermissionMode(cfg.ApprovalMode)
 	}
 	return dto.DefaultAIPermissionMode
+}
+
+// aiGlobalAutoContinue 返回全局默认自动继续开关（[AI]「自动继续」），用于新建任务未指定时的缺省值。
+func aiGlobalAutoContinue() bool {
+	if cfg := dto.ServerConfig.AI; cfg != nil {
+		return cfg.AutoContinue
+	}
+	return true
+}
+
+// aiGlobalAutoContinueMax 返回全局默认自动继续次数（[AI]「自动继续次数」，0 表示不限制），
+// 用于新建任务与历史任务未指定时的缺省值。
+func aiGlobalAutoContinueMax() int {
+	if cfg := dto.ServerConfig.AI; cfg != nil {
+		return dto.NormalizeAIAutoContinueMax(cfg.AutoContinueMax)
+	}
+	return dto.DefaultAIAutoContinueMax
+}
+
+// aiAutoContinueMaxPtr 把自动继续次数包装为指针：落盘时用以区分「未设置（跟随全局默认）」与「0（不限制）」。
+func aiAutoContinueMaxPtr(n int) *int {
+	v := dto.NormalizeAIAutoContinueMax(n)
+	return &v
 }
 
 // aiDefaultModelName 返回全局默认模型名（[AI]「当前模型」解析出的模型名）。
@@ -240,12 +426,32 @@ func aiNormalizeSession(s *AISession) {
 		s.Title = "新任务"
 	}
 	s.ContextMode = aiNormalizeContextMode(s.ContextMode)
+	// 任务必须归属于某个智能体，不存在「未选用」的空态：历史数据里没有归属的空值一律落为默认
+	// 智能体，读到的任务因此始终带一个明确归属（默认智能体的有效性与删除后的补救由
+	// aiEnsureSessionAgents 负责，这里不做存在性校验以免打乱锁顺序）
+	s.AgentID = strings.TrimSpace(s.AgentID)
+	if s.AgentID == "" {
+		s.AgentID = aiDefaultAgentID()
+	}
 	s.PermissionMode = aiNormalizePermissionMode(s.PermissionMode)
+	// 自动继续次数：历史任务没有该字段（nil）时落为全局默认值，避免旧任务被当成「不限制」；
+	// 已设置过的任务（含 0 = 不限制）按自身值保留
+	if s.AutoContinueMax == nil {
+		s.AutoContinueMax = aiAutoContinueMaxPtr(aiGlobalAutoContinueMax())
+	} else {
+		s.AutoContinueMax = aiAutoContinueMaxPtr(*s.AutoContinueMax)
+	}
 	s.ReasoningMode = aiNormalizeReasoningMode(s.ReasoningMode)
 	s.ReasoningEffort = dto.NormalizeReasoningEffort(s.ReasoningEffort)
 	s.ReasoningModel = strings.TrimSpace(s.ReasoningModel)
 	if s.Messages == nil {
 		s.Messages = []AISessionMessage{}
+	}
+	if s.CompactedUpTo < 0 {
+		s.CompactedUpTo = 0
+	}
+	if s.CompactedUpTo > len(s.Messages) {
+		s.CompactedUpTo = len(s.Messages)
 	}
 	interrupted := 0
 	for i := range s.Messages {
@@ -366,22 +572,54 @@ type aiSessionMetaJSON struct {
 	DicPath      string `json:"dic_path"`
 	Model        string `json:"model"`
 	ContextMode  string `json:"context_mode"`
+	AgentID      string `json:"agent_id"`
 	MessageCount int    `json:"message_count"`
 	HasMemory    bool   `json:"has_memory"`
-	UpdatedAt    int64  `json:"updated_at"`
+	// CompactedUpTo 已折叠进任务记忆的消息条数（>0 表示发生过上下文压缩）
+	CompactedUpTo int   `json:"compacted_up_to"`
+	UpdatedAt     int64 `json:"updated_at"`
 }
 
 // aiSessionMetaOf 由会话生成列表元信息。
 func aiSessionMetaOf(s *AISession) aiSessionMetaJSON {
 	return aiSessionMetaJSON{
-		ID:           s.ID,
-		Title:        s.Title,
-		DicPath:      s.DicPath,
-		Model:        s.Model,
-		ContextMode:  s.ContextMode,
-		MessageCount: len(s.Messages),
-		HasMemory:    strings.TrimSpace(s.Memory) != "",
-		UpdatedAt:    s.UpdatedAt,
+		ID:            s.ID,
+		Title:         s.Title,
+		DicPath:       s.DicPath,
+		Model:         s.Model,
+		ContextMode:   s.ContextMode,
+		AgentID:       s.AgentID,
+		MessageCount:  len(s.Messages),
+		HasMemory:     strings.TrimSpace(s.Memory) != "",
+		CompactedUpTo: aiSessionCompactedUpTo(s),
+		UpdatedAt:     s.UpdatedAt,
+	}
+}
+
+// aiSessionUsageJSON 估算该会话下一次请求的上下文占用，供前端展示用量提示。
+// 口径与实际请求一致：系统提示只按任务记忆计（固定的系统提示与工具定义由服务端另行拼接，此处不计），
+// 历史按「未压缩区间」计——已折叠的部分由任务记忆代表。
+func aiSessionUsageJSON(s *AISession, cfg *dto.AIConfig, model string) map[string]any {
+	if s == nil {
+		return nil
+	}
+	upTo := aiSessionCompactedUpTo(s)
+	used := aiEstimateTokens(strings.TrimSpace(s.Memory))
+	for _, m := range s.Messages[upTo:] {
+		used += aiEstimateTokens(m.Content) + aiVisionImageTokens*len(m.Images)
+	}
+	limit := aiSessionContextLimit(cfg, model)
+	ratio := 0.0
+	if limit > 0 {
+		ratio = float64(used) / float64(limit)
+	}
+	return map[string]any{
+		"used_tokens":      used,
+		"context_length":   limit,
+		"ratio":            math.Round(ratio*10000) / 10000,
+		"compacted_up_to":  upTo,
+		"message_count":    len(s.Messages),
+		"pending_messages": len(s.Messages) - upTo,
 	}
 }
 
@@ -542,6 +780,9 @@ func aiClassifyStreamInterrupt(err error) string {
 		return "超时"
 	case strings.Contains(msg, "轮数"):
 		return "工具轮数超限"
+	case aiRetryableByNetError(err):
+		// 自动重试后仍失败的网络层故障（连不上、连接被重置、读超时等），与限流区分开便于排查
+		return "网络故障"
 	case aiRetryable(err):
 		return "限流/过载"
 	case strings.Contains(msg, "未返回内容"):
@@ -623,19 +864,30 @@ func aiSummarizeMemory(cfg *dto.AIConfig, model, memory string, old []AISessionM
 	})
 }
 
-// compressAISessionByID 将指定会话较早的消息压缩为任务记忆，仅保留最近若干条。
+// compressAISessionByID 把指定会话中较早的对话折叠进任务记忆，仅推进「已压缩边界」。
+//
+// 压缩不删除任何原始消息：边界之前的消息仍完整保留在会话中（前端照常展示与回看），
+// 只是不再重复送入模型上下文——它们在模型侧由任务记忆摘要代表（见 aiSessionHistoryMessages）。
+// 这样「模型当前看到什么」与「会话持久记录了哪些事实」彼此分离，压缩不会造成信息不可逆丢失。
+//
 // AI 调用在锁外进行，避免长时间占用会话锁；应用结果前校验会话未被并发修改。
 func compressAISessionByID(id string) (bool, error) {
 	aiSessionsMu.Lock()
 	ensureAISessionsLoadedLocked()
 	sess := aiSessions[id]
-	if sess == nil || len(sess.Messages) <= aiSessionKeepMessages {
+	if sess == nil {
 		aiSessionsMu.Unlock()
 		return false, nil
 	}
 	total := len(sess.Messages)
+	// 只折叠「最近 aiSessionKeepMessages 条」之前的部分，且至少要有 1 条新消息可折叠
 	cut := total - aiSessionKeepMessages
-	old := append([]AISessionMessage(nil), sess.Messages[:cut]...)
+	prev := aiSessionCompactedUpTo(sess)
+	if cut <= prev {
+		aiSessionsMu.Unlock()
+		return false, nil
+	}
+	old := append([]AISessionMessage(nil), sess.Messages[prev:cut]...)
 	memory := sess.Memory
 	model := sess.Model
 	aiSessionsMu.Unlock()
@@ -656,11 +908,12 @@ func compressAISessionByID(id string) (bool, error) {
 	aiSessionsMu.Lock()
 	defer aiSessionsMu.Unlock()
 	sess = aiSessions[id]
-	if sess == nil || len(sess.Messages) != total {
+	if sess == nil || len(sess.Messages) != total || aiSessionCompactedUpTo(sess) != prev {
 		return false, nil // 会话已被并发修改，放弃本次压缩结果
 	}
+	// 折叠范围 = 上次边界 到 本次边界：原文全部保留，只更新摘要与边界
 	sess.Memory = aiClipRunes(summary, aiSessionMemoryMaxRunes)
-	sess.Messages = append([]AISessionMessage(nil), sess.Messages[cut:]...)
+	sess.CompactedUpTo = cut
 	sess.UpdatedAt = time.Now().Unix()
 	saveAISessionsLocked()
 	return true, nil
@@ -844,6 +1097,8 @@ func aiSessionHandle(w http.ResponseWriter, h *HttpOpUiData) {
 		return
 
 	case "list_ai_sessions":
+		// 列表与会话详情都先补齐智能体归属，历史任务不会显示成「未选用智能体」
+		aiEnsureSessionAgents()
 		aiSessionsMu.Lock()
 		ensureAISessionsLoadedLocked()
 		list := make([]aiSessionMetaJSON, 0, len(aiSessions))
@@ -863,6 +1118,7 @@ func aiSessionHandle(w http.ResponseWriter, h *HttpOpUiData) {
 			http.Error(w, `{"status":"error","error":"invalid json"}`, http.StatusBadRequest)
 			return
 		}
+		aiEnsureSessionAgents()
 		aiSessionsMu.Lock()
 		ensureAISessionsLoadedLocked()
 		sess := aiSessions[j.ID]
@@ -878,7 +1134,11 @@ func aiSessionHandle(w http.ResponseWriter, h *HttpOpUiData) {
 			aiWriteError(w, "任务不存在")
 			return
 		}
-		aiWriteJSON(w, map[string]any{"status": "ok", "session": snapshot})
+		aiWriteJSON(w, map[string]any{
+			"status":  "ok",
+			"session": snapshot,
+			"usage":   aiSessionUsageJSON(snapshot, aiResolveConfig(), snapshot.Model),
+		})
 		return
 
 	case "create_ai_session":
@@ -887,6 +1147,9 @@ func aiSessionHandle(w http.ResponseWriter, h *HttpOpUiData) {
 			DicPath string `json:"dic_path"`
 			System  string `json:"system"`
 			Model   string `json:"model"`
+			// AgentID 新建任务选用的智能体：缺省（未传或已不存在）时落为出厂默认智能体，
+			// 任务的智能体归属因此始终是一个有效值，不存在空值
+			AgentID string `json:"agent_id"`
 		}
 		_ = json.Unmarshal(h.Data, &j)
 		// 新建任务即写入具体模型：未指定时直接落为全局默认模型名，不再保留空值表示「跟随服务端默认」
@@ -896,17 +1159,27 @@ func aiSessionHandle(w http.ResponseWriter, h *HttpOpUiData) {
 		}
 		now := time.Now().Unix()
 		sess := &AISession{
-			ID:             newAISessionID(),
-			Title:          aiSessionTitle(j.Title, ""),
-			DicPath:        strings.TrimSpace(j.DicPath),
-			System:         strings.TrimSpace(j.System),
-			Model:          model,
-			ContextMode:    "auto",
-			PermissionMode: aiGlobalPermissionMode(),
-			ReasoningMode:  "inherit",
-			Messages:       []AISessionMessage{},
-			CreatedAt:      now,
-			UpdatedAt:      now,
+			ID:              newAISessionID(),
+			Title:           aiSessionTitle(j.Title, ""),
+			DicPath:         strings.TrimSpace(j.DicPath),
+			System:          strings.TrimSpace(j.System),
+			Model:           model,
+			ContextMode:     "auto",
+			PermissionMode:  aiGlobalPermissionMode(),
+			AutoContinue:    aiGlobalAutoContinue(),
+			AutoContinueMax: aiAutoContinueMaxPtr(aiGlobalAutoContinueMax()),
+			ReasoningMode:   "inherit",
+			Messages:        []AISessionMessage{},
+			CreatedAt:       now,
+			UpdatedAt:       now,
+		}
+		// 任务始终有明确的智能体归属：显式指定时套用其预设（与「在任务里切换智能体」一致）；
+		// 未指定或指定的智能体已不存在时，落为默认智能体，避免任务显示成「未选用智能体」
+		agentID := strings.TrimSpace(j.AgentID)
+		agent := aiAgentByID(agentID)
+		sess.AgentID = agent.ID
+		if strings.EqualFold(agent.ID, agentID) {
+			aiApplyAgentPreset(sess, agent)
 		}
 		aiSessionsMu.Lock()
 		ensureAISessionsLoadedLocked()
@@ -926,6 +1199,8 @@ func aiSessionHandle(w http.ResponseWriter, h *HttpOpUiData) {
 			ContextMode     *string `json:"context_mode"`
 			Memory          *string `json:"memory"`
 			PermissionMode  *string `json:"permission_mode"`
+			AutoContinue    *bool   `json:"auto_continue"`
+			AutoContinueMax *int    `json:"auto_continue_max"`
 			ReasoningMode   *string `json:"reasoning_mode"`
 			ReasoningEffort *string `json:"reasoning_effort"`
 			ReasoningModel  *string `json:"reasoning_model"`
@@ -970,8 +1245,14 @@ func aiSessionHandle(w http.ResponseWriter, h *HttpOpUiData) {
 		}
 		if j.PermissionMode != nil {
 			sess.PermissionMode = aiNormalizePermissionMode(*j.PermissionMode)
-			// 审批模式同步为全局默认（写到 [AI]「审批模式」），新建任务与新建智能体默认使用它
+			// 审批模式同步为全局默认（写到 [AI]「审批模式」），新建任务默认使用它
 			syncPermission = sess.PermissionMode
+		}
+		if j.AutoContinue != nil {
+			sess.AutoContinue = *j.AutoContinue
+		}
+		if j.AutoContinueMax != nil {
+			sess.AutoContinueMax = aiAutoContinueMaxPtr(*j.AutoContinueMax)
 		}
 		if j.ReasoningMode != nil {
 			sess.ReasoningMode = aiNormalizeReasoningMode(*j.ReasoningMode)
@@ -1032,6 +1313,7 @@ func aiSessionHandle(w http.ResponseWriter, h *HttpOpUiData) {
 		if sess := aiSessions[j.ID]; sess != nil {
 			sess.Messages = []AISessionMessage{}
 			sess.Memory = ""
+			sess.CompactedUpTo = 0
 			sess.UpdatedAt = time.Now().Unix()
 			saveAISessionsLocked()
 		}
@@ -1135,6 +1417,11 @@ func aiSessionHandle(w http.ResponseWriter, h *HttpOpUiData) {
 		}
 		if keep < len(sess.Messages) {
 			sess.Messages = append([]AISessionMessage(nil), sess.Messages[:keep]...)
+			// 截断到已压缩边界之内（编辑/重试很早期的消息）：边界之外的消息已不存在，
+			// 若继续按原边界投影，剩下的消息会被整体视为「已折叠」而完全不进模型上下文，故重置边界；任务记忆仍保留
+			if sess.CompactedUpTo > keep {
+				sess.CompactedUpTo = 0
+			}
 		}
 		sess.UpdatedAt = time.Now().Unix()
 		saveAISessionsLocked()
@@ -1143,7 +1430,7 @@ func aiSessionHandle(w http.ResponseWriter, h *HttpOpUiData) {
 		return
 
 	case "compress_ai_session":
-		// 手动触发记忆压缩
+		// 手动触发记忆压缩：把较早对话折叠进任务记忆（原文保留，仅不再重复送模型）
 		var j struct {
 			ID string `json:"id"`
 		}
@@ -1160,11 +1447,19 @@ func aiSessionHandle(w http.ResponseWriter, h *HttpOpUiData) {
 		ensureAISessionsLoadedLocked()
 		sess := aiSessions[j.ID]
 		var memory string
+		upTo, count := 0, 0
 		if sess != nil {
 			memory = sess.Memory
+			upTo, count = aiSessionCompactedUpTo(sess), len(sess.Messages)
 		}
 		aiSessionsMu.Unlock()
-		aiWriteJSON(w, map[string]any{"status": "ok", "compressed": compressed, "memory": memory})
+		aiWriteJSON(w, map[string]any{
+			"status":          "ok",
+			"compressed":      compressed,
+			"memory":          memory,
+			"compacted_up_to": upTo,
+			"message_count":   count,
+		})
 		return
 
 	case "export_ai_sessions":
@@ -1287,9 +1582,6 @@ func aiChatStateless(w http.ResponseWriter, aiCfg *dto.AIConfig, messages []aiCh
 	}
 	system = strings.TrimSpace(system)
 	if system == "" {
-		system = aiCfg.SystemPrompt
-	}
-	if system == "" {
 		system = aiDicSystemPrompt
 	}
 	if f := aiBuiltinFuncsTextCached(); f != "" {
@@ -1318,7 +1610,7 @@ func aiChatWithSession(w http.ResponseWriter, aiCfg *dto.AIConfig, sessionID, me
 	if sess == nil {
 		// 前端通常已先行创建；此处兜底新建，保证不丢消息
 		now := time.Now().Unix()
-		sess = &AISession{ID: sessionID, ContextMode: "auto", Model: aiDefaultModelName(), PermissionMode: aiGlobalPermissionMode(), Messages: []AISessionMessage{}, CreatedAt: now, UpdatedAt: now}
+		sess = &AISession{ID: sessionID, ContextMode: "auto", Model: aiDefaultModelName(), PermissionMode: aiGlobalPermissionMode(), AutoContinue: aiGlobalAutoContinue(), AutoContinueMax: aiAutoContinueMaxPtr(aiGlobalAutoContinueMax()), Messages: []AISessionMessage{}, CreatedAt: now, UpdatedAt: now}
 		aiSessions[sess.ID] = sess
 	}
 	if t := strings.TrimSpace(message); t != "" || len(images) > 0 {
@@ -1337,6 +1629,7 @@ func aiChatWithSession(w http.ResponseWriter, aiCfg *dto.AIConfig, sessionID, me
 	}
 	sess.UpdatedAt = time.Now().Unix()
 	history := append([]AISessionMessage(nil), sess.Messages...)
+	compactedUpTo := aiSessionCompactedUpTo(sess)
 	memory := sess.Memory
 	baseSystem := strings.TrimSpace(sess.System)
 	sessModel := sess.Model
@@ -1344,8 +1637,13 @@ func aiChatWithSession(w http.ResponseWriter, aiCfg *dto.AIConfig, sessionID, me
 	reasoningEffort := sess.ReasoningEffort
 	reasoningModel := sess.ReasoningModel
 	permissionMode := aiNormalizePermissionMode(sess.PermissionMode)
+	sessionAgentID := sess.AgentID
 	saveAISessionsLocked()
 	aiSessionsMu.Unlock()
+
+	// 智能体的工作提示词与内置技能清单不在任务里存副本，运行时按任务当前选用的智能体动态套用，
+	// 因此编辑智能体后对其任务立即生效。锁顺序要求先释放 aiSessionsMu 再查 aiAgentsMu。
+	agent := aiAgentByID(sessionAgentID)
 
 	if len(history) == 0 {
 		aiWriteError(w, "消息不能为空")
@@ -1359,32 +1657,9 @@ func aiChatWithSession(w http.ResponseWriter, aiCfg *dto.AIConfig, sessionID, me
 	if baseSystem == "" {
 		baseSystem = strings.TrimSpace(system)
 	}
-	if baseSystem == "" {
-		baseSystem = aiCfg.SystemPrompt
-	}
+	baseSystem = strings.TrimSpace(baseSystem)
 	if baseSystem == "" {
 		baseSystem = aiDicSystemPrompt
-	}
-	if m := strings.TrimSpace(memory); m != "" {
-		baseSystem += "\n\n【任务记忆（较早对话的摘要，供持续参考）】\n" + m
-	}
-	// 全局项目记忆：用户手工维护、所有任务共享，与任务自身记忆相互独立
-	if pm, _ := aiProjectMemory(); strings.TrimSpace(pm) != "" {
-		baseSystem += "\n\n【项目记忆（全局，所有任务共享，供持续参考）】\n" + strings.TrimSpace(pm)
-	}
-	// 技能清单：只给名称 + 描述，模型按需调用 read_skill 读取技能全文
-	if sk := aiSkillsPromptText(); sk != "" {
-		baseSystem += "\n\n" + sk
-	}
-	if f := aiBuiltinFuncsTextCached(); f != "" {
-		baseSystem += "\n\n" + f
-	}
-	// 词库调试 AI 具备文件/词库工具能力：补充工具使用与「改盘后同步编辑器」的约定
-	baseSystem += aiDicToolsPrompt
-	if dp := strings.TrimSpace(sess.DicPath); dp != "" {
-		baseSystem += "\n\n当前任务关联的词库文件：" + dp +
-			"\n（这是用户此刻在编辑器中打开的 .n 文件，是你默认的操作对象：需要阅读或修改词库时优先直接 read_dic / save_dic 这个文件，" +
-			"不要先用 list_files / search_files 满目录查找或读取无关文件；仅当用户明确指向其他文件时才切换。）"
 	}
 
 	if sessModel == "" {
@@ -1397,30 +1672,72 @@ func aiChatWithSession(w http.ResponseWriter, aiCfg *dto.AIConfig, sessionID, me
 		sessModel = reasonModel
 	}
 
-	msgs := make([]aiChatMessage, 0, len(history)+2)
-	msgs = append(msgs, aiChatMessage{Role: "system", Content: baseSystem})
-	// 当前词库实时信息由前端「按需附带」，仅本次请求生效，不写入历史
-	if ctx := strings.TrimSpace(context); ctx != "" {
-		msgs = append(msgs, aiChatMessage{Role: "system", Content: "以下是当前词库的实时信息，供本次回答参考：\n\n" + ctx})
+	// assemble 组装本次请求的消息：系统段（系统提示 + 任务记忆 + 项目记忆 + 智能体提示 +
+	// 技能清单 + 内置函数 + 词库上下文）+ 前端按需附带的词库实时信息 + 历史投影。
+	// 历史投影跳过「已折叠进任务记忆」的前 upTo 条：这些消息不再重复送模型，由任务记忆代表。
+	assemble := func(memText string, hist []AISessionMessage, upTo int) []aiChatMessage {
+		sys := baseSystem
+		if m := strings.TrimSpace(memText); m != "" {
+			sys += "\n\n【任务记忆（较早对话的摘要，供持续参考）】\n" + m
+		}
+		// 全局项目记忆：用户手工维护、所有任务共享，与任务自身记忆相互独立
+		if pm, _ := aiProjectMemory(); strings.TrimSpace(pm) != "" {
+			sys += "\n\n【项目记忆（全局，所有任务共享，供持续参考）】\n" + strings.TrimSpace(pm)
+		}
+		// 智能体工作提示词：声明该智能体负责的词库场景与工作方式（工具能力、语法结构这类内容已拆成内置技能，按需 read_skill 读取）
+		if p := strings.TrimSpace(agent.Prompt); p != "" {
+			sys += "\n\n" + p
+		}
+		// 技能清单：只给名称 + 描述（含该智能体声明的内置技能），模型按需调用 read_skill 读取技能全文
+		if sk := aiSkillsPromptText(agent.Skills); sk != "" {
+			sys += "\n\n" + sk
+		}
+		if f := aiBuiltinFuncsTextCached(); f != "" {
+			sys += "\n\n" + f
+		}
+		if dp := strings.TrimSpace(sess.DicPath); dp != "" {
+			sys += "\n\n当前任务关联的词库文件：" + dp +
+				"\n（这是用户此刻在编辑器中打开的文件，是你默认的操作对象：需要阅读或修改词库时优先直接 read_dic / save_dic 这个文件，" +
+				"不要先用 list_files / search_files 满目录查找或读取无关文件；仅当用户明确指向其他文件时才切换。" +
+				"但它不一定是本智能体负责的词库类型（本智能体职责见上方工作提示词）：若明显不符，例如本智能体负责网页词库（.wn）而该文件是机器人 .n，" +
+				"不要顺着文件类型按错误场景写代码，应先向用户说明这处冲突并确认要操作的目标文件。）"
+		}
+		out := make([]aiChatMessage, 0, len(hist)-upTo+2)
+		out = append(out, aiChatMessage{Role: "system", Content: sys})
+		// 当前词库实时信息由前端「按需附带」，仅本次请求生效，不写入历史
+		if ctx := strings.TrimSpace(context); ctx != "" {
+			out = append(out, aiChatMessage{Role: "system", Content: "以下是当前词库的实时信息，供本次回答参考：\n\n" + ctx})
+		}
+		return append(out, aiSessionHistoryMessages(hist, upTo, aiCfg.Vision)...)
 	}
-	for _, m := range history {
-		role := m.Role
-		if role != "assistant" {
-			role = "user"
-		}
-		// 用户消息带图时按多模态消息回传（文本 + image_url）；未开启视觉能力则只回灌文字并明确告知看不到图
-		if role == "user" && len(m.Images) > 0 {
-			if aiCfg.Vision {
-				if imgs := aiSessionImageDataURIs(m.Images); len(imgs) > 0 {
-					msgs = append(msgs, aiVisionUserMessage(m.Content, imgs))
-					continue
-				}
-			} else {
-				msgs = append(msgs, aiChatMessage{Role: role, Content: aiUserImagesVisionHint(len(m.Images)) + "\n" + m.Content})
-				continue
+
+	msgs := assemble(memory, history, compactedUpTo)
+
+	// pre-step 上下文压力检查：估算本次请求的 token 占用，超出模型上下文的一定比例时先把较早对话
+	// 折叠进任务记忆，再用「记忆 + 未压缩区间」重建请求。压缩只推进边界、不删除原文（见 compressAISessionByID），
+	// 因此这一步不会造成历史不可逆丢失，失败时按原上下文继续即可。
+	if aiSessionOverPressure(aiCfg, sessModel, msgs) {
+		if ok, cerr := compressAISessionByID(sessionID); cerr != nil {
+			debugLog.Warnf("[AI 会话] 上下文超出压力阈值但压缩失败，按原上下文继续: session_id=%s err=%v", sessionID, cerr)
+		} else if ok {
+			aiSessionsMu.Lock()
+			ensureAISessionsLoadedLocked()
+			if s := aiSessions[sessionID]; s != nil {
+				compactedUpTo = aiSessionCompactedUpTo(s)
+				history = append([]AISessionMessage(nil), s.Messages...)
+				memory = s.Memory
 			}
+			aiSessionsMu.Unlock()
+			msgs = assemble(memory, history, compactedUpTo)
+			debugLog.Infof("[AI 会话] 上下文超出压力阈值，已将较早对话折叠进任务记忆: session_id=%s compacted_up_to=%d 估算占用=%d",
+				sessionID, compactedUpTo, aiMessagesTokens(msgs))
+			// 通知前端刷新压缩标记与用量提示
+			aiStreamNotify(streamID, "ai_stream_compacted", map[string]any{
+				"session_id":      sessionID,
+				"compacted_up_to": compactedUpTo,
+				"message_count":   len(history),
+			})
 		}
-		msgs = append(msgs, aiChatMessage{Role: role, Content: m.Content})
 	}
 
 	if streamID != "" {
@@ -1458,7 +1775,6 @@ func aiChatWithSession(w http.ResponseWriter, aiCfg *dto.AIConfig, sessionID, me
 	}
 	snapshot := *sess
 	snapshot.Messages = append([]AISessionMessage(nil), sess.Messages...)
-	needCompress := len(sess.Messages) > aiSessionCompressThreshold
 	aiSessionsMu.Unlock()
 
 	aiWriteJSON(w, map[string]any{
@@ -1469,9 +1785,10 @@ func aiChatWithSession(w http.ResponseWriter, aiCfg *dto.AIConfig, sessionID, me
 		"reasoning":  reasoning,
 		"session_id": snapshot.ID,
 		"session":    &snapshot,
+		"usage":      aiSessionUsageJSON(&snapshot, aiCfg, snapshot.Model),
 	})
 
-	// 用户主动终止：不再推送收尾事件（前端已按终止态收尾），也无需压缩历史
+	// 用户主动终止：不再推送收尾事件（前端已按终止态收尾）
 	if terminated {
 		return
 	}
@@ -1482,8 +1799,102 @@ func aiChatWithSession(w http.ResponseWriter, aiCfg *dto.AIConfig, sessionID, me
 		"reasoning": reasoning,
 	})
 
-	// 消息过多时异步压缩，避免阻塞本次对话响应
-	if needCompress {
-		go func(id string) { _, _ = compressAISessionByID(id) }(snapshot.ID)
+	// 收尾提示命中「继续」时由后端接续下一轮：任务不再依赖页面/连接存活，关闭页面也会继续跑
+	aiMaybeAutoContinue(aiCfg, sessionID, streamID, content)
+}
+
+// ---------- 后端自动继续：让任务脱离页面与连接生命周期持续运行 ----------
+//
+// 以往「收尾提示 → 自动发送继续」由前端在生成结束后判断并触发，页面关闭或切走后即失效。
+// 这里把同一判定搬进后端：一轮生成成功收尾后，若结果命中「继续」提示、任务开启了自动继续
+// 且未达次数上限，就由后端自行接续下一轮；前端只负责展示（接管新流的推送即可）。
+
+var (
+	aiAutoContinueMu     sync.Mutex
+	aiAutoContinueCounts = map[string]int{}
+)
+
+// aiSessionContinueHint 判断一轮生成结果是否属于「达到轮数/时间上限、回复继续接着处理」的收尾提示，
+// 判定口径与前端 aiHasContinueHint 保持一致。
+func aiSessionContinueHint(content string) bool {
+	return strings.Contains(content, "回复「继续」") || strings.Contains(content, "已达到轮数/时间上限")
+}
+
+// aiAutoContinueBump 递增并返回该任务连续自动继续的次数。
+func aiAutoContinueBump(sessionID string) int {
+	aiAutoContinueMu.Lock()
+	defer aiAutoContinueMu.Unlock()
+	aiAutoContinueCounts[sessionID]++
+	return aiAutoContinueCounts[sessionID]
+}
+
+// aiAutoContinueReset 清零该任务的连续自动继续次数：本轮不再需要继续，或任务关闭了自动继续。
+func aiAutoContinueReset(sessionID string) {
+	aiAutoContinueMu.Lock()
+	delete(aiAutoContinueCounts, sessionID)
+	aiAutoContinueMu.Unlock()
+}
+
+// aiMaybeAutoContinue 一轮生成收尾后按需接续下一轮。streamID 为刚结束的那一轮，仅用于日志与推送。
+func aiMaybeAutoContinue(aiCfg *dto.AIConfig, sessionID, streamID, content string) {
+	if sessionID == "" {
+		return
 	}
+	if !aiSessionContinueHint(content) {
+		aiAutoContinueReset(sessionID)
+		return
+	}
+
+	aiSessionsMu.Lock()
+	ensureAISessionsLoadedLocked()
+	sess := aiSessions[sessionID]
+	enabled := aiGlobalAutoContinue()
+	maxContinues := aiGlobalAutoContinueMax()
+	if sess != nil {
+		enabled = sess.AutoContinue
+		if sess.AutoContinueMax != nil {
+			maxContinues = dto.NormalizeAIAutoContinueMax(*sess.AutoContinueMax)
+		}
+	}
+	aiSessionsMu.Unlock()
+
+	if !enabled {
+		aiAutoContinueReset(sessionID)
+		return
+	}
+	n := aiAutoContinueBump(sessionID)
+	if maxContinues > 0 && n > maxContinues {
+		debugLog.Warnf("[AI 会话] 连续自动继续已达上限，暂停续跑: session_id=%s max=%d", sessionID, maxContinues)
+		// 前端据此提示用户「可手动点击继续」，故不依赖某一轮流的归属匹配
+		aiStreamNotify(streamID, "ai_stream_auto_continue_paused", map[string]any{
+			"session_id": sessionID,
+			"max":        maxContinues,
+		})
+		return
+	}
+
+	nextStreamID := fmt.Sprintf("aiac%d", time.Now().UnixNano())
+	debugLog.Infof("[AI 会话] 后台自动继续第 %d 轮: session_id=%s", n, sessionID)
+	// 独立 goroutine 发起：既不阻塞本轮响应，也不再依赖任何页面/连接是否存活
+	go func() {
+		defer func() {
+			if r := recover(); r != nil {
+				debugLog.Errorf("[AI 会话] 自动继续异常: session_id=%s err=%v", sessionID, r)
+			}
+		}()
+		// 等待期间用户可能已手动发话：末尾不再是刚收尾的那条回复时放弃续跑，避免两轮并发生成
+		aiSessionsMu.Lock()
+		ensureAISessionsLoadedLocked()
+		ready := false
+		if s := aiSessions[sessionID]; s != nil && len(s.Messages) > 0 {
+			last := s.Messages[len(s.Messages)-1]
+			ready = last.Role == "assistant" && !last.Draft
+		}
+		aiSessionsMu.Unlock()
+		if !ready {
+			debugLog.Infof("[AI 会话] 自动继续取消：任务已有新的用户消息: session_id=%s", sessionID)
+			return
+		}
+		aiChatWithSession(&wsResponseWriter{header: make(http.Header)}, aiCfg, sessionID, "继续", nil, "", "", "", "", "", nextStreamID)
+	}()
 }
