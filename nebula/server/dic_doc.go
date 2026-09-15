@@ -351,7 +351,9 @@ func dicDocIndexText() string {
 	for i := range list {
 		if list[i].Group != group {
 			group = list[i].Group
-			b.WriteString("\n【" + group + "】\n")
+			b.WriteString("\n【")
+			b.WriteString(group)
+			b.WriteString("】\n")
 		}
 		b.WriteString(fmt.Sprintf("- %s（%s，%d 字）\n", list[i].Title, list[i].Path, list[i].Chars))
 	}
