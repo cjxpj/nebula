@@ -184,7 +184,7 @@ func aiToolDefinitions() []map[string]any {
 				"trigger": str("触发词，默认 Main"),
 				"timeout": num("运行超时秒数，默认 15，最大 60"),
 			}, "path"),
-		aiTool("run_web_dic", "运行网页词库 .wn（本地模拟执行）：<?n ... ?> 内联块与 <script type=\"nebula\"> 脚本块自上而下执行并完成模板渲染，返回最终 HTML 与执行块变量检查、模板键核对结果，用于验证修改效果。.wn 没有触发词，不要传 trigger。",
+		aiTool("run_web_dic", "运行网页词库 .wn（本地模拟执行）：先执行页面里全部 <?n ... ?> 内联块、再执行 <script type=\"nebula\"> 脚本块，最后完成模板渲染，返回最终 HTML 与执行块变量检查、模板键核对结果，用于验证修改效果。.wn 没有触发词，不要传 trigger。",
 			map[string]any{
 				"path": str("网页词库路径（相对应用目录，.wn 结尾）"),
 			}, "path"),
@@ -1364,7 +1364,7 @@ func aiToolRunDic(argsJSON, streamID string, vision bool) (string, string, []str
 }
 
 // aiToolRunWebDic 本地运行网页词库（.wn）：执行块（<?n ... ?> 内联块 / <script type="nebula"> 脚本块）
-// 自上而下执行并完成模板渲染，返回最终 HTML（渲染后的整页内容），运行结果同步推送到前端「运行结果」面板。
+// 先执行页面里全部 <?n ... ?> 内联块、再执行全部 <script type="nebula"> 脚本块，最后完成模板渲染，返回最终 HTML（渲染后的整页内容），运行结果同步推送到前端「运行结果」面板。
 // .wn 没有触发词概念，也不需要编译，故不做编译诊断与触发词分支。
 func aiToolRunWebDic(argsJSON, streamID string) (string, string, []string) {
 	var a struct {

@@ -7536,7 +7536,7 @@ func opuiHandleApi(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, `{"status":"error","error":"词库路径不合法"}`, http.StatusBadRequest)
 			return
 		}
-		// 网页词库（.wn）：执行块（<?n ... ?> 内联块 / <script type="nebula"> 脚本块）自上而下执行后做模板渲染，
+		// 网页词库（.wn）：先执行页面里全部 <?n ... ?> 内联块、再执行 <script type="nebula"> 脚本块后做模板渲染，
 		// 没有触发词与编译诊断，走独立的执行分支，返回渲染后的 HTML 供前端展示，并附带静态检查诊断
 		if checkWebDicPath(j.Path) {
 			// 与 .n 运行一致：运行期间启用删除操作人工确认，脚本删除文件时弹窗等待用户放行
