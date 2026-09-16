@@ -1,0 +1,82 @@
+=== RUN   TestTmpBuiltinPromptRefresh
+=== RUN   TestTmpRawSearch
+    zz_tmp_rawsearch_test.go:11: === [文件读文本] -> 0 hits
+    zz_tmp_rawsearch_test.go:11: === [画布] -> 5 hits
+    zz_tmp_rawsearch_test.go:18: --- [docs/0-词库语法/04-调用内置函数与对象方法.md] heading="调用内置函数与对象方法" title="调用内置函数与对象方法" func=true runes=609
+=== RUN   TestTmpRawSearch
+    zz_tmp_rawsearch_test.go:11: === [文件读文本] -> 0 hits
+    zz_tmp_rawsearch_test.go:11: === [画布] -> 5 hits
+    zz_tmp_rawsearch_test.go:18: --- [docs/0-词库语法/04-调用内置函数与对象方法.md] heading="调用内置函数与对象方法" title="调用内置函数与对象方法" func=true runes=609
+        # 调用内置函数与对象方法
+=== RUN   TestTmpRawSearch
+    zz_tmp_rawsearch_test.go:11: === [文件读文本] -> 0 hits
+    zz_tmp_rawsearch_test.go:11: === [画布] -> 5 hits
+    zz_tmp_rawsearch_test.go:18: --- [docs/0-词库语法/04-调用内置函数与对象方法.md] heading="调用内置函数与对象方法" title="调用内置函数与对象方法" func=true runes=609
+        # 调用内置函数与对象方法
+=== RUN   TestTmpRawSearch
+    zz_tmp_rawsearch_test.go:12: === [读文件] -> 4 hits
+    zz_tmp_rawsearch_test.go:19: --- [docs/1-内置函数/04-文件操作.md] heading="读取数据" func=true runes=328 head=## 读取数据⏎⏎```⏎$读文件 database/a.txt 默认值$   // 读取文件全部文本⏎$读 路径 键 
+    zz_tmp_rawsearch_test.go:19: --- [docs/1-内置函数/08-绘图与图片处理.md] heading="GIF拆帧" func=true runes=97 head=## GIF拆帧⏎⏎```⏎a:$读文件 database/test.gif$⏎$GIF拆帧 %a%$⏎```⏎⏎数据以
+    zz_tmp_rawsearch_test.go:19: --- [docs/1-内置函数/08-绘图与图片处理.md] heading="图片相似度" func=true runes=83 head=## 图片相似度⏎⏎```⏎图1:$读文件 database/1.png$⏎图2:$读文件 database/2.png
+    zz_tmp_rawsearch_test.go:19: --- [docs/1-内置函数/08-绘图与图片处理.md] heading="图片颜色" func=true runes=99 head=## 图片颜色⏎⏎> 参数为图片二进制字符串，返回十六进制颜色 `#RRGGBB`⏎⏎```⏎图:$读文件 databa
+    zz_tmp_rawsearch_test.go:12: === [画布] -> 5 hits
+    zz_tmp_rawsearch_test.go:19: --- [docs/0-词库语法/04-调用内置函数与对象方法.md] heading="调用内置函数与对象方法" func=true runes=609 head=# 调用内置函数与对象方法⏎⏎1. $ 必须首尾成对：$函数名 参数...$。最常见的错误是漏掉开头的 $（只写结尾）：
+    zz_tmp_rawsearch_test.go:19: --- [docs/0-词库语法/06-流程控制.md] heading="流程控制" func=true runes=1016 head=# 流程控制⏎⏎1. 行内判断：如果:条件 … 否则如果:条件 … 否则 … 如果尾（结尾是 如果尾，不是 <如果）；行
+    zz_tmp_rawsearch_test.go:19: --- [docs/0-词库语法/08-高频易错点.md] heading="高频易错点" func=true runes=327 head=# 高频易错点⏎⏎1. [函数] 未声明参数规则（[函数|N]）时不能带参调用；形参只能靠 %参数1%…%参数N% 取，
+    zz_tmp_rawsearch_test.go:19: --- [docs/1-内置函数/08-绘图与图片处理.md] heading="画布" func=true runes=1211 head=## 画布⏎⏎创建画布需要赋予值（返回面对像对象）。第三个参数为背景色（`#十六进制` 或颜色对象），不写时默认黑色（`
+    zz_tmp_rawsearch_test.go:19: --- [docs/0-词库语法/05-函数与类.md] heading="函数与类" func=false runes=567 head=# 函数与类⏎⏎1. 定义函数用 [函数]名称；函数体取参只能用 %参数N%，且定义处必须声明参数规则（如 [函数|1]
+    zz_tmp_rawsearch_test.go:12: === [画布 导出] -> 1 hits
+    zz_tmp_rawsearch_test.go:19: --- [docs/1-内置函数/08-绘图与图片处理.md] heading="画布" func=true runes=1211 head=## 画布⏎⏎创建画布需要赋予值（返回面对像对象）。第三个参数为背景色（`#十六进制` 或颜色对象），不写时默认黑色（`
+    zz_tmp_rawsearch_test.go:12: === [读文件_行数] -> 1 hits
+    zz_tmp_rawsearch_test.go:19: --- [docs/1-内置函数/04-文件操作.md] heading="读取数据" func=true runes=328 head=## 读取数据⏎⏎```⏎$读文件 database/a.txt 默认值$   // 读取文件全部文本⏎$读 路径 键 
+    zz_tmp_rawsearch_test.go:12: === [db_query] -> 0 hits
+    zz_tmp_rawsearch_test.go:12: === [不存在的关键词xyz] -> 0 hits
+    zz_tmp_rawsearch_test.go:24: === docs=33
+    zz_tmp_rawsearch_test.go:31:     docs/0-词库语法/01-文件结构.md: 1 secs | 文件结构
+    zz_tmp_rawsearch_test.go:31:     docs/0-词库语法/02-触发词与取值.md: 1 secs | 触发词与取值
+    zz_tmp_rawsearch_test.go:31:     docs/0-词库语法/03-变量.md: 1 secs | 变量
+    zz_tmp_rawsearch_test.go:31:     docs/0-词库语法/04-调用内置函数与对象方法.md: 1 secs | 调用内置函数与对象方法
+    zz_tmp_rawsearch_test.go:31:     docs/0-词库语法/05-函数与类.md: 1 secs | 函数与类
+    zz_tmp_rawsearch_test.go:31:     docs/0-词库语法/06-流程控制.md: 1 secs | 流程控制
+    zz_tmp_rawsearch_test.go:31:     docs/0-词库语法/07-注释与换行.md: 1 secs | 注释与换行
+    zz_tmp_rawsearch_test.go:31:     docs/0-词库语法/08-高频易错点.md: 1 secs | 高频易错点
+=== RUN   TestTmpRawSearch
+    zz_tmp_rawsearch_test.go:12: === [读文件] -> 4 hits
+    zz_tmp_rawsearch_test.go:19: --- [docs/1-内置函数/04-文件操作.md] heading="读取数据" func=true runes=328 head=## 读取数据⏎⏎```⏎$读文件 database/a.txt 默认值$   // 读取文件全部文本⏎$读 路径 键 
+    zz_tmp_rawsearch_test.go:19: --- [docs/1-内置函数/08-绘图与图片处理.md] heading="GIF拆帧" func=true runes=97 head=## GIF拆帧⏎⏎```⏎a:$读文件 database/test.gif$⏎$GIF拆帧 %a%$⏎```⏎⏎数据以
+    zz_tmp_rawsearch_test.go:19: --- [docs/1-内置函数/08-绘图与图片处理.md] heading="图片相似度" func=true runes=83 head=## 图片相似度⏎⏎```⏎图1:$读文件 database/1.png$⏎图2:$读文件 database/2.png
+    zz_tmp_rawsearch_test.go:19: --- [docs/1-内置函数/08-绘图与图片处理.md] heading="图片颜色" func=true runes=99 head=## 图片颜色⏎⏎> 参数为图片二进制字符串，返回十六进制颜色 `#RRGGBB`⏎⏎```⏎图:$读文件 databa
+    zz_tmp_rawsearch_test.go:12: === [画布] -> 5 hits
+    zz_tmp_rawsearch_test.go:19: --- [docs/0-词库语法/04-调用内置函数与对象方法.md] heading="调用内置函数与对象方法" func=true runes=609 head=# 调用内置函数与对象方法⏎⏎1. $ 必须首尾成对：$函数名 参数...$。最常见的错误是漏掉开头的 $（只写结尾）：
+    zz_tmp_rawsearch_test.go:19: --- [docs/0-词库语法/06-流程控制.md] heading="流程控制" func=true runes=1016 head=# 流程控制⏎⏎1. 行内判断：如果:条件 … 否则如果:条件 … 否则 … 如果尾（结尾是 如果尾，不是 <如果）；行
+    zz_tmp_rawsearch_test.go:19: --- [docs/0-词库语法/08-高频易错点.md] heading="高频易错点" func=true runes=327 head=# 高频易错点⏎⏎1. [函数] 未声明参数规则（[函数|N]）时不能带参调用；形参只能靠 %参数1%…%参数N% 取，
+    zz_tmp_rawsearch_test.go:19: --- [docs/1-内置函数/08-绘图与图片处理.md] heading="画布" func=true runes=1211 head=## 画布⏎⏎创建画布需要赋予值（返回面对像对象）。第三个参数为背景色（`#十六进制` 或颜色对象），不写时默认黑色（`
+    zz_tmp_rawsearch_test.go:19: --- [docs/0-词库语法/05-函数与类.md] heading="函数与类" func=false runes=312 head=…计算结果回写外部），不是形参；函数体里读 %行%/%列% 这类未定义的裸变量会报「变量不存在」。要接收实参就必须写成 
+    zz_tmp_rawsearch_test.go:12: === [画布 导出] -> 1 hits
+    zz_tmp_rawsearch_test.go:19: --- [docs/1-内置函数/08-绘图与图片处理.md] heading="画布" func=true runes=1211 head=## 画布⏎⏎创建画布需要赋予值（返回面对像对象）。第三个参数为背景色（`#十六进制` 或颜色对象），不写时默认黑色（`
+    zz_tmp_rawsearch_test.go:12: === [读文件_行数] -> 1 hits
+    zz_tmp_rawsearch_test.go:19: --- [docs/1-内置函数/04-文件操作.md] heading="读取数据" func=true runes=328 head=## 读取数据⏎⏎```⏎$读文件 database/a.txt 默认值$   // 读取文件全部文本⏎$读 路径 键 
+    zz_tmp_rawsearch_test.go:12: === [db_query] -> 0 hits
+    zz_tmp_rawsearch_test.go:12: === [不存在的关键词xyz] -> 0 hits
+    zz_tmp_rawsearch_test.go:24: === docs=33
+    zz_tmp_rawsearch_test.go:31:     docs/0-词库语法/01-文件结构.md: 1 secs | 文件结构
+    zz_tmp_rawsearch_test.go:31:     docs/0-词库语法/02-触发词与取值.md: 1 secs | 触发词与取值
+    zz_tmp_rawsearch_test.go:31:     docs/0-词库语法/03-变量.md: 1 secs | 变量
+    zz_tmp_rawsearch_test.go:31:     docs/0-词库语法/04-调用内置函数与对象方法.md: 1 secs | 调用内置函数与对象方法
+    zz_tmp_rawsearch_test.go:31:     docs/0-词库语法/05-函数与类.md: 1 secs | 函数与类
+    zz_tmp_rawsearch_test.go:31:     docs/0-词库语法/06-流程控制.md: 1 secs | 流程控制
+    zz_tmp_rawsearch_test.go:31:     docs/0-词库语法/07-注释与换行.md: 1 secs | 注释与换行
+=== RUN   TestAIPinnedSkillsTextIncludesSyntax
+--- PASS: TestAIPinnedSkillsTextIncludesSyntax (0.00s)
+=== RUN   TestAIPinnedSkillsTextEmptyWhenNotDeclared
+--- PASS: TestAIPinnedSkillsTextEmptyWhenNotDeclared (0.00s)
+=== RUN   TestAISkillsPromptTextExcludesPinned
+--- PASS: TestAISkillsPromptTextExcludesPinned (0.00s)
+=== RUN   TestGenerateSelfSignedCert
+--- PASS: TestGenerateSelfSignedCert (0.00s)
+=== RUN   TestWriteCertFiles
+--- PASS: TestWriteCertFiles (0.00s)
+=== RUN   TestListSystemCerts
+    https_system_windows_test.go:12: 系统证书数量: 2
+--- PASS: TestListSystemCerts (0.27s)
+=== RUN   TestExtractSystemCertInvalid

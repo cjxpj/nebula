@@ -152,18 +152,31 @@ func (m *dicImpl) WebDicRun(WD *dic_dto.WebDic) string {
 	// 不挂载时脚本里的 $GET$ / $设置头部$ 会解析不到函数、被当成普通文本原样输出。
 	dicRun.Dic.MyFunc = WD.MyFunc
 
+	data := make(map[string]any)
+
+	// 1. 先处理内联执行块 <?n ... ?>，就地执行并把结果插回块所在位置。
+	// 必须在 html.Parse 之前按原文处理：Go 的 html 解析器会把 <?...> 当成注释节点吞掉，
+	// 解析后再找就找不到这个块了。结果按原文插回，因此块内可以直接输出 HTML 片段。
+	src := run.ReplaceProcessedContent(WD.Text, "<?n", "?>", func(block string) string {
+		// 与脚本块一致：先裁掉首尾空白（块内首行是空行时会被当成「头部结束」，语句不会执行）
+		lines := run.TrimWebScriptIndent(strings.Split(strings.TrimSpace(block), "\n"))
+		res := m.DicRunLine(dicRun, lines)
+		maps.Copy(data, dicRun.Val.P.GetAll())
+		return res
+	})
+
 	// 解析成节点树
-	doc, err := html.Parse(strings.NewReader(WD.Text))
+	doc, err := html.Parse(strings.NewReader(src))
 	if err != nil {
 		debugLog.Error(err)
 	}
 
-	data := make(map[string]any)
-
-	// 1. 执行 nebula script，收集数据
+	// 2. 执行 nebula script，收集数据
+	// 脚本块与内联块共用同一个 dicRun：变量跨块可见，块之间可以接力计算。
 	for _, s := range findNebulaScripts(doc) {
-		lines := strings.Split(s.Text, "\n")
-		res := m.NewDicRunLine(dicRun, lines)
+		// 脚本块正文可能带缩进（格式化后的网页词库），先去掉行首空白再解析
+		lines := run.TrimWebScriptIndent(strings.Split(s.Text, "\n"))
+		res := m.DicRunLine(dicRun, lines)
 		if s.Id != "" {
 			data[s.Id] = res
 		} else {
@@ -171,13 +184,13 @@ func (m *dicImpl) WebDicRun(WD *dic_dto.WebDic) string {
 		}
 	}
 
-	// 2. 只移除 type="nebula" 的 script
+	// 3. 只移除 type="nebula" 的 script
 	removeNebulaScripts(doc)
 
 	var htmlBuf bytes.Buffer
 	html.Render(&htmlBuf, doc)
 
-	// 2. 使用 Go 模板引擎渲染
+	// 4. 使用 Go 模板引擎渲染
 	tpl, err := template.New("page").Parse(htmlBuf.String())
 	if err != nil {
 		debugLog.Infof("模板解析失败: %v", err)
@@ -187,7 +200,7 @@ func (m *dicImpl) WebDicRun(WD *dic_dto.WebDic) string {
 		if err := tpl.Execute(&buf, data); err != nil {
 			debugLog.Infof("模板渲染失败: %v", err)
 		}
-		// 3. 模板渲染结果
+		// 5. 模板渲染结果
 		result = buf.String()
 	}
 

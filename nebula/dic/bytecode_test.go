@@ -61,7 +61,7 @@ var golden = map[string]string{
 	"范围循环负数起始":       "-1012",
 	"范围循环空范围":        "尾",
 	"范围循环动态":         "234",
-	"判断循环":            "11",
+	"判断循环":           "11",
 	"循环嵌套遍历终止循环":     "0结束",
 	"判断嵌套遍历":         "01",
 	"JSON对象赋值":       `{"x":1,"y":"值"}`,
@@ -78,6 +78,11 @@ var golden = map[string]string{
 	"文本框换行分隔":        "第一行\n第二行\n第三行",
 	"文本框多行赋值":        "甲\n乙",
 	"纯文本框":           "%x%$复读 你好$",
+	"纯文本赋值":          "a%x%|b",
+	"变量前缀文本框赋值":      "甲乙",
+	"变量前缀文本框换行":      "甲\n乙",
+	"变量前缀纯文本赋值":      "%x%|b",
+	"变量前缀纯文本无分隔":     "%x%$复读 你好$",
 	"文本框不执行函数":       "$复读 你好$值",
 	"循环内文本框":         "行1行2",
 	"JSON键值框":        "k=值<JSON%a%",
@@ -112,11 +117,11 @@ var golden = map[string]string{
 	"行内判断elif尾后首分支":  "一后",
 	"行内判断elif尾后末分支":  "二后",
 	"行内判断elif尾后无命中":  "后",
-	"行内判断否则尾后真":   "是后",
-	"行内判断否则尾后假":   "否后",
-	"行内判断elif否则尾后首": "一后",
-	"行内判断elif否则尾后中": "二后",
-	"行内判断elif否则尾后末": "三后",
+	"行内判断否则尾后真":      "是后",
+	"行内判断否则尾后假":      "否后",
+	"行内判断elif否则尾后首":  "一后",
+	"行内判断elif否则尾后中":  "二后",
+	"行内判断elif否则尾后末":  "三后",
 	"行内判断英文":         "三",
 	"行内判断返回尾":        "是",
 	"行内判断返回尾假":       "后",
@@ -770,6 +775,61 @@ func TestEquivPureTextBlock(t *testing.T) {
 		"%x%",
 		"$复读 你好$",
 		"<文本",
+	}, func(p *dto.Val) { p.Set("x", "值") })
+}
+
+func TestEquivPureTextBlockAssign(t *testing.T) {
+	// 纯文本> 赋值：内容原样（%变量% 不插值），行间用 = 右侧的分隔符连接
+	assertEquivalent(t, "纯文本赋值", []string{
+		"纯文本>t=|",
+		"a%x%",
+		"b",
+		"<文本",
+		"%t%",
+	}, func(p *dto.Val) { p.Set("x", "值") })
+}
+
+func TestEquivTextBlockVarPrefixAssign(t *testing.T) {
+	// 变量名:文本> 赋予值：整块内容赋给前缀变量，块本身不输出
+	assertEquivalent(t, "变量前缀文本框赋值", []string{
+		"a:文本>",
+		"甲",
+		"乙",
+		"<文本",
+		"%a%",
+	}, nil)
+}
+
+func TestEquivTextBlockVarPrefixLineFeed(t *testing.T) {
+	// 变量名:文本>%换行% 赋予值：前缀为赋值目标，其后整段插值后作行间分隔符
+	assertEquivalent(t, "变量前缀文本框换行", []string{
+		"a:文本>%换行%",
+		"甲",
+		"乙",
+		"<文本",
+		"%a%",
+	}, func(p *dto.Val) { p.Set("换行", "\n") })
+}
+
+func TestEquivPureTextBlockVarPrefixAssign(t *testing.T) {
+	// 变量名:纯文本>| 赋予值：内容原样（%变量% 不插值），其后整段作行间分隔符
+	assertEquivalent(t, "变量前缀纯文本赋值", []string{
+		"a:纯文本>|",
+		"%x%",
+		"b",
+		"<文本",
+		"%a%",
+	}, func(p *dto.Val) { p.Set("x", "值") })
+}
+
+func TestEquivPureTextBlockVarPrefixNoSep(t *testing.T) {
+	// 变量名:纯文本> 不带行间分隔符：内容原样拼接（%变量% 与 $函数$ 都不处理）后赋给前缀变量
+	assertEquivalent(t, "变量前缀纯文本无分隔", []string{
+		"a:纯文本>",
+		"%x%",
+		"$复读 你好$",
+		"<文本",
+		"%a%",
 	}, func(p *dto.Val) { p.Set("x", "值") })
 }
 

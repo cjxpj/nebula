@@ -6375,14 +6375,16 @@ func opuiHandleApi(w http.ResponseWriter, r *http.Request) {
 		}
 
 		// 编译检测：打开词库时也编译一次，返回编译问题（error 红色 / warning 黄色）供前端高亮。
-		// 网页词库（.wn）是 HTML，不走 .n 编译，返回内容即可。
+		// 网页词库（.wn）是 HTML，走脚本块变量检查 + 模板键核对。
 		resp := map[string]any{"content": content}
-		if !checkWebDicPath(j.Path) {
-			if dicCheck, err := dic_dto.RunDicNoCache(j.Path); err == nil && dicCheck != nil {
-				defer dicCheck.Close()
-				if len(dicCheck.Data.Warnings) > 0 {
-					resp["warnings"] = dicCheck.Data.Warnings
-				}
+		if checkWebDicPath(j.Path) {
+			if warnings := run.WebDicCheck(content); len(warnings) > 0 {
+				resp["warnings"] = warnings
+			}
+		} else if dicCheck, err := dic_dto.RunDicNoCache(j.Path); err == nil && dicCheck != nil {
+			defer dicCheck.Close()
+			if len(dicCheck.Data.Warnings) > 0 {
+				resp["warnings"] = dicCheck.Data.Warnings
 			}
 		}
 		jsonResp, _ := json.Marshal(resp)
@@ -6406,10 +6408,27 @@ func opuiHandleApi(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, `{"status":"error","error":"词库路径不合法"}`, http.StatusBadRequest)
 			return
 		}
-		// 网页词库（.wn）：不参与 .n 的自动格式化与编译检测，原样写入即可
+		// 网页词库（.wn）：走 HTML 排版 + 脚本块检查，不参与 .n 的块结构格式化与编译
 		if checkWebDicPath(j.Path) {
-			utils.NewFileQueue(j.Path).WriteToFile(j.Content)
-			jsonResp, _ := json.Marshal(map[string]any{"status": "ok"})
+			content := j.Content
+			formatted := false
+			if dicAutoFormatEnabled() {
+				if f := build.FormatWebDic(content); f != content {
+					content = f
+					formatted = true
+				}
+			}
+			utils.NewFileQueue(j.Path).WriteToFile(content)
+
+			resp := map[string]any{"status": "ok"}
+			if formatted {
+				// 回传格式化结果，供前端同步编辑器内容（避免界面与实际文件不一致）
+				resp["content"] = content
+			}
+			if warnings := run.WebDicCheck(content); len(warnings) > 0 {
+				resp["warnings"] = warnings
+			}
+			jsonResp, _ := json.Marshal(resp)
 			w.Write(jsonResp)
 			return
 		}
@@ -6441,7 +6460,8 @@ func opuiHandleApi(w http.ResponseWriter, r *http.Request) {
 		return
 
 	case "dic_format":
-		// 词库格式化：按块结构自动缩进（4 空格/层），与命令行 -format 共用 build.FormatDic 实现
+		// 词库格式化：.n 按块结构自动缩进（build.FormatDic），.wn 只缩进 HTML 结构
+		// 并逐字节保留 <script type="nebula"> 正文（build.FormatWebDic），与命令行 -format 共用实现
 		var j struct {
 			Path    string `json:"path"`
 			Content string `json:"content"`
@@ -6454,11 +6474,16 @@ func opuiHandleApi(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, `{"status":"error","error":"词库路径不能为空"}`, http.StatusBadRequest)
 			return
 		}
-		if !checkDicPath(j.Path) {
+		if !checkDicOrWebPath(j.Path) {
 			http.Error(w, `{"status":"error","error":"词库路径不合法"}`, http.StatusBadRequest)
 			return
 		}
-		formatted := build.FormatDic(j.Content)
+		var formatted string
+		if checkWebDicPath(j.Path) {
+			formatted = build.FormatWebDic(j.Content)
+		} else {
+			formatted = build.FormatDic(j.Content)
+		}
 		jsonResp, _ := json.Marshal(map[string]any{
 			"status":  "ok",
 			"content": formatted,
@@ -7511,8 +7536,8 @@ func opuiHandleApi(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, `{"status":"error","error":"词库路径不合法"}`, http.StatusBadRequest)
 			return
 		}
-		// 网页词库（.wn）：脚本块自上而下执行后做模板渲染，没有触发词与编译诊断，
-		// 走独立的执行分支，返回渲染后的 HTML 供前端展示
+		// 网页词库（.wn）：执行块（<?n ... ?> 内联块 / <script type="nebula"> 脚本块）自上而下执行后做模板渲染，
+		// 没有触发词与编译诊断，走独立的执行分支，返回渲染后的 HTML 供前端展示，并附带静态检查诊断
 		if checkWebDicPath(j.Path) {
 			// 与 .n 运行一致：运行期间启用删除操作人工确认，脚本删除文件时弹窗等待用户放行
 			ensureDicDeleteConfirm()
@@ -7523,13 +7548,24 @@ func opuiHandleApi(w http.ResponseWriter, r *http.Request) {
 				http.Error(w, `{"status":"error","error":"词库加载失败: `+err.Error()+`"}`, http.StatusBadRequest)
 				return
 			}
+			warnings := []dto.BuildWarning{}
+			blockCount := 0
+			templateKeys := []string{}
+			if content, err := utils.NewFileQueue(j.Path).ReadFromFile(); err == nil {
+				warnings = run.WebDicCheck(content)
+				blockCount, templateKeys = run.WebDicRenderInfo(content)
+			}
 			jsonResp, _ := json.Marshal(map[string]any{
-				"path":     j.Path,
-				"output":   output,
-				"timedOut": false,
-				"segments": parseOutputSegments(output),
-				"vars":     map[string]any{"P": map[string]any{}, "G": map[string]any{}, "GV": map[string]any{}},
-				"webDic":   true,
+				"path":             j.Path,
+				"output":           output,
+				"warnings":         warnings,
+				"timedOut":         false,
+				"segments":         parseOutputSegments(output),
+				"vars":             map[string]any{"P": map[string]any{}, "G": map[string]any{}, "GV": map[string]any{}},
+				"webDic":           true,
+				"scriptBlockCount": blockCount,
+				"templateKeys":     templateKeys,
+				"renderNote":       webDicRenderNote(blockCount, templateKeys),
 			})
 			w.Write(jsonResp)
 			return
@@ -8056,11 +8092,13 @@ func opuiHandleApi(w http.ResponseWriter, r *http.Request) {
 // ============== AI 对接（OpenAI 兼容，默认 DeepSeek） ==============
 
 // aiDicSystemPrompt AI 词库开发内置系统提示词（智能体未配置系统提示时使用）。
-// 只保留身份定位与事实约束：语法结构、工具能力已拆成内置技能（见 ai_skill.go），
-// 由系统提示的「可用技能」清单按当前智能体声明的内置技能列出，模型按需调用 read_skill 读取技能正文。
+// 只保留身份定位与事实约束：语法结构与工具能力已拆成内置技能（见 ai_skill.go），
+// 「词库语法结构」作为常驻技能每轮直接给出正文，「词库工具能力」仍由「可用技能」清单按需 read_skill 读取。
 const aiDicSystemPrompt = `你是 Nebula 词库（.n / .wn 文件）开发助手。回答必须以本次对话实际提供的信息为准，不得臆造。
 
-写或修改词库代码前，先调用 read_skill 读取「词库语法结构」技能，严格按其中的语法约定书写；需要读取 / 写入文件、编译或运行词库时，先读取「词库工具能力」技能，按其中的调用通道与词条边界约定执行。
+写或修改词库代码前，先按下方【常驻技能：词库语法结构】的要求重新读取相关语法文档并逐条复核，严格按文档原文书写，不要凭记忆或前几轮留下的印象拼代码；需要读取 / 写入文件、编译或运行词库时，先读取「词库工具能力」技能，按其中的调用通道与词条边界约定执行。
+
+书写纪律（硬性）：一律按语法原样书写，禁止为了对齐、美观或分段插入多余的空行与空格——正文行与行紧贴、块结构（如果>/循环>/匹配>/遍历>/文本>/函数> 等）内部不得出现空行，%变量%、$函数 参数$、键:值 之间只保留语法要求的单个空格，行首 / 行尾不要补空格，[...] 表达式内不写空格（写 [1000*%秒%]，不写 [1000 * %秒%]）；行首缩进不必自己对，保存时会按 .n 块结构 / .wn HTML 结构自动格式化（.wn 的 <?n ... ?> 内联块与 <script type="nebula"> 脚本块正文同样会被自动排版，行首缩进在解析前会被裁掉；确实要保留行首空白的行用 //@关闭缩进 与 //@启用缩进 夹起来）。
 
 事实约束：
 1. 当前词库的函数、变量、类、触发词与语法，一律以用户提供的「当前词库代码 / 编译诊断」为准；未出现在其中、也未出现在下方【可用内置函数】清单中的名称，视为不存在；

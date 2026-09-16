@@ -17,42 +17,26 @@ import (
 	"github.com/cjxpj/nebula/utils"
 )
 
-func groupMsg(m *feishubot_msg.ImMessageReceiveV1) {
-	botDicPath := utils.NewFileQueue(path.Join(dto.ServerConfig.FeiShuBot.FilePath, "dic"))
-	botDicList, err := botDicPath.GetFileList()
+// isAdmin 判断用户是否在主人（管理员）列表中，是则返回匹配到的条目，否则返回 "null"
+func isAdmin(userID string) string {
+	adminList, err := utils.NewFileQueue(path.Join(dto.ServerConfig.FeiShuBot.FilePath, "admin.txt")).ReadFromFile()
+	if err != nil {
+		return "null"
+	}
+	for s := range strings.SplitSeq(adminList, ",") {
+		if id := strings.TrimSpace(s); id != "" && userID == id {
+			return id
+		}
+	}
+	return "null"
+}
+
+// runDic 遍历词库目录执行词库，reply 为回复函数
+func runDic(valData *dto.Val, content string, reply func(string)) {
+	botDicList, err := utils.NewFileQueue(path.Join(dto.ServerConfig.FeiShuBot.FilePath, "dic")).GetFileList()
 	if err != nil {
 		return
 	}
-
-	// 取出需要的数据
-	// QQ
-	userID := m.Event.Sender.SenderID.OpenID
-	// 群号
-	groupID := m.Event.Message.ChatID
-	// 消息ID
-	msgID := m.Event.Message.MessageID
-
-	isAdmin := "null" // 是否是管理员
-	// 主人列表
-	if adminList, err := utils.NewFileQueue(path.Join(dto.ServerConfig.FeiShuBot.FilePath, "admin.txt")).ReadFromFile(); err == nil {
-		for s := range strings.SplitSeq(adminList, ",") {
-			id := strings.TrimSpace(s)
-			if userID == id {
-				isAdmin = s
-				break
-			}
-		}
-	}
-
-	content := extractText(m.Event.Message.Content)
-
-	valData := dto.NewVal().
-		Set("来源", "群聊").
-		Set("群号", groupID).
-		Set("QQ", userID).
-		Set("MsgId", msgID).
-		Set("MessageID", msgID).
-		Set("主人", isAdmin)
 
 	for _, v := range botDicList {
 		if !strings.HasSuffix(v, ".n") {
@@ -65,11 +49,11 @@ func groupMsg(m *feishubot_msg.ImMessageReceiveV1) {
 				return
 			}
 
-			// 回复消息
-		dic := dic_dto.NewDic(dicPath, FileData).
-			SetGlobal_v(valData)
+			dic := dic_dto.NewDic(dicPath, FileData).
+				SetGlobal_v(valData)
 
-		dic.SetFunc("调用", dto.DicFunc{
+			// 延迟回复
+			dic.SetFunc("调用", dto.DicFunc{
 				L: "2..",
 				Fn: func(d *dto.DicInputs) (any, error) {
 					go func() {
@@ -78,8 +62,7 @@ func groupMsg(m *feishubot_msg.ImMessageReceiveV1) {
 						time.Sleep(time.Duration(sleepTime) * time.Millisecond)
 						rMsg := dic_api.Api.DicRunPrivateVal(dic, d.Inputs.StringAfter(2), qqVal)
 						if rMsg != "" {
-							rMsg = strings.ReplaceAll(rMsg, "\\r", "\n")
-							SendGroupMsg(groupID, rMsg)
+							reply(strings.ReplaceAll(rMsg, "\\r", "\n"))
 						}
 					}()
 					return "", nil
@@ -89,19 +72,54 @@ func groupMsg(m *feishubot_msg.ImMessageReceiveV1) {
 
 			rMsg := dic_api.Api.DicRun(dic, content)
 			if rMsg != "" {
-				rMsg = strings.ReplaceAll(rMsg, "\\r", "\n")
-				debugLog.Infof("%v", rMsg)
-				_, err := SendGroupMsg(groupID, rMsg)
-				if err != nil {
-					debugLog.Infof("%v", err)
-				}
+				reply(strings.ReplaceAll(rMsg, "\\r", "\n"))
 			}
 		}()
 	}
 }
 
+func groupMsg(m *feishubot_msg.ImMessageReceiveV1) {
+	// 用户
+	userID := m.Event.Sender.SenderID.OpenID
+	// 群号
+	groupID := m.Event.Message.ChatID
+	// 消息ID
+	msgID := m.Event.Message.MessageID
+
+	valData := dto.NewVal().
+		Set("来源", "群聊").
+		Set("群号", groupID).
+		Set("QQ", userID).
+		Set("MsgId", msgID).
+		Set("MessageID", msgID).
+		Set("主人", isAdmin(userID))
+
+	runDic(valData, extractText(m.Event.Message.Content), func(rMsg string) {
+		if _, err := SendGroupMsg(groupID, rMsg); err != nil {
+			debugLog.Infof("%v", err)
+		}
+	})
+}
+
 func p2pMsg(m *feishubot_msg.ImMessageReceiveV1) {
-	debugLog.Infof("私聊%v", m)
+	// 用户
+	userID := m.Event.Sender.SenderID.OpenID
+	// 消息ID
+	msgID := m.Event.Message.MessageID
+
+	valData := dto.NewVal().
+		Set("来源", "私聊").
+		Set("群号", "0").
+		Set("QQ", userID).
+		Set("MsgId", msgID).
+		Set("MessageID", msgID).
+		Set("主人", isAdmin(userID))
+
+	runDic(valData, extractText(m.Event.Message.Content), func(rMsg string) {
+		if _, err := SendPrivateMsg(userID, rMsg); err != nil {
+			debugLog.Infof("%v", err)
+		}
+	})
 }
 
 // BotMessage 统一入口：只负责路由层逻辑
@@ -115,27 +133,42 @@ func BotMessage(w http.ResponseWriter, r *http.Request) {
 
 	debugLog.Infof("%v", string(body))
 
-	// 处理验证码
-	plain, err := parseAndDecrypt(body)
-	if err == nil {
-		// URL 验证
-		if plain.Type == "url_verification" {
-			w.Header().Set("Content-Type", "application/json")
-			json.NewEncoder(w).Encode(map[string]string{"challenge": plain.Challenge})
+	plain, err := decryptIfNeeded(body)
+	if err != nil {
+		debugLog.Info("decrypt failed:", err)
+		http.Error(w, "decrypt failed", http.StatusBadRequest)
+		return
+	}
+
+	// 处理 URL 验证
+	var verify feishubot_msg.SlackURLVerification
+	if err := json.Unmarshal(plain, &verify); err == nil && verify.Type == "url_verification" {
+		if !checkToken(verify.Token) {
+			debugLog.Info("飞书验证令牌不匹配")
+			http.Error(w, "invalid token", http.StatusUnauthorized)
 			return
 		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]string{"challenge": verify.Challenge})
+		return
 	}
 
 	// 处理事件
-	ev, err := parseGroupMessage(body)
-	if err != nil {
+	var ev feishubot_msg.ImMessageReceiveV1
+	if err := json.Unmarshal(plain, &ev); err != nil {
 		debugLog.Info("parse failed:", err)
 		return
 	}
+	if !checkToken(ev.Header.Token) {
+		debugLog.Info("飞书验证令牌不匹配")
+		http.Error(w, "invalid token", http.StatusUnauthorized)
+		return
+	}
+
 	switch ev.Event.Message.ChatType {
 	case "group":
-		groupMsg(ev)
+		groupMsg(&ev)
 	case "p2p":
-		p2pMsg(ev)
+		p2pMsg(&ev)
 	}
 }

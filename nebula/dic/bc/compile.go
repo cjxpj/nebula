@@ -420,8 +420,15 @@ func (c *compiler) compileBlock(b *ast.Block) {
 
 // compileText 编译 文本>/纯文本> 框为 OpTextBlock：内容行由运行时按
 // 纯文本（原样）或文本（%变量% 插值）拼接，换行符由开启行后缀插值得到。
+// 开启行支持 文本>/纯文本>，也支持赋予值形式 变量名:文本>/变量名:纯文本>。
 func (c *compiler) compileText(b *ast.Block) {
-	pure := strings.HasPrefix(b.Open, "纯文本>")
+	open := b.Open
+	if vt, vp, vs := build.ValTextTest(open); vt == 6 && vp != "" {
+		if strings.HasPrefix(vs, "纯文本>") || strings.HasPrefix(vs, "文本>") {
+			open = vs
+		}
+	}
+	pure := strings.HasPrefix(open, "纯文本>")
 	arg := 0
 	if pure {
 		arg = 1

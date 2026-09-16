@@ -43,6 +43,7 @@ func blockOpen(line string) (BlockKind, bool) {
 	//   >>>     → 连续执行框（与单行链式 a>>>b 区分）
 	//   """     → 赋值文本框（内容 %变量% 插值）
 	//   '''     → 赋值文本框（内容原样）
+	//   文本> / 纯文本> → 赋值文本框（前缀即赋值目标，后缀为行间分隔符）
 	//   函数> / 执行函数> → 函数框（存储 / 立即执行）
 	if vt, vp, vs := build.ValTextTest(line); vt == 6 {
 		// 变量:函数> / 变量:执行函数> 开头的函数框（赋予值形式）。
@@ -52,6 +53,9 @@ func blockOpen(line string) (BlockKind, bool) {
 				return BlockFunc, true
 			case strings.HasPrefix(vs, "函数>"):
 				return BlockFunc, true
+			// 变量:文本> / 变量:纯文本>：与 变量:""" / 变量:''' 同族的赋值文本框。
+			case strings.HasPrefix(vs, "纯文本>"), strings.HasPrefix(vs, "文本>"):
+				return BlockText, true
 			}
 		}
 		switch vs {

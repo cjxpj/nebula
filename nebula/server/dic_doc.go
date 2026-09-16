@@ -339,6 +339,214 @@ func dicDocSnippet(runes []rune, at, size int) string {
 	return s
 }
 
+// ============== 按小节检索原文（供 AI 的 search_docs 工具） ==============
+
+const (
+	// dicDocRawMaxHits 一次检索最多返回的小节数
+	dicDocRawMaxHits = 12
+	// dicDocRawPerDoc 单篇最多返回的小节数，避免一篇长文档把结果占满
+	dicDocRawPerDoc = 3
+	// dicDocRawSectionRunes 函数名命中的小节最多返回的字符数，超出以命中处为中心裁剪
+	dicDocRawSectionRunes = 1200
+	// dicDocRawBriefRunes 只是被正文提到（命中不在函数名上）的小节最多返回的字符数。
+	// 取较短窗口，否则「画布」这类常见词会把好几篇文档整篇拖进上下文，失去「检索代替通读」的意义。
+	dicDocRawBriefRunes = 300
+	// dicDocRawClipLead 裁剪长小节时，命中处之前保留的上下文字符数
+	dicDocRawClipLead = 200
+)
+
+// dicDocRawHit 一条「按小节」的检索命中：定位到哪一篇的哪一节，并附上该节原文。
+type dicDocRawHit struct {
+	Path  string `json:"path"`
+	Title string `json:"title"`
+	Group string `json:"group"`
+	// Heading 命中所在小节的标题（无标题的小节为空）
+	Heading string `json:"heading"`
+	// Func 该节内是否有命中完整落在函数名（$函数名 参数…$）上
+	Func bool `json:"func"`
+	// Text 小节原文（markdown，超长时以命中处为中心裁剪）
+	Text string `json:"text"`
+}
+
+// dicDocSection 文档里的一节：标题 + 原文区间（按字节偏移）。
+type dicDocSection struct {
+	Heading string
+	Start   int
+	End     int
+}
+
+// dicDocRawSearch 在内置文档原文里检索关键词，返回命中所在小节的原文。
+// 与 dicDocSearch 的分工：那个返回「纯文本碎片 + 篇内高亮序号」，供文档页的结果列表定位；
+// 这个返回整节 markdown，供 AI 直接照着写代码——拿到相关小节就不必通读整篇文档。
+// keywords 之间是「与」关系（都出现才算命中），便于用多个词把范围收窄到想要的那一节。
+// 结果顺序：含函数名命中的节优先（多半是在找函数用法），同档保持篇序 / 篇内顺序。
+func dicDocRawSearch(keywords []string) []dicDocRawHit {
+	kws := make([]string, 0, len(keywords))
+	for _, k := range keywords {
+		if k = strings.TrimSpace(strings.ToLower(k)); k != "" {
+			kws = append(kws, k)
+		}
+	}
+	hits := []dicDocRawHit{}
+	if len(kws) == 0 {
+		return hits
+	}
+	for _, doc := range dicDocList() {
+		for _, sec := range dicDocSections(doc.content) {
+			text := doc.content[sec.Start:sec.End]
+			if !dicDocContainsAll(text, kws) {
+				continue
+			}
+			// 函数名命中的多半是「查这个函数怎么用」，给足正文；只是正文提到关键词的
+			// 只给一小段窗口，否则「画布」这类常见词会把好几篇文档整篇拖进上下文。
+			funcHit := dicDocSectionFuncHit(text, kws)
+			limit := dicDocRawBriefRunes
+			if funcHit {
+				limit = dicDocRawSectionRunes
+			}
+			hits = append(hits, dicDocRawHit{
+				Path:    doc.Path,
+				Title:   doc.Title,
+				Group:   doc.Group,
+				Heading: sec.Heading,
+				Func:    funcHit,
+				Text:    dicDocSectionClip(text, kws, limit),
+			})
+		}
+	}
+	// 函数名命中优先，同档保持原有篇序 / 篇内序
+	sort.SliceStable(hits, func(i, j int) bool { return hits[i].Func && !hits[j].Func })
+	kept := hits[:0]
+	perDoc := map[string]int{}
+	for _, h := range hits {
+		if len(kept) >= dicDocRawMaxHits || perDoc[h.Path] >= dicDocRawPerDoc {
+			continue
+		}
+		perDoc[h.Path]++
+		kept = append(kept, h)
+	}
+	return kept
+}
+
+// dicDocSections 按标题行把正文切成小节。
+// 代码围栏（```）里的 # 行不算标题，否则文档示例代码里的 # 会把小节错误切开。
+func dicDocSections(text string) []dicDocSection {
+	secs := []dicDocSection{}
+	inFence := false
+	for off := 0; off < len(text); {
+		end := strings.IndexByte(text[off:], '\n')
+		line := text[off:]
+		if end >= 0 {
+			line = text[off : off+end]
+		}
+		trimmed := strings.TrimSpace(line)
+		switch {
+		case strings.HasPrefix(trimmed, "```"):
+			inFence = !inFence
+		case !inFence && dicDocIsHeadingLine(trimmed):
+			if n := len(secs); n > 0 {
+				secs[n-1].End = off
+			}
+			secs = append(secs, dicDocSection{Heading: dicDocHeadingText(trimmed), Start: off, End: len(text)})
+		}
+		if end < 0 {
+			break
+		}
+		off += end + 1
+	}
+	if len(secs) == 0 {
+		return []dicDocSection{{Start: 0, End: len(text)}}
+	}
+	// 首个标题之前的内容（如篇首说明）单独成一节
+	if secs[0].Start > 0 {
+		secs = append([]dicDocSection{{Start: 0, End: secs[0].Start}}, secs...)
+	}
+	return secs
+}
+
+// dicDocIsHeadingLine 判断一行是不是 markdown 标题（# 后跟空白或行尾）。
+func dicDocIsHeadingLine(line string) bool {
+	if !strings.HasPrefix(line, "#") {
+		return false
+	}
+	rest := strings.TrimLeft(line, "#")
+	return rest == "" || strings.HasPrefix(rest, " ")
+}
+
+// dicDocHeadingText 取标题行的标题文本（去掉 # 前缀），非标题行返回空串。
+func dicDocHeadingText(line string) string {
+	if !dicDocIsHeadingLine(line) {
+		return ""
+	}
+	return strings.TrimSpace(strings.TrimLeft(line, "#"))
+}
+
+// dicDocContainsAll 判断文本是否同时包含全部关键词（关键词已转小写）。
+func dicDocContainsAll(text string, kws []string) bool {
+	hay := strings.ToLower(text)
+	for _, k := range kws {
+		if !strings.Contains(hay, k) {
+			return false
+		}
+	}
+	return true
+}
+
+// dicDocSectionFuncHit 判断本节里是否有某个关键词的命中完整落在函数名（$函数名 参数…$）上。
+func dicDocSectionFuncHit(section string, kws []string) bool {
+	spans := dicDocFuncSpans(section)
+	if len(spans) == 0 {
+		return false
+	}
+	hay := strings.ToLower(section)
+	for _, k := range kws {
+		size := utf8.RuneCountInString(k)
+		for offset := 0; ; {
+			i := strings.Index(hay[offset:], k)
+			if i < 0 {
+				break
+			}
+			at := utf8.RuneCountInString(section[:offset+i])
+			if dicDocInFuncName(spans, at, at+size) {
+				return true
+			}
+			offset += i + len(k)
+		}
+	}
+	return false
+}
+
+// dicDocSectionClip 裁剪小节原文：超长时以最靠前的命中处为中心取窗口，保证命中内容一定在结果里。
+func dicDocSectionClip(section string, kws []string, max int) string {
+	runes := []rune(section)
+	if len(runes) <= max {
+		return strings.TrimRight(section, "\n")
+	}
+	best := -1
+	hay := strings.ToLower(section)
+	for _, k := range kws {
+		i := strings.Index(hay, k)
+		if i < 0 {
+			continue
+		}
+		if at := utf8.RuneCountInString(section[:i]); best < 0 || at < best {
+			best = at
+		}
+	}
+	start := 0
+	if best > dicDocRawClipLead {
+		start = best - dicDocRawClipLead
+	}
+	if start+max > len(runes) {
+		start = len(runes) - max
+	}
+	out := strings.TrimRight(string(runes[start:start+max]), "\n")
+	if start > 0 {
+		out = "…" + out
+	}
+	return out + "\n…（本节较长已截断）"
+}
+
 // dicDocIndexText 文档索引文本：列出全部分组与文档，供 AI 了解有哪些文档可读、该传什么 doc 值。
 func dicDocIndexText() string {
 	list := dicDocList()
@@ -346,7 +554,7 @@ func dicDocIndexText() string {
 		return "内置文档资源缺失。"
 	}
 	var b strings.Builder
-	b.WriteString("内置文档清单（读某一篇：read_dic_doc 传 doc=\"资源路径\"）：\n")
+	b.WriteString("内置文档清单（检索内容用 search_docs；读整篇用 read_dic_doc 传 doc=\"资源路径\"）：\n")
 	group := ""
 	for i := range list {
 		if list[i].Group != group {
@@ -355,7 +563,7 @@ func dicDocIndexText() string {
 			b.WriteString(group)
 			b.WriteString("】\n")
 		}
-		b.WriteString(fmt.Sprintf("- %s（%s，%d 字）\n", list[i].Title, list[i].Path, list[i].Chars))
+		fmt.Fprintf(&b, "- %s（%s，%d 字）\n", list[i].Title, list[i].Path, list[i].Chars)
 	}
 	return strings.TrimRight(b.String(), "\n")
 }

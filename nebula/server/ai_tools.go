@@ -24,9 +24,11 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"github.com/cjxpj/nebula/build"
 	dic_api "github.com/cjxpj/nebula/dic/api"
 	dic_dto "github.com/cjxpj/nebula/dic/dto"
 	"github.com/cjxpj/nebula/dto"
+	"github.com/cjxpj/nebula/run"
 	"github.com/cjxpj/nebula/utils"
 )
 
@@ -68,6 +70,9 @@ const (
 	aiToolReadMaxRunes = 60000
 	// aiToolOutputMaxRunes 词库运行输出回灌给模型时的最大字符数
 	aiToolOutputMaxRunes = 20000
+	// aiDicListMax 编译清单（函数 / 触发词）回灌给模型的最大条目数，
+	// 超出只给前若干项并在 note 里说明总数，避免大词库（含 #引入 展开）把上下文撑爆。
+	aiDicListMax = 300
 	// aiImageViewGrid 视图工具分区域网格的边长：把图片切成 N×N 块，每块给出平均色
 	aiImageViewGrid = 8
 	// aiImageViewMaxColors 视图工具返回的主色数量上限（按占比从高到低）
@@ -159,25 +164,27 @@ func aiToolDefinitions() []map[string]any {
 				"paths":  strList("要移动的路径列表（相对应用目录）"),
 				"target": str("目标目录（相对应用目录），留空表示应用目录根"),
 			}, "paths"),
-		aiTool("read_dic", "读取词库文件的完整代码，并返回编译诊断（error/warning），修改词库前先用它查看最新内容。支持 .n 与网页词库 .wn（.wn 无编译诊断）。",
+		aiTool("read_dic", "读取词库文件的完整代码，并返回诊断（error/warning），修改词库前先用它查看最新内容。支持 .n 与网页词库 .wn：.n 返回编译诊断，.wn 返回执行块（<?n ... ?> 内联块 / <script type=\"nebula\"> 脚本块）的变量检查与模板键核对结果。",
 			map[string]any{"path": str("词库路径（相对应用目录，.n 或 .wn 结尾）")}, "path"),
-		aiTool("read_dic_doc", "读取内置说明文档。不传 doc 时返回文档清单（分组 + 标题 + 资源路径 + 字数）；传 doc 时只返回那一篇的正文，用于查阅内置函数、数据库、机器人功能、JavaScript 集成、扩展开发与对象实例（如画布）的准确用法与参数。doc 可给资源路径（如 docs/1-内置函数/04-文件操作.md）或标题（如 文件操作）。遇到不确定的函数 / API 时优先调用它，不要靠猜、也不要往词库写试探词条。",
+		aiTool("search_docs", "在内置说明文档里搜索关键词，直接返回命中处所在小节的原文（markdown），用于查证内置函数、数据库、机器人功能、JavaScript 集成、扩展开发与对象实例（如画布）的准确用法与参数。查某个函数 / API 怎么用时先用它：一次调用就能拿到相关小节的完整示例与说明，不必通读整篇文档。关键词可用空格分隔多个（要求同时出现，便于收窄范围），如「画布 导出」；文档里的函数名形如 $读文件 …$，拿不准名字时可先只搜「文件」这类短词。",
+			map[string]any{"keyword": str("要搜索的关键词，如 读文件、画布 导出、发送消息")}, "keyword"),
+		aiTool("read_dic_doc", "读取内置说明文档。查某个函数 / API 的用法请优先用 search_docs 检索（直接返回命中小节原文）；本工具用于浏览文档清单、通读某一篇，或看检索结果之外的上下文。不传 doc 时返回文档清单（分组 + 标题 + 资源路径 + 字数）；传 doc 时只返回那一篇的正文，涵盖内置函数、数据库、机器人功能、JavaScript 集成、扩展开发与对象实例（如画布）。doc 可给资源路径（如 docs/1-内置函数/04-文件操作.md）或标题（如 文件操作）。遇到不确定的函数 / API 时以文档为准，不要靠猜、也不要往词库写试探词条。",
 			map[string]any{"doc": str("要读取的文档：资源路径或标题；留空则返回全部文档清单")}),
 		aiTool("read_skill", "读取指定技能的完整内容（步骤与约定）。每轮系统提示的「可用技能」清单只给出技能名称与描述（含应用内置技能）；当任务与某个技能的描述相符时，先调用本工具读取该技能全文，再严格按其中的步骤执行。", map[string]any{"name": str("技能名称（与「可用技能」清单中的名称一致）")}, "name"),
-		aiTool("save_dic", "保存词库文件（覆盖写入）。.n 保存后自动重新编译并返回编译报错（errors）与警告（warnings）；保存前会做语法规范校验（如把 # 当注释、块结构内空行），不合格会拒绝写入并返回问题列表，需修正后重新保存；返回的 errors 非空时必须继续修复后再次保存，直到无 error 级诊断。网页词库 .wn 直接写入，写入后用 run_web_dic 运行验证。",
+		aiTool("save_dic", "保存词库文件（覆盖写入）。.n 保存后自动重新编译，除编译报错（errors）与警告（warnings）外，还返回编译后的函数（functions）、面向对象的类方法（classes，类名 -> 方法名）与触发词（triggers）清单，保存后即可据此确认本次改动是否生效，无需再另外调用 check_dic；保存前会做语法规范校验（如把 # 当注释、块结构内空行），不合格会拒绝写入并返回问题列表，需修正后重新保存；返回的 errors 非空时必须继续修复后再次保存，直到无 error 级诊断。网页词库 .wn 直接写入（不做语法规范校验），写入后返回执行块（<?n ... ?> 内联块 / <script type=\"nebula\"> 脚本块）的变量检查与模板键核对结果：warnings 里的「变量赋值后未被使用」「模板键不存在」都会让页面静默输出为空，必须修复后再次保存。",
 			map[string]any{
 				"path":    str("词库路径（相对应用目录，.n 或 .wn 结尾）"),
 				"content": str("要保存的完整词库代码"),
 			}, "path", "content"),
-		aiTool("check_dic", "编译检查 .n 词库并返回诊断（error/warning），不修改文件。",
-			map[string]any{"path": str("词库路径（相对应用目录，.n 结尾）")}, "path"),
+		aiTool("check_dic", "编译检查 .n 词库：返回诊断（error/warning），以及编译后的清单——函数（functions，全局 [函数] 与自定义函数）、面向对象的类方法（classes，类名 -> 方法名，含构造函数 new）、触发词（triggers）；不修改文件。清单含 #引入= 带入的部分，函数为「名称」、触发词为「触发词」或「[类别]触发词」；可用它确认新增的函数 / 类方法 / 触发词是否已生效、是否与既有名称冲突。也支持网页词库 .wn：返回执行块（<?n ... ?> 内联块 / <script type=\"nebula\"> 脚本块）的变量检查与模板键核对结果。",
+			map[string]any{"path": str("词库路径（相对应用目录，.n 或 .wn 结尾）")}, "path"),
 		aiTool("run_dic", "运行 .n 词库并返回输出与运行诊断，用于验证修改效果。存在 error 级编译诊断时会拒绝运行。",
 			map[string]any{
 				"path":    str("词库路径（相对应用目录，.n 结尾）"),
 				"trigger": str("触发词，默认 Main"),
 				"timeout": num("运行超时秒数，默认 15，最大 60"),
 			}, "path"),
-		aiTool("run_web_dic", "运行网页词库 .wn（本地模拟执行）：脚本块自上而下执行并完成模板渲染，返回最终 HTML，用于验证修改效果。.wn 没有触发词，不要传 trigger。",
+		aiTool("run_web_dic", "运行网页词库 .wn（本地模拟执行）：<?n ... ?> 内联块与 <script type=\"nebula\"> 脚本块自上而下执行并完成模板渲染，返回最终 HTML 与执行块变量检查、模板键核对结果，用于验证修改效果。.wn 没有触发词，不要传 trigger。",
 			map[string]any{
 				"path": str("网页词库路径（相对应用目录，.wn 结尾）"),
 			}, "path"),
@@ -186,6 +193,8 @@ func aiToolDefinitions() []map[string]any {
 				"source": str("图片来源：应用目录内的相对路径（如 public/a.png）、data URI（data:image/png;base64,...），或 http(s) 图片地址（远程地址只识别、不下载分析）"),
 				"grid":   boolean("是否输出分区域色块网格（整图切成 8×8 块、每格给出该块平均色）：看不清图片时用它判断画面布局与配色分布，默认 false"),
 			}, "source"),
+		aiTool("switch_agent", "把当前任务交给另一个智能体并继续：本智能体只负责自己工作提示词里声明的那类词库，用户要做的事明显属于别的场景时（例如本智能体负责网页词库 .wn，用户却要给机器人写 .n 词库，或用户要求改动的那个关联文件本身就是 .n），不要硬按本场景写代码，直接用它交接给对应智能体。注意只按「用户明确的目标文件类型」判断：用户没点名目标文件时，先看「当前任务关联的词库文件」——它属于本智能体类型就直接改它、不要另建同类新文件，也不属于交接场景；只有它属于别的类型、而用户要做的又不是改它时，才按本智能体职责新建自己类型的文件并开发调试。不传 agent 时返回可选智能体清单（id / 名称 / 是否内置），据此选中目标名称后再调用一次。切换立即生效：本轮后续步骤就按新智能体的工作提示词与技能清单继续，因此交接后只需一句说明告知用户「已转交给谁」，随即接着用户最初的请求往下做，不要让用户重新发一遍。",
+			map[string]any{"agent": str("目标智能体的名称或 ID（取自本工具返回的清单）；留空表示只查询可选智能体")}),
 	}
 }
 
@@ -258,22 +267,148 @@ func aiToolDecode(argsJSON string, dst any) error {
 
 // aiDicWarnings 编译词库并返回诊断列表（error/warning），失败时以 error 诊断形式返回原因。
 func aiDicWarnings(path string) []dto.BuildWarning {
+	warnings, _, _, _ := aiDicCompile(path)
+	return warnings
+}
+
+// aiDicCompile 编译词库并返回诊断与编译后清单（函数、类方法、触发词）。
+// 清单取自编译产物，因此 #引入= 带入的部分也在其中；编译失败时只有一条 error 诊断，清单为空。
+func aiDicCompile(path string) (warnings []dto.BuildWarning, funcs []string, classes map[string][]string, triggers []string) {
 	d, err := dic_dto.RunDicNoCache(path)
 	if err != nil {
-		return []dto.BuildWarning{{Level: "error", Text: "词库编译失败: " + err.Error()}}
+		return []dto.BuildWarning{{Level: "error", Text: "词库编译失败: " + err.Error()}}, nil, nil, nil
 	}
-	if d == nil {
-		return nil
+	if d == nil || d.Data == nil {
+		return nil, nil, nil, nil
 	}
 	defer d.Close()
-	return d.Data.Warnings
+	funcs, classes, triggers = aiDicManifest(d.Data)
+	return d.Data.Warnings, funcs, classes, triggers
+}
+
+// aiDicManifest 汇总编译产物里的函数、类方法与触发词。
+// 全局函数（funcs）：[函数] 词条与自定义函数（JS 扩展、#引入 注入）；
+// 类方法（classes）：类名 -> 该类的 [函数] 方法名（含构造函数 new），即面向对象的函数；
+// 触发词（triggers）：其余词条，带类别的按源码形式还原（如 [内部]戳一戳、[群事件]群成员进群）。
+// 均按名称排序去重，便于模型核对改动是否生效。
+func aiDicManifest(v *dto.BuildValue) (funcs []string, classes map[string][]string, triggers []string) {
+	funcs, triggers = []string{}, []string{}
+	classes = make(map[string][]string, len(v.Class))
+	seenFunc := make(map[string]bool)
+	seenTrigger := make(map[string]bool)
+	seenMethod := make(map[string]map[string]bool, len(v.Class))
+	for _, item := range v.Dic {
+		if item == nil {
+			continue
+		}
+		aiDicAdd(&triggers, seenTrigger, item.Trigger)
+	}
+	for category, list := range v.DicFuncs {
+		for _, item := range list {
+			if item == nil {
+				continue
+			}
+			if category == "函数" {
+				aiDicAdd(&funcs, seenFunc, aiDicFuncName(item.Trigger))
+			} else {
+				aiDicAdd(&triggers, seenTrigger, "["+category+"]"+item.Trigger)
+			}
+		}
+	}
+	for name, cls := range v.Class {
+		if cls == nil {
+			continue
+		}
+		if seenMethod[name] == nil {
+			seenMethod[name] = make(map[string]bool)
+		}
+		if _, ok := classes[name]; !ok {
+			classes[name] = []string{}
+		}
+		methods := classes[name]
+		for category, list := range cls.DicFuncs {
+			for _, item := range list {
+				if item == nil {
+					continue
+				}
+				if category == "函数" {
+					aiDicAdd(&methods, seenMethod[name], aiDicFuncName(item.Trigger))
+				} else {
+					aiDicAdd(&triggers, seenTrigger, "["+category+":"+name+"]"+item.Trigger)
+				}
+			}
+		}
+		classes[name] = methods
+	}
+	for name := range v.MyFunc {
+		aiDicAdd(&funcs, seenFunc, name)
+	}
+	sort.Strings(funcs)
+	sort.Strings(triggers)
+	for _, methods := range classes {
+		sort.Strings(methods)
+	}
+	return funcs, classes, triggers
+}
+
+// aiDicAdd 把非空且未出现过的名称追加进清单。
+func aiDicAdd(list *[]string, seen map[string]bool, name string) {
+	name = strings.TrimSpace(name)
+	if name == "" || seen[name] {
+		return
+	}
+	seen[name] = true
+	*list = append(*list, name)
+}
+
+// aiDicManifestFields 把编译清单整理成回灌给模型的字段（函数 / 类方法 / 触发词），
+// 任一清单超过 aiDicListMax 时截断并返回一条 note 说明总数。
+func aiDicManifestFields(funcs []string, classes map[string][]string, triggers []string) (map[string]any, string) {
+	clipped := len(funcs) > aiDicListMax || len(triggers) > aiDicListMax
+	classOut := make(map[string][]string, len(classes))
+	for name, methods := range classes {
+		if len(methods) > aiDicListMax {
+			clipped = true
+		}
+		classOut[name] = aiDicClipList(methods)
+	}
+	fields := map[string]any{
+		"functions":     aiDicClipList(funcs),
+		"functionCount": len(funcs),
+		"classes":       classOut,
+		"classCount":    len(classes),
+		"triggers":      aiDicClipList(triggers),
+		"triggerCount":  len(triggers),
+	}
+	if !clipped {
+		return fields, ""
+	}
+	return fields, fmt.Sprintf("清单过长，函数 / 类方法 / 触发词各只列出前 %d 项；实际共 %d 个函数、%d 个类、%d 个触发词。",
+		aiDicListMax, len(funcs), len(classes), len(triggers))
+}
+
+// aiDicClipList 取清单前 aiDicListMax 项返回，超出部分由调用方在 note 里说明总数。
+func aiDicClipList(list []string) []string {
+	if len(list) > aiDicListMax {
+		return list[:aiDicListMax]
+	}
+	return list
+}
+
+// aiDicFuncName 去掉函数触发词的传出变量后缀：[函数]名称->变量1,变量2 只保留函数名。
+func aiDicFuncName(trigger string) string {
+	if i := strings.LastIndex(trigger, "->"); i != -1 {
+		return trigger[:i]
+	}
+	return trigger
 }
 
 // aiToolExecute 执行一次工具调用，返回回灌给模型的文本结果、展示在思考区的简要说明，
 // 以及本次调用捕获到的图片（多模态上传用；目前仅 run_dic 且视觉能力开启时非空）。
 // streamID 为本轮 AI 流式请求 id，运行词库时用于把执行结果推送到前端「运行结果」面板。
+// sessionID 为当前任务 id，切换智能体时需要它定位任务。
 // vision 为全局「AI 视觉能力」开关，run_dic 据此决定图片是上传给模型还是仅提示无法查看。
-func aiToolExecute(name, argsJSON, streamID string, vision bool) (result string, brief string, images []string) {
+func aiToolExecute(name, argsJSON, streamID, sessionID string, vision bool) (result string, brief string, images []string) {
 	switch name {
 	case "list_files":
 		return aiToolPair(aiToolListFiles(argsJSON))
@@ -291,6 +426,8 @@ func aiToolExecute(name, argsJSON, streamID string, vision bool) (result string,
 		return aiToolPair(aiToolMoveFile(argsJSON))
 	case "read_dic":
 		return aiToolPair(aiToolReadDic(argsJSON))
+	case "search_docs":
+		return aiToolPair(aiToolSearchDocs(argsJSON))
 	case "read_dic_doc":
 		return aiToolPair(aiToolReadDicDoc(argsJSON))
 	case "read_skill":
@@ -305,6 +442,8 @@ func aiToolExecute(name, argsJSON, streamID string, vision bool) (result string,
 		return aiToolRunWebDic(argsJSON, streamID)
 	case "view_image":
 		return aiToolPair(aiToolViewImage(argsJSON))
+	case "switch_agent":
+		return aiToolPair(aiToolSwitchAgent(argsJSON, sessionID))
 	default:
 		return aiToolFail("未知工具: " + name), "未知工具 " + name, nil
 	}
@@ -313,6 +452,114 @@ func aiToolExecute(name, argsJSON, streamID string, vision bool) (result string,
 // aiToolPair 把「结果, 摘要」二元返回值补上空的图片列表，供 aiToolExecute 统一返回三元组。
 func aiToolPair(result, brief string) (string, string, []string) {
 	return result, brief, nil
+}
+
+// aiToolSwitchAgent 把当前任务交给另一个智能体（与前端「切换智能体」走同一套 aiSetSessionAgent）。
+// agent 留空时只返回可选清单，让模型先看清有哪些智能体、再按名称切换；
+// 名称支持精确匹配、忽略大小写与唯一子串匹配，匹配不到或有歧义时把清单一并回灌，避免切错任务归属。
+func aiToolSwitchAgent(argsJSON, sessionID string) (string, string) {
+	var a struct {
+		Agent string `json:"agent"`
+	}
+	if err := aiToolDecode(argsJSON, &a); err != nil {
+		return aiToolFail("参数解析失败: " + err.Error()), "参数错误"
+	}
+	if strings.TrimSpace(sessionID) == "" {
+		return aiToolFail("无法确定当前任务，未能切换智能体"), "无法切换"
+	}
+	list := aiAgentBriefList()
+	want := strings.TrimSpace(a.Agent)
+	if want == "" {
+		return aiToolResult(map[string]any{
+			"agents": list,
+			"note":   "请从中选定目标智能体后再次调用本工具，并传其名称（或 id）。",
+		}), "列出可选智能体"
+	}
+	target := aiMatchAgentBrief(list, want)
+	if target == nil {
+		return aiToolResult(map[string]any{
+			"error":  "未找到唯一匹配的智能体: " + want + "，请改用清单中的准确名称或 id",
+			"agents": list,
+		}), "未找到智能体"
+	}
+	targetID, _ := target["id"].(string)
+	targetName, _ := target["name"].(string)
+	if aiSessionAgentID(sessionID) == targetID {
+		return aiToolResult(map[string]any{
+			"status": "ok",
+			"agent":  target,
+			"note":   "当前任务已由该智能体负责，无需切换，请按它的职责继续。",
+		}), "已是 " + targetName
+	}
+	agent, _, err := aiSetSessionAgent(sessionID, targetID, "")
+	if err != nil {
+		return aiToolFail("切换智能体失败: " + err.Error()), "切换失败"
+	}
+	return aiToolResult(map[string]any{
+		"status": "ok",
+		"agent":  map[string]any{"id": agent.ID, "name": agent.Name, "builtin": agent.Builtin},
+		"note": "任务已转交「" + agent.Name + "」，本轮的系统提示也已立即换成它的工作提示词与技能清单：" +
+			"请不要再按原来的场景继续，直接按「" + agent.Name + "」的职责与技能，接着用户最初的要求往下做，" +
+			"不需要让用户重新发消息；给用户的一句说明讲清「已转交给谁、接下来由它继续」即可。",
+	}), "已切换到 " + agent.Name
+}
+
+// aiAgentBriefList 返回全部智能体的摘要（id / 名称 / 是否内置），供模型挑选交接目标。
+func aiAgentBriefList() []map[string]any {
+	aiAgentsMu.Lock()
+	ensureAIAgentsLoadedLocked()
+	list := make([]map[string]any, 0, len(aiAgents))
+	for _, a := range aiAgents {
+		list = append(list, map[string]any{"id": a.ID, "name": a.Name, "builtin": a.Builtin})
+	}
+	aiAgentsMu.Unlock()
+	sort.Slice(list, func(i, j int) bool {
+		ni, _ := list[i]["name"].(string)
+		nj, _ := list[j]["name"].(string)
+		return ni < nj
+	})
+	return list
+}
+
+// aiMatchAgentBrief 在摘要列表中按 id / 名称定位智能体：先精确、再忽略大小写、最后唯一子串；
+// 子串命中多个时返回 nil，交由模型给出更明确的名称，避免切到不相干的智能体。
+func aiMatchAgentBrief(list []map[string]any, want string) map[string]any {
+	for _, a := range list {
+		if id, _ := a["id"].(string); id == want {
+			return a
+		}
+	}
+	for _, a := range list {
+		if n, _ := a["name"].(string); strings.EqualFold(n, want) {
+			return a
+		}
+	}
+	lower := strings.ToLower(want)
+	var hit map[string]any
+	for _, a := range list {
+		n, _ := a["name"].(string)
+		id, _ := a["id"].(string)
+		if !strings.Contains(strings.ToLower(n), lower) && !strings.Contains(strings.ToLower(id), lower) {
+			continue
+		}
+		if hit != nil {
+			return nil
+		}
+		hit = a
+	}
+	return hit
+}
+
+// aiSessionAgentID 返回任务当前归属的智能体 id（任务不存在时为空串）。
+func aiSessionAgentID(sessionID string) string {
+	aiSessionsMu.Lock()
+	ensureAISessionsLoadedLocked()
+	id := ""
+	if s := aiSessions[strings.TrimSpace(sessionID)]; s != nil {
+		id = s.AgentID
+	}
+	aiSessionsMu.Unlock()
+	return id
 }
 
 // aiToolListFiles 列出目录直接子项。
@@ -619,17 +866,69 @@ func aiToolReadDic(argsJSON string) (string, string) {
 			return aiToolFail("词库读取失败: " + err.Error()), "读取失败 " + p
 		}
 	}
-	// 网页词库（.wn）没有编译环节，只在被访问时解析脚本块，故不返回编译诊断
+	// 网页词库（.wn）没有编译环节，改做脚本块变量检查与模板键核对
 	warnings := []dto.BuildWarning{}
-	if !checkWebDicPath(p) {
+	resp := map[string]any{"path": p}
+	if checkWebDicPath(p) {
+		warnings = run.WebDicCheck(content)
+		blockCount, keys := run.WebDicRenderInfo(content)
+		resp["webDic"] = true
+		resp["scriptBlockCount"] = blockCount
+		resp["templateKeys"] = keys
+		resp["renderNote"] = webDicRenderNote(blockCount, keys)
+	} else {
 		warnings = aiDicWarnings(p)
 	}
 	text := content
 	if len([]rune(text)) > aiToolReadMaxRunes {
 		text = aiClipRunesHeadTail(text, aiToolReadMaxRunes)
 	}
-	return aiToolResult(map[string]any{"path": p, "content": text, "warnings": warnings}),
-		fmt.Sprintf("读取词库 %s（%d 字符，%d 条编译诊断）", p, len([]rune(content)), len(warnings))
+	kind := "编译诊断"
+	if checkWebDicPath(p) {
+		kind = "检查诊断"
+	}
+	resp["content"] = text
+	resp["warnings"] = warnings
+	return aiToolResult(resp),
+		fmt.Sprintf("读取词库 %s（%d 字符，%d 条%s）", p, len([]rune(content)), len(warnings), kind)
+}
+
+// aiToolSearchDocs 在内置说明文档里检索关键词，返回命中小节的原文。
+// 存在的意义：查一个不熟悉的函数以前只能 read_dic_doc 整篇读取（动辄上万字），既挤占上下文又慢；
+// 一次 search_docs 直接拿到相关小节，多数问题不必再读整篇。
+func aiToolSearchDocs(argsJSON string) (string, string) {
+	var a struct {
+		Keyword string `json:"keyword"`
+	}
+	if err := aiToolDecode(argsJSON, &a); err != nil {
+		return aiToolFail("参数解析失败: " + err.Error()), "参数错误"
+	}
+	kw := strings.TrimSpace(a.Keyword)
+	if kw == "" {
+		return aiToolFail("请提供要搜索的关键词"), "缺少关键词"
+	}
+	// 空格 / 逗号 / 顿号分隔的多个关键词按「与」处理，便于把范围收窄到想要的那一节
+	keywords := strings.FieldsFunc(kw, func(r rune) bool {
+		switch r {
+		case ' ', '\t', ',', '，', '、':
+			return true
+		}
+		return false
+	})
+	hits := dicDocRawSearch(keywords)
+	if len(hits) == 0 {
+		return aiToolResult(map[string]any{
+			"keyword": kw,
+			"count":   0,
+			"hits":    hits,
+			"hint":    "没有命中的小节。可只保留函数名或换更短的关键词重试；要浏览全部篇章用 read_dic_doc（不传 doc）。",
+		}), "检索文档「" + kw + "」无命中"
+	}
+	res := map[string]any{"keyword": kw, "count": len(hits), "hits": hits}
+	if len(hits) >= dicDocRawMaxHits {
+		res["note"] = fmt.Sprintf("结果已达上限（%d 节），可用更多关键词（空格分隔）缩小范围", dicDocRawMaxHits)
+	}
+	return aiToolResult(res), fmt.Sprintf("检索文档「%s」命中 %d 节", kw, len(hits))
 }
 
 // aiToolReadDicDoc 读取内置说明文档（appfiles/static/docs 下的分篇 md）。
@@ -780,9 +1079,10 @@ func aiDicBlockClose(line string) bool {
 	return false
 }
 
-// aiToolSaveDic 保存词库并返回编译诊断。保存前先做语法规范检查，不合格则拒绝写入；
-// 写入后自动重新编译，把诊断（error/warning）回灌给模型并推送给前端，
-// 用户无需再手动运行一次才能看到警告/报错。
+// aiToolSaveDic 保存词库并返回编译诊断与编译清单。保存前先做语法规范检查，不合格则拒绝写入；
+// 落盘前按手动保存的规则自动格式化（.n 走块结构缩进，.wn 走 HTML 缩进）；
+// 写入后自动重新编译，把诊断（error/warning）与函数 / 类方法 / 触发词清单回灌给模型并推送给前端，
+// 用户无需再手动运行一次才能看到警告/报错，模型也无需再单独调用 check_dic 确认清单。
 func aiToolSaveDic(argsJSON string) (string, string) {
 	var a struct {
 		Path    string `json:"path"`
@@ -795,13 +1095,42 @@ func aiToolSaveDic(argsJSON string) (string, string) {
 	if !checkDicOrWebPath(p) {
 		return aiToolFail("词库路径不合法，需为应用目录内的相对路径且以 .n / .wn 结尾"), "路径不合法"
 	}
-	// 网页词库（.wn）是 HTML 容器 + 脚本块，不参与 .n 语法规范校验，也没有编译环节，
-	// 直接写入即可，写入后由模型用 run_web_dic 运行验证。
+	// 网页词库（.wn）是 HTML 容器 + 执行块（<?n ... ?> 内联块 / <script type="nebula"> 脚本块），
+	// 不参与 .n 语法规范校验，也没有编译环节：直接写入，写完后做执行块变量检查与模板键核对，
+	// 把「赋值了但页面没用」「模板键不存在」这类会让页面静默输出为空的问题回灌给模型，
+	// 避免它以为保存成功就收尾。
 	if checkWebDicPath(p) {
-		utils.NewFileQueue(p).WriteToFile(a.Content)
-		aiNotifyFileChanged("save", p, nil)
-		return aiToolResult(map[string]any{"status": "ok", "path": p, "webDic": true}),
-			"已保存网页词库 " + p
+		content := a.Content
+		// 与手动保存（dic_save_content）保持一致：落盘前按 HTML 结构自动缩进，
+		// 否则 AI 保存的 .wn 缩进会与前端保存的结果不一致，用户每次都要手动点一次格式化
+		formatted := false
+		if dicAutoFormatEnabled() {
+			if f := build.FormatWebDic(content); f != content {
+				content = f
+				formatted = true
+			}
+		}
+		utils.NewFileQueue(p).WriteToFile(content)
+		warnings := run.WebDicCheck(content)
+		blockCount, keys := run.WebDicRenderInfo(content)
+		aiNotifyFileChanged("save", p, map[string]any{"warnings": warnings})
+		resp := map[string]any{
+			"status": "ok", "path": p, "webDic": true, "warnings": warnings,
+			"scriptBlockCount": blockCount, "templateKeys": keys,
+			"renderNote": webDicRenderNote(blockCount, keys),
+		}
+		if formatted {
+			resp["formatted"] = true
+		}
+		brief := "已保存网页词库 " + p + "（无检查诊断）"
+		if len(warnings) > 0 {
+			resp["nextStep"] = fmt.Sprintf(
+				"本次内容已写入磁盘，执行块/模板检查有 %d 条 warning（见 warnings）。"+
+					"「变量赋值后未被使用」「模板键不存在」都会让页面静默输出为空，"+
+					"必须逐条修复后用完整内容再次调用 save_dic 覆盖保存，并在答复里说明。", len(warnings))
+			brief = fmt.Sprintf("已保存网页词库 %s（%d 条检查警告）", p, len(warnings))
+		}
+		return aiToolResult(resp), brief
 	}
 	// 保存前强校验：拦下编译查不出、却会让代码静默失效的写法，把问题回灌给模型让它改对再存
 	if problems := aiDicLintContent(a.Content); len(problems) > 0 {
@@ -812,10 +1141,20 @@ func aiToolSaveDic(argsJSON string) (string, string) {
 				"请逐条修正下列问题后，用修正后的完整内容再次调用 save_dic：\n" + strings.Join(problems, "\n"),
 		}), fmt.Sprintf("词库内容不规范，已拒绝保存（%d 处问题）", len(problems))
 	}
-	utils.NewFileQueue(p).WriteToFile(a.Content)
+	// 与手动保存（dic_save_content）保持一致：落盘前按块结构重新缩进，
+	// 否则 AI 保存的 .n 缩进会与前端保存的结果不一致，用户每次都要手动点一次格式化
+	content := a.Content
+	formatted := false
+	if dicAutoFormatEnabled() {
+		if f := build.FormatDic(content); f != content {
+			content = f
+			formatted = true
+		}
+	}
+	utils.NewFileQueue(p).WriteToFile(content)
 
 	// 保存后自动重新编译：诊断一并回灌给模型（据此继续修复）并推送给前端（据此高亮行号并提示用户）
-	warnings := aiDicWarnings(p)
+	warnings, funcs, classes, triggers := aiDicCompile(p)
 	errors := make([]dto.BuildWarning, 0, len(warnings))
 	for _, w := range warnings {
 		if w.Level == "error" {
@@ -824,7 +1163,17 @@ func aiToolSaveDic(argsJSON string) (string, string) {
 	}
 	aiNotifyFileChanged("save", p, map[string]any{"warnings": warnings})
 
+	// 编译清单（函数 / 类方法 / 触发词）随保存结果一并返回：模型保存后即可确认
+	// 本次改动引入了哪些函数 / 类方法 / 触发词，无需再单独调用 check_dic。
+	fields, note := aiDicManifestFields(funcs, classes, triggers)
 	resp := map[string]any{"status": "ok", "path": p, "warnings": warnings, "errorCount": len(errors)}
+	maps.Copy(resp, fields)
+	if formatted {
+		resp["formatted"] = true
+	}
+	if note != "" {
+		resp["note"] = note
+	}
 	brief := fmt.Sprintf("已保存词库 %s（无编译诊断）", p)
 	switch {
 	case len(errors) > 0:
@@ -845,7 +1194,7 @@ func aiToolSaveDic(argsJSON string) (string, string) {
 	return aiToolResult(resp), brief
 }
 
-// aiToolCheckDic 仅编译检查词库。
+// aiToolCheckDic 仅编译检查词库；网页词库（.wn）改做脚本块变量检查与模板键核对。
 func aiToolCheckDic(argsJSON string) (string, string) {
 	var a struct {
 		Path string `json:"path"`
@@ -854,21 +1203,47 @@ func aiToolCheckDic(argsJSON string) (string, string) {
 		return aiToolFail("参数解析失败: " + err.Error()), "参数错误"
 	}
 	p := strings.TrimSpace(a.Path)
-	if !checkDicPath(p) {
-		return aiToolFail("词库路径不合法，需为应用目录内的相对路径且以 .n 结尾"), "路径不合法"
+	if !checkDicOrWebPath(p) {
+		return aiToolFail("词库路径不合法，需为应用目录内的相对路径且以 .n / .wn 结尾"), "路径不合法"
 	}
-	if _, err := os.Stat(filepath.Join(opuiAppDir(), filepath.FromSlash(p))); err != nil {
+	filePath := filepath.Join(opuiAppDir(), filepath.FromSlash(p))
+	if _, err := os.Stat(filePath); err != nil {
 		return aiToolFail("词库文件不存在: " + p), "词库不存在 " + p
 	}
-	warnings := aiDicWarnings(p)
+	// 网页词库没有编译环节，也不存在函数 / 类 / 触发词清单，只返回执行块与模板键检查结果
+	if checkWebDicPath(p) {
+		content, err := utils.NewFileQueue(p).ReadFromFile()
+		if err != nil {
+			return aiToolFail("词库读取失败: " + err.Error()), "读取失败 " + p
+		}
+		warnings := run.WebDicCheck(content)
+		blockCount, keys := run.WebDicRenderInfo(content)
+		resp := map[string]any{
+			"path": p, "webDic": true, "warnings": warnings,
+			"scriptBlockCount": blockCount, "templateKeys": keys,
+			"renderNote": webDicRenderNote(blockCount, keys),
+		}
+		return aiToolResult(resp),
+			fmt.Sprintf("检查网页词库 %s：%d 条检查诊断", p, len(warnings))
+	}
+	// 编译检查不通过时仍返回清单：清单反映的是「磁盘上现有的编译结果」，
+	// 便于核对本次改动引入了哪些函数 / 类方法 / 触发词。
+	warnings, funcs, classes, triggers := aiDicCompile(p)
 	errCount := 0
 	for _, w := range warnings {
 		if w.Level == "error" {
 			errCount++
 		}
 	}
-	return aiToolResult(map[string]any{"path": p, "warnings": warnings, "errorCount": errCount}),
-		fmt.Sprintf("编译检查 %s：%d 个错误，%d 条诊断", p, errCount, len(warnings))
+	fields, note := aiDicManifestFields(funcs, classes, triggers)
+	resp := map[string]any{"path": p, "warnings": warnings, "errorCount": errCount}
+	maps.Copy(resp, fields)
+	if note != "" {
+		resp["note"] = note
+	}
+	return aiToolResult(resp),
+		fmt.Sprintf("编译检查 %s：%d 个错误，%d 条诊断，%d 个函数，%d 个类，%d 个触发词",
+			p, errCount, len(warnings), len(funcs), len(classes), len(triggers))
 }
 
 // aiToolRunDic 运行词库并返回输出。
@@ -988,8 +1363,8 @@ func aiToolRunDic(argsJSON, streamID string, vision bool) (string, string, []str
 	return aiToolResult(resp), brief, upload
 }
 
-// aiToolRunWebDic 本地运行网页词库（.wn）：脚本块自上而下执行并完成模板渲染，
-// 返回最终 HTML（渲染后的整页内容），运行结果同步推送到前端「运行结果」面板。
+// aiToolRunWebDic 本地运行网页词库（.wn）：执行块（<?n ... ?> 内联块 / <script type="nebula"> 脚本块）
+// 自上而下执行并完成模板渲染，返回最终 HTML（渲染后的整页内容），运行结果同步推送到前端「运行结果」面板。
 // .wn 没有触发词概念，也不需要编译，故不做编译诊断与触发词分支。
 func aiToolRunWebDic(argsJSON, streamID string) (string, string, []string) {
 	var a struct {
@@ -1009,8 +1384,24 @@ func aiToolRunWebDic(argsJSON, streamID string) (string, string, []string) {
 	dicDeleteConfirmActive.Add(1)
 	defer dicDeleteConfirmActive.Add(-1)
 
+	// 运行前先做静态检查：执行块变量 + 模板键，让模型能看到「赋值了但页面没用」这类静默失效问题
+	warnings := []dto.BuildWarning{}
+	blockCount := 0
+	var templateKeys []string
+	if content, err := utils.NewFileQueue(p).ReadFromFile(); err == nil {
+		warnings = run.WebDicCheck(content)
+		blockCount, templateKeys = run.WebDicRenderInfo(content)
+	}
+
 	output, err := runWebDicLocal(p, a.G)
 	if err != nil {
+		if len(warnings) > 0 {
+			return aiToolResult(map[string]any{
+				"status":   "error",
+				"error":    "网页词库加载失败: " + err.Error(),
+				"warnings": warnings,
+			}), fmt.Sprintf("运行失败 %s（另有 %d 条检查警告）", p, len(warnings)), nil
+		}
 		return aiToolFail("网页词库加载失败: " + err.Error()), "运行失败 " + p, nil
 	}
 
@@ -1019,16 +1410,49 @@ func aiToolRunWebDic(argsJSON, streamID string) (string, string, []string) {
 		"path":     p,
 		"webDic":   true,
 		"output":   output,
+		"warnings": warnings,
 		"timedOut": false,
 		"segments": parseOutputSegments(output),
 		"vars":     map[string]any{"P": map[string]any{}, "G": map[string]any{}, "GV": map[string]any{}},
 	})
 
 	resp := map[string]any{
-		"output":   aiClipRunesHeadTail(output, aiToolOutputMaxRunes),
-		"timedOut": false,
+		"output":           aiClipRunesHeadTail(output, aiToolOutputMaxRunes),
+		"warnings":         warnings,
+		"timedOut":         false,
+		"scriptBlockCount": blockCount,
+		"templateKeys":     templateKeys,
+		"renderNote":       webDicRenderNote(blockCount, templateKeys),
 	}
-	return aiToolResult(resp), "已运行网页词库 " + p, nil
+	brief := "已运行网页词库 " + p
+	var notes []string
+	if blockCount == 0 {
+		notes = append(notes, "无执行块（<?n ... ?> 内联块 / <script type=\"nebula\"> 脚本块）")
+	}
+	if len(warnings) > 0 {
+		notes = append(notes, fmt.Sprintf("%d 条检查警告", len(warnings)))
+	}
+	if len(notes) > 0 {
+		brief += "（" + strings.Join(notes, "，") + "）"
+	}
+	return aiToolResult(resp), brief, nil
+}
+
+// webDicRenderNote 生成网页词库的渲染摘要，明确告诉模型执行块是否真的存在、页面能取到哪些模板键。
+// 执行块数为 0 时页面不会执行任何 Nebula 逻辑，文件里的赋值行 / 框开启行 / $函数$ / %变量%
+// 都会作为普通文字原样输出——这是「保存成功、页面却什么都没渲染」的常见原因，
+// 必须在回灌里点明，避免模型只看到 output 就宣布渲染正常。
+func webDicRenderNote(blockCount int, keys []string) string {
+	if blockCount == 0 {
+		return "本文件没有执行块（<?n ... ?> 内联块或 <script type=\"nebula\"> 脚本块）：页面不会执行任何 Nebula 语句，" +
+			"HTML 里的赋值行 / 框开启行 / $函数$ / %变量% 都会作为普通文字原样显示。" +
+			"若要让页面渲染词库结果，请把逻辑写进 <?n ... ?> 内联块（推荐，就地输出）或 <script type=\"nebula\"> ... </script> 脚本块。"
+	}
+	note := fmt.Sprintf("已执行 %d 个执行块（<?n ... ?> 内联块 / <script type=\"nebula\"> 脚本块）。", blockCount)
+	if len(keys) == 0 {
+		return note + "这些块没有提供任何模板键，页面里的 {{.键}} 都会渲染为空（内联块的结果已经就地写入页面，不需要再取）。"
+	}
+	return note + "块内赋值提供的模板键：" + strings.Join(keys, "、") + "。页面只有用 {{.键}} 才能取到这些结果。"
 }
 
 // ============== 视图工具（把图片变成可读的量化数据） ==============
@@ -1284,8 +1708,10 @@ func aiParseTextToolCalls(content string) ([]aiToolCall, string) {
 	content = aiCanonInvokeToolCalls(content)
 	// 兼容 <save_dic><parameter name="…">…</parameter></save_dic> 这类裸 XML（见 aiCanonXMLToolCalls）
 	content = aiCanonXMLToolCalls(content)
+	// 兼容缺了 <tool_call> 开标签的写法（见 aiCanonOrphanToolCalls）
+	content = aiCanonOrphanToolCalls(content)
 	if !strings.Contains(content, "<tool_call>") {
-		return nil, content
+		return nil, aiStripToolCallMarkup(content)
 	}
 	var calls []aiToolCall
 	var rest strings.Builder
@@ -1307,7 +1733,7 @@ func aiParseTextToolCalls(content string) ([]aiToolCall, string) {
 			calls = append(calls, call)
 		}
 	}
-	return calls, strings.TrimSpace(rest.String())
+	return calls, aiStripToolCallMarkup(strings.TrimSpace(rest.String()))
 }
 
 // ============== DSML 形式文本工具调用的规整 ==============
@@ -1487,6 +1913,85 @@ func aiCanonXMLToolCalls(s string) string {
 	return out.String()
 }
 
+// aiOrphanToolCallRe 匹配缺了 <tool_call> 开标签的调用开头：行首的已注册工具名 + 紧跟参数标签。
+var aiOrphanToolCallRe = regexp.MustCompile(`(?m)^[ \t]*([A-Za-z_][A-Za-z0-9_]*)[ \t]*\r?\n?[ \t]*<arg_key>`)
+
+// aiCanonOrphanToolCalls 兼容缺了 <tool_call> 开标签的文本工具调用，把它补回统一标记。
+// 部分模型只把调用当成正文续写，直接吐出「工具名 + 参数标签」而漏掉外层包裹，例如：
+//
+//	search_docs
+//	<arg_key>keyword</arg_key>
+//	<arg_value>画布方法</arg_value>
+//	</tool_call>
+//
+// 少了开标签时既有解析一律落空：这段既会原样出现在答复正文里（用户看到一段没被执行的调用），
+// 又不会真的执行。这里按「行首的已注册工具名 + 紧跟参数标签」识别并补齐外层，
+// 复用既有解析逻辑；不含参数标记或工具名不认识时原样返回，避免误伤正常正文。
+func aiCanonOrphanToolCalls(s string) string {
+	if !strings.Contains(s, "<arg_key>") || !aiOrphanToolCallRe.MatchString(s) {
+		return s
+	}
+	names := aiKnownToolNames()
+	var out strings.Builder
+	rest := s
+	for {
+		loc := aiOrphanToolCallRe.FindStringSubmatchIndex(rest)
+		if loc == nil {
+			out.WriteString(rest)
+			break
+		}
+		name := rest[loc[2]:loc[3]]
+		// 已有开标签（<tool_call> 单独占一行、工具名在下一行）时交给既有解析，不要重复补齐
+		if strings.HasSuffix(strings.TrimRight(rest[:loc[2]], " \t\r\n"), "<tool_call>") {
+			out.WriteString(rest[:loc[3]])
+			rest = rest[loc[3]:]
+			continue
+		}
+		if !names[name] {
+			// 不是已注册工具：这部分当普通正文跳过，继续找后面的调用
+			out.WriteString(rest[:loc[3]])
+			rest = rest[loc[3]:]
+			continue
+		}
+		out.WriteString(rest[:loc[2]])
+		body := rest[loc[3]:]
+		var inner string
+		if i := strings.Index(body, "</tool_call>"); i >= 0 {
+			inner = body[:i]
+			body = body[i+len("</tool_call>"):]
+		} else if i := strings.LastIndex(body, "</arg_value>"); i >= 0 {
+			// 连收尾标签也没有：参数区截到最后一个 </arg_value>，其后的文本仍归正文
+			inner = body[:i+len("</arg_value>")]
+			body = body[i+len("</arg_value>"):]
+		} else {
+			inner, body = body, ""
+		}
+		out.WriteString("<tool_call>")
+		out.WriteString(name)
+		out.WriteString(inner)
+		out.WriteString("</tool_call>")
+		rest = body
+	}
+	return out.String()
+}
+
+// 调用标记残片：解析失败（工具名不认识、标签畸形、调用被截断）时会留在正文里。
+var (
+	aiToolCallTagRe = regexp.MustCompile(`</?tool_call>`)
+	aiToolCallArgRe = regexp.MustCompile(`(?s)<arg_key>.*?</arg_key>[ \t\r\n]*<arg_value>.*?</arg_value>`)
+)
+
+// aiStripToolCallMarkup 去掉正文里残留的调用标记，避免用户直接看到一段没被执行的调用。
+// 只处理参数标记与 tool_call 标签本身，普通正文不受影响。
+func aiStripToolCallMarkup(s string) string {
+	if !strings.Contains(s, "<arg_key>") && !strings.Contains(s, "</tool_call>") {
+		return s
+	}
+	s = aiToolCallArgRe.ReplaceAllString(s, "")
+	s = aiToolCallTagRe.ReplaceAllString(s, "")
+	return strings.TrimSpace(s)
+}
+
 // aiToolCallTextRouter 流式识别正文里的文本形式工具调用（<tool_call>…</tool_call>），
 // 让调用片段改走思考区、而不是出现在答复正文中（正文里出现裸 JSON 会严重干扰阅读）。
 // 增量可能把一个标记拆成多片（如 "<tool" + "_call>"），用 pending 暂存疑似不完整的标记尾部，
@@ -1595,6 +2100,10 @@ func aiParseTextToolCall(inner string) (aiToolCall, bool) {
 			break
 		}
 		key := strings.TrimSpace(keyPart)
+		// 参数标签分行的写法很常见（工具名、arg_key、arg_value 各占一行），
+		// 这里允许键值标签之间的空白，避免「解析出调用但参数全丢」——
+		// 那种调用会带着空参数去执行，比不解析更糟。
+		tail = strings.TrimLeft(tail, " \t\r\n")
 		if !strings.HasPrefix(tail, "<arg_value>") {
 			break
 		}
@@ -1654,9 +2163,11 @@ func aiNormalizeToolCalls(calls []aiToolCall) []aiToolCall {
 
 // aiActionPreambleMarkers 计划/承诺式前言的典型措辞：模型用这些词表态「接下来要做什么」，
 // 却在本轮没有发起任何工具调用。
+// 「让我」「我来」必须单列：模型最常用的表态正是「让我检查一下…」「我来看看…」，
+// 只收「让我先 / 我来修」这类带后续动词的写法会整片漏判，用户看到的就是一句悬空的承诺。
 var aiActionPreambleMarkers = []string{
-	"我这就", "我马上", "我先", "让我先", "让我来", "接下来我", "然后我", "随后我",
-	"我会", "我将", "我准备", "我打算", "我来看", "我来修", "我来改", "我来写",
+	"我这就", "我马上", "我先", "让我", "我来", "接下来我", "然后我", "随后我",
+	"我会", "我将", "我准备", "我打算", "我来看", "我看看", "我查一下", "我读一下", "我确认", "我核对",
 	"先修复", "先修正", "先读取", "先看", "然后跑", "然后运行", "再运行",
 }
 
@@ -1692,6 +2203,29 @@ func aiLooksLikeActionPreamble(text string) bool {
 	return false
 }
 
+// aiFinalStallNote 收尾轮未能给出实质答复时的收尾说明。
+// 收尾轮已不下发工具（时间预算耗尽或触及轮数上限），模型却仍可能只回一句「让我检查一下…」
+// 式的行动前言——它想调用工具，但工具已被撤下，于是这句承诺成了最终答复，用户看到的就是
+// 「说了要去做、随后彻底没反应」。补上这句说明既讲清停在这里的原因，也给出手动继续的入口；
+// 它同时是「自动继续」的判定依据（见 aiSessionContinueHint），开了自动继续的任务会自动接着跑。
+const aiFinalStallNote = "（本次工具调用已达到轮数/时间上限，未能继续执行。可以回复「继续」让我接着处理。）"
+
+// aiFinalStallText 收尾轮的答复不成正文（空，或只是一句行动前言）时补上收尾说明；
+// 已是收尾提示的文案原样返回，避免重复追加。
+func aiFinalStallText(text string) string {
+	t := strings.TrimSpace(text)
+	if t == "" {
+		return aiFinalStallNote
+	}
+	if strings.Contains(t, "已达到轮数/时间上限") {
+		return text
+	}
+	if !aiLooksLikeActionPreamble(t) {
+		return text
+	}
+	return text + "\n\n" + aiFinalStallNote
+}
+
 // aiChatWithTools 执行「带工具能力」的多轮对话：模型请求工具调用时本地执行并把结果回灌，
 // 直至模型给出最终答复；达到轮数上限时追加一次不带工具的收尾请求强制模型基于已有信息作答，
 // 不再以错误中止整轮回复。
@@ -1701,7 +2235,9 @@ func aiLooksLikeActionPreamble(text string) bool {
 // 正文增量同样在流式解析时经 ai_stream_delta（kind=content）逐片推送，前端边生成边渲染。
 // 首轮即失败（常见于服务商不支持 function calling）时显式提示后降级为无工具流式对话，
 // 避免「静默降级」让用户误以为 AI 具备改写能力却始终没有动作。
-func aiChatWithTools(c *dto.AIConfig, model string, msgs []aiChatMessage, effort, streamID, permissionMode, sessionID string) (string, string, error) {
+// refreshSystem 由调用方提供，用于「AI 在工具轮中途把任务交接给别的智能体」后就地重建首条系统提示
+// （换成接手方的工作提示词与技能清单），为 nil 时交接只对之后的消息生效。
+func aiChatWithTools(c *dto.AIConfig, model string, msgs []aiChatMessage, effort, streamID, permissionMode, sessionID string, refreshSystem func() string) (string, string, error) {
 	tools := aiToolDefinitions()
 	deadline := time.Now().Add(aiToolTotalBudget)
 	work := append([]aiChatMessage(nil), msgs...)
@@ -1908,16 +2444,19 @@ func aiChatWithTools(c *dto.AIConfig, model string, msgs []aiChatMessage, effort
 					})
 					continue
 				}
-				if final {
-					// 收尾轮仍无正文：给出可读提示，而不是报错中止
-					content = "（本次工具调用已达到轮数/时间上限，未能生成完整答复。可以回复「继续」让我接着处理。）"
-				} else {
+				if !final {
 					// 重试用尽仍无正文：不再以错误中断整轮生成（历史版本会报「AI 未返回内容」），
 					// 给出可读提示并保留已产生的思考，用户可直接点「重试」再次发起。
 					content = "（上游多次未返回正文内容，可能是思考过程占满了输出预算。可以点「重试」或回复「继续」再试一次。）"
 				}
+				// 收尾轮仍无正文的情形由下方 aiFinalStallText 统一补提示
 			}
 			content = mergeContent(content)
+			// 收尾轮不下发工具，模型却可能只回一句「让我先看看…」式的行动前言就停住——工具已被撤下，
+			// 它没机会再执行，这句承诺会直接成为最终答复。补上收尾说明，别让用户看到一句前言就没了下文。
+			if final {
+				content = aiFinalStallText(content)
+			}
 			// 续写用尽后仍被截断：明确告知用户，避免误以为答复已经完整
 			if finishReason == "length" {
 				content += "\n\n（提示：本次输出多次触达模型长度上限，内容可能仍不完整。可回复「继续」让我接着补全。）"
@@ -1950,7 +2489,14 @@ func aiChatWithTools(c *dto.AIConfig, model string, msgs []aiChatMessage, effort
 			// 文件改动前的快照：解析本工具会改动的文件目标并在执行前抓取，供回撤与逐行标注
 			fileTargets := aiFileToolTargets(call.Function.Name, call.Function.Arguments)
 			aiFileToolCapture(fileTargets)
-			result, brief, images := aiToolExecute(call.Function.Name, call.Function.Arguments, streamID, c.Vision)
+			result, brief, images := aiToolExecute(call.Function.Name, call.Function.Arguments, streamID, sessionID, c.Vision)
+			// 交接智能体后立刻把首条系统提示换成接手方的：本轮后续步骤要按新智能体的职责继续，
+			// 否则模型拿着旧智能体的提示词干活，用户只能再发一条消息才真正转到新智能体。
+			if call.Function.Name == "switch_agent" && refreshSystem != nil && len(work) > 0 && work[0].Role == "system" {
+				if sys := refreshSystem(); strings.TrimSpace(sys) != "" {
+					work[0].Content = sys
+				}
+			}
 			// 执行后按实际落盘状态登记「本任务改过的文件」并推送逐行标注
 			if len(fileTargets) > 0 {
 				aiFileToolRecord(sessionID, call.Function.Name, fileTargets)
@@ -1971,11 +2517,9 @@ func aiChatWithTools(c *dto.AIConfig, model string, msgs []aiChatMessage, effort
 		// 收尾轮：最后一批调用已就地执行完，不再回灌模型（否则又开启新一轮调用），
 		// 直接以已剥离标记的正文收尾；正文为空时给出可读提示。
 		if final {
-			if strings.TrimSpace(content) == "" && contentAll.Len() == 0 {
-				content = "（本次工具调用已达到轮数/时间上限，未能生成完整答复。可以回复「继续」让我接着处理。）"
-			}
-			// 若此前发生过截断续写，累积片段必须一并返回，否则收尾答复只剩最后一段
-			return pendingNote(mergeContent(content)), reasoningAll.String(), nil
+			// 若此前发生过截断续写，累积片段必须一并返回，否则收尾答复只剩最后一段；
+			// 正文为空或只是一句行动前言时补收尾说明（见 aiFinalStallText）
+			return pendingNote(aiFinalStallText(mergeContent(content))), reasoningAll.String(), nil
 		}
 		// 视觉能力开启且工具捕获到图片：以多模态 user 消息补发图片，供模型查看
 		if len(roundImages) > 0 {
@@ -1991,7 +2535,7 @@ func aiChatWithTools(c *dto.AIConfig, model string, msgs []aiChatMessage, effort
 //   manual 手动审批：除查阅文档（read_dic_doc）外，其余工具调用都需用户在对话流内联卡片中确认
 //   auto   自动审批（默认）：应用目录（当前项目）内的读取、写入与运行词库自动放行，删除/移动/重命名类工具需确认
 //   full   完全访问：全部工具自动放行
-// read_dic_doc 在任何档位下都免审批（见 aiToolAlwaysAllow）。
+// search_docs、read_dic_doc 在任何档位下都免审批（见 aiToolAlwaysAllow）。
 // 审批请求经 WS 推送 ai_tool_approval，前端在对话流内联卡片中答复后回传
 // ai_tool_approval_result 唤醒此处阻塞等待的对话协程；与词库删除确认一致，超时按拒绝处理。
 
@@ -2004,6 +2548,7 @@ var aiToolReadOnly = map[string]bool{
 	"search_files": true,
 	"read_file":    true,
 	"read_dic":     true,
+	"search_docs":  true,
 	"read_dic_doc": true,
 	"read_skill":   true,
 	"check_dic":    true,
@@ -2018,17 +2563,21 @@ var aiToolReadOnly = map[string]bool{
 // run_dic / run_web_dic 只读地执行词库并返回输出，是「改完即验证」的收尾动作，同样不该中断。
 // 词库运行期自身的删除请求另有 dic_delete_confirm 确认流程，不受此处影响。
 // 删除、移动、重命名属破坏性操作，在 auto 档下仍保留确认卡片。
+// switch_agent 只改任务的智能体归属（与前端「切换智能体」同一操作，随时可切回），
+// 不碰磁盘；它正是「场景不符时自动交接到对应智能体」这条协同路径，弹卡片会让交接变成半途而废。
 var aiToolAutoAllow = map[string]bool{
-	"save_dic":    true,
-	"write_file":  true,
-	"run_dic":     true,
-	"run_web_dic": true,
+	"save_dic":     true,
+	"write_file":   true,
+	"run_dic":      true,
+	"run_web_dic":  true,
+	"switch_agent": true,
 }
 
 // aiToolAlwaysAllow 任何权限档位（含手动审批）都免审批的只读工具。
-// 查阅文档/技能不产生磁盘副作用，也不改动词库，弹审批卡片只会卡住模型求证语法的路；
+// 检索 / 查阅文档、读取技能不产生磁盘副作用，也不改动词库，弹审批卡片只会卡住模型求证语法的路；
 // 模型求证不了就退化成猜 API、往词库里写试探词条，破坏性反而更大。
 var aiToolAlwaysAllow = map[string]bool{
+	"search_docs":  true,
 	"read_dic_doc": true,
 	"read_skill":   true,
 }

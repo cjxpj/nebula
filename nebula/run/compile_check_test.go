@@ -126,6 +126,30 @@ func TestCheckBlockPairsNewJson(t *testing.T) {
 	}
 }
 
+func TestCheckBlockPairsTextBlockVarPrefix(t *testing.T) {
+	// 变量名:文本> / 变量名:纯文本> 属叶子框：<文本 关闭，内容行的 `a: 文本` 不参与框识别。
+	v := newTestBuildValue()
+	v.Dic = []*dto.BuildDic{{
+		Trigger:     "测试",
+		TriggerLine: 1,
+		Text: []string{
+			"a:文本>",
+			"第一行",
+			"<文本",
+			"b:纯文本>|",
+			"第二行",
+			"<文本",
+			"%a%%b%",
+		},
+		LineNums: []int{2, 3, 4, 5, 6, 7, 8},
+	}}
+	s := newTestStack()
+	runCompileChecks(v, s)
+	if len(s.warnings) != 0 {
+		t.Fatalf("期望无警告，实际：%v", warningsText(s.warnings))
+	}
+}
+
 func TestCheckTriggerRegex(t *testing.T) {
 	v := newTestBuildValue()
 	v.Dic = []*dto.BuildDic{
@@ -504,23 +528,33 @@ func TestCheckUndefinedVarSkipRawTextBlocks(t *testing.T) {
 			"a:'''", // 再验证原样框不影响后续行检查
 			"%不存在4%",
 			"'''",
+			"pa:纯文本>|", // 变量前缀原样赋值框：内容不做插值
+			"%不存在5%",
+			"<文本",
+			"pb:文本>%换行%", // 变量前缀插值赋值框：内容做插值，应检查
+			"%不存在6%",
+			"<文本",
 		},
-		LineNums: []int{2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13},
+		LineNums: []int{2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19},
 	}}
 	s := newTestStack()
 	runCompileChecks(v, s)
 
-	// 原样文本框内的 %不存在1% / %不存在2% / %不存在4% 不应告警；
-	// 插值文本框内的 %不存在3% 应告警。
+	// 原样文本框内的 %不存在1% / %不存在2% / %不存在4% / %不存在5% 不应告警；
+	// 插值文本框内的 %不存在3% / %不存在6% 应告警。
 	for _, w := range s.warnings {
 		if strings.Contains(w.Text, "变量不存在：不存在1") ||
 			strings.Contains(w.Text, "变量不存在：不存在2") ||
-			strings.Contains(w.Text, "变量不存在：不存在4") {
+			strings.Contains(w.Text, "变量不存在：不存在4") ||
+			strings.Contains(w.Text, "变量不存在：不存在5") {
 			t.Fatalf("原样文本框内的变量不应告警，实际：%v", warningsText(s.warnings))
 		}
 	}
 	if !containsText(s.warnings, "变量不存在：不存在3") {
 		t.Fatalf("插值文本框内的未定义变量应告警，实际：%v", warningsText(s.warnings))
+	}
+	if !containsText(s.warnings, "变量不存在：不存在6") {
+		t.Fatalf("变量前缀插值文本框内的未定义变量应告警，实际：%v", warningsText(s.warnings))
 	}
 }
 
@@ -770,6 +804,124 @@ func TestCheckUnusedAssignmentSkips(t *testing.T) {
 	}
 }
 
+func TestCheckUnusedAssignmentSkipsJsonBlockContent(t *testing.T) {
+	// JSON 键值框内容行是 JSON 键值设置而不是变量赋值（键名会被 ValTextTest 误认为赋值目标），
+	// 其中的值仍会读取变量：JSON> 框按 %变量% 插值，变量:{ 框按 dic.NewJson 的 %变量名 前缀替换。
+	newCase := func(texts []string, nums []int) *importStack {
+		v := newTestBuildValue()
+		v.Head = []string{"b:", "ww:ok"}
+		v.HeadLineNums = []int{1, 2}
+		v.Dic = []*dto.BuildDic{{
+			Trigger:     "测试",
+			TriggerLine: 3,
+			Text:        texts,
+			LineNums:    nums,
+		}}
+		s := newTestStack()
+		runCompileChecks(v, s)
+		return s
+	}
+
+	s := newCase([]string{
+		"JSON>{}",
+		"b:=%b%", // 读变量 b；键名 b 不是赋值目标
+		"<JSON",
+		"a:{",
+		`    "a": "%ww"`, // NewJson 前缀语法读变量 ww（值不带闭合 %）
+		"}",
+		"%a%",
+	}, []int{4, 5, 6, 7, 8, 9, 10})
+	for _, w := range s.warnings {
+		if strings.Contains(w.Text, "变量未使用") {
+			t.Fatalf("JSON 框内容行不应产生「变量未使用」告警，实际：%v", warningsText(s.warnings))
+		}
+	}
+
+	// 框开启行本身仍是赋值：变量全程未被引用时应照常告警。
+	s = newCase([]string{"a:{", `    "a": 1`, "}"}, []int{4, 5, 6})
+	if !containsText(s.warnings, "变量未使用：a") {
+		t.Fatalf("JSON 框赋值后未被引用的变量应告警，实际：%v", warningsText(s.warnings))
+	}
+}
+
+func TestCheckUnusedAssignmentSkipsContentBlockLines(t *testing.T) {
+	// 文本框/JS 框/链式框等内容行不是变量赋值（行首形如 `key: 值` 的是文本或取值表达式），
+	// 不应产生「变量未使用」告警。
+	cases := []struct {
+		name string
+		text []string
+	}{
+		{"文本块", []string{"文本>", "a: 这是文本", "<文本"}},
+		{"纯文本块", []string{"纯文本>", "a: 这是文本", "<文本"}},
+		{"变量三引号", []string{`x:"""`, "a: 这是文本", `"""`, "%x%"}},
+		{"变量三单引号", []string{`x:'''`, "a: 这是文本", `'''`, "%x%"}},
+		{"变量前缀文本块", []string{"x:文本>", "a: 这是文本", "<文本", "%x%"}},
+		{"变量前缀纯文本块", []string{"x:纯文本>", "a: 这是文本", "<文本", "%x%"}},
+		{"JS框", []string{"--js", "const o = {a: 1};", "foo: bar", "--end"}},
+		{"链式框", []string{"v:>>>", "a: 1", "<<<", "%v%"}},
+		{"异步链式框", []string{"#:>>>", "a: 1", "<<<"}},
+	}
+	for _, c := range cases {
+		v := newTestBuildValue()
+		nums := make([]int, len(c.text))
+		for i := range nums {
+			nums[i] = i + 2
+		}
+		v.Dic = []*dto.BuildDic{{Trigger: "测试", TriggerLine: 1, Text: c.text, LineNums: nums}}
+		s := newTestStack()
+		runCompileChecks(v, s)
+		if containsText(s.warnings, "变量未使用") {
+			t.Fatalf("%s：内容行不应产生「变量未使用」告警，实际：%v", c.name, warningsText(s.warnings))
+		}
+	}
+}
+
+func TestCheckUndefinedVarSkipsJsonPercentNoise(t *testing.T) {
+	// JSON 框内容行的文本值含 % 时（如 a="50%", b="60%"），% 切分产生的噪声片段
+	// 不应被当成变量引用报「变量不存在」。
+	v := newTestBuildValue()
+	v.Head = []string{"b:1"}
+	v.HeadLineNums = []int{1}
+	v.Dic = []*dto.BuildDic{{
+		Trigger:     "测试",
+		TriggerLine: 2,
+		Text:        []string{"JSON>{}", `a="50%", b="60%"`, "<JSON", "%b%"},
+		LineNums:    []int{3, 4, 5, 6},
+	}}
+	s := newTestStack()
+	runCompileChecks(v, s)
+	if containsText(s.warnings, "变量不存在") {
+		t.Fatalf("JSON 框内容行的 %% 不应产生噪声引用告警，实际：%v", warningsText(s.warnings))
+	}
+}
+
+func TestCheckUndefinedVarInContentBlocks(t *testing.T) {
+	// 框内容行不参与赋值收集，但插值框里的 %变量% 仍是引用，应照常检查变量是否存在。
+	v := newTestBuildValue()
+	v.Dic = []*dto.BuildDic{{
+		Trigger:     "测试",
+		TriggerLine: 1,
+		Text: []string{
+			"V:>>>", // 链式框内容为取值表达式
+			"%不存在1%",
+			"<<<",
+			"%V%",
+			"--js", // JS 框内容不做 %变量% 插值
+			"%不存在2%",
+			"--end",
+		},
+		LineNums: []int{2, 3, 4, 5, 6, 7, 8},
+	}}
+	s := newTestStack()
+	runCompileChecks(v, s)
+	if !containsText(s.warnings, "变量不存在：不存在1") {
+		t.Fatalf("链式框内容里的未定义变量应告警，实际：%v", warningsText(s.warnings))
+	}
+	if containsText(s.warnings, "变量不存在：不存在2") {
+		t.Fatalf("JS 框内容不做插值，不应告警，实际：%v", warningsText(s.warnings))
+	}
+}
+
 func TestCheckRawAssignSkipsFuncAndVar(t *testing.T) {
 	// :: 纯文本赋值（绝对文本）的值原样写入，不执行 $函数$、不解析 %变量%，
 	// 故其中的 $...$ / %...% 不应被误报为「函数不存在」「变量不存在」。
@@ -819,8 +971,8 @@ func TestCheckNormalAssignStillParsed(t *testing.T) {
 		TriggerLine: 1,
 		Text: []string{
 			"a:$不存在的函数$", // 普通赋值：应报函数不存在
-			"b:%未定义%",     // 普通赋值：应报变量不存在
-			"%a%%b%",       // 引用 a/b，避免触发「变量未使用」
+			"b:%未定义%",    // 普通赋值：应报变量不存在
+			"%a%%b%",     // 引用 a/b，避免触发「变量未使用」
 		},
 		LineNums: []int{2, 3, 4},
 	}}

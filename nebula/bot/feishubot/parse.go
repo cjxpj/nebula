@@ -2,61 +2,43 @@ package feishubot
 
 import (
 	"encoding/json"
+	"fmt"
 
-	feishubot_msg "github.com/cjxpj/nebula/bot/feishubot/msg"
+	"github.com/cjxpj/nebula/dto"
+	larkevent "github.com/larksuite/oapi-sdk-go/v3/event"
 )
 
-// parseAndDecrypt 读取 body 并解密（如有），返回解析好的外壳
-func parseAndDecrypt(body []byte) (*feishubot_msg.SlackURLVerification, error) {
-	plain, err := decryptIfNeeded(body)
-	if err != nil {
-		return nil, err
-	}
-
-	var e feishubot_msg.SlackURLVerification
-	if err = json.Unmarshal(plain, &e); err != nil {
-		return nil, err
-	}
-	return &e, nil
-}
-
-// 解析群消息
-func parseGroupMessage(body []byte) (*feishubot_msg.ImMessageReceiveV1, error) {
-	plain, err := decryptIfNeeded(body)
-	if err != nil {
-		return nil, err
-	}
-
-	var e feishubot_msg.ImMessageReceiveV1
-	if err = json.Unmarshal(plain, &e); err != nil {
-		return nil, err
-	}
-	return &e, nil
-}
-
-// decryptIfNeeded 若配置了 EncryptKey 则解密，否则原样返回
+// decryptIfNeeded 若为加密事件（{"encrypt":"..."}）则解密，否则原样返回
 func decryptIfNeeded(cipher []byte) ([]byte, error) {
-	// 快速判断：飞书加密事件一定是 {"encrypt":"..."}
 	var tmp map[string]json.RawMessage
 	if err := json.Unmarshal(cipher, &tmp); err != nil {
 		return nil, err
 	}
-	if encrypt, ok := tmp["encrypt"]; ok {
-		// 这里调用你的 AES-CBC 解密函数，把 encrypt 字段解密成明文
-		// 例如：return decryptAES(encrypt, yourEncryptKey)
-		// 下面给出占位实现：
-		return decryptAES(encrypt)
+	encryptField, ok := tmp["encrypt"]
+	if !ok {
+		return cipher, nil
 	}
-	return cipher, nil
+
+	var encrypt string
+	if err := json.Unmarshal(encryptField, &encrypt); err != nil {
+		return nil, err
+	}
+
+	secret := ""
+	if bot := dto.ServerConfig.FeiShuBot; bot != nil {
+		secret = bot.EncryptKey
+	}
+	if secret == "" {
+		return nil, fmt.Errorf("收到加密事件，但未配置飞书「加密密钥」")
+	}
+	// AES-256-CBC，key = sha256(加密密钥)，密文前 16 字节为 IV
+	return larkevent.EventDecrypt(encrypt, secret)
 }
 
-// decryptAES 占位：AES-256-CBC 解密，key 为你后台配置的 EncryptKey
-func decryptAES(cipherField json.RawMessage) ([]byte, error) {
-	// 把引号去掉拿到 base64 密文
-	var b64 string
-	_ = json.Unmarshal(cipherField, &b64)
-	// 在此实现 AES-CBC 解密，返回解密后的 JSON 明文
-	// 若无需支持加密，可直接 return nil, fmt.Errorf("encrypt not supported")
-	// 需要完整代码可再喊我
-	return []byte("decrypted-json-placeholder"), nil
+// checkToken 校验事件订阅验证令牌；未配置验证令牌时不做校验
+func checkToken(token string) bool {
+	if bot := dto.ServerConfig.FeiShuBot; bot != nil && bot.VerificationToken != "" {
+		return token == bot.VerificationToken
+	}
+	return true
 }

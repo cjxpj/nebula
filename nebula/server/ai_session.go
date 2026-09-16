@@ -856,8 +856,9 @@ func aiSummarizeMemory(cfg *dto.AIConfig, model, memory string, old []AISessionM
 要求：
 1. 只输出记忆正文，不要任何前言、解释或 Markdown 代码围栏；
 2. 保留关键结论、已确定的方案、待办事项、涉及的文件与函数名、用户偏好与约束；
-3. 合并重复信息，删除寒暄与无关内容；
-4. 使用中文，条目式呈现，控制在 800 字以内。`
+3. 「语法结构」类硬约束必须原样保留、不得概括或省略：词条结构、触发词与取值写法、变量写法、内置函数与对象方法的准确名称与参数个数、易错点等，逐条照抄原文（这类内容一旦被概括，后续就会凭印象写错代码）；
+4. 合并重复信息，删除寒暄与无关内容；
+5. 使用中文，条目式呈现，控制在 800 字以内（语法结构类内容不计入此字数限制）。`
 	return aiChatOnce(cfg, model, []aiChatMessage{
 		{Role: "system", Content: system},
 		{Role: "user", Content: sb.String()},
@@ -1598,6 +1599,25 @@ func aiChatStateless(w http.ResponseWriter, aiCfg *dto.AIConfig, messages []aiCh
 	aiWriteJSON(w, map[string]string{"status": "ok", "content": content})
 }
 
+// aiDicPathFromContext 从本次请求携带的「当前词库实时信息」里取出用户此刻在编辑器打开的词库路径：
+// 该文本首行固定是「当前词库文件：<路径>」（没打开文件时是占位名「未命名.n」）。
+// 前端只在新建任务 / 切换智能体 / 手动关联时才单独带 dic_path，日常发消息只有这段实时信息，
+// 用它把会话的关联词库文件同步到用户当前打开的文件上。
+func aiDicPathFromContext(context string) string {
+	for _, line := range strings.Split(context, "\n") {
+		p, ok := strings.CutPrefix(strings.TrimSpace(line), "当前词库文件：")
+		if !ok {
+			continue
+		}
+		p = strings.TrimSpace(p)
+		if p == "" || p == "未命名.n" || !checkDicOrWebPath(p) {
+			return ""
+		}
+		return p
+	}
+	return ""
+}
+
 // aiChatWithSession 基于任务的对话：读取历史与记忆、追加消息、持久化并按需压缩。
 // images 为本轮用户消息附带的图片（已落盘、相对应用目录的路径）；streamID 非空时以流式方式请求上游，
 // 并经由 WS 推送思考/正文增量（多轮思考实时呈现）。
@@ -1624,7 +1644,12 @@ func aiChatWithSession(w http.ResponseWriter, aiCfg *dto.AIConfig, sessionID, me
 			sess.Title = aiSessionTitle(title, first)
 		}
 	}
-	if dp := strings.TrimSpace(dicPath); dp != "" && sess.DicPath == "" {
+	// 关联词库文件跟随用户本次请求：优先用本次显式带来的 dic_path（新建任务 / 切换智能体 / 手动关联），
+	// 否则从本次携带的实时信息里取「当前词库文件」。不能只在为空时写入，否则会话会一直停在首次绑定的
+	// 那个文件上——用户后来打开的词库（哪怕类型正是本智能体负责的）都不会被当成默认操作对象。
+	if dp := strings.TrimSpace(dicPath); dp != "" {
+		sess.DicPath = dp
+	} else if dp := aiDicPathFromContext(context); dp != "" {
 		sess.DicPath = dp
 	}
 	sess.UpdatedAt = time.Now().Unix()
@@ -1643,7 +1668,13 @@ func aiChatWithSession(w http.ResponseWriter, aiCfg *dto.AIConfig, sessionID, me
 
 	// 智能体的工作提示词与内置技能清单不在任务里存副本，运行时按任务当前选用的智能体动态套用，
 	// 因此编辑智能体后对其任务立即生效。锁顺序要求先释放 aiSessionsMu 再查 aiAgentsMu。
-	agent := aiAgentByID(sessionAgentID)
+	// 每次调用都现取任务的智能体：AI 在工具轮中途用 switch_agent 交接后，重建提示要拿到新智能体。
+	currentAgent := func() *AIAgent {
+		if id := aiSessionAgentID(sessionID); id != "" {
+			return aiAgentByID(id)
+		}
+		return aiAgentByID(sessionAgentID)
+	}
 
 	if len(history) == 0 {
 		aiWriteError(w, "消息不能为空")
@@ -1672,10 +1703,10 @@ func aiChatWithSession(w http.ResponseWriter, aiCfg *dto.AIConfig, sessionID, me
 		sessModel = reasonModel
 	}
 
-	// assemble 组装本次请求的消息：系统段（系统提示 + 任务记忆 + 项目记忆 + 智能体提示 +
-	// 技能清单 + 内置函数 + 词库上下文）+ 前端按需附带的词库实时信息 + 历史投影。
-	// 历史投影跳过「已折叠进任务记忆」的前 upTo 条：这些消息不再重复送模型，由任务记忆代表。
-	assemble := func(memText string, hist []AISessionMessage, upTo int) []aiChatMessage {
+	// buildSystem 组装系统段文本（系统提示 + 任务记忆 + 项目记忆 + 智能体提示 +
+	// 技能清单 + 内置函数 + 词库上下文）。独立成函数是为了 AI 在工具轮中途交接智能体后重建：
+	// 接手方的工作提示词与技能清单要立刻生效，而不是拿交接前那一套接着干。
+	buildSystem := func(memText string) string {
 		sys := baseSystem
 		if m := strings.TrimSpace(memText); m != "" {
 			sys += "\n\n【任务记忆（较早对话的摘要，供持续参考）】\n" + m
@@ -1684,26 +1715,44 @@ func aiChatWithSession(w http.ResponseWriter, aiCfg *dto.AIConfig, sessionID, me
 		if pm, _ := aiProjectMemory(); strings.TrimSpace(pm) != "" {
 			sys += "\n\n【项目记忆（全局，所有任务共享，供持续参考）】\n" + strings.TrimSpace(pm)
 		}
-		// 智能体工作提示词：声明该智能体负责的词库场景与工作方式（工具能力、语法结构这类内容已拆成内置技能，按需 read_skill 读取）
-		if p := strings.TrimSpace(agent.Prompt); p != "" {
+		// 智能体工作提示词：声明该智能体负责的词库场景与工作方式（工具能力这类内容已拆成内置技能，按需 read_skill 读取；
+		// 「词库语法结构」是常驻技能，正文由下方 aiPinnedSkillsText 直接给出）
+		// 取当前的智能体而非请求开始时的快照：交接后重建时这里就已经是接手方的那一套
+		curAgent := currentAgent()
+		if p := strings.TrimSpace(curAgent.Prompt); p != "" {
 			sys += "\n\n" + p
 		}
 		// 技能清单：只给名称 + 描述（含该智能体声明的内置技能），模型按需调用 read_skill 读取技能全文
-		if sk := aiSkillsPromptText(agent.Skills); sk != "" {
+		if sk := aiSkillsPromptText(curAgent.Skills); sk != "" {
 			sys += "\n\n" + sk
+		}
+		// 常驻技能正文：语法这类硬约束每轮都直接给出。它不写进对话历史，因此多轮之后
+		// 上下文压缩也概括不掉，避免模型凭记忆写错语法（见 ai_skill.go 的常驻技能）。
+		if ps := aiPinnedSkillsText(curAgent.Skills); ps != "" {
+			sys += "\n\n" + ps
 		}
 		if f := aiBuiltinFuncsTextCached(); f != "" {
 			sys += "\n\n" + f
 		}
 		if dp := strings.TrimSpace(sess.DicPath); dp != "" {
 			sys += "\n\n当前任务关联的词库文件：" + dp +
-				"\n（这是用户此刻在编辑器中打开的文件，是你默认的操作对象：需要阅读或修改词库时优先直接 read_dic / save_dic 这个文件，" +
-				"不要先用 list_files / search_files 满目录查找或读取无关文件；仅当用户明确指向其他文件时才切换。" +
-				"但它不一定是本智能体负责的词库类型（本智能体职责见上方工作提示词）：若明显不符，例如本智能体负责网页词库（.wn）而该文件是机器人 .n，" +
-				"不要顺着文件类型按错误场景写代码，应先向用户说明这处冲突并确认要操作的目标文件。）"
+				"\n（这是用户此刻在编辑器中打开的文件，默认就是本次的操作对象：" +
+				"直接 read_dic / save_dic 这个文件，不要先用 list_files / search_files 满目录查找或读取无关文件，也不要另建同类新文件；" +
+				"它不一定是本智能体负责的词库类型（本智能体职责见上方工作提示词）：若本次请求确实是要改这个文件、而它的类型与本智能体职责明显不符" +
+				"（例如本智能体负责网页词库 .wn，而该文件是机器人 .n），不要顺着文件类型按错误场景写代码，" +
+				"应先用 switch_agent 把任务交给负责该类型的智能体并说明一句已转交给谁——切换立即生效，随后按接手方的职责继续，不要停下等用户再发消息；" +
+				"它属于本智能体负责的类型（例如本智能体负责网页词库、而它是 .wn）时，一律以它为默认操作对象：即使本次话里没点名它（只是让你实现一个功能），也直接改它，不要另建同类新文件；" +
+				"只有它类型明显不符、用户本次又没要求改它（或用户明确说要「新建一个文件」）时，才按本智能体职责新建自己类型的文件（本智能体负责网页词库就新建 .wn 并编辑、运行调试）；" +
+				"没有合适的智能体可交，或用户明确要求就在本智能体下处理时，再向用户说明这处冲突并按用户意图继续。）"
 		}
+		return sys
+	}
+
+	// assemble 组装本次请求的消息：系统段 + 前端按需附带的词库实时信息 + 历史投影。
+	// 历史投影跳过「已折叠进任务记忆」的前 upTo 条：这些消息不再重复送模型，由任务记忆代表。
+	assemble := func(memText string, hist []AISessionMessage, upTo int) []aiChatMessage {
 		out := make([]aiChatMessage, 0, len(hist)-upTo+2)
-		out = append(out, aiChatMessage{Role: "system", Content: sys})
+		out = append(out, aiChatMessage{Role: "system", Content: buildSystem(memText)})
 		// 当前词库实时信息由前端「按需附带」，仅本次请求生效，不写入历史
 		if ctx := strings.TrimSpace(context); ctx != "" {
 			out = append(out, aiChatMessage{Role: "system", Content: "以下是当前词库的实时信息，供本次回答参考：\n\n" + ctx})
@@ -1740,6 +1789,13 @@ func aiChatWithSession(w http.ResponseWriter, aiCfg *dto.AIConfig, sessionID, me
 		}
 	}
 
+	// 首条系统提示的重建入口：AI 在工具轮中途用 switch_agent 交接给别的智能体后立刻调用，
+	// 就地换成接手方的工作提示词与技能清单，让本轮后续步骤按新智能体的职责继续，
+	// 而不是拿旧智能体的提示词硬做、还要用户再发一条消息。
+	refreshSystem := func() string {
+		return buildSystem(memory)
+	}
+
 	if streamID != "" {
 		// 登记可取消上下文：用户点击「终止」时据此打断上游请求
 		aiRegisterStreamCancel(streamID)
@@ -1750,7 +1806,7 @@ func aiChatWithSession(w http.ResponseWriter, aiCfg *dto.AIConfig, sessionID, me
 		aiStreamNotify(streamID, "ai_stream_start", nil)
 	}
 	chatStartedAt := time.Now()
-	content, reasoning, err := aiChatWithTools(aiCfg, sessModel, msgs, reasonEffort, streamID, permissionMode, sessionID)
+	content, reasoning, err := aiChatWithTools(aiCfg, sessModel, msgs, reasonEffort, streamID, permissionMode, sessionID, refreshSystem)
 	// 无论成功或失败都收尾草稿：失败时保留已产生的部分内容，避免刷新后整轮消失
 	aiSessionFinishDraft(sessionID, content, reasoning, err)
 	if err != nil {

@@ -250,7 +250,12 @@ func cliFormat(args []string, jsonOut bool) int {
 		}
 	}
 
-	formatted, changed, err := build.FormatDicFile(path)
+	format := build.FormatDicFile
+	if strings.HasSuffix(strings.ToLower(path), ".wn") {
+		// 网页词库是 HTML，只缩进结构并保留脚本块正文
+		format = build.FormatWebDicFile
+	}
+	formatted, changed, err := format(path)
 	if err != nil {
 		if jsonOut {
 			writeJSON(map[string]string{"path": path, "error": err.Error()})

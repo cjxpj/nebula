@@ -162,21 +162,32 @@ func aiSkillFindByName(name string) (*AISkill, bool) {
 
 // aiSkillsPromptText 生成注入系统提示的「技能清单」：仅名称 + 描述，提示模型按需调用 read_skill。
 // builtinNames 为当前任务所属智能体声明可用的内置技能名；用户自建技能始终全部列出。
+// 常驻技能（见 aiBuiltinPinnedSkills）的正文已直接注入系统提示，这里不再列为「按需读取」。
 // 无技能时返回空串（不注入任何内容）。
 func aiSkillsPromptText(builtinNames []string) string {
 	list := make([]*AISkill, 0, len(builtinNames))
+	pinned := make([]string, 0, len(aiBuiltinPinnedSkills))
 	for _, name := range builtinNames {
 		if b, ok := aiBuiltinSkillFindByName(name); ok {
+			if aiBuiltinPinnedSkills[b.Name] {
+				pinned = append(pinned, b.Name)
+				continue
+			}
 			list = append(list, b)
 		}
 	}
 	list = append(list, aiSkillList()...)
-	if len(list) == 0 {
+	if len(list) == 0 && len(pinned) == 0 {
 		return ""
 	}
 	var sb strings.Builder
 	sb.WriteString("【可用技能】\n")
 	sb.WriteString("以下是本次任务可用的技能（含应用内置技能）。当任务与某个技能的描述相符时，先调用 read_skill 读取该技能全文，再严格按其中的步骤与约定执行；与描述不符的技能无需读取。\n")
+	if len(pinned) > 0 {
+		sb.WriteString("（")
+		sb.WriteString(strings.Join(pinned, "、"))
+		sb.WriteString(" 为常驻技能，正文已直接给出，无需调用 read_skill。）\n")
+	}
 	for _, s := range list {
 		sb.WriteString("- ")
 		sb.WriteString(s.Name)
@@ -194,10 +205,11 @@ func aiSkillsPromptText(builtinNames []string) string {
 
 // ============== 应用内置技能 ==============
 //
-// 「工具能力」「语法结构」这类过去常驻在系统提示里的内容，改为内置技能按需读取：
+// 「工具能力」这类过去常驻在系统提示里的内容，改为内置技能按需读取：
 // 只有任务所属智能体（见 ai_agent.go 的 AIAgent）声明的内置技能才进入「可用技能」清单，
 // 模型判断任务与描述相符时再调用 read_skill 读取正文，避免每轮把全部内容塞进上下文。
 // 内置技能随程序分发，不可编辑或删除（read_skill 始终可读取，不受智能体声明限制）。
+// 例外是「词库语法结构」这类硬约束：它被定为常驻技能（见下方「常驻技能」段），正文每轮直接注入。
 
 // 内置技能名称（read_skill 与「可用技能」清单共用）。
 const (
@@ -323,6 +335,50 @@ func aiAllSkillList() []*AISkill {
 		out = append(out, aiBuiltinSkillSnapshot(&list[i]))
 	}
 	return append(out, aiSkillList()...)
+}
+
+// ---------- 常驻技能 ----------
+//
+// 语法这类硬约束内容，只在「可用技能」清单里给个名字是不够的：模型读过的文档只存在于对话历史里，
+// 多轮之后会被上下文压缩概括掉，于是开始凭印象写错语法。因此把这类技能定为「常驻技能」：
+// 正文（连同其指向的易错点文档）每轮随系统提示直接给出，不进对话历史，压缩也就碰不到它。
+
+// aiBuiltinPinnedSkills 常驻技能集合：值为 true 表示正文每轮注入系统提示。
+var aiBuiltinPinnedSkills = map[string]bool{
+	aiBuiltinSkillSyntax: true,
+}
+
+// aiPinnedSyntaxDoc 随「词库语法结构」一起常驻的易错点文档：
+// 规则类内容里最短、也最常被写错的一篇，全文常驻的代价很小。
+const aiPinnedSyntaxDoc = "docs/0-词库语法/08-高频易错点.md"
+
+// aiPinnedSkillsText 生成常驻技能的正文段，只包含该智能体已声明的常驻技能；
+// 未声明常驻技能的智能体（不写词库的场景）返回空串，不占用上下文。
+func aiPinnedSkillsText(builtinNames []string) string {
+	var sb strings.Builder
+	for _, name := range builtinNames {
+		b, ok := aiBuiltinSkillFindByName(name)
+		if !ok || !aiBuiltinPinnedSkills[b.Name] {
+			continue
+		}
+		body := strings.TrimSpace(b.Content)
+		if body == "" {
+			continue
+		}
+		if b.Name == aiBuiltinSkillSyntax {
+			if doc, err := dicDocFind(aiPinnedSyntaxDoc); err == nil {
+				if extra := strings.TrimSpace(doc.content); extra != "" {
+					body += "\n\n" + extra
+				}
+			}
+		}
+		sb.WriteString("【常驻技能：")
+		sb.WriteString(b.Name)
+		sb.WriteString("（每轮直接给出，不随对话压缩丢失，写代码前必须据此复核）】\n")
+		sb.WriteString(body)
+		sb.WriteString("\n\n")
+	}
+	return strings.TrimRight(sb.String(), "\n")
 }
 
 // ---------- 接口处理 ----------

@@ -146,15 +146,17 @@ func LoadConfig_feishu(FeiShu_Config *ConfigSection) {
 		secret := FeiShu_Config.Key("密钥").String()
 		dicPath := FeiShu_Config.Key("词库").String()
 		ServerConfig.FeiShuBot = &feishubot_msg.RouterFeishubot{
-			Open:     true,
-			Addr:     "/" + FeiShu_Config.Key("访问路径").String(),
-			API:      lark.NewClient(appId, secret),
-			FilePath: dicPath,
+			Open:              true,
+			Addr:              "/" + FeiShu_Config.Key("访问路径").String(),
+			API:               lark.NewClient(appId, secret),
+			FilePath:          dicPath,
+			EncryptKey:        FeiShu_Config.Key("加密密钥").String(),
+			VerificationToken: FeiShu_Config.Key("验证令牌").String(),
 		}
 		BotDic := utils.NewFileQueue(dicPath)
 		if !BotDic.DirExists() {
 			BotDic.SetPath(filepath.Join(dicPath, "dic", "dic.n"))
-			if data, err := appfiles.GetFile("dic/NapCatBot.n"); err == nil {
+			if data, err := appfiles.GetFile("dic/FeiShuBot.n"); err == nil {
 				BotDic.WriteFileByte(data)
 			} else {
 				fmt.Println("embed err:", err)

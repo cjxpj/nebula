@@ -123,6 +123,10 @@ NapCat:
   访问路径: feishu-bot
   APPID: cli_xxx
   密钥: xxx
+  # 事件订阅的加密密钥（Encrypt Key），留空表示事件未加密
+  加密密钥: ""
+  # 事件订阅的验证令牌（Verification Token），留空表示不校验
+  验证令牌: ""
 
 Secluded:
   # Secluded 插件协议（WebSocket客户端模式）

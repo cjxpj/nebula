@@ -5,8 +5,8 @@ import (
 	"strconv"
 	"strings"
 
-	dic_dto "github.com/cjxpj/nebula/dic/dto"
 	"github.com/cjxpj/nebula/debugLog"
+	dic_dto "github.com/cjxpj/nebula/dic/dto"
 	"github.com/cjxpj/nebula/dto"
 )
 
@@ -33,7 +33,7 @@ func NewJson(r *dic_dto.DicEntry, v *dto.Val, jsonStr string) string {
 					if _, ok := rawValue.(string); ok {
 						return rawValue
 					} else {
-						return fmt.Sprintf("%v", value)
+						return fmt.Sprintf("%v", rawValue)
 					}
 				}
 				return value // 如果没有找到对应的键，保持原值

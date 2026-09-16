@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -53,9 +54,12 @@ type AIAgent struct {
 	ReasoningEffort string `json:"reasoning_effort"`
 	ReasoningModel  string `json:"reasoning_model"`
 	// Builtin 标记该智能体为应用内置（出厂预置）：不可删除，仅可编辑。由 ID 前缀推导，不单独落盘
-	Builtin   bool  `json:"builtin,omitempty"`
-	CreatedAt int64 `json:"created_at"`
-	UpdatedAt int64 `json:"updated_at"`
+	Builtin bool `json:"builtin,omitempty"`
+	// PromptEdited 标记内置项已被用户编辑过（在界面上保存过一次即置真）：出厂提示词会随版本更新
+	// （例如新增智能体之间的交接约定），未被编辑过的内置项跟随出厂文本刷新，编辑过的保留用户改动。
+	PromptEdited bool  `json:"prompt_edited,omitempty"`
+	CreatedAt    int64 `json:"created_at"`
+	UpdatedAt    int64 `json:"updated_at"`
 }
 
 // aiAgentStore 智能体持久化文件结构。
@@ -79,10 +83,12 @@ var aiBuiltinAgents = []*AIAgent{
 		Name: "网页词库",
 		Prompt: "【当前智能体：网页词库】\n" +
 			"本智能体只负责网页词库 .wn（WebNebula）：产出与保存的文件一律以 .wn 结尾，禁止生成机器人 / API 词库那种 .n 文件；\n" +
-			".wn 没有触发词概念——文件里不写触发词、不写 Main、不用 %参数N%，页面里的脚本块自上而下依次执行；\n" +
-			"注意 <script type=\"nebula\"> 是服务端 Nebula 脚本、不是 JavaScript：块里禁止写 JS（document / console / let / function / 箭头函数等），写了也不会执行；需要浏览器端 JS 就另写不带 type 的普通 <script>，不要把 JS 包进 type=\"nebula\" 块；\n" +
-			"动手前先调用 read_skill 读取「" + aiBuiltinSkillWeb + "」技能，按其执行模型与模板渲染规则编写；脚本块内部按「" + aiBuiltinSkillSyntax + "」技能的语法书写，读写文件与运行前读取「" + aiBuiltinSkillTools + "」技能；\n" +
-			"改完用 save_dic 保存 .wn，再用 run_web_dic 运行验证渲染结果（脚本块已执行、模板变量已替换），不要只凭保存成功就汇报完成；\n" +
+			"遇到的其他类型场景（机器人词库、API 词库这类 .n，用户要求改动的那个关联文件本身就是 .n）：不要按网页词库场景硬写代码，先用 switch_agent 把任务交给对应智能体（「机器人词库」「API词库」等，可先不传参数取回可选清单）；判断依据是用户明确的目标文件类型与落点目录，不是功能名称——「九宫格」这类功能名在三种场景里都可能出现，不要仅凭它交接。切换立即生效：本轮后续步骤就按接手方的提示词继续，交接后一句说明告知用户已转交给谁，随即按接手方的职责把用户最初的请求做完，不要让用户重发；确实没有对应智能体时，再说明冲突并请用户确认要怎么处理；\n" +
+			"写入前先按「当前任务关联的词库文件」（用户此刻在编辑器打开的文件）定落点：它已经是 .wn 就直接改它，read_dic / save_dic 都用同一路径，不要另建新的 .wn；只有它明显是别的类型（如机器人 .n）而用户本次并不要求改它，或用户明确说「新建一个词库文件」时，才新建 .wn 写出来，再用 save_dic 保存、run_web_dic 运行调试；\n" +
+			".wn 没有触发词概念——文件里不写触发词、不写 Main、不用 %参数N%，页面里的执行块（<?n ... ?> 内联块 / <script type=\"nebula\"> 脚本块）自上而下依次执行；输出内容优先用 <?n 换行 语句 换行 ?> 内联块就地写（结果直接插在该位置，推荐），大段多行脚本再用 <script type=\"nebula\"> 脚本块，需要跨处取值时才在块里赋值、页面用 {{.键}} 取；\n" +
+			"注意这两种块都是服务端 Nebula 脚本、不是 JavaScript：块里禁止写 JS（document / console / let / function / 箭头函数等），写了也不会执行；需要浏览器端 JS 就另写不带 type 的普通 <script>，不要把 JS 包进 type=\"nebula\" 块或 <?n ?> 块；\n" +
+			"动手前先调用 read_skill 读取「" + aiBuiltinSkillWeb + "」技能，按其执行模型与模板渲染规则编写；执行块内部按下方【常驻技能：" + aiBuiltinSkillSyntax + "】的规则书写——该技能每轮都直接给出，写码前必须逐条复核，不得凭记忆或前几轮印象拼语法，拿不准就用 search_docs 查文档、用 read_dic_doc 读对应语法文档求证；读写文件与运行前读取「" + aiBuiltinSkillTools + "」技能；\n" +
+			"改完用 save_dic 保存 .wn，再用 run_web_dic 运行验证渲染结果（执行块已消失、内联块只剩输出、模板变量已替换），不要只凭保存成功就汇报完成；\n" +
 			"用户要求修改词库内容时必须真正调用写入工具完成，不要只输出代码让用户手动粘贴。",
 		Skills: []string{aiBuiltinSkillWeb, aiBuiltinSkillSceneDev, aiBuiltinSkillTools, aiBuiltinSkillSyntax},
 	},
@@ -91,8 +97,9 @@ var aiBuiltinAgents = []*AIAgent{
 		Name: "机器人词库",
 		Prompt: "【当前智能体：机器人词库】\n" +
 			"本智能体负责编写机器人 .n 词库（放在机器人账号路径的 dic/ 目录，靠用户发消息触发）：动手前先调用 read_skill 读取「" + aiBuiltinSkillBot + "」技能，按其约定写菜单（逐个列出各功能的触发指令）、触发词与正文；\n" +
-			"写代码前读取「" + aiBuiltinSkillSyntax + "」技能，读写文件与运行前读取「" + aiBuiltinSkillTools + "」技能；\n" +
-			"功能与娱乐类词条一律不写 Main（机器人按触发词匹配消息，Main 永远不会被消息触发）；用户要求修改词库内容时必须真正调用写入工具完成。",
+			"要写的是网页词库 .wn，或用户要求改动的那个关联文件明显是 HTTP 访问的接口词库时：不要按机器人 .n 硬写（.wn 没有触发词，写成 .n 根本不生效），先用 switch_agent 交接给「网页词库」「API词库」等对应智能体；判断依据是用户明确的目标文件类型与落点目录，不是功能名称；切换立即生效，交接后说明一句已转交给谁，随即按接手方的职责把用户最初的请求做完，不要让用户重发；写入前先按「当前任务关联的词库文件」（用户此刻在编辑器打开的文件）定落点：它已经是机器人 .n（账号路径下的 dic/）就直接改它，read_dic / save_dic 都用同一路径，不要另建新的 .n；只有它明显是别的类型而用户本次并不要求改它，或用户明确说「新建一个词库文件」时，才新建 .n 来写；\n" +
+			"写代码前按下方【常驻技能：" + aiBuiltinSkillSyntax + "】逐条复核词条结构、触发词与变量写法（该技能每轮都直接给出，不得凭记忆或前几轮印象拼语法，拿不准就用 search_docs 查文档、用 read_dic_doc 读对应语法文档求证），读写文件与运行前读取「" + aiBuiltinSkillTools + "」技能；\n" +
+			"每个触发词都是执行入口，用户发什么消息就执行对应词条（写出来的任意触发词都能被唤起）；功能与娱乐类词条一律不写 Main（机器人按触发词匹配消息，Main 永远不会被消息触发）；用户要求修改词库内容时必须真正调用写入工具完成。",
 		Skills: []string{aiBuiltinSkillBot, aiBuiltinSkillSceneDev, aiBuiltinSkillTools, aiBuiltinSkillSyntax},
 	},
 	{
@@ -100,8 +107,9 @@ var aiBuiltinAgents = []*AIAgent{
 		Name: "API词库",
 		Prompt: "【当前智能体：API词库】\n" +
 			"本智能体负责编写被 HTTP 访问的 .n 接口词库（放在网站根目录下，由 system/router.n 以 Main 为触发词执行）：动手前先调用 read_skill 读取「" + aiBuiltinSkillAPI + "」技能，按其约定处理请求数据与响应；\n" +
-			"写代码前读取「" + aiBuiltinSkillSyntax + "」技能，读写文件与运行前读取「" + aiBuiltinSkillTools + "」技能；\n" +
-			"本场景恰恰必须写 Main 触发词（与机器人功能词库相反）；用户要求修改词库内容时必须真正调用写入工具完成。",
+			"要写的是网页词库 .wn，或用户要求改动的那个关联文件明显是靠用户发消息触发的机器人词库时：不要按 API 场景硬写，先用 switch_agent 交接给「网页词库」「机器人词库」等对应智能体；判断依据是用户明确的目标文件类型与落点目录，不是功能名称；切换立即生效，交接后说明一句已转交给谁，随即按接手方的职责把用户最初的请求做完，不要让用户重发；写入前先按「当前任务关联的词库文件」（用户此刻在编辑器打开的文件）定落点：它已经是本场景的接口 .n（网站根目录下、以 Main 为触发词）就直接改它，read_dic / save_dic 都用同一路径，不要另建新的；只有它明显是别的类型而用户本次并不要求改它，或用户明确说「新建一个文件」时，才新建 .n 来写；\n" +
+			"写代码前按下方【常驻技能：" + aiBuiltinSkillSyntax + "】逐条复核词条结构、变量写法与内置函数名称（该技能每轮都直接给出，不得凭记忆或前几轮印象拼语法，拿不准就用 search_docs 查文档、用 read_dic_doc 读对应语法文档求证），读写文件与运行前读取「" + aiBuiltinSkillTools + "」技能；\n" +
+			"本场景恰恰必须写 Main 触发词（与机器人功能词库相反）：执行入口只有 Main 一个，被 HTTP 访问时只会执行 Main 词条，写别的触发词走不到（自己验证时也用 run_dic 传 trigger=Main）；用户要求修改词库内容时必须真正调用写入工具完成。",
 		Skills: []string{aiBuiltinSkillAPI, aiBuiltinSkillSceneDev, aiBuiltinSkillTools, aiBuiltinSkillSyntax},
 	},
 }
@@ -152,20 +160,36 @@ func aiAgentByID(id string) *AIAgent {
 	return hit
 }
 
-// aiSeedMissingBuiltinAgentsLocked 补齐缺失的出厂内置智能体；调用方需持有 aiAgentsMu。
-// 内置项随程序出厂且被各词库场景依赖，用户误删或旧文件里没有时在此补回；已存在的保留用户改动，不覆盖。
+// aiSeedMissingBuiltinAgentsLocked 补齐缺失的出厂内置智能体，并让未被编辑过的内置项跟随出厂文本；
+// 调用方需持有 aiAgentsMu。
+// 内置项随程序出厂且被各词库场景依赖，用户误删或旧文件里没有时在此补回；
+// 出厂提示词会随版本更新（例如新增智能体之间的交接约定），若一律只补不覆盖，升级后运行实例
+// 会一直用旧提示词，因此未编辑过（PromptEdited 为假）的内置项刷新提示词与技能清单，
+// 编辑过的保留用户改动。模型、推理设置等由用户调整的字段一概不动。
 func aiSeedMissingBuiltinAgentsLocked() {
 	now := time.Now().Unix()
 	changed := false
 	for i, b := range aiBuiltinAgents {
-		if _, ok := aiAgents[b.ID]; ok {
+		cur, ok := aiAgents[b.ID]
+		if !ok {
+			a := aiAgentCopy(b)
+			// 时间戳递减，保证列表中按出厂顺序展示（列表按更新时间倒序）
+			a.CreatedAt, a.UpdatedAt = now-int64(i), now-int64(i)
+			aiNormalizeAgent(a)
+			aiAgents[a.ID] = a
+			changed = true
 			continue
 		}
-		a := aiAgentCopy(b)
-		// 时间戳递减，保证列表中按出厂顺序展示（列表按更新时间倒序）
-		a.CreatedAt, a.UpdatedAt = now-int64(i), now-int64(i)
-		aiNormalizeAgent(a)
-		aiAgents[a.ID] = a
+		if cur.PromptEdited {
+			continue
+		}
+		if cur.Prompt == b.Prompt && slices.Equal(cur.Skills, b.Skills) {
+			continue
+		}
+		cur.Prompt = b.Prompt
+		cur.Skills = append([]string(nil), b.Skills...)
+		aiNormalizeAgent(cur)
+		// 跟随出厂不算用户编辑，因此不动 UpdatedAt：否则每次升级内置项都会顶到列表最前
 		changed = true
 	}
 	if changed {
@@ -397,6 +421,10 @@ func aiAgentHandle(w http.ResponseWriter, h *HttpOpUiData) {
 		agent.ReasoningModel = j.ReasoningModel
 		agent.UpdatedAt = now
 		aiNormalizeAgent(agent)
+		// 在界面上保存过即视为用户编辑：此后出厂更新不再刷新这个内置项的提示词与技能，避免覆盖用户改动
+		if agent.Builtin {
+			agent.PromptEdited = true
+		}
 		saveAIAgentsLocked()
 		snap := aiAgentCopy(agent)
 		aiAgentsMu.Unlock()

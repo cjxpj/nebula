@@ -11,6 +11,10 @@ type RouterFeishubot struct {
 	API *lark.Client
 	// 词库路径
 	FilePath string
+	// 事件订阅加密密钥（Encrypt Key），为空表示事件未加密
+	EncryptKey string
+	// 事件订阅验证令牌（Verification Token），为空表示不校验
+	VerificationToken string
 }
 
 type SlackURLVerification struct {

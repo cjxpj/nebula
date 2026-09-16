@@ -64,6 +64,10 @@ func formatOpen(line string) (formatFrame, bool) {
 		if vk != "" && (strings.HasPrefix(vv, "执行函数>") || strings.HasPrefix(vv, "函数>")) {
 			return formatFrame{kind: "func", close: "<函数"}, true
 		}
+		// 变量名:文本> / 变量名:纯文本>：与 变量名:""" / 变量名:''' 同族的赋值文本框。
+		if vk != "" && (strings.HasPrefix(vv, "纯文本>") || strings.HasPrefix(vv, "文本>")) {
+			return formatFrame{kind: "text", close: "<文本", leaf: true}, true
+		}
 		if vv == "{" || vv == "[" {
 			// 键名含 -> 表示多键 JSON 取值，不是新建 JSON 框
 			if !strings.Contains(vk, "->") {

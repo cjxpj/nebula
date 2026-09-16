@@ -124,10 +124,14 @@ func blockOpen(line string) (blockKind, bool) {
 	case strings.HasPrefix(line, "执行函数>"):
 		return blkFunc, true
 	}
-	// 变量:函数> / 变量:执行函数> 开头的函数框（赋予值形式）。
+	// 变量:函数> / 变量:执行函数> 开头的函数框（赋予值形式）；
+	// 变量:文本> / 变量:纯文本> 开头的赋值文本框（赋予值形式）。
 	if vt, vp, vs := build.ValTextTest(line); vt == 6 && vp != "" {
-		if strings.HasPrefix(vs, "函数>") || strings.HasPrefix(vs, "执行函数>") {
+		switch {
+		case strings.HasPrefix(vs, "函数>"), strings.HasPrefix(vs, "执行函数>"):
 			return blkFunc, true
+		case strings.HasPrefix(vs, "文本>"), strings.HasPrefix(vs, "纯文本>"):
+			return blkText, true
 		}
 	}
 	return 0, false
@@ -277,6 +281,9 @@ func funcSkipOpen(line string) (funcSkipFrame, bool) {
 		case (vs == "{" || vs == "[") && !strings.Contains(vp, "->"):
 			// 变量:{ / 变量:[ 多行 JSON 赋值框（含 -> 路径的是单行 JSON 赋值，非框）。
 			return funcSkipFrame{depth: 1}, true
+		case vp != "" && (strings.HasPrefix(vs, "文本>") || strings.HasPrefix(vs, "纯文本>")):
+			// 变量:文本> / 变量:纯文本> 赋值文本框，内容不做 $函数$ 插值。
+			return funcSkipFrame{byMark: true, mark: "<文本"}, true
 		}
 	}
 	return funcSkipFrame{}, false
@@ -502,46 +509,31 @@ func checkUndefinedVars(v *dto.BuildValue, stack *importStack) {
 }
 
 // checkUndefinedVarsLines 顺序检查行序列中的变量引用并累积赋值变量到 defined。
-// 原样文本框（纯文本>/变量:”'）内的内容不做 %变量% 插值，跳过引用检查与赋值收集。
+// 框内容行（文本/JSON/JS/链式/三引号等）不参与赋值收集：它们不是变量赋值；
+// 其中做 %变量% 插值的框（文本>、变量:"""、变量:>>>、JSON>）仍按引用检查变量是否存在。
 func checkUndefinedVarsLines(lines []string, lineNums []int, defined map[string]bool, funcOutVars map[string]map[string]bool, stack *importStack) {
-	var rawClosers []string
+	var blocks contentBlockTracker
 	for i, line := range lines {
 		ln := 0
 		if i < len(lineNums) {
 			ln = lineNums[i]
 		}
-		// 关闭原样文本框
-		if n := len(rawClosers); n > 0 && line == rawClosers[n-1] {
-			rawClosers = rawClosers[:n-1]
-			continue
-		}
-		closer, isRawOpen := rawTextCloser(line)
-		// 原样文本框内容行：原样输出，跳过引用检查与赋值收集
-		if !isRawOpen && len(rawClosers) > 0 {
+		if blocks.step(line) {
+			seen := make(map[string]bool)
+			for _, name := range blocks.refs(line) {
+				if name == "" || seen[name] || defined[name] || isMagicVar(name) {
+					continue
+				}
+				seen[name] = true
+				stack.addWarning(ln, "变量不存在："+name)
+			}
 			continue
 		}
 		checkUndefinedVarsLine(line, ln, defined, stack)
 		collectAssignedVars(line, defined)
 		collectBlockVars(line, defined)
 		collectFuncOutVarsFromLine(line, funcOutVars, defined)
-		if isRawOpen {
-			rawClosers = append(rawClosers, closer)
-		}
 	}
-}
-
-// rawTextCloser 判断行是否为「原样文本」框的开启行（内容不做 %变量% 插值），
-// 返回其关闭标记；非开启行返回 ok=false。
-//   - 纯文本> ... <文本：内容原样输出
-//   - 变量:”' ... ”'：内容原样赋值
-func rawTextCloser(line string) (closer string, ok bool) {
-	if strings.HasPrefix(line, "纯文本>") {
-		return "<文本", true
-	}
-	if vt, _, vs := build.ValTextTest(line); vt == 6 && vs == `'''` {
-		return `'''`, true
-	}
-	return "", false
 }
 
 // checkUndefinedVarsEntry 顺序检查单个词条正文里的变量引用：
@@ -738,6 +730,178 @@ func collectBlockVars(line string, defined map[string]bool) {
 
 // ============ 赋值后变量未被使用检查 ============
 
+// contentFrame 记录「内容行不是变量赋值」的框的闭合方式与取值规则。
+type contentFrame struct {
+	byMark bool   // true：按关闭标记行闭合；false：按括号平衡闭合
+	mark   string // 关闭标记行
+	depth  int    // 括号平衡深度
+	interp bool   // 内容行做 %变量% 插值，其中的 %变量% 是变量引用
+	json   bool   // JSON 键值框：键名不是变量名，值按 NewJson 前缀语法读取变量
+}
+
+// contentBlockTracker 跟踪「内容行不是变量赋值」的框（文本/JSON/JS/链式/三引号等）的嵌套状态。
+// 这类框的内容行会被 ValTextTest 误认为「变量名 + 冒号」的赋值，静态检查需跳过：
+//   - 文本>/纯文本>/三引号文本块（变量: 加三个引号）：内容按文本输出或赋值（行内形如 `a: 文本` 是文本）；
+//   - --js ... --end：内容是 JS 脚本；
+//   - JSON>{/[、JSON> ... <JSON、变量:{/[：内容是 JSON 键值（key=value / key:=value）；
+//   - 变量:>>>/#:>>> ... <<<：内容是写回链式变量的取值表达式。
+type contentBlockTracker struct {
+	frames []contentFrame
+}
+
+// step 更新框状态，返回该行是否属于框内部（含关闭标记行；开启行本身返回 false）。
+func (t *contentBlockTracker) step(line string) bool {
+	if n := len(t.frames); n > 0 {
+		f := &t.frames[n-1]
+		if f.byMark {
+			if line == f.mark {
+				t.frames = t.frames[:n-1]
+			}
+			return true
+		}
+		if strings.HasSuffix(line, "{") || strings.HasSuffix(line, "[") {
+			f.depth++
+		}
+		if line == "}" || line == "]" || line == "}," || line == "]," {
+			f.depth--
+			if f.depth == 0 {
+				t.frames = t.frames[:n-1]
+			}
+		}
+		return true
+	}
+	if f, ok := contentBlockOpen(line); ok {
+		t.frames = append(t.frames, f)
+	}
+	return false
+}
+
+// refs 提取当前框内容行里被读取的变量名。
+func (t *contentBlockTracker) refs(line string) []string {
+	if len(t.frames) == 0 {
+		return nil
+	}
+	f := t.frames[len(t.frames)-1]
+	var names []string
+	if f.json {
+		// JSON>{/[ 与 变量:{/[ 的值按 dic.NewJson 的前缀语法（"s%变量名"/"%变量名"）读取变量。
+		names = append(names, jsonValueRefs(line)...)
+	}
+	if f.interp {
+		// JSON> 框的值与 文本>/变量:"""/变量:>>> 的内容经 r.Val.Text 做 %变量% 插值，
+		// 与正文行不同：内容行不会被切成赋值操作符，直接按 %变量% 成对切分。
+		names = append(names, textBlockVarRefs(line)...)
+	}
+	return names
+}
+
+// contentBlockOpen 识别「内容行不是变量赋值」的框开启行，判定与 blockOpen/funcSkipOpen 一致。
+func contentBlockOpen(line string) (contentFrame, bool) {
+	switch {
+	case strings.HasPrefix(line, "纯文本>"):
+		return contentFrame{byMark: true, mark: "<文本"}, true
+	case strings.HasPrefix(line, "文本>"):
+		return contentFrame{byMark: true, mark: "<文本", interp: true}, true
+	case line == "JSON>[" || line == "JSON>{":
+		return contentFrame{depth: 1, json: true}, true
+	case strings.HasPrefix(line, "JSON>"):
+		return contentFrame{byMark: true, mark: "<JSON", interp: true, json: true}, true
+	case line == "--js":
+		return contentFrame{byMark: true, mark: "--end"}, true
+	case strings.HasPrefix(line, "#:>>>"):
+		return contentFrame{byMark: true, mark: "<<<", interp: true}, true
+	}
+	if vt, vp, vs := build.ValTextTest(line); vt == 6 {
+		switch {
+		case vs == `"""`:
+			return contentFrame{byMark: true, mark: `"""`, interp: true}, true
+		case vs == `'''`:
+			return contentFrame{byMark: true, mark: `'''`}, true
+		case vs == ">>>":
+			return contentFrame{byMark: true, mark: "<<<", interp: true}, true
+		case (vs == "{" || vs == "[") && !strings.Contains(vp, "->"):
+			// 变量:{ / 变量:[ 多行 JSON 赋值框（含 -> 路径的是单行 JSON 赋值，非框）。
+			return contentFrame{depth: 1, json: true}, true
+		case vp != "" && strings.HasPrefix(vs, "纯文本>"):
+			// 变量:纯文本> 赋值框：内容原样，%变量% 不插值。
+			return contentFrame{byMark: true, mark: "<文本"}, true
+		case vp != "" && strings.HasPrefix(vs, "文本>"):
+			// 变量:文本> 赋值框：内容做 %变量% 插值。
+			return contentFrame{byMark: true, mark: "<文本", interp: true}, true
+		}
+	}
+	return contentFrame{}, false
+}
+
+// jsonValueRefs 提取 JSON 字符串值形式的变量引用。
+// dic.NewJson 的替换规则：字符串值以 "s%变量名" 或 "%变量名" 开头即读取该变量
+// （如 "a": "%ww" 读取变量 ww，值不带闭合 %）。静态检查需按同一语法识别，
+// 否则 JSON 框内以该语法读取的变量会被误判为「未使用」。
+func jsonValueRefs(line string) []string {
+	var names []string
+	for i := 0; i < len(line); i++ {
+		if line[i] != '"' {
+			continue
+		}
+		end := strings.IndexByte(line[i+1:], '"')
+		if end < 0 {
+			break
+		}
+		end += i + 1
+		val := line[i+1 : end]
+		// 仅取值位置的字符串参与替换，键名不受影响。
+		rest := strings.TrimRight(line[:i], " \t")
+		i = end
+		if rest == "" {
+			continue
+		}
+		if c := rest[len(rest)-1]; c != ':' && c != ',' && c != '[' {
+			continue
+		}
+		switch {
+		case strings.HasPrefix(val, "s%") && len(val) > 2 && !strings.Contains(val[2:], "%"):
+			names = append(names, val[2:])
+		case strings.HasPrefix(val, "%") && len(val) > 1 && !strings.Contains(val[1:], "%"):
+			names = append(names, val[1:])
+		}
+	}
+	return filterVarNames(names)
+}
+
+// textBlockVarRefs 提取文本框内容行里的 %变量% 引用（含 %实例.成员% 按 . 拆分的实例变量），
+// 并剔除 % 切分产生的噪声（如 JSON 文本值 `a="50%", b="60%"` 会被切成 `", b="60`）。
+func textBlockVarRefs(line string) []string {
+	var names []string
+	for _, name := range extractVarRefs(line) {
+		if strings.Contains(name, ".") {
+			names = append(names, strings.Split(name, ".")...)
+			continue
+		}
+		names = append(names, name)
+	}
+	return filterVarNames(names)
+}
+
+// filterVarNames 过滤出符合变量名规则的引用，剔除 % 切分噪声。
+func filterVarNames(names []string) []string {
+	out := make([]string, 0, len(names))
+	for _, name := range names {
+		if !isPlainVarName(name) {
+			continue
+		}
+		out = append(out, name)
+	}
+	return out
+}
+
+// isPlainVarName 判断字符串是否为变量名（不含空白、引号、逗号、等号、括号等 % 切分噪声字符）。
+func isPlainVarName(name string) bool {
+	if name == "" {
+		return false
+	}
+	return !strings.ContainsAny(name, " \t\r\n\"',=<>{}[]()%/\\")
+}
+
 // unusedAssign 记录一条赋值行（目标变量名、行号与原始行文本）。
 type unusedAssign struct {
 	name string
@@ -750,25 +914,33 @@ type unusedAssign struct {
 // 若本意是输出带冒号的文本，这是一种静默失效，提示时一并给出转义冒号的修正写法。
 // 告警定位在最后一次赋值行：该处才是变量的最终值，此前的赋值都被覆盖。
 func checkUnusedAssignment(v *dto.BuildValue, stack *importStack) {
-	used := make(map[string]bool)         // 全产物中被引用过的变量名
+	checkUnusedAssignmentWith(v, stack, isMagicVar, nil)
+}
+
+// checkUnusedAssignmentWith 与 checkUnusedAssignment 相同，只是把「哪些变量名不算死代码」交给调用方决定：
+// 网页词库脚本块没有编译环节、isMagicVar 也不覆盖运行时注入的全局变量，需要额外豁免；
+// extraUsed 是调用方已知的外部引用（如页面 HTML 里用 {{.键}} 取过值的变量），这些同样不算死代码。
+func checkUnusedAssignmentWith(v *dto.BuildValue, stack *importStack, exempt func(string) bool, extraUsed map[string]bool) {
+	used := make(map[string]bool, len(extraUsed)) // 全产物中被引用过的变量名
+	for name := range extraUsed {
+		used[name] = true
+	}
 	last := make(map[string]unusedAssign) // 变量 -> 最后一次赋值（最终值所在行）
 	var order []string                    // 变量首次出现的顺序，保证告警顺序稳定
 
 	scan := func(lines []string, lineNums []int) {
-		var rawClosers []string
+		var blocks contentBlockTracker
 		for i, line := range lines {
 			ln := 0
 			if i < len(lineNums) {
 				ln = lineNums[i]
 			}
-			// 关闭原样文本框
-			if n := len(rawClosers); n > 0 && line == rawClosers[n-1] {
-				rawClosers = rawClosers[:n-1]
-				continue
-			}
-			closer, isRawOpen := rawTextCloser(line)
-			// 原样文本框内容行：原样输出，%变量% 不做插值，既不算引用也不是赋值。
-			if !isRawOpen && len(rawClosers) > 0 {
+			// 框内容行不是变量赋值：文本/JSON/JS/链式/三引号等框内的 `key: 值` 会被
+			// ValTextTest 误认为变量赋值。内容行仍会读取变量（%变量% 或 NewJson 的 %变量名），需计入引用。
+			if blocks.step(line) {
+				for _, name := range blocks.refs(line) {
+					used[name] = true
+				}
 				continue
 			}
 			if !strings.HasPrefix(line, "//") {
@@ -783,16 +955,13 @@ func checkUnusedAssignment(v *dto.BuildValue, stack *importStack) {
 					}
 					used[name] = true
 				}
-				if isAssign && !isMagicVar(vp) {
+				if isAssign && !exempt(vp) {
 					// 告警定位到最后一次赋值：变量的最终值死在那里，此前的赋值都被覆盖了。
 					if _, ok := last[vp]; !ok {
 						order = append(order, vp)
 					}
 					last[vp] = unusedAssign{name: vp, line: ln, text: line}
 				}
-			}
-			if isRawOpen {
-				rawClosers = append(rawClosers, closer)
 			}
 		}
 	}
@@ -819,23 +988,30 @@ func checkUnusedAssignment(v *dto.BuildValue, stack *importStack) {
 		}
 		a := last[name]
 		msg := "变量未使用：" + name + " 赋值后未被任何地方引用"
-		// 多行 JSON 框（key:{ / key:[）本身就是块结构声明，冒号不是「想输出文本」的误写，
+		// 块开启行（key:{/[、key:"""/'''、key:>>>）本身就是块结构声明，冒号不是「想输出文本」的误写，
 		// 给出转义写法反而误导，只提示变量未被引用。
-		if !isJSONBoxAssign(a.text, name) {
+		if !isBlockAssign(a.text, name) {
 			msg += "；若此处是要输出文本，应写成 " + escapeAssignColon(a.text, name)
 		}
 		stack.addWarning(a.line, msg)
 	}
 }
 
-// isJSONBoxAssign 判断赋值行是否为多行 JSON 框声明（key:{ / key:[，键名不含 -> ），
-// 与 build.formatOpen 中 varNewJson 的判定保持一致。
-func isJSONBoxAssign(line, key string) bool {
+// isBlockAssign 判断赋值行是否为块开启声明（多行 JSON 框 key:{ / key:[、三引号文本块、链式块 key:>>>），
+// 判定与 build.formatOpen、contentBlockOpen 保持一致。
+func isBlockAssign(line, key string) bool {
 	if key == "" || strings.Contains(key, "->") || !strings.HasPrefix(line, key) {
 		return false
 	}
 	vt, _, vs := build.ValTextTest(line)
-	return vt == 6 && (strings.HasPrefix(vs, "{") || strings.HasPrefix(vs, "["))
+	if vt != 6 {
+		return false
+	}
+	switch vs {
+	case `"""`, `'''`, ">>>":
+		return true
+	}
+	return strings.HasPrefix(vs, "{") || strings.HasPrefix(vs, "[")
 }
 
 // isInlineControlLine 判断该行是否为行内判断语句（如果:/if: 起始，否则如果:/elif: 分支）。

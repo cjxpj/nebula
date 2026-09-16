@@ -394,8 +394,10 @@ func (a *dicRuntime) LoopVarChanged(name string, cur int) (int, bool, bool) {
 }
 
 // TextBlock 原生执行 文本>/纯文本> 框，语义与解释器 StateText 状态机一致：
-//   - 开启行后缀（`=` 右侧或整段后缀）经 %变量% 插值得到换行分隔符 LineFeed；
-//   - `=` 左侧为赋值目标变量名（无 `=` 则直接输出）；
+//   - 开启行支持 文本>/纯文本>，也支持赋予值形式 变量名:文本>/变量名:纯文本>；
+//   - 开启行后缀（变量名前缀形式为其后整段，否则为 `=` 右侧或整段后缀）
+//     经 %变量% 插值得到换行分隔符 LineFeed；
+//   - 赋值目标来自 `变量名:` 前缀或 `=` 左侧变量名（都没有则直接输出）；
 //   - 内容行按 pure 决定原样输出或 %变量% 插值，行间用 LineFeed 连接，末尾不加分隔符。
 func (a *dicRuntime) TextBlock(text string, lines []string, pure bool) string {
 	r := a.r
@@ -403,11 +405,22 @@ func (a *dicRuntime) TextBlock(text string, lines []string, pure bool) string {
 	if pure {
 		prefixLen = len("纯文本>")
 	}
-	getInput := text[prefixLen:]
 
+	open := text
 	valueName := ""
+	// 变量名:文本> / 变量名:纯文本>：前缀即赋值目标，其后整段为行间分隔符。
+	if vt, vp, vs := dicBuild.ValTextTest(text); vt == 6 && vp != "" && len(vs) >= prefixLen {
+		if strings.HasPrefix(vs, "文本>") || strings.HasPrefix(vs, "纯文本>") {
+			valueName = vp
+			open = vs
+		}
+	}
+	getInput := open[prefixLen:]
+
 	var lineFeed string
-	if startIdx := strings.IndexByte(getInput, '='); startIdx != -1 {
+	if valueName != "" {
+		lineFeed = utils.AnyIsString(r.Val.Text(getInput))
+	} else if startIdx := strings.IndexByte(getInput, '='); startIdx != -1 {
 		valueName = getInput[:startIdx]
 		lineFeed = utils.AnyIsString(r.Val.Text(getInput[startIdx+1:]))
 	} else {
