@@ -36,6 +36,7 @@ var webVoidTags = map[string]bool{
 // 运行时解析前会逐行去掉行首空白（run.TrimWebScriptIndent），缩进不影响执行结果。
 // 普通 <script>/<style> 正文剥掉共有缩进后整体缩进到脚本块层级，行的相对缩进不变。
 // <pre>/<textarea> 的正文与 HTML 注释逐字节保留，避免破坏预格式化文本。
+// 漏写 ?> 的 <?n 不是执行块（运行时整段原样输出），排版也从它起原样保留剩余内容，不会丢正文。
 // 换行符与末尾换行保持原文风格，与 FormatDic 一致。
 func FormatWebDic(text string) string {
 	eol := detectEOL(text)
@@ -80,7 +81,7 @@ func formatWebBody(lines []string) string {
 	nebulaIndent := 0 // 内联块开启行自身的缩进层级
 	inComment := false
 
-	for _, line := range lines {
+	for i, line := range lines {
 		trimmed := strings.TrimSpace(line)
 
 		if inComment {
@@ -158,13 +159,21 @@ func formatWebBody(lines []string) string {
 			rawTag, rawOpen, rawBody = name, trimmed, nil
 		} else if loc := webNebulaOpenRe.FindStringIndex(trimmed); loc != nil &&
 			!strings.Contains(trimmed[loc[1]:], webNebulaClose) {
+			if !webHasNebulaClose(lines[i+1:]) {
+				// <?n 缺少结束标记：运行时不会执行这一块，且从这里往后整段原样输出。
+				// 排版也必须原样保留剩余内容，否则会把块内正文连同后面的 HTML 一起吞掉。
+				out = append(out, lines[i+1:]...)
+				break
+			}
 			// <?n 与 ?> 不同行：<?n 之后的部分与后续行都是该块的 Nebula 正文
 			inNebula = true
 			nebulaBody = nil
-			if rest := strings.TrimSpace(trimmed[loc[1]:]); rest != "" {
-				nebulaBody = []string{rest}
-			}
 			nebulaIndent = indent
+			if rest := strings.TrimSpace(trimmed[loc[1]:]); rest != "" {
+				// 同行还有正文：开启行只保留到 <?n，正文并入块内排版，避免同一段正文重复输出
+				nebulaBody = []string{rest}
+				out[len(out)-1] = strings.Repeat(indentUnit, indent) + trimmed[:loc[1]]
+			}
 		}
 		// 本行开始了未闭合的 HTML 注释
 		if idx := strings.Index(trimmed, "<!--"); idx >= 0 && !strings.Contains(trimmed[idx:], "-->") {
@@ -173,6 +182,16 @@ func formatWebBody(lines []string) string {
 	}
 
 	return strings.Join(out, "\n")
+}
+
+// webHasNebulaClose 判断后续行里是否还有 ?> 结束标记，用于识别未闭合的 <?n 内联执行块。
+func webHasNebulaClose(lines []string) bool {
+	for _, line := range lines {
+		if strings.Contains(line, webNebulaClose) {
+			return true
+		}
+	}
+	return false
 }
 
 // webFormatRawBody 排版原样保留区的正文，inner 为正文应处的层级（开始标签所在层级 + 1）。

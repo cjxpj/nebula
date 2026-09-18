@@ -1,1 +1,3 @@
 === RUN   TestTmpWebDicCanvasImage
+=== RUN   TestTmpHello
+=== RUN   TestTmpReproDebugDicLoop

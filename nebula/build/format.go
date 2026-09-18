@@ -212,7 +212,7 @@ func formatMultiline(region []string) bool {
 	return false
 }
 
-// IsHeadLine 判断一行是否为头部内容：预编译指令（//@）、#引入= 导入行或赋值行。
+// IsHeadLine 判断一行是否为头部内容：预编译指令（//@）、#引入=/$引入 导入行、赋值行或函数调用行。
 func IsHeadLine(line string) bool {
 	line = strings.TrimSpace(line)
 	if line == "" {
@@ -221,15 +221,37 @@ func IsHeadLine(line string) bool {
 	if strings.HasPrefix(line, "//@") {
 		return true
 	}
-	if strings.HasPrefix(line, "#引入=") || strings.Contains(line, ":#引入=") {
+	if strings.HasPrefix(line, "#引入=") {
+		return true
+	}
+	// $引入 目标$ 与 #引入= 等价；变量:$引入 目标$ 为「导入全部函数并返回实例包」的赋予值形式。
+	if strings.HasPrefix(line, "$引入 ") && strings.HasSuffix(line, "$") {
+		return true
+	}
+	if idx := strings.Index(line, ":"); idx > 0 {
+		if rest := strings.TrimSpace(line[idx+1:]); strings.HasPrefix(rest, "$引入 ") && strings.HasSuffix(rest, "$") {
+			return true
+		}
+	}
+	if isFuncCallLine(line) {
 		return true
 	}
 	vt, key, _ := ValTextTest(line)
 	return vt != 0 && key != ""
 }
 
+// isFuncCallLine 判断整行是否为一个 $函数 …$ 调用（形如 $执行词库 xxx Main$）。
+// 要求整行就是一个调用（首尾各一个 $），避免把文案里零散的 $ 误判成调用。
+// 头部初始化脚本可承载函数调用（$执行词库$、$执行词库文件$、$重定向触发词$ 等），
+// 全文无空行时据此判定为头部，避免整行被当成触发词导致「运行没反应」。
+func isFuncCallLine(line string) bool {
+	return len(line) > 2 && strings.HasPrefix(line, "$") && strings.HasSuffix(line, "$")
+}
+
 // FirstHeadLikeLine 判断「全文无空行」的文件是否应按头部初始化脚本解析：
-// 跳过空行与普通注释后，首个有效行是赋值/引入/预编译指令行时返回 true。
+// 跳过空行与普通注释后，首个有效行是赋值/引入/预编译指令行、函数调用行，或框开启行
+// （循环>、遍历>、如果>、匹配>、文本>、JSON>、执行函数> 等）时返回 true——
+// 框与函数调用同样属于初始化脚本的一部分，头部与正文一样是合法的词块容器。
 // 词库编译（run 包）与这里的格式化共用该判定，保证解析与排版结果一致。
 func FirstHeadLikeLine(lines []string) bool {
 	for _, raw := range lines {
@@ -237,14 +259,18 @@ func FirstHeadLikeLine(lines []string) bool {
 		if line == "" || strings.HasPrefix(line, "/*") || (strings.HasPrefix(line, "//") && !strings.HasPrefix(line, "//@")) {
 			continue
 		}
-		return IsHeadLine(line)
+		if IsHeadLine(line) {
+			return true
+		}
+		_, blockOpen := formatOpen(line)
+		return blockOpen
 	}
 	return false
 }
 
 // formatBody 执行主体排版，等价内置算法的 Ss。
 // 首个空行之前为头部（初始化区），头部只做去缩进、不参与块缩进；
-// 全文无空行且开头是赋值/引入/指令行时，整篇按头部初始化脚本排版。
+// 全文无空行且开头是赋值/引入/指令行或框开启行时，整篇按头部初始化脚本排版。
 func formatBody(lines []string) string {
 	out := make([]string, 0, len(lines))
 

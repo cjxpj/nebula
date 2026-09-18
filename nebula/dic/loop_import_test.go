@@ -129,7 +129,7 @@ func TestFuncBuiltinConflict(t *testing.T) {
 	}
 }
 
-// TestImportAssignPackage 验证 #引入= 的赋予值形式：变量:#引入=目标 导入文件全部函数组成包并返回实例。
+// TestImportAssignPackage 验证 $引入 的赋予值形式：变量:$引入 目标$ 导入文件全部函数组成包并返回实例。
 func TestImportAssignPackage(t *testing.T) {
 	chdirToAppWin()
 
@@ -147,10 +147,9 @@ func TestImportAssignPackage(t *testing.T) {
 	}
 	defer os.Remove(filePath)
 
-	const dicText = "甲:#引入=" + pkgName + "\n\nMain\n$甲.读取变量$"
+	dicText := "甲:$引入 " + pkgName + "$\n\nMain\n$甲.读取变量$"
 	D := dic_dto.NewDic("t.n", dicText)
-	got := dic_api.Api.DicRun(D, "Main")
-	if got != "初始值" {
+	if got := dic_api.Api.DicRun(D, "Main"); got != "初始值" {
 		t.Errorf("导入包并调用方法错误，期望 初始值，实际 %q", got)
 	}
 }
@@ -193,7 +192,7 @@ func TestInstanceCallbackMethod(t *testing.T) {
 	}
 	defer os.Remove(filePath)
 
-	const dicText = "甲:#引入=" + pkgName + "\n\nMain\n$甲.test$\n$甲.回调 a$"
+	const dicText = "甲:$引入 " + pkgName + "$\n\nMain\n$甲.test$\n$甲.回调 a$"
 	D := dic_dto.NewDic("t.n", dicText)
 	if got := dic_api.Api.DicRun(D, "Main"); got != "okok2" {
 		t.Errorf("实例回调错误，期望 okok2，实际 %q", got)

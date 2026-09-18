@@ -54,4 +54,4 @@ func ListFiles(dir string) ([]string, error) {
 var Key []byte = []byte("cjxpj2960965389 nebula0052 juice")
 
 // 版本号
-var Version string = "20.2.0"
+var Version string = "20.3.0"

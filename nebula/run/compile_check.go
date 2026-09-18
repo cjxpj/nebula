@@ -23,7 +23,7 @@ func runCompileChecks(v *dto.BuildValue, stack *importStack) {
 }
 
 // allBuildDics 收集编译产物中全部词条（正文、全局函数、类内函数），按指针去重，
-// 避免「变量:#引入=」形式下同一批函数同时出现在全局函数表与类函数表中被重复检查。
+// 避免「变量:$引入」形式下同一批函数同时出现在全局函数表与类函数表中被重复检查。
 func allBuildDics(v *dto.BuildValue) []*dto.BuildDic {
 	seen := make(map[*dto.BuildDic]bool)
 	var out []*dto.BuildDic
@@ -159,9 +159,7 @@ func blockClose(line string) (blockKind, bool) {
 }
 
 func checkBlockPairs(v *dto.BuildValue, stack *importStack) {
-	// 头部虽无触发词，但同样会经 DicRunLine 线性执行，框结构缺失闭合应在编译期报错，
-	// 与正文词条保持一致的检查口径。
-	checkBlockPairsLines(v.Head, v.HeadLineNums, stack)
+	// 头部已作为首个词块并入 Dic，随 allBuildDics 统一检查，与正文词条口径一致。
 	for _, e := range allBuildDics(v) {
 		checkBlockPairsLines(e.Text, e.LineNums, stack)
 	}
@@ -293,7 +291,6 @@ func funcSkipOpen(line string) (funcSkipFrame, bool) {
 // 缺结尾 $ 时 parseFuncSegments 会把该行剩余部分整段按字面量输出：函数不执行，也没有任何提示；
 // 这里在编译期补一条警告，定位这种静默失效。
 func checkFuncClosed(v *dto.BuildValue, stack *importStack) {
-	checkFuncClosedLines(v.Head, v.HeadLineNums, stack)
 	for _, e := range allBuildDics(v) {
 		checkFuncClosedLines(e.Text, e.LineNums, stack)
 	}
@@ -476,8 +473,12 @@ func checkFuncCall(name string, argCount, line int, v *dto.BuildValue, funcIndex
 
 // checkFuncNameConflict 检查全局 [函数] 定义是否与系统内置函数重名。
 // 内置函数为只读，词库内 [函数] 定义不得覆盖；冲突时编译警告 + 运行时调用报错。
+// 保留的生命周期钩子（_初始化/_中间件）不属于可调用函数，跳过检查。
 func checkFuncNameConflict(v *dto.BuildValue, stack *importStack) {
 	for _, e := range v.DicFuncs["函数"] {
+		if dto.IsReservedTrigger(e.Trigger) {
+			continue
+		}
 		name := e.Trigger
 		if i := strings.LastIndex(name, "->"); i != -1 {
 			name = name[:i]
@@ -495,15 +496,24 @@ func checkFuncNameConflict(v *dto.BuildValue, stack *importStack) {
 func checkUndefinedVars(v *dto.BuildValue, stack *importStack) {
 	funcOutVars := collectFuncOutVars(v)
 
-	// 头部初始化语句：顺序检查并累积赋值，结果作为所有词条正文的初始已定义变量。
+	// 生命周期钩子（[f]_初始化 / [f]_中间件，其中 _中间件 已含编译期并入的头部内容）
+	// 在正文前执行（初始化只首次、中间件每次），其赋值对正文可见；先检查并累积，再逐个检查正文词条。
 	headDefined := make(map[string]bool)
 	// 编译期资源变量（//@资源 / //@一次性资源）在运行时注入局部变量表，视为已定义，避免误报「变量不存在」。
 	for name := range v.Resources {
 		headDefined[name] = true
 	}
-	checkUndefinedVarsLines(v.Head, v.HeadLineNums, headDefined, funcOutVars, stack)
+	for _, e := range v.DicFuncs["函数"] {
+		if e == nil || !dto.IsReservedTrigger(e.Trigger) {
+			continue
+		}
+		checkUndefinedVarsLines(e.Text, e.LineNums, headDefined, funcOutVars, stack)
+	}
 
 	for _, e := range allBuildDics(v) {
+		if e == nil || e.Trigger == dto.HeaderTrigger || dto.IsReservedTrigger(e.Trigger) {
+			continue
+		}
 		checkUndefinedVarsEntry(e, headDefined, funcOutVars, stack)
 	}
 }
@@ -966,7 +976,6 @@ func checkUnusedAssignmentWith(v *dto.BuildValue, stack *importStack, exempt fun
 		}
 	}
 
-	scan(v.Head, v.HeadLineNums)
 	for _, e := range allBuildDics(v) {
 		if e == nil {
 			continue

@@ -498,13 +498,16 @@ func parseTriggerPrefix(line string) (category, class, param, rest string) {
 	return category, class, param, rest
 }
 
-// parseImportLine 解析 #引入= 行，支持两种形式：
+// parseImportLine 解析引入行，支持两种写法（等价）：
 //
-//	#引入=目标        → varName 为空
-//	变量:#引入=目标    → 返回变量名与目标（导入全部函数并返回实例包）
+//	#引入=目标          → varName 为空
+//	$引入 目标$         → varName 为空
+//	变量:$引入 目标$    → 返回变量名与目标（导入全部函数并返回实例包）
 //
+// 赋予值形式（导入全部函数组成包并返回实例）只支持 $引入 函数写法，不支持 #引入=。
 // 返回变量名（可为空）、导入目标以及是否为引入行。
 func parseImportLine(line string) (varName, target string, ok bool) {
+	line = strings.TrimSpace(line)
 	if strings.HasPrefix(line, "#引入=") {
 		target = strings.TrimSpace(line[len("#引入="):])
 		if target == "" {
@@ -512,11 +515,27 @@ func parseImportLine(line string) (varName, target string, ok bool) {
 		}
 		return "", target, true
 	}
-	if idx := strings.Index(line, ":#引入="); idx > 0 {
+	return parseImportFuncCall(line)
+}
+
+// parseImportFuncCall 解析 $引入 目标$ / 变量:$引入 目标$ 形式的引入函数调用（$引入 目标$ 与 #引入=目标 等价）。
+func parseImportFuncCall(line string) (varName, target string, ok bool) {
+	// 变量:$引入 目标$
+	if idx := strings.Index(line, ":"); idx > 0 {
 		name := strings.TrimSpace(line[:idx])
-		target := strings.TrimSpace(line[idx+len(":#引入="):])
-		if name != "" && target != "" {
-			return name, target, true
+		rest := strings.TrimSpace(line[idx+1:])
+		if name != "" && strings.HasPrefix(rest, "$引入 ") && strings.HasSuffix(rest, "$") {
+			target = strings.TrimSpace(rest[len("$引入 ") : len(rest)-1])
+			if target != "" {
+				return name, target, true
+			}
+		}
+	}
+	// $引入 目标$
+	if strings.HasPrefix(line, "$引入 ") && strings.HasSuffix(line, "$") {
+		target = strings.TrimSpace(line[len("$引入 ") : len(line)-1])
+		if target != "" {
+			return "", target, true
 		}
 	}
 	return "", "", false
@@ -638,7 +657,7 @@ func (s *importStack) addError(line int, text string) {
 }
 
 // dicCacheVersion 磁盘编译缓存格式版本，结构变化时递增以淘汰旧缓存。
-const dicCacheVersion = 6
+const dicCacheVersion = 7
 
 // dicCacheEntry 词库编译结果的磁盘缓存结构（gob 序列化）。
 // 只缓存可序列化词条；含 bot 注入（MyFunc 非空）的词库不落缓存，故无需序列化 Go 函数。
@@ -647,9 +666,7 @@ type dicCacheEntry struct {
 	// Deps 所有依赖文件（含主文件）路径 -> 内容 hash，用于失效校验。
 	Deps map[string]string
 
-	// BuildValue 可序列化部分
-	Head          []string
-	HeadLineNums  []int
+	// BuildValue 可序列化部分（头部已并入 Dic 词块列表）
 	Dic           []*dto.BuildDic
 	DicFuncs      map[string][]*dto.BuildDic
 	ClassFuncs    map[string]map[string][]*dto.BuildDic
@@ -710,8 +727,6 @@ func classFuncsOf(class map[string]*dto.DicClass) map[string]map[string][]*dto.B
 // 缓存仅覆盖无 bot 注入的词库，故 MyFunc 与各 Class.Fn 均为空，直接用 NewDicClass 初始化。
 func rebuildBuildValue(e *dicCacheEntry) *dto.BuildValue {
 	result := &dto.BuildValue{
-		Head:          e.Head,
-		HeadLineNums:  e.HeadLineNums,
 		Dic:           e.Dic,
 		DicFuncs:      e.DicFuncs,
 		Class:         make(map[string]*dto.DicClass),
@@ -746,8 +761,7 @@ func MarshalBuildValue(v *dto.BuildValue) ([]byte, error) {
 	}
 	e := &dicCacheEntry{
 		Version:       dicCacheVersion,
-		Head:          v.Head,
-		HeadLineNums:  v.HeadLineNums,
+		Deps:          v.Deps,
 		Dic:           v.Dic,
 		DicFuncs:      v.DicFuncs,
 		ClassFuncs:    classFuncsOf(v.Class),
@@ -865,7 +879,7 @@ func importPackage(dicPath, path, fHeaderName string, funcMap map[string][]*dto.
 }
 
 // loadImport 加载 #引入= 目标（本地文件或目录），将函数/类/自定义函数合并到目标，
-// 并返回本次导入的全部函数组成的「包」（供变量:#引入= 的赋予值形式使用）。
+// 并返回本次导入的全部函数组成的「包」（供变量:$引入 的赋予值形式使用）。
 // fHeaderName 非空时给「函数」触发词加前缀。isDir 表示目标是否为目录（目录形式不返回实例）。
 func loadImport(dicPath, path, fHeaderName string, funcMap map[string][]*dto.BuildDic, classMap map[string]*dto.DicClass, myFunc map[string]dto.DicFunc, stack *importStack, lineNum int) (isDir bool, pkg *dto.DicClass) {
 	dirName, isDir := strings.CutSuffix(path, "/*")
@@ -987,7 +1001,7 @@ func web(dicPath string, lines []string, stack *importStack) *dto.BuildValue {
 
 		if varName, path, ok := parseImportLine(line); ok {
 			isDir, pkg := importPackage(dicPath, path, "", funcDict, classText, myFunc, stack, i+1)
-			// 赋予值形式：变量:#引入=目标 → 导入全部函数组成包并返回实例
+			// 赋予值形式：变量:$引入 目标$ → 导入全部函数组成包并返回实例
 			if varName != "" && !isDir {
 				classText[varName] = pkg
 				dicText = append(dicText, varName+":$new "+varName+"$")
@@ -997,8 +1011,14 @@ func web(dicPath string, lines []string, stack *importStack) *dto.BuildValue {
 		dicText = append(dicText, line)
 	}
 
+	// 网页内联块整体作为头部初始化脚本（无触发词拆分），并入头部词块。
+	var dic []*dto.BuildDic
+	if len(dicText) > 0 {
+		dic = []*dto.BuildDic{dto.NewHeadDic(dicText, nil)}
+	}
+
 	result := &dto.BuildValue{
-		Head:     dicText,
+		Dic:      dic,
 		DicFuncs: funcDict,
 		Class:    classText,
 		MyFunc:   myFunc,
@@ -1054,8 +1074,6 @@ func buildDicWithHashMode(dicPath string, lines []string, mainHash string, write
 		saveDicCache(dicPath, &dicCacheEntry{
 			Version:       dicCacheVersion,
 			Deps:          stack.deps,
-			Head:          result.Head,
-			HeadLineNums:  result.HeadLineNums,
 			Dic:           result.Dic,
 			DicFuncs:      result.DicFuncs,
 			ClassFuncs:    classFuncsOf(result.Class),
@@ -1155,9 +1173,9 @@ func buildDic(dicPath string, lines []string, stack *importStack) *dto.BuildValu
 		resourceOnce  bool
 	)
 
-	// 头部区域：文件开头到第一个空行之间为头部（#引入= 与初始化语句），
+	// 头部区域：文件开头到第一个空行之间为头部（$引入/#引入= 与初始化语句），
 	// 空行之后为正文；注释行不参与分隔（仅被跳过）。
-	// 全文无空行时：开头是赋值/引入/指令行则整篇按头部初始化脚本解析，
+	// 全文无空行时：开头是赋值/引入/指令行或框开启行则整篇按头部初始化脚本解析，
 	// 否则按正文解析（如被引入的 [函数] 文件）。
 	runhead = false
 	hasBlank := false
@@ -1257,7 +1275,7 @@ func buildDic(dicPath string, lines []string, stack *importStack) *dto.BuildValu
 		if runhead {
 			if varName, path, ok := parseImportLine(line); ok {
 				isDir, pkg := importPackage(dicPath, path, fHeaderName, chajianText, classText, myFunc, stack, dic_i+1)
-				// 赋予值形式：变量:#引入=目标 → 导入全部函数组成包并返回实例
+				// 赋予值形式：变量:$引入 目标$ → 导入全部函数组成包并返回实例
 				if varName != "" && !isDir {
 					classText[varName] = pkg
 					runheadtext = append(runheadtext, varName+":$new "+varName+"$")
@@ -1410,9 +1428,30 @@ func buildDic(dicPath string, lines []string, stack *importStack) *dto.BuildValu
 		}
 
 	}
+	// 头部内容与 [f]_中间件 是中间件的两种写法、二选一：
+	// - 只写头部：头部内容即中间件（编译成一个 [f]_中间件 词条）；
+	// - 已定义 [f]_中间件：函数覆盖头部，头部运行时语句被忽略（预编译指令 #引入=、//@资源 不受影响，仍生效）。
+	if len(runheadtext) > 0 {
+		hasMiddleware := false
+		for _, fn := range chajianText["函数"] {
+			if fn != nil && fn.Trigger == dto.MiddlewareTrigger {
+				hasMiddleware = true
+				break
+			}
+		}
+		if hasMiddleware {
+			line := runheadLineNums[0]
+			stack.addWarning(line, "头部中间件 与 [f]_中间件 二选一：已定义 [f]_中间件，头部中间件被覆盖忽略")
+		} else {
+			chajianText["函数"] = append(chajianText["函数"], &dto.BuildDic{
+				Trigger:  dto.MiddlewareTrigger,
+				Text:     runheadtext,
+				LineNums: runheadLineNums,
+			})
+		}
+	}
+
 	result := &dto.BuildValue{
-		Head:          runheadtext,
-		HeadLineNums:  runheadLineNums,
 		Dic:           dicText,
 		DicFuncs:      chajianText,
 		Class:         classText,

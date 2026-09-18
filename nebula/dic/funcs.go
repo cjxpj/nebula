@@ -182,6 +182,32 @@ func redirectTrigger(d *dto.DicInputs) (any, error) {
 	return "", nil
 }
 
+// 继续执行：从当前触发词命中的下一个词条开始，只执行紧邻的下一个命中的词条。
+// 用于多个触发词（含正则）匹配同一输入时逐级往下执行（如多个 Main 顺序执行）。无参调用。
+// 匹配规则与正常触发词匹配一致（纯文本优先、正则按原始顺序线性匹配），只往下走一个。
+func continueTrigger(d *dto.DicInputs) (any, error) {
+	curIdx := d.V.P.GetINT(triggerIdxKey)
+	trigger := d.V.P.GetStr("触发词")
+	idx := d.Dic.GetTriggerIndex()
+	list := d.Dic.Dic
+
+	text, matchedTrigger, nextIdx := run.RunForIndexed(idx, list, trigger, curIdx+1)
+	if text == nil {
+		return "", nil
+	}
+	d.V.P.SetRaw(triggerIdxKey, nextIdx)
+	d.V.P.Set("触发", matchedTrigger)
+
+	runEntry := dic_dto.NewRunDicEntry().
+		SetV(d.V).
+		SetDic(d.Dic)
+	// 携带后续词条的行号映射，保证级联执行的正文出错时能定位到正确源文件行
+	if nextIdx >= 0 && nextIdx < len(list) && list[nextIdx] != nil {
+		runEntry.LineNums = list[nextIdx].LineNums
+	}
+	return dic_api.Api.DicRunLine(runEntry, text), nil
+}
+
 // 执行网页词库
 func runWebPHPDic(d *dto.DicInputs) (any, error) {
 	data := d.Inputs.String(1)

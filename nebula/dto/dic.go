@@ -162,6 +162,29 @@ type LocalDicValueNodeJs struct {
 	Content []string `json:"content"`
 }
 
+// HeaderTrigger 头部词块的特殊触发词：头部始终先于正文执行，不参与用户触发词匹配，
+// 仅作为 BuildValue.Dic 列表中「头部词块」的标记使用。取值避开真实触发词与 [函数] 等前缀语法。
+const HeaderTrigger = "@头部"
+
+// InitTrigger 初始化生命周期钩子（[f]_初始化）：首次加载该词库时执行一次，
+// 其定义的变量会随快照带入之后每一次执行；不允许通过 $函数名$ 调用。
+const InitTrigger = "_初始化"
+
+// MiddlewareTrigger 中间件生命周期钩子（[f]_中间件）：每次执行都会经过，
+// 与头部同为中间件（二选一即可，两处都写都会执行）；不允许通过 $函数名$ 调用。
+const MiddlewareTrigger = "_中间件"
+
+// IsReservedTrigger 判断触发词是否为保留的生命周期钩子（_初始化/_中间件）。
+// 这类函数由执行引擎按生命周期自动调用，不参与函数索引、函数清单与 $函数名$ 调用。
+func IsReservedTrigger(t string) bool {
+	return t == InitTrigger || t == MiddlewareTrigger
+}
+
+// NewHeadDic 把头部初始化脚本行包装为头部词块（BuildDic），与正文词块统一放进 Dic 列表。
+func NewHeadDic(lines []string, lineNums []int) *BuildDic {
+	return &BuildDic{Trigger: HeaderTrigger, Text: lines, LineNums: lineNums}
+}
+
 // 词库结构
 type BuildDic struct {
 	Trigger  string   `json:"trigger"`
@@ -214,8 +237,6 @@ type BuildWarning struct {
 }
 
 type BuildValue struct {
-	Head         []string               `json:"头部"`
-	HeadLineNums []int                  `json:"-"` // 头部每行对应的原始文件行号（1-based）
 	Dic          []*BuildDic            `json:"词库"`
 	DicFuncs     map[string][]*BuildDic `json:"函数"`
 	Class        map[string]*DicClass   `json:"class"`
@@ -287,6 +308,8 @@ func (v *BuildValue) MergeFuncs(fn map[string][]*BuildDic) {
 }
 
 // BuildFuncIndex 从 DicFuncs 的「函数」类别构建函数名 -> 词条索引（触发词去掉 -> 后缀后作为键）。
+// 保留的生命周期钩子（_初始化/_中间件）不进入索引：它们由执行引擎按生命周期自动调用，
+// 不允许通过 $函数名$ 调用，避免与普通函数调用逻辑混淆。
 func BuildFuncIndex(dicFuncs map[string][]*BuildDic) map[string][]*BuildDic {
 	list := dicFuncs["函数"]
 	if len(list) == 0 {
@@ -294,6 +317,9 @@ func BuildFuncIndex(dicFuncs map[string][]*BuildDic) map[string][]*BuildDic {
 	}
 	idx := make(map[string][]*BuildDic, len(list))
 	for _, item := range list {
+		if item == nil || IsReservedTrigger(item.Trigger) {
+			continue
+		}
 		name := item.Trigger
 		if i := strings.LastIndex(name, "->"); i != -1 {
 			name = name[:i]
@@ -316,6 +342,17 @@ func (v *BuildValue) GetFuncIndex() map[string][]*BuildDic {
 	return idx
 }
 
+// LifecycleFunc 返回保留生命周期钩子（_初始化/_中间件）对应的函数词条；未定义返回 nil。
+// 只匹配全局 [函数] 触发器精确同名；带 -> 传出变量等变体不算钩子。
+func (v *BuildValue) LifecycleFunc(name string) *BuildDic {
+	for _, e := range v.DicFuncs["函数"] {
+		if e != nil && e.Trigger == name {
+			return e
+		}
+	}
+	return nil
+}
+
 // TriggerIndex 触发词匹配索引：纯文本触发词 -> 原始下标列表（保序），正则触发词 -> 原始下标列表（保序）。
 type TriggerIndex struct {
 	Plain map[string][]int
@@ -333,10 +370,13 @@ func isPlainTriggerText(t string) bool {
 	return true
 }
 
-// BuildTriggerIndex 从词条切片构建触发词匹配索引。
+// BuildTriggerIndex 从词条切片构建触发词匹配索引；头部词块（HeaderTrigger）不参与触发词匹配。
 func BuildTriggerIndex(list []*BuildDic) *TriggerIndex {
 	idx := &TriggerIndex{Plain: make(map[string][]int)}
 	for i, item := range list {
+		if item == nil || item.Trigger == HeaderTrigger {
+			continue
+		}
 		if isPlainTriggerText(item.Trigger) {
 			idx.Plain[item.Trigger] = append(idx.Plain[item.Trigger], i)
 		} else {
@@ -354,6 +394,16 @@ func (v *BuildValue) GetTriggerIndex() *TriggerIndex {
 	idx := BuildTriggerIndex(v.Dic)
 	v.triggerIndex.Store(idx)
 	return idx
+}
+
+// HeaderEntry 返回头部词块（Trigger == HeaderTrigger）；无头部时返回 nil。
+func (v *BuildValue) HeaderEntry() *BuildDic {
+	for _, e := range v.Dic {
+		if e != nil && e.Trigger == HeaderTrigger {
+			return e
+		}
+	}
+	return nil
 }
 
 // ClassValues 返回 Class 变量表（类名 -> 类变量），供 %类名.变量% 解析使用。
@@ -409,7 +459,6 @@ func (v *BuildValue) Close() {
 	v.DicFuncs = nil
 	v.Class = nil
 	v.Dic = nil
-	v.Head = nil
 	v.Resources = nil
 	v.OnceResources = nil
 }

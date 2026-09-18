@@ -2224,10 +2224,16 @@ func dicTriggerMissWarning(dic *dic_dto.Dic, trigger string) dto.BuildWarning {
 }
 
 // dicTriggerMissLine 把兜底警告定位到首个词条的触发词行；没有词条时退回第 1 行。
+// 头部已作为特殊触发词词块并入 Dic 列表（TriggerLine 为 0），需跳过它取首个真实词条。
 func dicTriggerMissLine(dic *dic_dto.Dic) int {
-	if dic != nil && dic.Data != nil && len(dic.Data.Dic) > 0 {
-		if n := dic.Data.Dic[0].TriggerLine; n > 0 {
-			return n
+	if dic != nil && dic.Data != nil {
+		for _, e := range dic.Data.Dic {
+			if e == nil || e.Trigger == dto.HeaderTrigger {
+				continue
+			}
+			if e.TriggerLine > 0 {
+				return e.TriggerLine
+			}
 		}
 	}
 	return 1
@@ -3009,8 +3015,8 @@ func apkToolchain() (javaHome, sdkRoot string, err error) {
 
 // buildApkBundle 把指定词库预置进 Android 工程 assets 并调用 gradle 打包 APK：
 //  1. 读取词库文件（.n 源文本，与 exe/linux 打包共用同一份文件；三端产物运行时都执行该词库）；
-//     词库是否带「$设置工作目录$」头部都不影响打包：Android 默认工作目录即 Documents/Nebula，
-//     词库数据会直接写入该目录；带头部则把工作目录切到其下的子目录；
+//     词库是否带「$设置工作目录$」（初始化/头部）都不影响打包：Android 默认工作目录即 Documents/Nebula，
+//     词库数据会直接写入该目录；带了该指令则把工作目录切到其下的子目录；
 //  2. 写入 android/app/src/main/assets/nebula/start.n 与版本标记 dic.version（内容 md5），
 //     App 首启时由 MainActivity.syncBundledDic() 同步到 Documents/Nebula/start.n 顶替默认模板；
 //     同内容时跳过覆盖，避免每次启动都改写用户已有词库；
@@ -8357,6 +8363,10 @@ const (
 	// 的最大尝试次数：上游高峰通常持续一两分钟，只重试几次会在十几秒内就被判失败，
 	// 这里放宽次数以便熬过高峰。
 	aiRetryRateLimitMaxAttempts = 8
+	// aiRetryStallMaxAttempts 上游静默超时（连接建着却不吐任何数据）的最大尝试次数：
+	// 每次尝试最坏要等满一个空闲超时窗口（默认 3 分钟），只安排一次重试——重试能救回
+	// 上游偶发断流，又不至于为了一个持续过载的上游让用户等上十几分钟。
+	aiRetryStallMaxAttempts = 2
 	// aiRetryBaseDelay 一般瞬时故障（网关抖动、过载）首次重试前的等待时长，之后按 2 倍退避
 	aiRetryBaseDelay = time.Second
 	// aiRetryRateLimitBaseDelay 账户级限流（按分钟窗口计费）首次重试前的等待时长，
@@ -8370,6 +8380,17 @@ const (
 type aiRetryableError struct{ msg string }
 
 func (e *aiRetryableError) Error() string { return e.msg }
+
+// aiStallError 标记「上游静默超时」：请求已发出（响应头也可能已返回），但上游长时间
+// 一个字节都不吐，被 aiStreamIdleTimeout 的看门狗掐断。它与限流/网络故障同属
+// 「换一条新请求通常就能恢复」的类型，但每次尝试最坏要等满一个空闲超时窗口，
+// 因此单独成一类，只安排一次重试（见 aiRetryStallMaxAttempts）。
+type aiStallError struct{ msg string }
+
+func (e *aiStallError) Error() string { return e.msg }
+
+// aiNewStallError 构造「上游静默超时」错误。
+func aiNewStallError(msg string) error { return &aiStallError{msg: msg} }
 
 // aiRetryableByMessage 判断错误文案是否属于可重试的限流/过载类错误。
 func aiRetryableByMessage(msg string) bool {
@@ -8455,6 +8476,10 @@ func aiRetryable(err error) bool {
 		return false
 	}
 	if _, ok := errors.AsType[*aiRetryableError](err); ok {
+		return true
+	}
+	// 上游静默超时：连接建着却不吐数据，重发一条新请求通常就能恢复
+	if _, ok := errors.AsType[*aiStallError](err); ok {
 		return true
 	}
 	return aiRetryableByMessage(err.Error()) || aiRetryableByNetError(err)
@@ -8614,6 +8639,12 @@ func aiRetryBackoff(streamID string, fn func() error) error {
 				delay = aiRetryRateLimitBaseDelay
 			}
 		}
+		// 上游静默超时：每次尝试最坏要等满一个空闲超时窗口，只再试一次
+		stalled := false
+		if _, ok := errors.AsType[*aiStallError](err); ok {
+			stalled = true
+			attempts = aiRetryStallMaxAttempts
+		}
 		if attempt >= attempts {
 			break
 		}
@@ -8623,6 +8654,8 @@ func aiRetryBackoff(streamID string, fn func() error) error {
 		switch {
 		case rateLimited:
 			reason = "触发限流"
+		case stalled:
+			reason = "上游无响应"
 		case aiRetryableByNetError(err):
 			reason = "网络异常"
 		}
@@ -8681,6 +8714,96 @@ func aiChatOnceTools(c *dto.AIConfig, model string, messages []aiChatMessage, re
 	return content, reasoning, calls, finishReason, nil
 }
 
+// ============== 智谱 GLM 专有请求参数 ==============
+
+// aiIsZhipuProvider 判断本次请求是否发往智谱 GLM：接口地址为 bigmodel.cn 开放平台，或模型名为 glm-* 系列。
+// 智谱专有的 thinking / tool_stream 参数只对它下发，避免其他 OpenAI 兼容服务商收到未知字段。
+func aiIsZhipuProvider(baseURL, model string) bool {
+	if strings.Contains(strings.ToLower(baseURL), "bigmodel.cn") {
+		return true
+	}
+	return strings.HasPrefix(strings.ToLower(strings.TrimSpace(model)), "glm-")
+}
+
+// aiGLMVersion 解析 glm-* 模型名的主/次版本号（glm-5.3-flash → 5,3；glm-4.5 → 4,5；glm-5v-turbo → 5,0）。
+// 非 glm-* 或无法解析时 ok 为 false。
+func aiGLMVersion(model string) (major, minor int, ok bool) {
+	m := strings.ToLower(strings.TrimSpace(model))
+	if !strings.HasPrefix(m, "glm-") {
+		return 0, 0, false
+	}
+	m = strings.TrimPrefix(m, "glm-")
+	if n, _ := fmt.Sscanf(m, "%d.%d", &major, &minor); n == 2 {
+		return major, minor, true
+	}
+	if n, _ := fmt.Sscanf(m, "%d", &major); n == 1 {
+		return major, 0, true
+	}
+	return 0, 0, false
+}
+
+// aiGLMThinkingModel 判断智谱模型是否支持 thinking 字段：官方文档为 GLM-4.5 及以上版本。
+// 更早的模型不下发该字段，避免未知参数导致整轮请求失败。
+func aiGLMThinkingModel(model string) bool {
+	major, minor, ok := aiGLMVersion(model)
+	if !ok {
+		return false
+	}
+	return major > 4 || (major == 4 && minor >= 5)
+}
+
+// aiGLMForcesThinking 判断智谱模型是否强制开启思考、不接受 thinking.type=disabled：官方文档明确
+// GLM-5.3 / GLM-5.3-FLASH 传 disabled 会报错，GLM-4.7 / GLM-4.5V 亦为强制思考模型。
+// 这些模型即使把「思考模式」关掉也只能保持开启，故不下发 disabled，以免整轮请求失败。
+func aiGLMForcesThinking(model string) bool {
+	m := strings.ToLower(strings.TrimSpace(model))
+	for _, prefix := range []string{"glm-5.3", "glm-4.7", "glm-4.5v"} {
+		if strings.HasPrefix(m, prefix) {
+			return true
+		}
+	}
+	// GA 之后的更高主版本按强制思考处理（无法在旧版本上关闭）
+	if major, _, ok := aiGLMVersion(m); ok && major >= 6 {
+		return true
+	}
+	return false
+}
+
+// aiGLMSupportsToolStream 判断智谱模型是否支持 tool_stream（工具调用参数随流逐步返回）。
+// 官方文档（工具流式输出）列出的支持范围为 GLM-4.6 及以上的「最新模型」，
+// 更早的 GLM-4.5 及以下不下发，避免未知参数影响其工具调用。
+func aiGLMSupportsToolStream(model string) bool {
+	major, minor, ok := aiGLMVersion(model)
+	if !ok {
+		return false
+	}
+	return major > 4 || (major == 4 && minor >= 6)
+}
+
+// aiApplyZhipuParams 为智谱 GLM 补充专有请求参数（其他服务商直接返回，不受影响）：
+//   - thinking：GLM 的思考默认开启，不显式下发 disabled 时配置里的「关闭思考」对智谱形同虚设；
+//     仅对支持该字段的 GLM-4.5+ 下发，强制思考的模型（GLM-5.3 等）保持默认不下发。
+//   - tool_stream：与 stream 同用，工具调用参数由一次性返回改为随流逐步返回，缩短等待；
+//     解析侧已按 index 归并 arguments（见 aiChatOnceToolsOnce），无需额外改动。
+//
+// effort 为空表示本次未开启思考模式。
+func aiApplyZhipuParams(payload map[string]any, baseURL, model, effort string, hasTools bool) {
+	if !aiIsZhipuProvider(baseURL, model) {
+		return
+	}
+	if aiGLMThinkingModel(model) {
+		switch {
+		case effort != "":
+			payload["thinking"] = map[string]any{"type": "enabled"}
+		case !aiGLMForcesThinking(model):
+			payload["thinking"] = map[string]any{"type": "disabled"}
+		}
+	}
+	if hasTools && aiGLMSupportsToolStream(model) {
+		payload["tool_stream"] = true
+	}
+}
+
 // aiChatOnceToolsOnce 以流式（SSE）方式调用 OpenAI 兼容的 chat/completions 接口（单次尝试），
 // 边解析上游增量边推送思维链（ai_stream_delta，kind=reasoning），最后聚合返回首个候选的
 // 文本内容、思维链与工具调用请求。tools 非空时随请求下发工具清单；
@@ -8717,7 +8840,8 @@ func aiChatOnceToolsOnce(c *dto.AIConfig, model string, messages []aiChatMessage
 	if c.MaxTokens > 0 {
 		payload["max_tokens"] = c.MaxTokens
 	}
-	if effort := dto.NormalizeReasoningEffort(reasoningEffort); effort != "" {
+	effort := dto.NormalizeReasoningEffort(reasoningEffort)
+	if effort != "" {
 		payload["reasoning_effort"] = effort
 	}
 	if len(tools) > 0 {
@@ -8726,6 +8850,8 @@ func aiChatOnceToolsOnce(c *dto.AIConfig, model string, messages []aiChatMessage
 			payload["tool_choice"] = toolChoice
 		}
 	}
+	// 智谱 GLM 专有参数：thinking（让「思考模式」开关真正生效）与 tool_stream（工具参数随流返回）
+	aiApplyZhipuParams(payload, c.BaseURL, model, effort, len(tools) > 0)
 	body, err := json.Marshal(payload)
 	if err != nil {
 		return "", "", nil, "", err
@@ -8761,9 +8887,10 @@ func aiChatOnceToolsOnce(c *dto.AIConfig, model string, messages []aiChatMessage
 		if parent.Err() != nil {
 			return "", "", nil, "", errAIStreamCancelled
 		}
-		// 取消源自本函数看门狗（父上下文未取消）：上游迟迟未响应，属超时而非网络故障
+		// 取消源自本函数看门狗（父上下文未取消）：上游迟迟未响应，属超时而非网络故障。
+		// 标记为「上游静默」以便退避重试——这类超时换一条新请求通常就能恢复
 		if ctx.Err() != nil {
-			return "", "", nil, "", fmt.Errorf("AI 接口建连超时：超过 %v 未收到上游响应", idleTimeout)
+			return "", "", nil, "", aiNewStallError(fmt.Sprintf("AI 接口建连超时：超过 %v 未收到上游响应", idleTimeout))
 		}
 		// 用 %w 保留底层错误链：网络层瞬时故障（连不上、连接被重置、读超时等）由此被
 		// aiRetryableByNetError 识别，交给 aiRetryBackoff 自动退避重试，而不是直接判失败
@@ -8905,7 +9032,8 @@ func aiChatOnceToolsOnce(c *dto.AIConfig, model string, messages []aiChatMessage
 			return content.String(), reasoning.String(), calls, finishReason, errAIStreamCancelled
 		}
 		if ctx.Err() != nil {
-			return content.String(), reasoning.String(), calls, finishReason, fmt.Errorf("AI 流式读取超时：超过 %v 未收到上游数据", idleTimeout)
+			return content.String(), reasoning.String(), calls, finishReason,
+				aiNewStallError(fmt.Sprintf("AI 流式读取超时：超过 %v 未收到上游数据", idleTimeout))
 		}
 		return content.String(), reasoning.String(), calls, finishReason, fmt.Errorf("AI 流式读取失败: %v", err)
 	}
@@ -9152,9 +9280,12 @@ func aiChatStreamReasoningOnce(c *dto.AIConfig, model string, messages []aiChatM
 	if c.MaxTokens > 0 {
 		payload["max_tokens"] = c.MaxTokens
 	}
-	if effort := dto.NormalizeReasoningEffort(reasoningEffort); effort != "" {
+	effort := dto.NormalizeReasoningEffort(reasoningEffort)
+	if effort != "" {
 		payload["reasoning_effort"] = effort
 	}
+	// 智谱 GLM 专有参数：thinking（让「思考模式」开关真正生效；本路径不下发工具，无 tool_stream）
+	aiApplyZhipuParams(payload, c.BaseURL, model, effort, false)
 	body, err := json.Marshal(payload)
 	if err != nil {
 		return "", "", "", err
@@ -9189,9 +9320,10 @@ func aiChatStreamReasoningOnce(c *dto.AIConfig, model string, messages []aiChatM
 		if parent.Err() != nil {
 			return "", "", "", errAIStreamCancelled
 		}
-		// 取消源自本函数看门狗（父上下文未取消）：上游迟迟未响应，属超时而非网络故障
+		// 取消源自本函数看门狗（父上下文未取消）：上游迟迟未响应，属超时而非网络故障。
+		// 标记为「上游静默」以便退避重试——这类超时换一条新请求通常就能恢复
 		if ctx.Err() != nil {
-			return "", "", "", fmt.Errorf("AI 接口建连超时：超过 %v 未收到上游响应", idleTimeout)
+			return "", "", "", aiNewStallError(fmt.Sprintf("AI 接口建连超时：超过 %v 未收到上游响应", idleTimeout))
 		}
 		// 同 aiChatOnceToolsOnce：保留错误链，让网络层瞬时故障可被识别并重试
 		return "", "", "", fmt.Errorf("AI 接口请求失败: %w", err)
@@ -9275,7 +9407,8 @@ func aiChatStreamReasoningOnce(c *dto.AIConfig, model string, messages []aiChatM
 			return content.String(), reasoning.String(), finishReason, errAIStreamCancelled
 		}
 		if ctx.Err() != nil {
-			return content.String(), reasoning.String(), finishReason, fmt.Errorf("AI 流式读取超时：超过 %v 未收到上游数据", idleTimeout)
+			return content.String(), reasoning.String(), finishReason,
+				aiNewStallError(fmt.Sprintf("AI 流式读取超时：超过 %v 未收到上游数据", idleTimeout))
 		}
 		return content.String(), reasoning.String(), finishReason, fmt.Errorf("AI 流式读取失败: %v", err)
 	}

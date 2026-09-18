@@ -62,7 +62,7 @@ const (
 	aiToolMaxEmptyRetries = 2
 	// aiToolEmptyRetryDelay 空回复重试前的等待时长（按重试次数递增），给上游一点恢复时间
 	aiToolEmptyRetryDelay = 2 * time.Second
-	// aiToolMaxFixNudges 上一步工具明确报错（编译失败、保存后仍有 error、运行超时等）、
+	// aiToolMaxFixNudges 上一步工具未通过（编译失败、保存后仍有 error、运行超时、警告未修等）、
 	// 模型却准备收尾时的最大提醒轮数：提醒它继续修复并重新验证，而不是把问题罗列出来就结束。
 	// 设上限避免模型反复修不好时空转；用尽后仍如实收尾并说明未通过验证。
 	aiToolMaxFixNudges = 3
@@ -218,6 +218,7 @@ func aiToolFail(msg string) string {
 // 依据是各工具实际返回的失败标记（见 aiToolSaveDic / aiToolCheckDic / aiToolRunDic）：
 // error / compileError / status=rejected / saved_with_errors / errorCount>0 / timedOut。
 // 工具轮循环据此在模型准备收尾时提醒它继续修，避免「执行没成功就结束问题」。
+// warning 级诊断由 aiToolResultWarning 负责，两者叠加判断。
 func aiToolResultFailure(result string) string {
 	var m map[string]any
 	if err := json.Unmarshal([]byte(result), &m); err != nil {
@@ -244,6 +245,44 @@ func aiToolResultFailure(result string) string {
 		return "运行超时"
 	}
 	return ""
+}
+
+// aiToolResultWarning 判断一次工具结果是否「能跑通、但仍有 warning 级诊断」，返回可读原因（无则空串）。
+// 与 aiToolResultFailure 的分工：error 级表示这一步没成功，warning 级表示「跑起来了但存在隐患」——
+// 「变量不存在」「模板键不存在」「赋值后未被使用」这类 warning 会让功能静默失效（页面空白、变量取不到值），
+// 只靠 error 级拦截的话，模型跑完看到 warning 也会直接收尾、不修就宣称完成，故同样计入待修复项。
+// 跑通验证的工具结果都带 warnings 字段（见 aiToolSaveDic / aiToolCheckDic / aiToolRunDic / aiToolRunWebDic）。
+func aiToolResultWarning(result string) string {
+	var m map[string]any
+	if err := json.Unmarshal([]byte(result), &m); err != nil {
+		return ""
+	}
+	raw, ok := m["warnings"].([]any)
+	if !ok || len(raw) == 0 {
+		return ""
+	}
+	var texts []string
+	for _, it := range raw {
+		w, ok := it.(map[string]any)
+		if !ok {
+			continue
+		}
+		// error 级已由 aiToolResultFailure 拦截，这里只统计 warning 级
+		if lv, _ := w["level"].(string); lv == "error" {
+			continue
+		}
+		if t, _ := w["text"].(string); strings.TrimSpace(t) != "" {
+			texts = append(texts, strings.TrimSpace(t))
+		}
+	}
+	if len(texts) == 0 {
+		return ""
+	}
+	head := strings.Join(texts, "；")
+	if r := []rune(head); len(r) > 160 {
+		head = string(r[:160]) + "…"
+	}
+	return fmt.Sprintf("%d 条 warning 级诊断（%s）", len(texts), head)
 }
 
 // aiToolResultIsVerification 判断一次工具调用是否属于「跑通验证」环节：
@@ -298,8 +337,8 @@ func aiDicManifest(v *dto.BuildValue) (funcs []string, classes map[string][]stri
 	seenTrigger := make(map[string]bool)
 	seenMethod := make(map[string]map[string]bool, len(v.Class))
 	for _, item := range v.Dic {
-		if item == nil {
-			continue
+		if item == nil || item.Trigger == dto.HeaderTrigger {
+			continue // 头部初始化块不是用户触发词，不列入清单
 		}
 		aiDicAdd(&triggers, seenTrigger, item.Trigger)
 	}
@@ -309,6 +348,10 @@ func aiDicManifest(v *dto.BuildValue) (funcs []string, classes map[string][]stri
 				continue
 			}
 			if category == "函数" {
+				// 生命周期钩子（[f]_初始化 / [f]_中间件）由引擎自动调用，不在可调用函数清单里。
+				if dto.IsReservedTrigger(item.Trigger) {
+					continue
+				}
 				aiDicAdd(&funcs, seenFunc, aiDicFuncName(item.Trigger))
 			} else {
 				aiDicAdd(&triggers, seenTrigger, "["+category+"]"+item.Trigger)
@@ -2265,10 +2308,10 @@ func aiChatWithTools(c *dto.AIConfig, model string, msgs []aiChatMessage, effort
 	continueCount := 0
 	// 空回复重试计数：上游只产出思考、正文为空时最多自动重试 aiToolMaxEmptyRetries 次
 	emptyRetryCount := 0
-	// 修复提醒计数：上一步工具明确报错而模型准备收尾时，最多补 aiToolMaxFixNudges 轮提醒
+	// 修复提醒计数：上一步工具未通过（error 级失败或 warning 级诊断）而模型准备收尾时，最多补 aiToolMaxFixNudges 轮提醒
 	fixNudgeCount := 0
-	// unresolvedIssue 最近一次未通过的步骤（工具结果里的失败标记），为空表示当前没有待修复项；
-	// 成功跑过词库 / 重新编译检查（aiToolResultVerified）后解除，据此拦截「没跑通就收尾」
+	// unresolvedIssue 最近一次未通过的步骤（工具结果里的失败标记或 warning 级诊断），为空表示当前没有待修复项；
+	// 成功跑过词库 / 重新编译检查且没有 warning（aiToolResultFailure / aiToolResultWarning 均为空）后解除，据此拦截「没跑通就收尾」
 	unresolvedIssue := ""
 	// plainOnly 置位后不再下发工具（空回复重试后的轮次），避免模型又陷入「要不要调工具」的长思考
 	plainOnly := false
@@ -2341,20 +2384,31 @@ func aiChatWithTools(c *dto.AIConfig, model string, msgs []aiChatMessage, effort
 			}
 			return text, reasoningAll.String() + streamReasoning, nil
 		}
-		// 思维链已由 aiChatOnceTools 在流式解析时逐字推送，此处仅累积，避免重复推送
-		if r := strings.TrimSpace(reasoning); r != "" {
-			reasoningAll.WriteString(r)
-			reasoningAll.WriteByte('\n')
-		}
 		// 兜底：模型有时把工具调用写成 <tool_call> 文本混进正文、不走原生 tool_calls，
 		// 不解析就会出现「模型声称已按正确语法重写，实际从未调用 save_dic、文件没变」。
 		// 收尾轮同样要解析：此时已不下发工具定义，模型仍可能把调用写成 DSML/invoke 文本，
 		// 不剥离这些标记就会把 `<…DSML… invoke…>` 原样塞进答复，用户看到一段没被执行的调用。
-		if parsed, rest := aiParseTextToolCalls(content); len(parsed) > 0 {
-			if len(calls) == 0 {
-				calls = parsed
-			}
+		parsed, rest := aiParseTextToolCalls(content)
+		if len(parsed) > 0 {
 			content = rest
+		}
+		// 思维链里同样可能夹带调用文本：部分模型（GLM / DeepSeek 等）把「工具名 + <arg_key>…」
+		// 直接写进思考内容，整轮正文为空。只解析正文会整段漏掉——调用从未执行、文件毫无变化，
+		// 思考区却挂着一段没被执行的调用，用户看到的就是「工具调用被当成文本输出」。
+		// 仅在正文没解析出调用且本轮无正文时回退解析思维链，避免把正常思考里的示例文本误判成调用。
+		if len(parsed) == 0 && strings.TrimSpace(content) == "" {
+			if rParsed, rRest := aiParseTextToolCalls(reasoning); len(rParsed) > 0 {
+				parsed, reasoning = rParsed, rRest
+			}
+		}
+		if len(parsed) > 0 && len(calls) == 0 {
+			calls = parsed
+		}
+		// 思维链已由 aiChatOnceTools 在流式解析时逐字推送，此处仅累积，避免重复推送。
+		// 需放在兜底解析之后：从思维链里剥离出的调用标记不应再计入思考过程。
+		if r := strings.TrimSpace(reasoning); r != "" {
+			reasoningAll.WriteString(r)
+			reasoningAll.WriteByte('\n')
 		}
 		// 规整为可配对的调用列表：补齐缺失的 id、剔除残缺口，避免下游上游因
 		// assistant(tool_calls) 与 tool 消息配不上对而拒绝整轮请求（见 aiNormalizeToolCalls）
@@ -2378,7 +2432,7 @@ func aiChatWithTools(c *dto.AIConfig, model string, msgs []aiChatMessage, effort
 				})
 				continue
 			}
-			// 「没跑通就收尾」：上一批工具明确报错（编译失败、保存后仍有 error、运行超时等），
+			// 「没跑通就收尾」：上一批工具未通过（编译失败、保存后仍有 error、运行超时、warning 级诊断未修等），
 			// 模型却准备结束本轮——按目标导向约定必须继续修，这里补一轮提醒促其修好并重新验证。
 			if !final && unresolvedIssue != "" && fixNudgeCount < aiToolMaxFixNudges {
 				fixNudgeCount++
@@ -2389,8 +2443,10 @@ func aiChatWithTools(c *dto.AIConfig, model string, msgs []aiChatMessage, effort
 				}
 				work = append(work, aiChatMessage{
 					Role: "user",
-					Content: "你上一步的工具结果表示这一步没有成功（" + unresolvedIssue + "）。按约定此时不能收尾：" +
-						"请按返回的诊断继续修复，修完用完整内容重新保存，并重新运行验证（编译 error 清零、运行有正常输出）后再给结论；" +
+					Content: "你上一步的验证还没有通过（" + unresolvedIssue + "）。按约定此时不能收尾：" +
+						"error 级诊断必须清零，warning 级诊断（如变量不存在、模板键不存在、赋值后未被使用）同样必须逐条修复——" +
+						"确实属于有意设计、无需改动的，才可以在答复里说明理由后保留；" +
+						"修完用完整内容重新保存，并重新运行验证（编译无 error / warning、运行有正常输出）后再给结论；" +
 						"不要只把问题罗列出来就结束回答，也不要在没验证通过时声称「已完成 / 已修复」。" +
 						"若同一处已连续两次修不好，请说明卡在哪一步、试过什么、还需要什么信息。",
 				})
@@ -2503,9 +2559,14 @@ func aiChatWithTools(c *dto.AIConfig, model string, msgs []aiChatMessage, effort
 			}
 			appendReasoning("  " + brief + "\n\n")
 			// 按本次工具结果更新「未通过」状态：跑通验证环节（保存 / 编译检查 / 运行）出现
-			// 失败标记即记下这一步没成功；同一环节跑通说明修复生效，解除该状态。
+			// 失败（error 级）或 warning 级诊断，即记下这一步还没修干净；既无失败也无 warning
+			// 说明修复生效、验证通过，解除该状态。
 			if aiToolResultIsVerification(call.Function.Name) {
-				if reason := aiToolResultFailure(result); reason != "" {
+				reason := aiToolResultFailure(result)
+				if reason == "" {
+					reason = aiToolResultWarning(result)
+				}
+				if reason != "" {
 					unresolvedIssue = call.Function.Name + "：" + reason
 				} else {
 					unresolvedIssue = ""
@@ -2519,7 +2580,16 @@ func aiChatWithTools(c *dto.AIConfig, model string, msgs []aiChatMessage, effort
 		if final {
 			// 若此前发生过截断续写，累积片段必须一并返回，否则收尾答复只剩最后一段；
 			// 正文为空或只是一句行动前言时补收尾说明（见 aiFinalStallText）
-			return pendingNote(aiFinalStallText(mergeContent(content))), reasoningAll.String(), nil
+			finalText := mergeContent(content)
+			if len(calls) > 0 {
+				// 收尾轮本已撤下工具，模型却仍以文本形式发起了调用：这句正文只是调用前的行动前言，
+				// 它还没看到刚执行出的结果，不可能构成结论。直接交付会让用户只收到一句没有下文的
+				// 承诺（如「我需要继续修复语法错误：」），误以为工具调用没被执行。这里一律补上收尾
+				// 说明；该说明同时是「自动继续」的判定依据（见 aiSessionContinueHint），开了自动
+				// 继续的任务会自动接着跑。
+				finalText += "\n\n" + aiFinalStallNote
+			}
+			return pendingNote(aiFinalStallText(finalText)), reasoningAll.String(), nil
 		}
 		// 视觉能力开启且工具捕获到图片：以多模态 user 消息补发图片，供模型查看
 		if len(roundImages) > 0 {

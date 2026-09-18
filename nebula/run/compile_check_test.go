@@ -586,21 +586,24 @@ func TestCheckUndefinedVarSkipRawTextBlocksInFunc(t *testing.T) {
 
 func TestCheckUndefinedVarSkipRawTextBlocksInHead(t *testing.T) {
 	v := newTestBuildValue()
-	v.Head = []string{
-		"纯文本>%换行%", // 头部原样框：内容不做插值
-		"%不存在1%",
-		"<文本",
-		"变量:'''", // 头部原样赋值框：内容不做插值
-		"%不存在2%",
-		"'''",
-	}
-	v.HeadLineNums = []int{1, 2, 3, 4, 5, 6}
+	v.DicFuncs["函数"] = []*dto.BuildDic{{
+		Trigger: dto.MiddlewareTrigger,
+		Text: []string{
+			"纯文本>%换行%", // 中间件原样框：内容不做插值
+			"%不存在1%",
+			"<文本",
+			"变量:'''", // 中间件原样赋值框：内容不做插值
+			"%不存在2%",
+			"'''",
+		},
+		LineNums: []int{1, 2, 3, 4, 5, 6},
+	}}
 	s := newTestStack()
 	runCompileChecks(v, s)
 	for _, w := range s.warnings {
 		if strings.Contains(w.Text, "变量不存在：不存在1") ||
 			strings.Contains(w.Text, "变量不存在：不存在2") {
-			t.Fatalf("头部原样文本框内的变量不应告警，实际：%v", warningsText(s.warnings))
+			t.Fatalf("中间件原样文本框内的变量不应告警，实际：%v", warningsText(s.warnings))
 		}
 	}
 }
@@ -809,8 +812,9 @@ func TestCheckUnusedAssignmentSkipsJsonBlockContent(t *testing.T) {
 	// 其中的值仍会读取变量：JSON> 框按 %变量% 插值，变量:{ 框按 dic.NewJson 的 %变量名 前缀替换。
 	newCase := func(texts []string, nums []int) *importStack {
 		v := newTestBuildValue()
-		v.Head = []string{"b:", "ww:ok"}
-		v.HeadLineNums = []int{1, 2}
+		v.DicFuncs["函数"] = []*dto.BuildDic{
+			{Trigger: dto.MiddlewareTrigger, Text: []string{"b:", "ww:ok"}, LineNums: []int{1, 2}},
+		}
 		v.Dic = []*dto.BuildDic{{
 			Trigger:     "测试",
 			TriggerLine: 3,
@@ -880,8 +884,9 @@ func TestCheckUndefinedVarSkipsJsonPercentNoise(t *testing.T) {
 	// JSON 框内容行的文本值含 % 时（如 a="50%", b="60%"），% 切分产生的噪声片段
 	// 不应被当成变量引用报「变量不存在」。
 	v := newTestBuildValue()
-	v.Head = []string{"b:1"}
-	v.HeadLineNums = []int{1}
+	v.DicFuncs["函数"] = []*dto.BuildDic{
+		{Trigger: dto.MiddlewareTrigger, Text: []string{"b:1"}, LineNums: []int{1}},
+	}
 	v.Dic = []*dto.BuildDic{{
 		Trigger:     "测试",
 		TriggerLine: 2,

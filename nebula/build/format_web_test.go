@@ -51,6 +51,35 @@ if (a) {
 	}
 }
 
+// TestFormatWebDicInlineBlock <?n ... ?> 内联块的正文按 .n 块结构排版并缩进到块层级；
+// <?n 之后同行的正文只输出一次（不重复），结束行的 ?> 与它后面的 HTML 一起回到开启行层级。
+func TestFormatWebDicInlineBlock(t *testing.T) {
+	text := "<html>\n<body>\n<p>前缀<?n 甲:1\n如果>$甲$>0\n文本>正数\n<文本\n<如果\n?></p>\n</body>\n</html>\n"
+	want := "<html>\n    <body>\n        <p>前缀<?n\n            甲:1\n            如果>$甲$>0\n                文本>正数\n                <文本\n            <如果\n        ?></p>\n    </body>\n</html>\n"
+	got := FormatWebDic(text)
+	if got != want {
+		t.Fatalf("格式化结果不符:\n--- got ---\n%s\n--- want ---\n%s", got, want)
+	}
+	if twice := FormatWebDic(got); twice != got {
+		t.Fatalf("二次格式化结果不一致:\n--- once ---\n%s\n--- twice ---\n%s", got, twice)
+	}
+}
+
+// TestFormatWebDicUnclosedInlineBlock 漏写 ?> 的 <?n 不是执行块（运行时不会执行、整段原样输出），
+// 排版必须同样原样保留剩余内容，不能把块内正文连同后面的 HTML 一起吞掉。
+func TestFormatWebDicUnclosedInlineBlock(t *testing.T) {
+	text := "<html>\n<body>\n<p><?n\n甲:1\n%甲%\n</body>\n</html>\n"
+	got := FormatWebDic(text)
+	for _, want := range []string{"<?n", "甲:1", "%甲%", "</body>", "</html>"} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("格式化吞掉了 %q:\n%s", want, got)
+		}
+	}
+	if twice := FormatWebDic(got); twice != got {
+		t.Fatalf("二次格式化结果不一致:\n--- once ---\n%s\n--- twice ---\n%s", got, twice)
+	}
+}
+
 // TestFormatWebDicIdempotent 二次格式化必须稳定；pre 与 HTML 注释逐字节保留。
 func TestFormatWebDicIdempotent(t *testing.T) {
 	text := "<html>\n<body>\n<pre>\n  保留\n    缩进\n</pre>\n<!--\n <b>注释不缩进</b>\n-->\n<script type=\"nebula\">\n  文本>内容\n$内容$\n</script>\n</body>\n</html>\n"

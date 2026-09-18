@@ -42,10 +42,10 @@ func runWebDicAllPRes(t *testing.T, text string) string {
 // 顶格与缩进两种写法必须得到相同结果，且缩进不会进入脚本输出。
 func TestWebDicRunScriptIndent(t *testing.T) {
 	body := "甲:1\n$甲$\n$加法 1 2$"
-	flat := "<html><body>\n<script type=\"nebula\" id=\"d\">\n" + body + "\n</script>\n<p>{{.d}}</p>\n</body></html>"
-	indented := "<html><body>\n    <script type=\"nebula\" id=\"d\">\n        " +
+	flat := "<html><body>\n<script type=\"nebula\">\n" + body + "\n</script>\n<p>{{.甲}}</p>\n</body></html>"
+	indented := "<html><body>\n    <script type=\"nebula\">\n        " +
 		strings.ReplaceAll(body, "\n", "\n        ") +
-		"\n    </script>\n    <p>{{.d}}</p>\n</body></html>"
+		"\n    </script>\n    <p>{{.甲}}</p>\n</body></html>"
 
 	flatRes := runWebDicRes(t, flat)
 	indentedRes := runWebDicRes(t, indented)
@@ -63,28 +63,55 @@ func TestWebDicRunScriptIndent(t *testing.T) {
 }
 
 // TestWebDicRunInlineBlock 内联执行块 <?n ... ?> 就地执行并输出：
-// 块的结果直接插在块所在的位置，块内赋值的变量并入模板数据、与其它执行块共享。
+// 每个执行块独立作用域，脚本块赋值的变量通过 {{.变量}} 注入，内联块赋值的变量不进模板数据。
 func TestWebDicRunInlineBlock(t *testing.T) {
 	wn := "<html><body>\n" +
 		"<p><?n\n甲:7\n%甲%\n?></p>\n" +
-		"<p><?n\n乙:%甲%0\n%乙%\n?></p>\n" +
-		"<script type=\"nebula\" id=\"丙\">\n丙:%甲%#%乙%\n%丙%\n</script>\n" +
-		"<p>{{.甲}}|{{.丙}}</p>\n" +
+		"<p><?n\n乙:5\n%乙%\n?></p>\n" +
+		"<script type=\"nebula\">\n丙:9\n%丙%\n</script>\n" +
+		"<p>{{.甲}}|{{.乙}}|{{.丙}}</p>\n" +
 		"</body></html>"
 
 	out := (&dicImpl{}).WebDicRun(dic_dto.NewWebDic("执行", wn))
 
-	// 第一个内联块就地输出（不经过模板数据）
-	if !strings.Contains(out, "<p>7</p>") {
+	// 内联块就地输出（不经过模板数据）
+	if !strings.Contains(out, "<p>7</p>") || !strings.Contains(out, "<p>5</p>") {
 		t.Fatalf("内联块未就地输出：%q", out)
 	}
-	// 第二个内联块读到第一个块的变量
-	if !strings.Contains(out, "<p>70</p>") {
-		t.Fatalf("内联块之间的变量未共享：%q", out)
+	// 只有带 id 的脚本块输出能通过 {{.丙}} 注入；内联块赋值的甲/乙不进模板数据
+	if !strings.Contains(out, "<p>||9</p>") {
+		t.Fatalf("模板数据注入结果不符：%q", out)
 	}
-	// <script type="nebula"> 继续接力，且内联块赋值的变量能通过 {{.键}} 取到
-	if !strings.Contains(out, "<p>7|7#70</p>") {
-		t.Fatalf("脚本块未读到内联块的变量：%q", out)
+}
+
+// TestWebDicRunScriptID 带 id 的 <script type="nebula" id="b"> 脚本块把整块输出存进 data[b]，
+// 页面用 {{.b}} 取到；块内赋值的变量不进模板数据（id 块只提供 id 这一个键）。
+func TestWebDicRunScriptID(t *testing.T) {
+	wn := "<html><body>\n" +
+		"<script type=\"nebula\" id=\"b\">\n甲:7\n%甲%\n</script>\n" +
+		"<p>{{.b}}</p>\n<p>{{.甲}}</p>\n" +
+		"</body></html>"
+
+	out := (&dicImpl{}).WebDicRun(dic_dto.NewWebDic("执行", wn))
+
+	if !strings.Contains(out, "<p>7</p>") {
+		t.Fatalf("带 id 脚本块的输出未通过 {{.b}} 注入：%q", out)
+	}
+	if !strings.Contains(out, "<p></p>") {
+		t.Fatalf("带 id 脚本块赋值的甲不应进模板数据（{{.甲}} 应为空）：%q", out)
+	}
+}
+
+// TestWebDicRunInlineBlockCRLF CRLF 换行的网页词库，内联块里的循环次数与关闭标记不能被 \r 破坏：
+// 循环>i=10 应完整执行 10 次，而不是因 strconv.Atoi("10\r") 失败退化为 1 次。
+func TestWebDicRunInlineBlockCRLF(t *testing.T) {
+	wn := "<html><body>\n<p><?n\r\n循环>i=10\r\nfuck\r\n<循环\r\n?></p>\n</body></html>"
+	out := (&dicImpl{}).WebDicRun(dic_dto.NewWebDic("执行", wn))
+	if got := strings.Count(out, "fuck"); got != 10 {
+		t.Fatalf("CRLF 内联块循环执行次数 = %d，期望 10：%q", got, out)
+	}
+	if strings.Contains(out, "<循环") || strings.Contains(out, "循环>") {
+		t.Fatalf("CRLF 内联块语句未执行、原样输出：%q", out)
 	}
 }
 
@@ -109,7 +136,7 @@ func TestWebDicRunInlineBlockIndent(t *testing.T) {
 
 // TestWebDicRunInlineBlockAfterFormat 内联块经格式化（正文按 .n 块结构排版并缩进）后执行结果不变。
 func TestWebDicRunInlineBlockAfterFormat(t *testing.T) {
-	wn := "<html>\n<body>\n<p><?n\n甲:1\n乙:%甲%2\n%乙%\n?></p>\n<p>{{.乙}}</p>\n</body>\n</html>\n"
+	wn := "<html>\n<body>\n<p><?n\n甲:1\n乙:%甲%2\n%乙%\n?></p>\n</body>\n</html>\n"
 	formatted := build.FormatWebDic(wn)
 	if formatted == wn {
 		t.Fatalf("格式化结果未发生变化：%q", wn)
@@ -117,7 +144,7 @@ func TestWebDicRunInlineBlockAfterFormat(t *testing.T) {
 
 	want := runWebDicAllPRes(t, wn)
 	got := runWebDicAllPRes(t, formatted)
-	if want != "12|12" {
+	if want != "12" {
 		t.Fatalf("内联块无输出，用例失去判别力：%q", want)
 	}
 	if got != want {
@@ -127,7 +154,7 @@ func TestWebDicRunInlineBlockAfterFormat(t *testing.T) {
 
 // TestWebDicRunAfterFormat 整份网页词库格式化后，执行结果与格式化前一致。
 func TestWebDicRunAfterFormat(t *testing.T) {
-	wn := "<html>\n<body>\n<script type=\"nebula\" id=\"d\">\n甲:1\n$甲$\n</script>\n<p>{{.d}}</p>\n</body>\n</html>\n"
+	wn := "<html>\n<body>\n<script type=\"nebula\">\n甲:1\n$甲$\n</script>\n<p>{{.甲}}</p>\n</body>\n</html>\n"
 	formatted := build.FormatWebDic(wn)
 	if formatted == wn {
 		t.Fatalf("格式化结果未发生变化：%q", wn)

@@ -17,7 +17,7 @@ var (
 	webDicScriptOpenRe = regexp.MustCompile(`(?is)<script\b[^>]*>`)
 	// webDicScriptCloseRe 匹配 </script> 结束标签。
 	webDicScriptCloseRe = regexp.MustCompile(`(?is)</script\s*>`)
-	// webDicTypeAttrRe / webDicIDAttrRe 取开始标签里的 type / id 属性值。
+	// webDicTypeAttrRe / webDicIDAttrRe 取开始标签里的 type / id 属性值，
 	// 属性名要求位于标签内空白之后，避免把 data-id 之类的属性误当成 id。
 	webDicTypeAttrRe = regexp.MustCompile(`(?is)(?:^|\s)type\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s>]+))`)
 	webDicIDAttrRe   = regexp.MustCompile(`(?is)(?:^|\s)id\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s>]+))`)
@@ -34,21 +34,28 @@ var (
 	// webDicInlineRe 匹配内联执行块 <?n ... ?>：整块按 Nebula 语法就地执行，结果插回块所在位置。
 	// 非贪婪匹配，遇到最近的 ?> 结束；块内允许为空（空块执行结果为空串）。
 	webDicInlineRe = regexp.MustCompile(`(?s)<\?n(.*?)\?>`)
+	// webDicInlineOpenMarker / webDicInlineCloseMarker 是内联执行块的起止标记，
+	// 与运行时 run.ReplaceProcessedContent(原文, "<?n", "?>", ...) 的查找方式保持一致。
+	webDicInlineOpenMarker  = "<?n"
+	webDicInlineCloseMarker = "?>"
 )
 
 // webDicBlock 原文里的一个执行块：<script type="nebula"> 脚本块或 <?n ... ?> 内联块。
 type webDicBlock struct {
-	id        string   // 块的 id 属性；空表示无 id（块内变量会整体并入模板数据）。内联块没有 id
+	id        string   // 脚本块的 id 属性；空表示无 id（块内赋值变量会整体并入模板数据）。内联块没有 id
+	isScript  bool     // true 表示 <script type="nebula"> 脚本块；false 表示 <?n ... ?> 内联块
 	lines     []string // 块正文，首尾空白按运行时的 TrimSpace 语义裁掉
 	lineNums  []int    // lines 每行对应的原文行号（1-based）
 	openStart int      // 块起始标记在原文中的起始偏移
 	closeEnd  int      // 块结束标记在原文中的结束偏移
 }
 
-// WebDicCheck 对网页词库（.wn）原文做三类静态检查：
+// WebDicCheck 对网页词库（.wn）原文做五类静态检查：
 //  1. 执行块变量检查：$变量$ 误用、变量不存在、变量未使用（赋值了但页面没用到）；
 //  2. 模板键核对：{{.键}} 在脚本块结果里不存在时提示——Go 模板遇到缺失键会静默渲染成空；
-//  3. 执行块外 Nebula 语法：语句没写进执行块（<?n ... ?> 或 <script type="nebula">）时不会执行，会原样输出到页面。
+//  3. 执行块外 Nebula 语法：语句没写进执行块（<?n ... ?> 或 <script type="nebula">）时不会执行，会原样输出到页面；
+//  4. 内联执行块未闭合：<?n 缺 ?> 时整块不执行，且它之后的内容会原样输出到页面；
+//  5. 多个无 id 脚本块：不带 id 的 <script type="nebula"> 脚本块只允许一个。
 func WebDicCheck(text string) []dto.BuildWarning {
 	blocks := webDicBlocks(text)
 
@@ -61,6 +68,8 @@ func WebDicCheck(text string) []dto.BuildWarning {
 	}
 	warnings = append(warnings, templateWarnings...)
 	warnings = append(warnings, webDicOutsideSyntaxWarnings(text, blocks)...)
+	warnings = append(warnings, webDicUnclosedInlineWarnings(text)...)
+	warnings = append(warnings, webDicMultipleScriptWarnings(text, blocks)...)
 
 	return webDicDedupeWarnings(warnings)
 }
@@ -87,10 +96,14 @@ func webDicBlocks(text string) []webDicBlock {
 	return blocks
 }
 
-// webDicTemplateKeys 收集执行块提供的模板键：有 id 的块提供该 id，无 id 的块提供块内所有被赋值的变量。
+// webDicTemplateKeys 收集执行块提供的模板键：带 id 的脚本块提供该 id（{{.id}} 取整块输出），
+// 不带 id 的脚本块提供块内赋值的变量（{{.变量名}}）；内联块就地输出，其赋值不进模板数据。
 func webDicTemplateKeys(blocks []webDicBlock) map[string]bool {
 	keys := make(map[string]bool)
 	for _, b := range blocks {
+		if !b.isScript {
+			continue
+		}
 		if b.id != "" {
 			keys[b.id] = true
 			continue
@@ -100,6 +113,34 @@ func webDicTemplateKeys(blocks []webDicBlock) map[string]bool {
 		}
 	}
 	return keys
+}
+
+// webDicMultipleScriptWarnings 不带 id 的 <script type="nebula"> 脚本块只能有一个：
+// 它的赋值变量并入模板数据，多个无 id 脚本块赋的变量会互相覆盖，行为不可预期。
+// 带 id 的脚本块各用自己的 id 做模板键，允许多个。
+func webDicMultipleScriptWarnings(text string, blocks []webDicBlock) []dto.BuildWarning {
+	seen := 0
+	var second *webDicBlock
+	for i := range blocks {
+		if blocks[i].isScript && blocks[i].id == "" {
+			seen++
+			if seen == 2 {
+				second = &blocks[i]
+			}
+		}
+	}
+	if seen <= 1 {
+		return nil
+	}
+	line := 0
+	if second != nil {
+		line = 1 + strings.Count(text[:second.openStart], "\n")
+	}
+	return []dto.BuildWarning{{
+		Line:  line,
+		Text:  "存在多个不带 id 的 <script type=\"nebula\"> 脚本块，网页词库只允许一个（多个脚本块赋值的变量会互相覆盖）",
+		Level: "warning",
+	}}
 }
 
 // webDicCheckLines 对网页词库的单个执行块（<?n ... ?> 内联块 / <script type="nebula"> 脚本块）做变量类静态检查。
@@ -119,7 +160,7 @@ func webDicCheckLines(lines []string, lineNums []int, pageKeys map[string]bool) 
 	}
 	checkUndefinedVarsLines(lines, lineNums, defined, nil, stack)
 
-	checkUnusedAssignmentWith(&dto.BuildValue{Head: lines, HeadLineNums: lineNums}, stack, isWebDicVar, pageKeys)
+	checkUnusedAssignmentWith(&dto.BuildValue{Dic: []*dto.BuildDic{dto.NewHeadDic(lines, lineNums)}}, stack, isWebDicVar, pageKeys)
 
 	return stack.warnings
 }
@@ -189,6 +230,7 @@ func webDicScriptBlocks(text string) []webDicBlock {
 		lines, lineNums := webDicTrimBlockLines(rawLines, nums)
 		blocks = append(blocks, webDicBlock{
 			id:        id,
+			isScript:  true,
 			lines:     lines,
 			lineNums:  lineNums,
 			openStart: loc[0],
@@ -200,7 +242,7 @@ func webDicScriptBlocks(text string) []webDicBlock {
 }
 
 // webDicInlineBlocks 按原文扫描 <?n ... ?> 内联执行块并记录每行的原文行号。
-// 内联块没有 id：块内赋值同样会并入模板数据，页面可以用 {{.键}} 取到。
+// 内联块就地输出，块内赋值不进模板数据。
 func webDicInlineBlocks(text string) []webDicBlock {
 	var blocks []webDicBlock
 	for _, loc := range webDicInlineRe.FindAllStringSubmatchIndex(text, -1) {
@@ -256,10 +298,12 @@ func webDicTrimBlockLines(lines []string, nums []int) ([]string, []int) {
 // TrimWebScriptIndent 去掉网页词库脚本块每行行首的空白，与运行时解析前的处理保持一致
 // （解释器识别块开启行/赋值行时不做 TrimLeft，缩进排版后的脚本必须先去掉行首空白）。
 // //@关闭缩进 到 //@启用缩进 之间的行首空白有语义，保持原样，与 web 对 .n 头部的处理一致。
+// 同时去掉 CRLF 文件切分后残留在行尾的 \r，避免 <文本\r、//@关闭缩进\r 这类精确匹配失败。
 func TrimWebScriptIndent(lines []string) []string {
 	out := make([]string, len(lines))
 	suojin := false
 	for i, line := range lines {
+		line = strings.TrimRight(line, "\r")
 		trimmed := strings.TrimLeft(line, " \t")
 		switch trimmed {
 		case "//@关闭缩进":
@@ -281,7 +325,7 @@ func TrimWebScriptIndent(lines []string) []string {
 }
 
 // webDicTemplateWarnings 核对 HTML 里的 {{.键}}，并返回页面引用到的键名集合。
-// 键既不是某个脚本块的 id、也不是无 id 块里赋值过的变量时，Go 模板会把它渲染成空串，属静默失效。
+// 键不是脚本块里赋值的变量时，Go 模板会把它渲染成空串，属静默失效。
 // 只检查脚本块之外的模板动作：脚本块在模板解析前就被移除了，块内的模板语法不会生效。
 // 返回的 used 交给变量检查使用：页面既然用 {{.键}} 取了这个变量，脚本块里的赋值就不是死代码。
 func webDicTemplateWarnings(text string, blocks []webDicBlock, keys map[string]bool) (warnings []dto.BuildWarning, used map[string]bool) {
@@ -298,7 +342,7 @@ func webDicTemplateWarnings(text string, blocks []webDicBlock, keys map[string]b
 			}
 			warnings = append(warnings, dto.BuildWarning{
 				Line:  1 + strings.Count(masked[:loc[0]+km[2]], "\n"),
-				Text:  "模板键不存在：" + name + "，脚本块没有提供该键，页面渲染时会输出为空",
+				Text:  "模板键不存在：" + name + "，脚本块没有赋值该变量，页面渲染时会输出为空",
 				Level: "warning",
 			})
 		}
@@ -314,6 +358,12 @@ func webDicTemplateWarnings(text string, blocks []webDicBlock, keys map[string]b
 func webDicOutsideSyntaxWarnings(text string, blocks []webDicBlock) []dto.BuildWarning {
 	masked := webDicMaskScripts(text, blocks)
 	masked = webDicMaskRegions(masked, webDicStyleRe, webDicScriptAnyRe)
+	// 未闭合的 <?n 之后的内容运行时整段原样输出（不执行），这里一并屏蔽：
+	// 否则后面那些「本来就没打算执行」的文本会被逐条误报成「脚本块外的 Nebula 语法」，
+	// 掩盖掉真正的原因（漏写 ?>）。未闭合本身由 webDicUnclosedInlineWarnings 单独告警。
+	if start := webDicUnclosedInlineStart(text); start >= 0 {
+		masked = webDicMaskTail(masked, start)
+	}
 
 	var warnings []dto.BuildWarning
 	add := func(line int, msg string) {
@@ -334,14 +384,48 @@ func webDicOutsideSyntaxWarnings(text string, blocks []webDicBlock) []dto.BuildW
 			continue
 		}
 		if webDicFuncCallLine(line) {
-			add(ln, "脚本块外的 Nebula 语法："+line+" 是函数调用，写在这里不会执行、会原样输出到页面；请把它放进 <?n ... ?> 内联块执行，再用 {{.键}} 把结果渲染到页面")
+			add(ln, "脚本块外的 Nebula 语法："+line+" 是函数调用，写在这里不会执行、会原样输出到页面；请把它放进 <?n ... ?> 内联块执行（就地输出），或用带 id 的脚本块包起来再用 {{.id}} 渲染")
 			continue
 		}
 		if loc := webDicVarReadRe.FindStringIndex(line); loc != nil {
-			add(ln, "脚本块外的 Nebula 语法："+line[loc[0]:loc[1]]+" 不会被替换（模板只认 {{.键}}），会原样输出到页面；变量请在 <?n ... ?> 内联块里赋值，页面用 {{.键}} 取值")
+			add(ln, "脚本块外的 Nebula 语法："+line[loc[0]:loc[1]]+" 不会被替换，会原样输出到页面；变量请在 <?n ... ?> 内联块里赋值并就地输出，或放进带 id 的脚本块、页面用 {{.id}} 取值")
 		}
 	}
 	return warnings
+}
+
+// webDicUnclosedInlineWarnings 报告缺少结束标记的内联执行块 <?n。
+// 运行时按子串查找结束标记，找不到 ?> 时整块不执行，而且从该 <?n 起的剩余内容全部原样输出到页面
+// （页面会直接显示后面的源码文本）；运行时遇到第一处就该停止处理，所以只报这一处。
+func webDicUnclosedInlineWarnings(text string) []dto.BuildWarning {
+	start := webDicUnclosedInlineStart(text)
+	if start < 0 {
+		return nil
+	}
+	return []dto.BuildWarning{{
+		Line: 1 + strings.Count(text[:start], "\n"),
+		Text: "内联执行块 " + webDicInlineOpenMarker + " 缺少结束标记 " + webDicInlineCloseMarker +
+			"：整个块不会执行，并且从这里起的剩余内容都会被当成普通文字原样输出到页面；请补上 " + webDicInlineCloseMarker,
+		Level: "warning",
+	}}
+}
+
+// webDicUnclosedInlineStart 返回原文中第一个未闭合的内联执行块 <?n 的起始偏移，没有则返回 -1。
+// 查找方式与运行时 ReplaceProcessedContent 完全一致：每个 <?n 往后找最近的 ?>，找不到即未闭合。
+func webDicUnclosedInlineStart(text string) int {
+	pos := 0
+	for {
+		open := strings.Index(text[pos:], webDicInlineOpenMarker)
+		if open < 0 {
+			return -1
+		}
+		open += pos
+		closeIdx := strings.Index(text[open+len(webDicInlineOpenMarker):], webDicInlineCloseMarker)
+		if closeIdx < 0 {
+			return open
+		}
+		pos = open + len(webDicInlineOpenMarker) + closeIdx + len(webDicInlineCloseMarker)
+	}
 }
 
 // webDicFuncCallLine 判断整行是否为一个 $函数 …$ 调用（形如 $设置头部 Content-Type text/plain$）。
@@ -350,16 +434,21 @@ func webDicFuncCallLine(line string) bool {
 	return len(line) > 2 && strings.HasPrefix(line, "$") && strings.HasSuffix(line, "$") && !strings.ContainsAny(line, "<>")
 }
 
+// webDicMaskSpan 把 buf 的 [start, end) 逐字节替换成空格（保留换行），长度不变。
+func webDicMaskSpan(buf []byte, start, end int) {
+	for i := start; i < end && i < len(buf); i++ {
+		if buf[i] != '\n' {
+			buf[i] = ' '
+		}
+	}
+}
+
 // webDicMaskRegions 按正则把若干区域逐字节替换成空格（保留换行），长度不变。
 func webDicMaskRegions(text string, res ...*regexp.Regexp) string {
 	buf := []byte(text)
 	for _, re := range res {
 		for _, loc := range re.FindAllStringIndex(text, -1) {
-			for i := loc[0]; i < loc[1] && i < len(buf); i++ {
-				if buf[i] != '\n' {
-					buf[i] = ' '
-				}
-			}
+			webDicMaskSpan(buf, loc[0], loc[1])
 		}
 	}
 	return string(buf)
@@ -372,12 +461,15 @@ func webDicMaskScripts(text string, blocks []webDicBlock) string {
 	}
 	buf := []byte(text)
 	for _, b := range blocks {
-		for i := b.openStart; i < b.closeEnd && i < len(buf); i++ {
-			if buf[i] != '\n' {
-				buf[i] = ' '
-			}
-		}
+		webDicMaskSpan(buf, b.openStart, b.closeEnd)
 	}
+	return string(buf)
+}
+
+// webDicMaskTail 从 start 起把剩余内容逐字节替换成空格（保留换行），长度不变。
+func webDicMaskTail(text string, start int) string {
+	buf := []byte(text)
+	webDicMaskSpan(buf, start, len(buf))
 	return string(buf)
 }
 

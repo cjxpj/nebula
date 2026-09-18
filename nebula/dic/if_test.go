@@ -1,10 +1,12 @@
 package dic
 
 import (
+	"sync"
 	"testing"
 
 	dic_api "github.com/cjxpj/nebula/dic/api"
 	dic_dto "github.com/cjxpj/nebula/dic/dto"
+	"github.com/cjxpj/nebula/dto"
 )
 
 // runIf 执行一段以 Main 为触发词的脚本（判断框专项），返回输出文本。
@@ -227,5 +229,100 @@ func TestIfConditionFunc(t *testing.T) {
 				t.Errorf("期望输出 %q，实际 %q", c.want, got)
 			}
 		})
+	}
+}
+
+// TestLifecycleHooks 生命周期钩子执行模型：
+//   - [f]_初始化：首次加载该词库内容时执行一次，变量快照带入后续每次执行；
+//   - 头部 与 [f]_中间件 二选一：已定义 [f]_中间件 时覆盖头部，头部运行时语句不执行；
+//   - [f]_中间件：每次执行都会经过；
+//   - 触发词/正文正常匹配，初始化快照不覆盖本次的触发词。
+func TestLifecycleHooks(t *testing.T) {
+	chdirToAppWin()
+	initOutputCache = sync.Map{} // 重置缓存，避免与其他测试相互影响
+
+	const path = "lifecycle_test.n"
+	// 头部写赋值 + 计数；_中间件 也写赋值 + 计数；初始化只执行一次。
+	// 已定义 _中间件 时头部被覆盖，故头部赋值/计数不应发生。
+	const text = "$计数头部$\n" +
+		"头部前缀:head\n" +
+		"\n" +
+		"[f]_初始化\n" +
+		"$计数初始化$\n" +
+		"初始化前缀:init\n" +
+		"\n" +
+		"[f]_中间件\n" +
+		"$计数中间件$\n" +
+		"中间件前缀:mid\n" +
+		"\n" +
+		"Main\n" +
+		"%头部前缀%|%初始化前缀%|%中间件前缀%\n" +
+		"\n" +
+		"第二\n" +
+		"%触发词%|%头部前缀%|%初始化前缀%|%中间件前缀%"
+
+	var headRuns, initRuns, midRuns int
+	mkCounter := func(p *int) dto.DicFunc {
+		return dto.DicFunc{L: "0", Fn: func(d *dto.DicInputs) (any, error) {
+			*p++
+			return "", nil
+		}}
+	}
+	newDic := func() *dic_dto.Dic {
+		return dic_dto.NewDic(path, text).
+			SetFunc("计数头部", mkCounter(&headRuns)).
+			SetFunc("计数初始化", mkCounter(&initRuns)).
+			SetFunc("计数中间件", mkCounter(&midRuns))
+	}
+
+	// 头部被覆盖：%头部前缀% 未赋值，保持字面量原样输出；只有初始化与中间件赋值生效。
+	got1 := dic_api.Api.DicRun(newDic(), "Main")
+	if got1 != "%头部前缀%|init|mid" {
+		t.Fatalf("首次执行期望 %%头部前缀%%|init|mid（头部被覆盖），实际 %q", got1)
+	}
+	got2 := dic_api.Api.DicRun(newDic(), "第二")
+	if got2 != "第二|%头部前缀%|init|mid" {
+		t.Fatalf("第二次执行期望 第二|%%头部前缀%%|init|mid，实际 %q", got2)
+	}
+	if initRuns != 1 {
+		t.Fatalf("_初始化 应只执行一次，实际 %d 次", initRuns)
+	}
+	if headRuns != 0 {
+		t.Fatalf("头部被 _中间件 覆盖，应不执行，实际 %d 次", headRuns)
+	}
+	if midRuns != 2 {
+		t.Fatalf("_中间件 应每次执行，实际 %d 次", midRuns)
+	}
+}
+
+// TestHeadOnlyAsMiddleware 只写头部、未定义 [f]_中间件 时，头部内容即中间件，每次执行都会经过。
+func TestHeadOnlyAsMiddleware(t *testing.T) {
+	chdirToAppWin()
+	initOutputCache = sync.Map{}
+
+	const path = "head_only_middleware_test.n"
+	const text = "$计数头部$\n" +
+		"头部前缀:head\n" +
+		"\n" +
+		"Main\n" +
+		"%头部前缀%"
+
+	var headRuns int
+	newDic := func() *dic_dto.Dic {
+		return dic_dto.NewDic(path, text).
+			SetFunc("计数头部", dto.DicFunc{L: "0", Fn: func(d *dto.DicInputs) (any, error) {
+				headRuns++
+				return "", nil
+			}})
+	}
+
+	if got := dic_api.Api.DicRun(newDic(), "Main"); got != "head" {
+		t.Fatalf("只写头部时头部内容应作为中间件执行，期望 head，实际 %q", got)
+	}
+	if got := dic_api.Api.DicRun(newDic(), "Main"); got != "head" {
+		t.Fatalf("头部中间件应每次执行，期望 head，实际 %q", got)
+	}
+	if headRuns != 2 {
+		t.Fatalf("头部中间件应每次执行，实际 %d 次", headRuns)
 	}
 }

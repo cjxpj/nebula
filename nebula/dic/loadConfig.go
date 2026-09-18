@@ -72,7 +72,7 @@ func Start() string {
 	}
 	infoDic.SetGlobal_v(GV)
 
-	// 运行启动词库：头部（$设置工作目录$）先确定数据目录，正文创建服务器并设置核心服务器，
+	// 运行启动词库：初始化（$设置工作目录$）先确定数据目录，正文创建服务器并设置核心服务器，
 	// 首次「服务器.设置核心服务器」会触发一次性配置加载。
 	if mainRes := dic_api.Api.DicRun(infoDic, "Main"); mainRes != "" {
 		fmt.Printf("%v\n", debugLog.EscapeControlChars(mainRes))

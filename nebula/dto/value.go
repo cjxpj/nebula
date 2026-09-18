@@ -735,6 +735,23 @@ func (v *Val) GetRaw(key string) (any, bool) {
 	return v.get(key)
 }
 
+// Has 判断变量是否存在（不触发一次性变量的消费语义）。
+// 供头部变量快照恢复等场景判断「本次执行是否已有该变量」，避免覆盖调用方按次注入的变量。
+func (v *Val) Has(key string) bool {
+	if isPlainVarName(key) {
+		if _, ok := v.slotGet(internVar(key)); ok {
+			return true
+		}
+	}
+	v.mu.RLock()
+	defer v.mu.RUnlock()
+	if _, ok := v.num[key]; ok {
+		return true
+	}
+	_, ok := v.obj[key]
+	return ok
+}
+
 // SetOnce 设置一次性变量（//@一次性资源）：写入后仅在首次读取时返回，读取后即销毁。
 // 不写无锁槽，使 %变量% 读取回退到 map 路径并触发 getOnce 消费语义。
 func (v *Val) SetOnce(key string, val any) *Val {
