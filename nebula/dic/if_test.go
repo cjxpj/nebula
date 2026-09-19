@@ -326,3 +326,24 @@ func TestHeadOnlyAsMiddleware(t *testing.T) {
 		t.Fatalf("头部中间件应每次执行，实际 %d 次", headRuns)
 	}
 }
+
+// TestInitHaltPersists [f]_初始化 里的 >终止 应持久生效：初始化只执行一次，
+// 命中缓存后仍要恢复「终止」状态，避免首次执行被终止、后续执行又继续跑正文的不一致行为。
+func TestInitHaltPersists(t *testing.T) {
+	chdirToAppWin()
+	initOutputCache = sync.Map{}
+
+	const path = "init_halt_test.n"
+	const text = "\n[f]_初始化\n>终止\n\nMain\n正文"
+
+	newDic := func() *dic_dto.Dic {
+		return dic_dto.NewDic(path, text)
+	}
+
+	if got := dic_api.Api.DicRun(newDic(), "Main"); got != "" {
+		t.Fatalf("首次执行应被初始化 >终止，期望空输出，实际 %q", got)
+	}
+	if got := dic_api.Api.DicRun(newDic(), "Main"); got != "" {
+		t.Fatalf("命中初始化缓存后仍应被 >终止，期望空输出，实际 %q", got)
+	}
+}

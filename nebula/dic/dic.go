@@ -28,6 +28,7 @@ var json = jsoniter.Config{
 type initSnapshot struct {
 	out  string
 	vars map[string]any
+	halt bool // 初始化里执行了 >终止（全局终止），命中缓存时需同样终止本次执行
 }
 
 // initOutputCache 缓存各词库 [f]_初始化 的执行结果，实现「首次加载时执行一次」（类似 Go init / Lua require）：
@@ -403,6 +404,9 @@ func (m *dicImpl) runInitOnce(dicRun *dic_dto.DicEntry, data *dto.BuildValue, pa
 			}
 			dicRun.Val.P.Set(k, val)
 		}
+		if snap.halt {
+			dicRun.Sys_v.Stop.Store(true)
+		}
 		return snap.out
 	}
 
@@ -410,7 +414,7 @@ func (m *dicImpl) runInitOnce(dicRun *dic_dto.DicEntry, data *dto.BuildValue, pa
 	out := m.DicRunLine(dicRun, entry.Text)
 
 	// 用 Clone 取快照：初始化变量后续会被中间件/正文改动，直接存引用会让快照跟着漂移。
-	initOutputCache.Store(key, initSnapshot{out: out, vars: dicRun.Val.P.Clone().GetAll()})
+	initOutputCache.Store(key, initSnapshot{out: out, vars: dicRun.Val.P.Clone().GetAll(), halt: dicRun.Sys_v.Stop.Load()})
 	return out
 }
 
