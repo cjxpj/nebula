@@ -331,6 +331,7 @@ func Setup() {
 		f{Name: "HTML编码", L: "1", Fn: htmlEncode},
 		f{Name: "HTML解码", L: "1", Fn: htmlDecode},
 		f{Name: "MD转HTML", L: "1", Fn: markdownToHtml},
+		f{Name: "创建HTML", L: "0|1", Fn: htmlNew},
 
 		// ========== 画布绘图 ==========
 		f{Name: "绘图", L: "1", Fn: drawImg},

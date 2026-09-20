@@ -273,6 +273,9 @@ type DicInputs struct {
 	Output *SingleValue
 	// Raw 未展开的原始参数（%变量%/[算术] 保持原样），供需要自行按 operand 边界求值的函数使用；为 nil 时退回 Inputs。
 	Raw *utils.DicInputs
+	// InTrigger 当前执行是否来自正文触发词匹配：false 表示 $函数名$/[函数]/[内部]/类方法等函数调用路径。
+	// 供 $继续执行$ 等仅在正文触发词下生效的内置函数判断。
+	InTrigger bool
 }
 
 func NewDicInputs(dic *BuildValue, v *DicVal, i *utils.DicInputs) *DicInputs {

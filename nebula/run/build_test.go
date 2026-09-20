@@ -207,3 +207,75 @@ func TestBuildDicHeadOverriddenByMiddleware(t *testing.T) {
 		t.Fatalf("头部应被覆盖，_中间件 只含函数内容，got=%v want=%v", mw.Text, want)
 	}
 }
+
+// TestUnusedFuncAcrossImport 验证「函数未使用」检查的当前文件口径：
+// 经 #引入= 合并进来的库函数不算当前文件的函数，不在编译主文件时告警；
+// 但引入链上任一文件里的调用都算已使用，主文件函数被库文件调用时不应告警。
+func TestUnusedFuncAcrossImport(t *testing.T) {
+	chdirToAppWin()
+	// 词库文件路径按进程工作目录解析，切到 NebulaData 才能让 #引入= 读到 private/ 下的测试库。
+	prevDir, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("获取工作目录失败：%v", err)
+	}
+	if err := os.Chdir(filepath.Join(prevDir, "NebulaData")); err != nil {
+		t.Fatalf("切换工作目录失败：%v", err)
+	}
+	defer os.Chdir(prevDir)
+
+	const (
+		libName  = "unused_func_lib_test_unique.n"
+		mainName = "unused_func_main_test_unique.n"
+	)
+	libPath := filepath.Join("private", libName)
+	// 库函数 定义后未被调用（应归属库文件、不在主文件告警）；
+	// 被主文件调用 只被库文件正文调用（说明引入链上的调用算已使用）。
+	libText := "[函数]库函数\n    ok\n\n[函数]被主文件调用\n    $主文件函数$\n"
+	if err := os.WriteFile(libPath, []byte(libText), 0o644); err != nil {
+		t.Fatalf("写入测试词库失败：%v", err)
+	}
+	defer os.Remove(libPath)
+
+	mainText := "#引入=" + libName + "\n\n[函数]主文件函数\n    ok\n\n[函数]主文件未用函数\n    ok\n\nMain\n    ok"
+	r := BuildDic(mainName, mainText)
+	if containsText(r.Warnings, "函数未使用：库函数") {
+		t.Fatalf("被引入的库函数不应在编译主文件时告警，实际：%v", warningsText(r.Warnings))
+	}
+	if containsText(r.Warnings, "函数未使用：主文件函数") {
+		t.Fatalf("被引入文件调用过的函数应算已使用，实际：%v", warningsText(r.Warnings))
+	}
+	if !containsText(r.Warnings, "函数未使用：主文件未用函数") {
+		t.Fatalf("当前文件里定义且未被调用的函数应告警，实际：%v", warningsText(r.Warnings))
+	}
+
+	// 主文件调用库函数后同样不产生未使用告警。
+	r2 := BuildDic(mainName, "#引入="+libName+"\n\nMain\n    $库函数$")
+	if containsText(r2.Warnings, "函数未使用") {
+		t.Fatalf("库函数已被调用且不属于当前文件，不应有未使用告警，实际：%v", warningsText(r2.Warnings))
+	}
+}
+
+// TestContinuePlacementAcrossLayouts 验证 $继续执行$ 位置检查在真实编译链路上的效果：
+// 正文触发词下正常，落在 [函数] 或头部（被并入 _中间件）时编译即报错。
+func TestContinuePlacementAcrossLayouts(t *testing.T) {
+	chdirToAppWin()
+
+	// 正文触发词（Main）里调用：合法，不报错。（前置空行避免 Main 被当成头部）
+	body := BuildDic("continue_body_test_unique.n", "\nMain\n$继续执行$\n\nMain\nok")
+	if containsText(body.Warnings, "继续执行：仅允许") {
+		t.Fatalf("正文触发词下调用 $继续执行$ 不应报错，实际：%v", warningsText(body.Warnings))
+	}
+
+	// [函数] 里调用：应报错。
+	fn := BuildDic("continue_func_test_unique.n", "\n[函数]测试函数\n    $继续执行$\n\nMain\n    $测试函数$")
+	if !containsText(fn.Warnings, "继续执行：仅允许在正文触发词下使用") {
+		t.Fatalf("[函数] 中调用 $继续执行$ 应报错，实际：%v", warningsText(fn.Warnings))
+	}
+
+	// 头部（首行到第一个空行之间）内容会被并入 _中间件，同样不属于正文触发词：应报错。
+	// 这也是「[f]a + $继续执行$ 被整体当成头部」的真实场景。
+	head := BuildDic("continue_head_test_unique.n", "[f]a\n$继续执行$\n")
+	if !containsText(head.Warnings, "继续执行：仅允许在正文触发词下使用") {
+		t.Fatalf("头部/中间件里的 $继续执行$ 应报错，实际：%v", warningsText(head.Warnings))
+	}
+}

@@ -64,6 +64,10 @@ type DicFunc struct {
 	Dic    *dto.BuildValue
 	// 当前执行行号（1-based），用于调试报错定位
 	CurLine int
+	// Trigger 当前执行是否来自正文触发词匹配。
+	// true：正文词条（含头部/初始化/中间件）执行；false：$函数名$/[函数]/[内部]/类方法等函数调用路径。
+	// 供 $继续执行$ 等仅在正文触发词下生效的内置函数判断。
+	Trigger bool
 }
 
 // ReportCountError 实现 count.CountErrorReporter：算术表达式（[...]）求值出错时

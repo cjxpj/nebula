@@ -296,6 +296,7 @@ func Funcs(d *dic_dto.DicFunc, dic_i *utils.DicInputs) (any, error) {
 		}
 		di := dto.NewDicInputsWithOutput(d.Dic, d.Val, &inputs, d.Output)
 		di.Raw = dic_i
+		di.InTrigger = d.Trigger
 		res, err := fnInfo.Fn(di)
 		if err != nil {
 			return handleFuncError(d, dic_i.String(0), err, captureErr), nil

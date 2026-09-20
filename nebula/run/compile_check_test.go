@@ -248,7 +248,7 @@ func TestCheckFuncNameConflict(t *testing.T) {
 	if !containsText(s.warnings, "禁止覆盖系统内置函数：内置冲突函数") {
 		t.Fatalf("期望报告内置函数冲突，实际：%v", warningsText(s.warnings))
 	}
-	if containsText(s.warnings, "普通函数") {
+	if containsText(s.warnings, "禁止覆盖系统内置函数：普通函数") {
 		t.Fatalf("普通函数不应触发冲突警告，实际：%v", warningsText(s.warnings))
 	}
 }
@@ -265,6 +265,60 @@ func TestCheckUndefinedFunc(t *testing.T) {
 	runCompileChecks(v, s)
 	if !containsText(s.warnings, "函数不存在：不存在的函数") {
 		t.Fatalf("期望报告未定义函数，实际：%v", warningsText(s.warnings))
+	}
+}
+
+func TestCheckRuntimeInjectedFunc(t *testing.T) {
+	// 设置头部 / GET / POST 由 HTTP 链路（setDicWebFuncs）与词库调试（localHTTPFuncs）运行时注入，
+	// 编译期不在注册表中，不应误报「函数不存在」；但参数数量仍需按注入的规则检查。
+	v := newTestBuildValue()
+	v.Dic = []*dto.BuildDic{{
+		Trigger:     "测试",
+		TriggerLine: 1,
+		Text: []string{
+			"$设置头部 Content-Type text/html;charset=UTF-8$",
+			"$设置头部 Accept-Ranges bytes$",
+			"取值:$GET 名称 默认值$",
+		},
+		LineNums: []int{2, 3, 4},
+	}}
+	s := newTestStack()
+	runCompileChecks(v, s)
+	if containsText(s.warnings, "函数不存在：设置头部") || containsText(s.warnings, "函数不存在：GET") {
+		t.Fatalf("运行时注入的 HTTP 函数不应误报，实际：%v", warningsText(s.warnings))
+	}
+
+	// 参数数量错误仍要报出来（设置头部 需要 2 个参数）
+	v2 := newTestBuildValue()
+	v2.Dic = []*dto.BuildDic{{
+		Trigger:     "测试",
+		TriggerLine: 1,
+		Text:        []string{"$设置头部 只有一个参数$"},
+		LineNums:    []int{2},
+	}}
+	s2 := newTestStack()
+	runCompileChecks(v2, s2)
+	if !containsText(s2.warnings, "函数参数数量错误：$设置头部$") {
+		t.Fatalf("运行时注入的函数仍应检查参数数量，实际：%v", warningsText(s2.warnings))
+	}
+}
+
+func TestCheckHTTPContextVar(t *testing.T) {
+	// 响应状态 / 输出头部 / 网站根目录 等由 HTTP 链路运行时注入，编译期不可见，不应误报「变量不存在」。
+	v := newTestBuildValue()
+	v.Dic = []*dto.BuildDic{{
+		Trigger:     "测试",
+		TriggerLine: 1,
+		Text: []string{
+			"文件:%网站根目录%/index.wn",
+			"状态:%响应状态%",
+		},
+		LineNums: []int{2, 3},
+	}}
+	s := newTestStack()
+	runCompileChecks(v, s)
+	if containsText(s.warnings, "变量不存在：网站根目录") || containsText(s.warnings, "变量不存在：响应状态") {
+		t.Fatalf("HTTP 链路注入的上下文变量不应误报，实际：%v", warningsText(s.warnings))
 	}
 }
 
@@ -1009,5 +1063,221 @@ func TestCheckUnusedAssignmentSkipsRawTextAndComment(t *testing.T) {
 	runCompileChecks(v, s)
 	if !containsText(s.warnings, "变量未使用：a") {
 		t.Fatalf("原样框/注释中的 %%a%% 不应算作引用，实际：%v", warningsText(s.warnings))
+	}
+}
+
+// ============ 函数未使用检查 ============
+
+func TestCheckUnusedFuncWarns(t *testing.T) {
+	v := newTestBuildValue()
+	v.DicFuncs["函数"] = []*dto.BuildDic{
+		{Trigger: "未用函数", TriggerLine: 3, Text: []string{"ok"}, LineNums: []int{4}},
+	}
+	s := newTestStack()
+	runCompileChecks(v, s)
+	if !containsText(s.warnings, "函数未使用：未用函数") {
+		t.Fatalf("定义后未被调用的函数应告警，实际：%v", warningsText(s.warnings))
+	}
+}
+
+func TestCheckUnusedFuncReportsOncePerName(t *testing.T) {
+	// 同名函数在多处定义时只报一次，避免告警刷屏。
+	v := newTestBuildValue()
+	v.DicFuncs["函数"] = []*dto.BuildDic{
+		{Trigger: "重复未用", TriggerLine: 3, Text: []string{"ok"}, LineNums: []int{4}},
+		{Trigger: "重复未用", TriggerLine: 10, Text: []string{"ok2"}, LineNums: []int{11}},
+	}
+	s := newTestStack()
+	runCompileChecks(v, s)
+	count := 0
+	for _, w := range s.warnings {
+		if strings.Contains(w.Text, "函数未使用：重复未用") {
+			count++
+		}
+	}
+	if count != 1 {
+		t.Fatalf("同名占位函数只应告警一次，实际 %d 次：%v", count, warningsText(s.warnings))
+	}
+}
+
+func TestCheckUnusedFuncUsedNoWarn(t *testing.T) {
+	// 有 $函数名$ 调用即算已使用：[函数]名->传出变量 形式调用处只写函数名，需去掉 -> 后缀比较。
+	cases := []struct {
+		name    string
+		trigger string
+		call    string
+	}{
+		{"普通调用", "已用函数", "$已用函数 参数$"},
+		{"捕获调用", "已用函数", "$!已用函数$"},
+		{"传出变量后缀", "已用函数->结果", "$已用函数$"},
+	}
+	for _, c := range cases {
+		v := newTestBuildValue()
+		v.DicFuncs["函数"] = []*dto.BuildDic{
+			{Trigger: c.trigger, TriggerLine: 1, Text: []string{"ok"}, LineNums: []int{2}},
+		}
+		v.Dic = []*dto.BuildDic{{
+			Trigger:     "测试",
+			TriggerLine: 3,
+			Text:        []string{c.call},
+			LineNums:    []int{4},
+		}}
+		s := newTestStack()
+		runCompileChecks(v, s)
+		if containsText(s.warnings, "函数未使用") {
+			t.Fatalf("%s：已被调用的函数不应告警，实际：%v", c.name, warningsText(s.warnings))
+		}
+	}
+}
+
+func TestCheckUnusedFuncSkips(t *testing.T) {
+	// 不通过 $函数名$ 调用的函数不参与检查：
+	// [内部] 由 $回调$ / 宿主程序按触发词调度，_初始化/_中间件 由运行时按生命周期调度，
+	// 类内 [函数:类名] 由 $.类名 方法$ 等动态调用。
+	v := newTestBuildValue()
+	v.DicFuncs["函数"] = []*dto.BuildDic{
+		{Trigger: dto.InitTrigger, TriggerLine: 1, Text: []string{"ok"}, LineNums: []int{2}},
+		{Trigger: dto.MiddlewareTrigger, TriggerLine: 3, Text: []string{"ok"}, LineNums: []int{4}},
+	}
+	v.DicFuncs["内部"] = []*dto.BuildDic{
+		{Trigger: "内部函数", TriggerLine: 5, Text: []string{"ok"}, LineNums: []int{6}},
+	}
+	cls := dto.NewDicClass()
+	cls.DicFuncs["函数"] = []*dto.BuildDic{
+		{Trigger: "类方法", TriggerLine: 7, Text: []string{"ok"}, LineNums: []int{8}},
+	}
+	v.Class["类"] = cls
+	s := newTestStack()
+	runCompileChecks(v, s)
+	if containsText(s.warnings, "函数未使用") {
+		t.Fatalf("内部函数/生命周期钩子/类方法不应报「函数未使用」，实际：%v", warningsText(s.warnings))
+	}
+}
+
+func TestCheckUnusedFuncIgnoresContentBlocks(t *testing.T) {
+	// 文本框/JSON 框里的 $函数$ 是原样输出、不会执行，不应算作已使用。
+	v := newTestBuildValue()
+	v.DicFuncs["函数"] = []*dto.BuildDic{
+		{Trigger: "框内函数", TriggerLine: 1, Text: []string{"ok"}, LineNums: []int{2}},
+	}
+	v.Dic = []*dto.BuildDic{{
+		Trigger:     "测试",
+		TriggerLine: 3,
+		Text: []string{
+			"文本>",
+			"$框内函数$",
+			"<文本",
+			"JSON>",
+			"$框内函数$",
+			"<JSON",
+		},
+		LineNums: []int{4, 5, 6, 7, 8, 9},
+	}}
+	s := newTestStack()
+	runCompileChecks(v, s)
+	if !containsText(s.warnings, "函数未使用：框内函数") {
+		t.Fatalf("内容框里的 $函数$ 不应算作已使用，实际：%v", warningsText(s.warnings))
+	}
+}
+
+func TestCheckContinuePlacementInFunc(t *testing.T) {
+	// [函数] 等 $函数名$ 调用路径没有「正文触发词命中下标」语义，$继续执行$ 应编译报错。
+	v := newTestBuildValue()
+	v.DicFuncs["函数"] = []*dto.BuildDic{
+		{Trigger: "测试函数", TriggerLine: 1, Text: []string{"$继续执行$"}, LineNums: []int{2}},
+	}
+	s := newTestStack()
+	runCompileChecks(v, s)
+	found := false
+	for _, w := range s.warnings {
+		if !strings.Contains(w.Text, "继续执行：仅允许在正文触发词下使用") {
+			continue
+		}
+		found = true
+		if w.Level != "error" {
+			t.Fatalf("应为 error 级别，实际 %q", w.Level)
+		}
+		if w.Line != 2 {
+			t.Fatalf("行号应为 2，实际 %d", w.Line)
+		}
+	}
+	if !found {
+		t.Fatalf("[函数] 中调用 $继续执行$ 应报错，实际：%v", warningsText(s.warnings))
+	}
+}
+
+func TestCheckContinuePlacementInHeaderMiddleware(t *testing.T) {
+	// 头部内容会被并入 [f]_中间件；不在正文触发词下，$继续执行$ 同样报错。
+	v := newTestBuildValue()
+	v.DicFuncs["函数"] = []*dto.BuildDic{
+		{Trigger: dto.MiddlewareTrigger, TriggerLine: 1, Text: []string{"$继续执行$"}, LineNums: []int{2}},
+	}
+	s := newTestStack()
+	runCompileChecks(v, s)
+	if !containsText(s.warnings, "继续执行：仅允许在正文触发词下使用") {
+		t.Fatalf("头部/中间件中的 $继续执行$ 应报错，实际：%v", warningsText(s.warnings))
+	}
+}
+
+func TestCheckContinuePlacementInPrivateAndClass(t *testing.T) {
+	// [内部] 与类内方法（含类内回调用的 [内部]）都不属于正文触发词路径，均应报错。
+	v := newTestBuildValue()
+	v.DicFuncs["内部"] = []*dto.BuildDic{
+		{Trigger: "内部函数", TriggerLine: 1, Text: []string{"$继续执行$"}, LineNums: []int{2}},
+	}
+	cls := dto.NewDicClass()
+	cls.DicFuncs["函数"] = []*dto.BuildDic{
+		{Trigger: "类方法", TriggerLine: 3, Text: []string{"$继续执行$"}, LineNums: []int{4}},
+	}
+	v.Class["类"] = cls
+	s := newTestStack()
+	runCompileChecks(v, s)
+	count := 0
+	for _, w := range s.warnings {
+		if strings.Contains(w.Text, "继续执行：仅允许") {
+			count++
+		}
+	}
+	if count != 2 {
+		t.Fatalf("[内部] 与类方法各应报一次错，实际 %d 次：%v", count, warningsText(s.warnings))
+	}
+}
+
+func TestCheckContinuePlacementInBodyOK(t *testing.T) {
+	// 正文词条（无 [类别] 前缀）是唯一合法位置，不应报错。
+	v := newTestBuildValue()
+	v.Dic = []*dto.BuildDic{{
+		Trigger:     "Main",
+		TriggerLine: 1,
+		Text:        []string{"第一个$继续执行$"},
+		LineNums:    []int{2},
+	}}
+	s := newTestStack()
+	runCompileChecks(v, s)
+	if containsText(s.warnings, "继续执行：仅允许") {
+		t.Fatalf("正文词条里的 $继续执行$ 不应报错，实际：%v", warningsText(s.warnings))
+	}
+}
+
+func TestCheckContinuePlacementIgnoresContentBlocks(t *testing.T) {
+	// 文本框/JSON 框里的 $继续执行$ 是原样输出、不会执行，不应报错。
+	v := newTestBuildValue()
+	v.DicFuncs["函数"] = []*dto.BuildDic{{
+		Trigger:     "测试函数",
+		TriggerLine: 1,
+		Text: []string{
+			"文本>",
+			"$继续执行$",
+			"<文本",
+			"JSON>",
+			"$继续执行$",
+			"<JSON",
+		},
+		LineNums: []int{2, 3, 4, 5, 6, 7},
+	}}
+	s := newTestStack()
+	runCompileChecks(v, s)
+	if containsText(s.warnings, "继续执行：仅允许") {
+		t.Fatalf("内容框里的 $继续执行$ 不应报错，实际：%v", warningsText(s.warnings))
 	}
 }

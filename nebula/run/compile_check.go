@@ -18,6 +18,8 @@ func runCompileChecks(v *dto.BuildValue, stack *importStack) {
 	checkFuncClosed(v, stack)
 	checkFuncParams(v, stack)
 	checkFuncNameConflict(v, stack)
+	checkUnusedFunc(v, stack)
+	checkContinuePlacement(v, stack)
 	checkUndefinedVars(v, stack)
 	checkUnusedAssignment(v, stack)
 }
@@ -422,6 +424,16 @@ func checkFuncParamsEntry(e *dto.BuildDic, v *dto.BuildValue, funcIndex map[stri
 	}
 }
 
+// runtimeInjectedFuncs 运行时由调用方注入的内置函数及其参数规则。
+// HTTP 链路（dic/webhttp.go 的 setDicWebFuncs）与词库调试 / AI 运行（server/opui.go 的 localHTTPFuncs）
+// 在运行词库前把 设置头部 / GET / POST 挂到词库函数表上，编译期静态检查看不到它们，
+// 不在此放行会让 API / 网页词库里的 $设置头部$ / $GET$ / $POST$ 被误报为「函数不存在」。
+var runtimeInjectedFuncs = map[string]string{
+	"设置头部": "2",
+	"GET":  "1|2",
+	"POST": "1|2",
+}
+
 func checkFuncCall(name string, argCount, line int, v *dto.BuildValue, funcIndex map[string][]*dto.BuildDic, stack *importStack) {
 	// $!函数名 参数$：捕获报错调用，! 为前缀，需去掉后再解析函数名。
 	name = strings.TrimPrefix(name, "!")
@@ -465,6 +477,14 @@ func checkFuncCall(name string, argCount, line int, v *dto.BuildValue, funcIndex
 		return
 	}
 
+	// 运行时注入的 HTTP 函数（设置头部 / GET / POST）：仅 HTTP 链路与词库调试存在，编译期不可见
+	if rule, ok := runtimeInjectedFuncs[name]; ok {
+		if !utils.MatchLenRule(argCount, rule) {
+			stack.addError(line, fmt.Sprintf("函数参数数量错误：$%s$ 需要 %s 个参数，实际 %d 个", name, rule, argCount))
+		}
+		return
+	}
+
 	// 未定义的函数：非局部函数、非自定义函数、非内置函数，运行时将原样返回 $...$ 文本。
 	stack.addWarning(line, "函数不存在："+name)
 }
@@ -485,6 +505,137 @@ func checkFuncNameConflict(v *dto.BuildValue, stack *importStack) {
 		}
 		if _, ok := dto.GetFuncRule(name); ok {
 			stack.addError(e.TriggerLine, fmt.Sprintf("禁止覆盖系统内置函数：%s", name))
+		}
+	}
+}
+
+// ============ 函数未使用检查 ============
+
+// checkUnusedFunc 静态检查当前文件定义的 [函数]：整个编译产物里都没有 $函数$ 调用时给出警告。
+//   - 只有顶层词库告警：#引入 进来的库函数可能被别的入口词库调用，单独编译无法判定它是否真的没用；
+//   - 判定「被调用」时把整条引入链上的调用都算进来，任一文件里调用过都不算未使用；
+//   - [内部] 函数由 $回调$ 或宿主程序按触发词调度、生命周期钩子由运行时调度，均不参与检查。
+func checkUnusedFunc(v *dto.BuildValue, stack *importStack) {
+	for _, e := range allBuildDics(v) {
+		if e != nil {
+			collectFuncUses(e, stack.funcUses)
+		}
+	}
+	if stack.importDepth > 0 {
+		return
+	}
+
+	reported := make(map[string]bool)
+	for _, e := range v.DicFuncs["函数"] {
+		if e == nil || stack.importedFuncs[e] || dto.IsReservedTrigger(e.Trigger) {
+			continue
+		}
+		// [函数]名->传出变量：调用处只写函数名，比较时需去掉 -> 后缀。
+		name := e.Trigger
+		if i := strings.LastIndex(name, "->"); i != -1 {
+			name = name[:i]
+		}
+		if name == "" || stack.funcUses[name] || reported[name] {
+			continue
+		}
+		reported[name] = true
+		stack.addWarning(e.TriggerLine, "函数未使用："+name+" 定义后未被任何地方调用")
+	}
+}
+
+// collectFuncUses 收集词条正文里出现的 $函数$ 调用名（含 $!函数名$ 捕获调用），记录到 uses。
+// 文本/JSON 等内容行里的 $...$ 是原样输出、不会当成函数调用执行，跳过。
+func collectFuncUses(e *dto.BuildDic, uses map[string]bool) {
+	var blocks contentBlockTracker
+	for _, line := range e.Text {
+		if blocks.step(line) {
+			continue
+		}
+		line = assignOpValue(line)
+		if !strings.Contains(line, "$") {
+			continue
+		}
+		for _, seg := range parseFuncSegments(line) {
+			if !seg.isFunc || len(seg.args) == 0 {
+				continue
+			}
+			name := strings.TrimPrefix(seg.args[0], "!")
+			if name == "" || name == "new" {
+				continue
+			}
+			// $%变量%$ 函数框、$.类名 / %类名 开头的类方法：调用目标由运行时动态解析，
+			// 不是对具名 [函数] 的调用（类内 [函数:类名] 由 $.类名 方法$ 等动态调用，不在本检查范围）。
+			if len(name) > 2 && name[0] == '%' && name[len(name)-1] == '%' {
+				continue
+			}
+			if name[0] == '%' || name[0] == '.' {
+				continue
+			}
+			uses[name] = true
+		}
+	}
+}
+
+// ============ $继续执行$ 使用位置检查 ============
+
+// checkContinuePlacement 静态检查 $继续执行$ 的使用位置：只允许出现在正文词条里。
+// 它依赖「当前词条是正文触发词命中的第 N 条」这一下标语义（从下一个命中的正文词条继续执行），
+// $函数名$/[函数]/[内部]/类方法/生命周期钩子/头部中间件等执行路径下标语义不成立，运行时直接报错。
+func checkContinuePlacement(v *dto.BuildValue, stack *importStack) {
+	// 正文词条（无 [类别] 前缀）允许使用；同一批函数可能同时挂在全局函数表与类函数表上，按指针去重。
+	body := make(map[*dto.BuildDic]bool, len(v.Dic))
+	for _, e := range v.Dic {
+		if e != nil {
+			body[e] = true
+		}
+	}
+	seen := make(map[*dto.BuildDic]bool)
+	check := func(list []*dto.BuildDic) {
+		for _, e := range list {
+			if e == nil || seen[e] || body[e] {
+				continue
+			}
+			seen[e] = true
+			checkContinuePlacementEntry(e, stack)
+		}
+	}
+	for _, list := range v.DicFuncs {
+		check(list)
+	}
+	for _, c := range v.Class {
+		if c == nil {
+			continue
+		}
+		for _, list := range c.DicFuncs {
+			check(list)
+		}
+	}
+}
+
+// checkContinuePlacementEntry 检查单个非正文词条：文本/JSON 等内容行里的 $继续执行$ 是原样输出，跳过。
+func checkContinuePlacementEntry(e *dto.BuildDic, stack *importStack) {
+	var blocks contentBlockTracker
+	for i, line := range e.Text {
+		if blocks.step(line) {
+			continue
+		}
+		line = assignOpValue(line)
+		if !strings.Contains(line, "$") {
+			continue
+		}
+		for _, seg := range parseFuncSegments(line) {
+			if !seg.isFunc || len(seg.args) == 0 {
+				continue
+			}
+			if strings.TrimPrefix(seg.args[0], "!") != "继续执行" {
+				continue
+			}
+			ln := 0
+			if i < len(e.LineNums) {
+				ln = e.LineNums[i]
+			}
+			stack.addError(ln, "继续执行：仅允许在正文触发词下使用")
+			break
 		}
 	}
 }
@@ -1118,6 +1269,12 @@ func isMagicVar(name string) bool {
 		"Op", "robot", "Robot", "data", "GolineMode", "文件数据", "撤回消息", "AT0",
 		"子群号", "管理", "头像", "robot_appid":
 		return true
+	}
+	// HTTP 链路注入的页面级上下文变量（响应状态 / 输出头部 / COOKIE / 网站根目录 / 访问数据）
+	for _, n := range httpContextVars {
+		if name == n {
+			return true
+		}
 	}
 	// 系统魔术变量：_xxx_
 	if strings.HasPrefix(name, "_") {

@@ -41,3 +41,49 @@ func TestFormatDicTextBlockVarPrefix(t *testing.T) {
 		t.Fatalf("格式化结果不符:\n--- got ---\n%s\n--- want ---\n%s", got, want)
 	}
 }
+
+// TestFormatDicIfBranches 判断框的分支行（>否则如果: / >否则）与其开启行同层，
+// 分支正文落在分支行的下一层；嵌套在循环框里时按所属层级对齐。
+func TestFormatDicIfBranches(t *testing.T) {
+	cases := []struct{ name, src, want string }{
+		{
+			"判断框分支",
+			"测试\n如果>%a%==1\n一\n>否则如果:%a%==2\n二\n>否则\n三\n<如果\n",
+			"测试\n如果>%a%==1\n    一\n>否则如果:%a%==2\n    二\n>否则\n    三\n<如果\n",
+		},
+		{
+			"循环内判断框分支",
+			"测试\n循环>i=2\n如果>%i%==1\n一\n>否则\n二\n<如果\n<循环\n",
+			"测试\n循环>i=2\n    如果>%i%==1\n        一\n    >否则\n        二\n    <如果\n<循环\n",
+		},
+	}
+	for _, c := range cases {
+		got := FormatDic(c.src)
+		if got != c.want {
+			t.Fatalf("%s 格式化结果不符:\n--- got ---\n%s--- want ---\n%s", c.name, got, c.want)
+		}
+		if twice := FormatDic(got); twice != got {
+			t.Fatalf("%s 二次格式化结果不一致:\n--- once ---\n%s--- twice ---\n%s", c.name, got, twice)
+		}
+	}
+}
+
+// TestFormatDicMatchBranches 匹配框的分支行（如果是:值 / 如果不是，前导 > 可有可无）
+// 与其开启行同层，分支正文落在下一层。
+func TestFormatDicMatchBranches(t *testing.T) {
+	src := "测试\n匹配>%a%==1\n如果是:1\n一\n>如果不是\n二\n<匹配\n"
+	want := "测试\n匹配>%a%==1\n如果是:1\n    一\n>如果不是\n    二\n<匹配\n"
+	if got := FormatDic(src); got != want {
+		t.Fatalf("格式化结果不符:\n--- got ---\n%s--- want ---\n%s", got, want)
+	}
+}
+
+// TestFormatDicTriggerBodyFlush 触发词之下的正文不再整体缩进一级：
+// 正文顶格，框内按层级逐级缩进。
+func TestFormatDicTriggerBodyFlush(t *testing.T) {
+	src := "测试\n甲:1\n%甲%\n\n测试2\n循环>i=2\n%i%\n<循环\n"
+	want := "测试\n甲:1\n%甲%\n\n测试2\n循环>i=2\n    %i%\n<循环\n"
+	if got := FormatDic(src); got != want {
+		t.Fatalf("格式化结果不符:\n--- got ---\n%s--- want ---\n%s", got, want)
+	}
+}

@@ -622,13 +622,25 @@ type importStack struct {
 
 	// deps 记录所有已成功加载文件（含主文件）的路径与内容 hash，用于磁盘编译缓存失效校验。
 	deps map[string]string
+
+	// importDepth 当前编译层级：主文件为 0，loadImport 递归进入被引入文件时递增。
+	importDepth int
+
+	// funcUses 整条引入链上出现过的 $函数$ 调用名（含 $!函数名$），用于「函数未使用」检查：
+	// 任一文件里调用过即算已使用。
+	funcUses map[string]bool
+
+	// importedFuncs 通过 #引入= 合并进来的函数词条，「函数未使用」检查只针对当前文件定义的函数，故跳过它们。
+	importedFuncs map[*dto.BuildDic]bool
 }
 
 // newImportStack 创建空的引入链。
 func newImportStack() *importStack {
 	return &importStack{
-		files: make(map[string]bool),
-		deps:  make(map[string]string),
+		files:         make(map[string]bool),
+		deps:          make(map[string]string),
+		funcUses:      make(map[string]bool),
+		importedFuncs: make(map[*dto.BuildDic]bool),
 	}
 }
 
@@ -657,7 +669,7 @@ func (s *importStack) addError(line int, text string) {
 }
 
 // dicCacheVersion 磁盘编译缓存格式版本，结构变化时递增以淘汰旧缓存。
-const dicCacheVersion = 7
+const dicCacheVersion = 9
 
 // dicCacheEntry 词库编译结果的磁盘缓存结构（gob 序列化）。
 // 只缓存可序列化词条；含 bot 注入（MyFunc 非空）的词库不落缓存，故无需序列化 Go 函数。
@@ -922,7 +934,9 @@ func loadImport(dicPath, path, fHeaderName string, funcMap map[string][]*dto.Bui
 		// 记录依赖文件内容 hash，供磁盘编译缓存失效校验。
 		stack.deps[filePath] = dicHashBytes(raw)
 
+		stack.importDepth++
 		z := buildDic(filePath, FileData, stack)
+		stack.importDepth--
 		stack.pop(filePath)
 
 		if fHeaderName != "" {
@@ -933,6 +947,9 @@ func loadImport(dicPath, path, fHeaderName string, funcMap map[string][]*dto.Bui
 		for k, v := range z.DicFuncs {
 			funcMap[k] = append(funcMap[k], v...)
 			pkg.DicFuncs[k] = append(pkg.DicFuncs[k], v...)
+			for _, e := range v {
+				stack.importedFuncs[e] = true
+			}
 		}
 		maps.Copy(myFunc, z.MyFunc)
 		maps.Copy(pkg.Fn, z.MyFunc)
@@ -942,6 +959,9 @@ func loadImport(dicPath, path, fHeaderName string, funcMap map[string][]*dto.Bui
 			}
 			for k, v := range value.DicFuncs {
 				pkg.DicFuncs[k] = append(pkg.DicFuncs[k], v...)
+				for _, e := range v {
+					stack.importedFuncs[e] = true
+				}
 			}
 			maps.Copy(pkg.Fn, value.Fn)
 		}

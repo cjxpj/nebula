@@ -16,6 +16,7 @@ import (
 	"mime"
 	"net"
 	"net/http"
+	"net/textproto"
 	"net/url"
 	"os"
 	"os/exec"
@@ -2403,10 +2404,40 @@ func checkDicOrWebPath(path string) bool {
 	return checkDicPath(path) || checkWebDicPath(path)
 }
 
-// webDicLocalFuncs 本地执行网页词库时注入的 HTTP 函数空实现。
-// 词库调试与 AI 工具没有真实请求上下文：GET / POST 取默认值、设置头部 忽略，
-// 让含这些调用的 .wn 也能跑完并返回模板渲染结果，而不是因「函数不存在」中断。
-func webDicLocalFuncs() map[string]dto.DicFunc {
+// respHeader 本地运行词库时收集到的响应头（保持写入顺序，便于前端原样展示）。
+type respHeader struct {
+	Key   string `json:"key"`
+	Value string `json:"value"`
+}
+
+// localRunResult 本地执行网页词库的结果：渲染输出 + 词库设置的响应状态 / 响应头。
+type localRunResult struct {
+	Output  string       // 模板渲染后的整页输出
+	Status  string       // 响应状态（全局变量 响应状态，未设置时为 200）
+	Headers []respHeader // 设置头部 + 输出头部 合并后的最终响应头（同名后者覆盖）
+}
+
+// setRespHeader 记录 / 覆盖一个响应头：同名覆盖值并保持首次出现的顺序，
+// 与 HTTP 链路的 w.Header().Set 语义一致（头名按标准格式规范化）。
+func setRespHeader(headers *[]respHeader, key, value string) {
+	if key == "" {
+		return
+	}
+	key = textproto.CanonicalMIMEHeaderKey(key)
+	for i := range *headers {
+		if (*headers)[i].Key == key {
+			(*headers)[i].Value = value
+			return
+		}
+	}
+	*headers = append(*headers, respHeader{Key: key, Value: value})
+}
+
+// localHTTPFuncs 本地运行词库时注入的 HTTP 链路内置函数实现（.n 与 .wn 共用）。
+// 词库调试与 AI 工具没有真实请求上下文：GET / POST 取默认值；
+// 设置头部 不再忽略，而是记录进 headers 随运行结果返回——
+// 前端据此按 Content-Type 决定输出区域的展示方式（HTML 渲染预览 / JSON / 文本）。
+func localHTTPFuncs(headers *[]respHeader) map[string]dto.DicFunc {
 	getDefault := func(d *dto.DicInputs) (any, error) {
 		if d.Inputs.LenOk(2) {
 			if s, ok := d.Inputs.Get(2).(string); ok {
@@ -2416,25 +2447,92 @@ func webDicLocalFuncs() map[string]dto.DicFunc {
 		return "", nil
 	}
 	return map[string]dto.DicFunc{
-		"设置头部": {L: "2", Fn: func(d *dto.DicInputs) (any, error) { return "", nil }},
+		"设置头部": {L: "2", Fn: func(d *dto.DicInputs) (any, error) {
+			key, ok := d.Inputs.Get(1).(string)
+			if !ok {
+				return "参数错误1", nil
+			}
+			value, ok := d.Inputs.Get(2).(string)
+			if !ok {
+				return "参数错误2", nil
+			}
+			setRespHeader(headers, key, value)
+			return "", nil
+		}},
 		"GET":  {L: "1|2", Fn: getDefault},
 		"POST": {L: "1|2", Fn: getDefault},
 	}
 }
 
-// runWebDicLocal 本地执行 .wn 网页词库：读文件 → 注入 HTTP 函数空实现与全局变量 →
-// 执行脚本块并完成模板渲染，返回最终 HTML。词库调试与 AI 的 run_web_dic 工具共用。
-func runWebDicLocal(path string, g map[string]string) (string, error) {
+// ensureLocalRespDefaults 补齐与 HTTP 链路（serveHTTP）一致的响应全局变量默认值，
+// 词库已自行设置时以词库为准。
+func ensureLocalRespDefaults(val *dto.Val) {
+	if val.Get("响应状态") == nil {
+		val.Set("响应状态", "200")
+	}
+	if val.Get("输出头部") == nil {
+		val.Set("输出头部", "{}")
+	}
+}
+
+// collectLocalResp 运行结束后收集词库设置的响应信息：
+// 全局变量 输出头部（JSON 对象形式的额外响应头）在 HTTP 链路于输出阶段写入响应，
+// 这里解析后合并进收集结果（同名覆盖 设置头部）；响应状态未设置时按 200。
+func collectLocalResp(val *dto.Val, headers []respHeader) (string, []respHeader) {
+	if raw, ok := val.Get("输出头部").(string); ok && raw != "" && raw != "{}" {
+		var extra map[string]string
+		if err := json.Unmarshal([]byte(raw), &extra); err == nil {
+			// JSON 对象无序，按 key 排序保证展示顺序稳定
+			keys := make([]string, 0, len(extra))
+			for k := range extra {
+				keys = append(keys, k)
+			}
+			sort.Strings(keys)
+			for _, k := range keys {
+				setRespHeader(&headers, k, extra[k])
+			}
+		}
+	}
+	status := "200"
+	if s, ok := val.Get("响应状态").(string); ok && s != "" {
+		status = s
+	}
+	return status, headers
+}
+
+// attachLocalHTTPFuncs 为本地运行的普通词库（.n）注入 HTTP 链路内置函数（设置头部 / GET / POST），
+// 并补齐响应全局变量默认值，行为与 serveHTTP 的 .n 分支一致。
+// MyFunc 先复制再注入：编译缓存命中时词库实例与缓存共享同一函数表，就地写入会污染后续加载。
+// 返回的指针在整个运行期间有效，运行结束后交给 collectLocalResp 读取收集结果。
+func attachLocalHTTPFuncs(dic *dic_dto.Dic) *[]respHeader {
+	merged := make(map[string]dto.DicFunc, len(dic.MyFunc)+3)
+	maps.Copy(merged, dic.MyFunc)
+	dic.MyFunc = merged
+	headers := &[]respHeader{}
+	maps.Copy(dic.MyFunc, localHTTPFuncs(headers))
+	ensureLocalRespDefaults(dic.Val.G)
+	return headers
+}
+
+// runWebDicLocal 本地执行 .wn 网页词库：读文件 → 注入 HTTP 函数与全局变量 →
+// 执行脚本块并完成模板渲染。词库调试与 AI 的 run_web_dic 工具共用。
+// 真实 HTTP 链路里 设置头部 / 响应状态 会写进响应对象，本地没有响应对象，
+// 改为收集后随结果返回；输出头部（JSON 自定义头）在 HTTP 链路于输出阶段写入，这里同样在运行结束后合并。
+func runWebDicLocal(path string, g map[string]string) (*localRunResult, error) {
 	data, err := utils.NewFileQueue(path).ReadFileByte()
 	if err != nil {
-		return "", err
+		return nil, err
 	}
 	webdic := dic_dto.NewWebDic(path, string(data))
-	webdic.MyFunc = webDicLocalFuncs()
+	headers := []respHeader{}
+	webdic.MyFunc = localHTTPFuncs(&headers)
 	for k, v := range g {
 		webdic.Val.G.Set(k, v)
 	}
-	return dic_api.Api.WebDicRun(webdic), nil
+	ensureLocalRespDefaults(webdic.Val.G)
+	output := dic_api.Api.WebDicRun(webdic)
+	status, headers := collectLocalResp(webdic.Val.G, headers)
+	return &localRunResult{Output: output, Status: status, Headers: headers}, nil
 }
 
 // checkFilePath 校验文件管理路径：仅允许应用目录内的相对路径，
@@ -7549,11 +7647,12 @@ func opuiHandleApi(w http.ResponseWriter, r *http.Request) {
 			ensureDicDeleteConfirm()
 			dicDeleteConfirmActive.Add(1)
 			defer dicDeleteConfirmActive.Add(-1)
-			output, err := runWebDicLocal(j.Path, j.G)
+			runRes, err := runWebDicLocal(j.Path, j.G)
 			if err != nil {
 				http.Error(w, `{"status":"error","error":"词库加载失败: `+err.Error()+`"}`, http.StatusBadRequest)
 				return
 			}
+			output := runRes.Output
 			warnings := []dto.BuildWarning{}
 			blockCount := 0
 			templateKeys := []string{}
@@ -7569,6 +7668,8 @@ func opuiHandleApi(w http.ResponseWriter, r *http.Request) {
 				"segments":         parseOutputSegments(output),
 				"vars":             map[string]any{"P": map[string]any{}, "G": map[string]any{}, "GV": map[string]any{}},
 				"webDic":           true,
+				"respStatus":       runRes.Status,
+				"respHeaders":      runRes.Headers,
 				"scriptBlockCount": blockCount,
 				"templateKeys":     templateKeys,
 				"renderNote":       webDicRenderNote(blockCount, templateKeys),
@@ -7610,12 +7711,18 @@ func opuiHandleApi(w http.ResponseWriter, r *http.Request) {
 			dic.Val.G.Set(k, v)
 		}
 
+		// 与 HTTP 链路的 .n 分支一致地注入 设置头部 / GET / POST，并补齐响应全局变量默认值：
+		// 本地调试没有真实响应对象，词库设置的响应状态与响应头改为随运行结果返回，
+		// 前端据此展示响应信息并按 Content-Type 决定输出区域的展示方式
+		respHeaders := attachLocalHTTPFuncs(dic)
+
 		// 触发词命中则正常执行；未命中（如调试脚本没有写触发词）则整体按线性脚本执行
 		output, timedOut, fellBack := dic_api.Api.DicRunScript(dic, j.Trigger, time.Duration(j.Timeout)*time.Second)
 
 		// 输出/分段/错误行/变量/警告统一组装（与 AI 工具运行共用同一实现）；
 		// 兜底分支额外附一条黄色警告，提示触发词未命中、触发词行被当正文输出
 		resp := dicRunResultPayload(dic, output, timedOut, fellBack, j.Trigger)
+		resp["respStatus"], resp["respHeaders"] = collectLocalResp(dic.Val.G, *respHeaders)
 		jsonResp, _ := json.Marshal(resp)
 		w.Write(jsonResp)
 		return
@@ -8804,6 +8911,72 @@ func aiApplyZhipuParams(payload map[string]any, baseURL, model, effort string, h
 	}
 }
 
+// ============== DeepSeek 专有工具调用参数 ==============
+//
+// 依据 https://api-docs.deepseek.com/zh-cn/guides/tool_calls：
+// 思考模式自 DeepSeek-V3.2 起原生支持工具调用（reasoning_content 与 tool_calls 同流返回，
+// 现有流式解析已覆盖，无需额外改动）；strict 模式为 Beta 功能，要求 base_url 指向
+// https://api.deepseek.com/beta，且一次请求里所有 function 都必须声明 strict=true，
+// 参数 JSON Schema 还需满足 strict 约束（见 aiApplyDeepSeekStrictTools）。
+// 非 beta 的 DeepSeek 接口保持标准 OpenAI 工具格式，额外下发 strict 会被按非法字段拒绝。
+
+// aiDeepSeekBetaURL 判断 baseURL 是否指向 DeepSeek Beta 接口（strict 模式要求 https://api.deepseek.com/beta）。
+func aiDeepSeekBetaURL(baseURL string) bool {
+	if !strings.Contains(strings.ToLower(baseURL), "api.deepseek.com") {
+		return false
+	}
+	u, err := url.Parse(strings.TrimSpace(baseURL))
+	if err != nil || u.Path == "" {
+		return false
+	}
+	for _, seg := range strings.Split(strings.Trim(u.Path, "/"), "/") {
+		if seg == "beta" {
+			return true
+		}
+	}
+	return false
+}
+
+// aiApplyDeepSeekStrictTools 当 baseURL 指向 DeepSeek Beta 接口时，把工具清单改写为 strict 模式要求的格式：
+// function 增加 strict=true；参数对象的全部属性列入 required，并补 additionalProperties=false。
+// strict 模式还要求 schema 不使用 minLength / maxLength / minItems / maxItems 等不支持的关键字，
+// 现有工具定义只用 object / string / boolean / integer / array 与 description，均在支持范围内，无需裁剪。
+// 非 beta 接口原样返回，避免给其他服务商下发 strict 字段。
+func aiApplyDeepSeekStrictTools(baseURL string, tools []map[string]any) []map[string]any {
+	if !aiDeepSeekBetaURL(baseURL) {
+		return tools
+	}
+	out := make([]map[string]any, 0, len(tools))
+	for _, t := range tools {
+		fn, ok := t["function"].(map[string]any)
+		if !ok {
+			out = append(out, t)
+			continue
+		}
+		clone := make(map[string]any, len(fn)+1)
+		maps.Copy(clone, fn)
+		clone["strict"] = true
+		if params, ok := clone["parameters"].(map[string]any); ok {
+			pc := make(map[string]any, len(params)+1)
+			maps.Copy(pc, params)
+			if props, ok := pc["properties"].(map[string]any); ok && len(props) > 0 {
+				required := make([]any, 0, len(props))
+				for k := range props {
+					required = append(required, k)
+				}
+				sort.Slice(required, func(i, j int) bool {
+					return required[i].(string) < required[j].(string)
+				})
+				pc["required"] = required
+			}
+			pc["additionalProperties"] = false
+			clone["parameters"] = pc
+		}
+		out = append(out, map[string]any{"type": "function", "function": clone})
+	}
+	return out
+}
+
 // aiChatOnceToolsOnce 以流式（SSE）方式调用 OpenAI 兼容的 chat/completions 接口（单次尝试），
 // 边解析上游增量边推送思维链（ai_stream_delta，kind=reasoning），最后聚合返回首个候选的
 // 文本内容、思维链与工具调用请求。tools 非空时随请求下发工具清单；
@@ -8845,7 +9018,9 @@ func aiChatOnceToolsOnce(c *dto.AIConfig, model string, messages []aiChatMessage
 		payload["reasoning_effort"] = effort
 	}
 	if len(tools) > 0 {
-		payload["tools"] = tools
+		// DeepSeek Beta 接口（base_url 含 /beta）要求工具清单走 strict 模式（见 aiApplyDeepSeekStrictTools），
+		// 其余服务商保持标准 OpenAI 工具格式、原样下发
+		payload["tools"] = aiApplyDeepSeekStrictTools(c.BaseURL, tools)
 		if toolChoice != "" {
 			payload["tool_choice"] = toolChoice
 		}

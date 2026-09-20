@@ -1344,6 +1344,8 @@ func aiToolRunDic(argsJSON, streamID string, vision bool) (string, string, []str
 	if trigger == "" {
 		trigger = "Main"
 	}
+	// 与词库调试运行一致：注入 设置头部 / GET / POST 并收集响应状态与响应头
+	respHeaders := attachLocalHTTPFuncs(dic)
 	output, timedOut, fellBack := dic_api.Api.DicRunScript(dic, trigger, time.Duration(timeout)*time.Second)
 
 	// 捕获本次运行输出中的图片（±img= 标记 / <img> / ![]() / 直接输出的图片二进制）
@@ -1354,6 +1356,10 @@ func aiToolRunDic(argsJSON, streamID string, vision bool) (string, string, []str
 	panel := dicRunResultPayload(dic, output, timedOut, fellBack, trigger)
 	panel["path"] = p
 	panel["trigger"] = trigger
+	// 词库设置的响应状态 / 响应头：前端据此展示响应信息并按 Content-Type 切换输出区域展示方式
+	respStatus, respHeadersList := collectLocalResp(dic.Val.G, *respHeaders)
+	panel["respStatus"] = respStatus
+	panel["respHeaders"] = respHeadersList
 	if len(images) > 0 && !vision {
 		// 视觉能力未开启：图片不会上传给模型，在面板给出黄色警告，让用户知道模型看不见
 		ws, _ := panel["warnings"].([]dto.BuildWarning)
@@ -1436,7 +1442,7 @@ func aiToolRunWebDic(argsJSON, streamID string) (string, string, []string) {
 		blockCount, templateKeys = run.WebDicRenderInfo(content)
 	}
 
-	output, err := runWebDicLocal(p, a.G)
+	runRes, err := runWebDicLocal(p, a.G)
 	if err != nil {
 		if len(warnings) > 0 {
 			return aiToolResult(map[string]any{
@@ -1447,16 +1453,20 @@ func aiToolRunWebDic(argsJSON, streamID string) (string, string, []string) {
 		}
 		return aiToolFail("网页词库加载失败: " + err.Error()), "运行失败 " + p, nil
 	}
+	output := runRes.Output
 
-	// 运行结果推送到前端「运行结果」面板（webDic 标记供前端区分渲染方式）
+	// 运行结果推送到前端「运行结果」面板（webDic 标记供前端区分渲染方式；
+	// 响应状态 / 响应头供前端按 Content-Type 切换输出区域的展示方式）
 	aiStreamNotify(streamID, "ai_stream_dic_run", map[string]any{
-		"path":     p,
-		"webDic":   true,
-		"output":   output,
-		"warnings": warnings,
-		"timedOut": false,
-		"segments": parseOutputSegments(output),
-		"vars":     map[string]any{"P": map[string]any{}, "G": map[string]any{}, "GV": map[string]any{}},
+		"path":        p,
+		"webDic":      true,
+		"output":      output,
+		"warnings":    warnings,
+		"timedOut":    false,
+		"segments":    parseOutputSegments(output),
+		"vars":        map[string]any{"P": map[string]any{}, "G": map[string]any{}, "GV": map[string]any{}},
+		"respStatus":  runRes.Status,
+		"respHeaders": runRes.Headers,
 	})
 
 	resp := map[string]any{
@@ -1466,6 +1476,8 @@ func aiToolRunWebDic(argsJSON, streamID string) (string, string, []string) {
 		"scriptBlockCount": blockCount,
 		"templateKeys":     templateKeys,
 		"renderNote":       webDicRenderNote(blockCount, templateKeys),
+		"respStatus":       runRes.Status,
+		"respHeaders":      runRes.Headers,
 	}
 	brief := "已运行网页词库 " + p
 	var notes []string
@@ -1781,10 +1793,11 @@ func aiParseTextToolCalls(content string) ([]aiToolCall, string) {
 
 // ============== DSML 形式文本工具调用的规整 ==============
 //
-// 部分模型（DeepSeek 系列）在流式响应下不返回 OpenAI 原生 tool_calls，而是把调用写成
-// 自带分隔符的 DSML 标记混进正文：外层是 calls 包裹标签，内层是 invoke，参数用 parameter 表示。
-// 该写法既不进原生字段，也不符合上面那种标记，解析会落空，整段标记就原样留在答复正文里
-// （用户看到的正是「文字里冒出一段调用，文件却毫无变化」）。
+// 部分模型（早期 DeepSeek 系列、GLM 等，或经第三方网关时）在流式响应下不返回 OpenAI 原生 tool_calls，
+// 而是把调用写成自带分隔符的 DSML 标记混进正文：外层是 calls 包裹标签，内层是 invoke，参数用 parameter 表示。
+// DeepSeek 官方接口自 V3.2 起已原生支持思考模式下的工具调用（原生 tool_calls 字段），此处置保留为兜底，
+// 兼容旧模型/旧网关的 DSML 输出：该写法既不进原生字段，也不符合上面那种标记，解析会落空，
+// 整段标记就原样留在答复正文里（用户看到的正是「文字里冒出一段调用，文件却毫无变化」）。
 // 这里把它规整成上面那套统一标记（工具名 + arg_key/arg_value 参数），复用既有解析逻辑；
 // 文本不含 DSML 标记时原样返回，避免误伤正常正文。
 var (

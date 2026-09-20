@@ -91,8 +91,8 @@ func (a *dicRuntime) Line(line int, text string) string {
 
 // runAsyncValChain 在异步 goroutine 内逐段执行并写回 #（保留原始类型，供 $#.方法$ 调用），
 // 全部执行完后把最终 # 打印到终端。parts 为单行 >>> 分段或块内容行。
-func runAsyncValChain(val *dto.DicVal, dic *dto.BuildValue, parts []string) {
-	independentFuncV := &dic_dto.DicFunc{Val: val, Sys: &dto.LocalDicValue{}, Dic: dic}
+func runAsyncValChain(val *dto.DicVal, dic *dto.BuildValue, parts []string, trigger bool) {
+	independentFuncV := &dic_dto.DicFunc{Val: val, Sys: &dto.LocalDicValue{}, Dic: dic, Trigger: trigger}
 	subEntry := &dic_dto.DicEntry{Val: val}
 	for _, part := range parts {
 		if part == "" {
@@ -172,7 +172,7 @@ func (a *dicRuntime) runLeaf(line int, text string) string {
 		if strings.Contains(body, ">>>") && utils.IsJSONResult(body) == nil {
 			parts = SplitValChain(body)
 		}
-		go runAsyncValChain(val, funcV.Dic, parts)
+		go runAsyncValChain(val, funcV.Dic, parts, funcV.Trigger)
 		return r.Output.Get()
 	}
 
@@ -593,7 +593,7 @@ func (a *dicRuntime) ValChainBlock(text string, lines []string) string {
 	r := a.r
 	if text == "#:>>>" {
 		val := a.funcV.Val.NewDicVal(a.funcV.Val.P.Clone())
-		go runAsyncValChain(val, a.funcV.Dic, lines)
+		go runAsyncValChain(val, a.funcV.Dic, lines, a.funcV.Trigger)
 		return ""
 	}
 	_, varName, _ := dicBuild.ValTextTest(text)
@@ -880,10 +880,11 @@ func (m *dicImpl) dicRunLineBytecodeInstrs(r *dic_dto.DicEntry, instrs []bc.Inst
 	}
 
 	funcV := &dic_dto.DicFunc{
-		Val:    r.Val,
-		Sys:    r.Sys_v,
-		Dic:    r.Dic,
-		Output: r.Output,
+		Val:     r.Val,
+		Sys:     r.Sys_v,
+		Dic:     r.Dic,
+		Output:  r.Output,
+		Trigger: r.Trigger,
 	}
 
 	adapter := &dicRuntime{m: m, r: r, funcV: funcV}

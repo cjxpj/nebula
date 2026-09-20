@@ -185,7 +185,13 @@ func redirectTrigger(d *dto.DicInputs) (any, error) {
 // 继续执行：从当前触发词命中的下一个词条开始，只执行紧邻的下一个命中的词条。
 // 用于多个触发词（含正则）匹配同一输入时逐级往下执行（如多个 Main 顺序执行）。无参调用。
 // 匹配规则与正常触发词匹配一致（纯文本优先、正则按原始顺序线性匹配），只往下走一个。
+// 仅允许在正则触发词（正文触发词，含纯文本与正则）下使用：$函数名$/[函数]/[内部] 等函数调用
+// 路径没有触发词下标语义，继续执行会错误地把正文词条再跑一遍。
 func continueTrigger(d *dto.DicInputs) (any, error) {
+	if !d.InTrigger {
+		return "", errors.New("继续执行：仅允许在正则触发词下使用")
+	}
+
 	curIdx := d.V.P.GetINT(triggerIdxKey)
 	trigger := d.V.P.GetStr("触发词")
 	idx := d.Dic.GetTriggerIndex()

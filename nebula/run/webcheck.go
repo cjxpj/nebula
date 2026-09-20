@@ -8,9 +8,9 @@ import (
 	"github.com/cjxpj/nebula/dto"
 )
 
-// webDicGlobalVars 网页词库在 HTTP 链路里由 serveHTTP 注入的全局变量。
-// 它们既不出现在脚本块的赋值里，也不在 isMagicVar 名单中，需要在检查前预置，否则会被误报。
-var webDicGlobalVars = []string{"响应状态", "输出头部", "COOKIE", "网站根目录", "访问数据"}
+// httpContextVars HTTP 链路里由 serveHTTP 注入的页面级上下文变量，普通词库（.n）与网页词库（.wn）共用。
+// 它们不出现在词库自身的赋值里，静态检查看不到，需视为已定义（见 isMagicVar），否则会被误报「变量不存在」。
+var httpContextVars = []string{"响应状态", "输出头部", "COOKIE", "网站根目录", "访问数据"}
 
 var (
 	// webDicScriptOpenRe 匹配 <script ...> 开始标签（含属性，忽略大小写与换行）。
@@ -154,13 +154,13 @@ func webDicCheckLines(lines []string, lineNums []int, pageKeys map[string]bool) 
 
 	checkFuncClosedLines(lines, lineNums, stack)
 
-	defined := make(map[string]bool, len(webDicGlobalVars))
-	for _, name := range webDicGlobalVars {
+	defined := make(map[string]bool, len(httpContextVars))
+	for _, name := range httpContextVars {
 		defined[name] = true
 	}
 	checkUndefinedVarsLines(lines, lineNums, defined, nil, stack)
 
-	checkUnusedAssignmentWith(&dto.BuildValue{Dic: []*dto.BuildDic{dto.NewHeadDic(lines, lineNums)}}, stack, isWebDicVar, pageKeys)
+	checkUnusedAssignmentWith(&dto.BuildValue{Dic: []*dto.BuildDic{dto.NewHeadDic(lines, lineNums)}}, stack, isMagicVar, pageKeys)
 
 	return stack.warnings
 }
@@ -182,19 +182,6 @@ func WebDicAssignedVars(lines []string) []string {
 		out = append(out, name)
 	}
 	return out
-}
-
-// isWebDicVar 在 isMagicVar 的基础上补上网页词库运行时注入的全局变量。
-func isWebDicVar(name string) bool {
-	if isMagicVar(name) {
-		return true
-	}
-	for _, n := range webDicGlobalVars {
-		if name == n {
-			return true
-		}
-	}
-	return false
 }
 
 // webDicScriptBlocks 按原文扫描 <script type="nebula"> 块并记录每行的原文行号。

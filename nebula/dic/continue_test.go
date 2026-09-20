@@ -1,6 +1,7 @@
 package dic
 
 import (
+	"strings"
 	"testing"
 
 	dic_api "github.com/cjxpj/nebula/dic/api"
@@ -46,5 +47,24 @@ func TestContinueTrigger(t *testing.T) {
 	D6 := dic_dto.NewDic("t.n", "\nMain\na\\r$继续执行$\n\nM.*\nok5$继续执行$\n\nMain\nok2\\r")
 	if got := dic_api.Api.DicRun(D6, "Main"); got != "a\nok5ok2\n" {
 		t.Fatalf("继续执行逐级往下错误，期望 a\\nok5ok2\\n，实际 %q", got)
+	}
+}
+
+// TestContinueTriggerOnlyInBodyTrigger 验证 $继续执行$ 仅允许在正文触发词下使用：
+// 在 [函数] 等 $函数名$ 调用路径中调用时直接报错，不再错误地把正文词条再执行一遍。
+func TestContinueTriggerOnlyInBodyTrigger(t *testing.T) {
+	chdirToAppWin()
+
+	// [函数] 里调用 $继续执行$：报错
+	D := dic_dto.NewDic("t.n", "\n[函数]test\n$继续执行$\n\nMain\n$test$")
+	got := dic_api.Api.DicRun(D, "Main")
+	if !strings.Contains(got, "继续执行：仅允许在正则触发词下使用") {
+		t.Errorf("在 [函数] 中调用 $继续执行$ 应报错，实际 %q", got)
+	}
+
+	// $函数名$ 里调用 $继续执行$：同样报错
+	D2 := dic_dto.NewDic("t.n", "\n[函数]test\n$继续执行$\n\nMain\n第一个$test$第二个")
+	if got := dic_api.Api.DicRun(D2, "Main"); !strings.Contains(got, "继续执行：仅允许在正则触发词下使用") {
+		t.Errorf("在 $函数名$ 中调用 $继续执行$ 应报错，实际 %q", got)
 	}
 }

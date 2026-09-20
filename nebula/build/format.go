@@ -91,6 +91,21 @@ func formatOpen(line string) (formatFrame, bool) {
 	return formatFrame{}, false
 }
 
+// formatBranch 判断 line 是否为栈顶框的分支行：判断框的 >否则如果: / >否则，
+// 匹配框的 如果是:值 / 如果不是（前导 > 可有可无）。
+// 分支行与其所属框的开启行同层，自身不改变缩进层级；
+// 口径与运行时 splitIfBranches / splitMatchBranches 的切分规则一致。
+func formatBranch(f *formatFrame, line string) bool {
+	switch f.kind {
+	case "if":
+		return strings.HasPrefix(line, ">否则如果:") || line == ">否则"
+	case "match":
+		t := strings.TrimPrefix(line, ">")
+		return strings.HasPrefix(t, "如果是:") || t == "如果不是"
+	}
+	return false
+}
+
 // formatCloseKind 返回框关闭标记对应的框类型，等价内置算法的 fs 映射。
 // 注意：文本框与 JSON 框为叶子框，其关闭标记不在其中。
 func formatCloseKind(line string) string {
@@ -170,6 +185,12 @@ func formatIndent(lines []string) []string {
 
 		if kind := formatCloseKind(line); kind != "" && depth > 0 && stack[depth-1].kind == kind {
 			stack = stack[:depth-1]
+			out = append(out, pad(depth-1, line))
+			continue
+		}
+
+		// 分支行与所属框的开启行同层：按开启行的层级输出，且不改变栈。
+		if depth > 0 && formatBranch(&stack[depth-1], line) {
 			out = append(out, pad(depth-1, line))
 			continue
 		}
@@ -343,15 +364,9 @@ func formatBody(lines []string) string {
 			continue
 		}
 
-		// 正文首行为词条（触发词/函数名），保持顶格，其余行整体缩进一级
+		// 正文首行为词条（触发词/函数名），保持顶格；其余行按其所属框层级排版，不再整体缩进一级
 		out = append(out, trimLeadingBlank(region[0]))
-		for _, line := range formatIndent(region[1:]) {
-			if line == "" {
-				out = append(out, "")
-			} else {
-				out = append(out, indentUnit+line)
-			}
-		}
+		out = append(out, formatIndent(region[1:])...)
 	}
 
 	return strings.Join(out, "\n")

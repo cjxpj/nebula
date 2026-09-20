@@ -82,13 +82,13 @@ func getAttr(n *html.Node, key string) string {
 }
 
 func extractText(n *html.Node) string {
-	var s string
+	var s strings.Builder
 	for c := n.FirstChild; c != nil; c = c.NextSibling {
 		if c.Type == html.TextNode {
-			s += c.Data
+			s.WriteString(c.Data)
 		}
 	}
-	return s
+	return s.String()
 }
 
 // 在 html 或 body 直接子树中查找 <script type="nebula">
