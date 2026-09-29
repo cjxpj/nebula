@@ -58,6 +58,11 @@ type Runtime interface {
 	// lines 为内容行，lineNums 为内容行对应的原始文件行号。
 	// 立即以新局部作用域执行内容，并把返回内容写入变量（返回空）。
 	ExecFuncBlock(text string, lines []string, lineNums []int) string
+	// TryBlock 执行 测试>/变量:测试> 框：text 为开启行（含赋值目标变量名），
+	// lines 为内容行，lineNums 为内容行对应的原始文件行号。
+	// 立即以共享变量作用域执行内容；报错捕获到变量/%报错% 后继续（>终止 向上传播）。
+	// 返回应追加到最终输出的文本（赋予值形式返回空）。
+	TryBlock(text string, lines []string, lineNums []int) string
 	// ForEachInit 求值 遍历> 框的遍历源并准备迭代：text 为开启行（遍历>k,v=表达式 或 遍历>k）。
 	// depth 为该遍历帧在 VM 帧栈中的下标（用于嵌套遍历时隔离各层迭代状态）。
 	// 运行时内部按 depth 记录键值变量名与物化的迭代项；返回迭代项数量（0 表示无迭代）。
@@ -227,6 +232,11 @@ func Run(instrs []Instr, rt Runtime) string {
 			}
 		case OpExecFuncBlock:
 			rt.Append(rt.ExecFuncBlock(in.Text, in.Lines, in.LineNums))
+			if rt.Stop() {
+				return rt.Output()
+			}
+		case OpTryBlock:
+			rt.Append(rt.TryBlock(in.Text, in.Lines, in.LineNums))
 			if rt.Stop() {
 				return rt.Output()
 			}

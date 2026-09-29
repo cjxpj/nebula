@@ -2284,6 +2284,127 @@ func aiVisionDisabledHint(n int) string {
 	return fmt.Sprintf("本次运行输出中包含 %d 张图片，但当前模型的「AI 视觉能力」未开启，看不到图片的画面内容（已附尺寸、格式与颜色等量化数据，也可用 view_image 工具补看）；如需让 AI 真正看到画面，请在「基础配置 → AI」中为当前模型开启视觉能力后重试。", n)
 }
 
+// loadBlockDefaults 读取合并配置中 [积木编程] 节的配置。
+// 积木编程页直接以 .n 词库为编辑对象（无独立的积木工程文件），
+// 「打开的词库标签」在本页独立记录，与其它开发工具页共用的 [词库调试] 标签互不影响。
+func loadBlockDefaults() map[string]any {
+	def := map[string]any{}
+	// 默认打开的词库：取「词库调试」的默认词库（如 private/debug.n），供无打开记录时初始化
+	def["defaultDic"] = defaultDebugDic()
+	cfg, err := dto.LoadConfigFile()
+	if err != nil {
+		return def
+	}
+	sec := cfg.Section("积木编程")
+	if v := sec.Key("当前词库").String(); v != "" {
+		def["dic"] = v
+	}
+	if v := sec.Key("打开的标签").String(); v != "" {
+		// 标签列表整体 JSON 编码存储（.n 路径数组），保持单行值
+		var tabs []string
+		if err := json.Unmarshal([]byte(v), &tabs); err == nil && tabs != nil {
+			def["tabs"] = tabs
+		}
+	}
+	return def
+}
+
+// blockViewTable 积木编程「视图记录」在全局数据库中的表名。
+// key 为 .n 词库路径，data 为该词库的画布视图 JSON（滚动位置、缩放比例、积木排列坐标）。
+// 每个词库单独一条记录，随全局数据库持久化，可在「清理」页统一管理。
+const blockViewTable = "block_view"
+
+// blockViewSave 保存某个词库的积木视图记录（写入全局数据库）
+func blockViewSave(dicPath string, view json.RawMessage) error {
+	db, err := dic_funcs.GetGlobalDB()
+	if err != nil {
+		return err
+	}
+	if err := dic_funcs.EnsureFsTable(db, blockViewTable); err != nil {
+		return err
+	}
+	_, err = db.Exec(`
+		INSERT INTO "block_view" (key, data, updated_at)
+		VALUES (?, ?, ?)
+		ON CONFLICT(key) DO UPDATE SET
+			data = excluded.data,
+			updated_at = excluded.updated_at
+	`, dicPath, []byte(view), time.Now().Unix())
+	return err
+}
+
+// blockViewGet 读取某个词库的积木视图记录（不存在返回 nil）
+func blockViewGet(dicPath string) json.RawMessage {
+	db, err := dic_funcs.GetGlobalDB()
+	if err != nil {
+		return nil
+	}
+	if err := dic_funcs.EnsureFsTable(db, blockViewTable); err != nil {
+		return nil
+	}
+	var data []byte
+	if err := db.QueryRow(`SELECT data FROM "block_view" WHERE key=?`, dicPath).Scan(&data); err != nil {
+		return nil
+	}
+	return json.RawMessage(data)
+}
+
+// blockViewList 列出全部积木视图记录（供「清理」页展示并逐条清理）
+func blockViewList() []map[string]any {
+	items := make([]map[string]any, 0)
+	db, err := dic_funcs.GetGlobalDB()
+	if err != nil {
+		return items
+	}
+	if err := dic_funcs.EnsureFsTable(db, blockViewTable); err != nil {
+		return items
+	}
+	rows, err := db.Query(`SELECT key, length(data), updated_at FROM "block_view" ORDER BY updated_at DESC`)
+	if err != nil {
+		return items
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var key string
+		var size, updatedAt int64
+		if err := rows.Scan(&key, &size, &updatedAt); err != nil {
+			continue
+		}
+		items = append(items, map[string]any{
+			"path":      key,
+			"size":      size,
+			"updatedAt": updatedAt,
+		})
+	}
+	return items
+}
+
+// blockViewRemove 删除某个词库的积木视图记录
+func blockViewRemove(dicPath string) error {
+	db, err := dic_funcs.GetGlobalDB()
+	if err != nil {
+		return err
+	}
+	if err := dic_funcs.EnsureFsTable(db, blockViewTable); err != nil {
+		return err
+	}
+	_, err = db.Exec(`DELETE FROM "block_view" WHERE key=?`, dicPath)
+	return err
+}
+
+// blockViewClear 清空全部积木视图记录
+func blockViewClear() error {
+	db, err := dic_funcs.GetGlobalDB()
+	if err != nil {
+		return err
+	}
+	if err := dic_funcs.EnsureFsTable(db, blockViewTable); err != nil {
+		return err
+	}
+	_, err = db.Exec(`DELETE FROM "block_view"`)
+	return err
+}
+
 // loadDicDebugDefaults 读取合并配置中 [词库调试] 节的配置（运行配置的唯一存储位置）
 func loadDicDebugDefaults() map[string]any {
 	def := map[string]any{}
@@ -6135,6 +6256,58 @@ func opuiHandleApi(w http.ResponseWriter, r *http.Request) {
 		w.Write(jsonResp)
 		return
 
+	case "uninstall_nebula":
+		// 卸载主程序：删除程序本体 exe，remove_data 为真时连同数据目录一并删除，随后退出进程。
+		// 需校验管理面板登录密码；先返回响应、延迟执行删除，保证前端能收到结果（进程退出后 WS 即断开）。
+		var j struct {
+			RemoveData bool   `json:"remove_data"`
+			Password   string `json:"password"`
+		}
+		_ = json.Unmarshal(h.Data, &j)
+		// 未设置登录密码时放行（面板本身无鉴权），已设置则必须匹配登录密码
+		if ok, err := opuiVerifyPassword(j.Password); err != nil {
+			jsonResp, _ := json.Marshal(map[string]string{"status": "error", "error": "密码校验失败: " + err.Error()})
+			w.Write(jsonResp)
+			return
+		} else if !ok {
+			jsonResp, _ := json.Marshal(map[string]string{"status": "error", "error": "登录密码错误"})
+			w.Write(jsonResp)
+			return
+		}
+		if err := startUninstall(j.RemoveData); err != nil {
+			jsonResp, _ := json.Marshal(map[string]string{"status": "error", "error": err.Error()})
+			w.Write(jsonResp)
+			return
+		}
+		w.Write([]byte(`{"status":"ok"}`))
+		return
+
+	case "list_dic_cache":
+		// 词库编译缓存列表（private/.dic_cache）：供「清理」页展示并逐条清理
+		jsonResp, _ := json.Marshal(map[string]any{"status": "ok", "items": run.ListDicCache()})
+		w.Write(jsonResp)
+		return
+
+	case "remove_dic_cache":
+		// 清理单条词库编译缓存（缓存下次加载词库时会自动重建）
+		var j struct {
+			Name string `json:"name"`
+		}
+		_ = json.Unmarshal(h.Data, &j)
+		if err := run.RemoveDicCache(j.Name); err != nil {
+			jsonResp, _ := json.Marshal(map[string]string{"status": "error", "error": err.Error()})
+			w.Write(jsonResp)
+			return
+		}
+		w.Write([]byte(`{"status":"ok"}`))
+		return
+
+	case "clear_dic_cache":
+		// 清空全部词库编译缓存
+		run.ClearDicCache()
+		w.Write([]byte(`{"status":"ok"}`))
+		return
+
 	case "get_dic_doc_list":
 		// 内置说明文档清单（分篇 md，见 server/dic_doc.go）：供文档页左侧目录树使用
 		jsonResp, _ := json.Marshal(map[string]any{"status": "ok", "list": dicDocList()})
@@ -7406,6 +7579,120 @@ func opuiHandleApi(w http.ResponseWriter, r *http.Request) {
 		w.Write(jsonResp)
 		return
 
+	case "gen_dic_from_ir":
+		// 接收结构化 JSON IR，统一转成 .n 源码返回。
+		// 积木编程与词库调试 AI 协作共用：前端 / AI 只产出 IR，格式由后端保证。
+		var ir build.IR
+		if err := json.Unmarshal(h.Data, &ir); err != nil {
+			http.Error(w, `{"status":"error","error":"invalid ir json"}`, http.StatusBadRequest)
+			return
+		}
+		// 与保存/格式化（dic_save_content、dic_format）共用 FormatDic，
+		// 保证「生成出来的代码」与「保存后落盘/回显的代码」逐字一致。
+		jsonResp, _ := json.Marshal(map[string]any{"code": build.FormatDic(build.IRToNebula(ir))})
+		w.Write(jsonResp)
+		return
+
+	case "gen_ir_from_dic":
+		// 读取磁盘上的词库文件，反向解析为结构化 JSON IR 返回。
+		// 积木编程打开已有 .n 文件时用：以文件内容为准转成积木显示。
+		var j struct {
+			Path string `json:"path"`
+		}
+		if err := json.Unmarshal(h.Data, &j); err != nil {
+			http.Error(w, `{"status":"error","error":"invalid json"}`, http.StatusBadRequest)
+			return
+		}
+		if j.Path == "" {
+			http.Error(w, `{"status":"error","error":"词库路径不能为空"}`, http.StatusBadRequest)
+			return
+		}
+		if !checkDicOrWebPath(j.Path) {
+			http.Error(w, `{"status":"error","error":"词库路径不合法"}`, http.StatusBadRequest)
+			return
+		}
+		// 网页词库（.wn）是 HTML，不参与 .n 的积木解析，返回空 IR
+		if checkWebDicPath(j.Path) {
+			jsonResp, _ := json.Marshal(map[string]any{"ir": build.IR{}})
+			w.Write(jsonResp)
+			return
+		}
+		content, err := utils.NewFileQueue(j.Path).ReadFromFile()
+		if err != nil {
+			if !os.IsNotExist(err) {
+				http.Error(w, `{"status":"error","error":"词库读取失败: `+err.Error()+`"}`, http.StatusBadRequest)
+				return
+			}
+			content = ""
+		}
+		jsonResp, _ := json.Marshal(map[string]any{"ir": build.NebulaToIR(content)})
+		w.Write(jsonResp)
+		return
+
+	case "gen_dic_from_blocks":
+		// 接收 Blockly 工作区 JSON（积木 ↔ IR 的映射也在后端做），统一转成 .n 源码返回。
+		// 积木编程页保存时用：前端只负责渲染与序列化工作区，格式与语义由后端保证。
+		ir, err := build.BlocksToIR(h.Data)
+		if err != nil {
+			http.Error(w, `{"status":"error","error":"invalid workspace json"}`, http.StatusBadRequest)
+			return
+		}
+		// 与保存/格式化（dic_save_content、dic_format）共用 FormatDic，
+		// 避免「积木生成」与「保存」两套缩进约定不一致，导致编辑器内容在保存时被拉平跳变。
+		jsonResp, _ := json.Marshal(map[string]any{"code": build.FormatDic(build.IRToNebula(ir))})
+		w.Write(jsonResp)
+		return
+
+	case "gen_blocks_from_dic":
+		// 读取磁盘上的词库文件，后端直接解析为 Blockly 工作区载入状态返回。
+		// 积木编程页打开已有 .n 文件时用：前端把 data.blocks 直接交给 workspaces.load。
+		var j struct {
+			Path string `json:"path"`
+		}
+		if err := json.Unmarshal(h.Data, &j); err != nil {
+			http.Error(w, `{"status":"error","error":"invalid json"}`, http.StatusBadRequest)
+			return
+		}
+		if j.Path == "" {
+			http.Error(w, `{"status":"error","error":"词库路径不能为空"}`, http.StatusBadRequest)
+			return
+		}
+		if !checkDicOrWebPath(j.Path) {
+			http.Error(w, `{"status":"error","error":"词库路径不合法"}`, http.StatusBadRequest)
+			return
+		}
+		// 网页词库（.wn）是 HTML，不参与 .n 的积木解析，返回空工作区
+		if checkWebDicPath(j.Path) {
+			jsonResp, _ := json.Marshal(map[string]any{"blocks": build.IRToBlocks(build.IR{})})
+			w.Write(jsonResp)
+			return
+		}
+		content, err := utils.NewFileQueue(j.Path).ReadFromFile()
+		if err != nil {
+			if !os.IsNotExist(err) {
+				http.Error(w, `{"status":"error","error":"词库读取失败: `+err.Error()+`"}`, http.StatusBadRequest)
+				return
+			}
+			content = ""
+		}
+		jsonResp, _ := json.Marshal(map[string]any{"blocks": build.IRToBlocks(build.NebulaToIR(content))})
+		w.Write(jsonResp)
+		return
+
+	case "gen_blocks_from_code":
+		// 接收编辑器里的 .n 代码文本，后端直接解析为 Blockly 工作区载入状态返回。
+		// 积木编程页「应用到积木」用：编辑器内容可能尚未落盘，不能复用 gen_blocks_from_dic。
+		var j struct {
+			Content string `json:"content"`
+		}
+		if err := json.Unmarshal(h.Data, &j); err != nil {
+			http.Error(w, `{"status":"error","error":"invalid json"}`, http.StatusBadRequest)
+			return
+		}
+		jsonResp, _ := json.Marshal(map[string]any{"blocks": build.IRToBlocks(build.NebulaToIR(j.Content))})
+		w.Write(jsonResp)
+		return
+
 	case "ai_chat":
 		// AI 对话：词库编辑时与 AI 协作开发（关联词库代码、结合编译报错/警告）
 		// 携带 session_id 时进入「任务模式」（独立记忆 + 持久化 + 自动压缩）
@@ -7416,10 +7703,12 @@ func opuiHandleApi(w http.ResponseWriter, r *http.Request) {
 		"delete_ai_session", "clear_ai_session", "truncate_ai_messages",
 		"compress_ai_session", "export_ai_sessions", "import_ai_sessions", "cancel_ai_chat",
 		"list_ai_file_changes", "revert_ai_file_changes", "confirm_ai_file_changes",
-		"ai_upload_image", "get_ai_memory", "save_ai_memory":
+		"ai_upload_image", "get_ai_memory", "save_ai_memory",
+		"get_ai_task_layout", "save_ai_task_layout":
 		// AI 多任务会话管理：任务的增删改查、记忆压缩与导入导出、终止在途生成、
 		// 「本任务改动过的文件」列表、确认无误与回撤（驳回）、输入框图片的上传落盘，
-		// 以及全局「项目记忆」的读取与保存（所有任务共享一份）
+		// 以及全局「项目记忆」的读取与保存（所有任务共享一份）、
+		// 任务列表抽屉布局（分组与手工排序）的读取与保存
 		aiSessionHandle(w, h)
 		return
 
@@ -7508,6 +7797,8 @@ func opuiHandleApi(w http.ResponseWriter, r *http.Request) {
 			Interval   string `json:"interval"`
 			Once       bool   `json:"once"`
 			RunAtStart bool   `json:"run_at_start"`
+			// 指针用于区分「未传」与「显式 false」，未传时默认异步执行
+			Async *bool `json:"async"`
 		}
 		if err := json.Unmarshal(h.Data, &j); err != nil {
 			http.Error(w, `{"status":"error","error":"invalid json"}`, http.StatusBadRequest)
@@ -7523,7 +7814,11 @@ func opuiHandleApi(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, `{"status":"error","error":"词库路径不合法"}`, http.StatusBadRequest)
 			return
 		}
-		id, err := dic_funcs.AddScheduledTask(j.DicPath, j.Trigger, j.Interval, j.Once, j.RunAtStart)
+		async := true
+		if j.Async != nil {
+			async = *j.Async
+		}
+		id, err := dic_funcs.AddScheduledTask(j.DicPath, j.Trigger, j.Interval, j.Once, j.RunAtStart, async)
 		if err != nil {
 			http.Error(w, `{"status":"error","error":"`+err.Error()+`"}`, http.StatusBadRequest)
 			return
@@ -7618,6 +7913,121 @@ func opuiHandleApi(w http.ResponseWriter, r *http.Request) {
 		}
 		jsonResp, _ := json.Marshal(map[string]any{"status": "ok"})
 		w.Write(jsonResp)
+		return
+
+	case "get_block_config":
+		// 读取积木编程页的打开记录（合并配置的 [积木编程] 节）
+		jsonResp, _ := json.Marshal(loadBlockDefaults())
+		w.Write(jsonResp)
+		return
+
+	case "save_block_config":
+		// 保存积木编程页打开的词库标签到合并配置的 [积木编程] 节
+		var cfg map[string]any
+		if err := json.Unmarshal(h.Data, &cfg); err != nil {
+			http.Error(w, `{"status":"error","error":"invalid json"}`, http.StatusBadRequest)
+			return
+		}
+		cfgFile, err := dto.LoadConfigFile()
+		if err != nil {
+			http.Error(w, `{"status":"error","error":"读取配置文件失败"}`, http.StatusInternalServerError)
+			return
+		}
+		sec := cfgFile.Section("积木编程")
+		if v, ok := cfg["dic"].(string); ok {
+			sec.Key("当前词库").SetValue(v)
+		}
+		if tabs, ok := cfg["tabs"].([]any); ok {
+			items := make([]string, 0, len(tabs))
+			for _, it := range tabs {
+				p, ok := it.(string)
+				if !ok || p == "" {
+					continue
+				}
+				items = append(items, p)
+			}
+			// 词库标签列表整体 JSON 编码存储（.n 路径数组），保持单行值
+			if b, err := json.Marshal(items); err == nil {
+				sec.Key("打开的标签").SetValue(string(b))
+			}
+		}
+		if err := cfgFile.Save(); err != nil {
+			http.Error(w, `{"status":"error","error":"写入配置文件失败: `+err.Error()+`"}`, http.StatusInternalServerError)
+			return
+		}
+		jsonResp, _ := json.Marshal(map[string]any{"status": "ok"})
+		w.Write(jsonResp)
+		return
+
+	case "get_block_view":
+		// 读取某个 .n 词库的积木视图记录（画布滚动位置、缩放比例、积木排列坐标）
+		var j struct {
+			Path string `json:"path"`
+		}
+		if err := json.Unmarshal(h.Data, &j); err != nil {
+			http.Error(w, `{"status":"error","error":"invalid json"}`, http.StatusBadRequest)
+			return
+		}
+		resp := map[string]any{"status": "ok"}
+		if j.Path != "" {
+			if v := blockViewGet(j.Path); v != nil {
+				resp["view"] = v
+			}
+		}
+		jsonResp, _ := json.Marshal(resp)
+		w.Write(jsonResp)
+		return
+
+	case "save_block_view":
+		// 保存某个 .n 词库的积木视图记录（写入全局数据库，可在「清理」页管理）
+		var j struct {
+			Path string          `json:"path"`
+			View json.RawMessage `json:"view"`
+		}
+		if err := json.Unmarshal(h.Data, &j); err != nil {
+			http.Error(w, `{"status":"error","error":"invalid json"}`, http.StatusBadRequest)
+			return
+		}
+		if j.Path == "" || len(j.View) == 0 {
+			http.Error(w, `{"status":"error","error":"参数不完整"}`, http.StatusBadRequest)
+			return
+		}
+		if err := blockViewSave(j.Path, j.View); err != nil {
+			jsonResp, _ := json.Marshal(map[string]string{"status": "error", "error": err.Error()})
+			w.Write(jsonResp)
+			return
+		}
+		w.Write([]byte(`{"status":"ok"}`))
+		return
+
+	case "list_block_view":
+		// 积木视图记录列表：供「清理」页展示并逐条清理
+		jsonResp, _ := json.Marshal(map[string]any{"status": "ok", "items": blockViewList()})
+		w.Write(jsonResp)
+		return
+
+	case "remove_block_view":
+		// 清理单个词库的积木视图记录（下次打开按积木默认位置展示）
+		var j struct {
+			Path string `json:"path"`
+		}
+		_ = json.Unmarshal(h.Data, &j)
+		if err := blockViewRemove(j.Path); err != nil {
+			jsonResp, _ := json.Marshal(map[string]string{"status": "error", "error": err.Error()})
+			w.Write(jsonResp)
+			return
+		}
+		w.Write([]byte(`{"status":"ok"}`))
+		return
+
+	case "clear_block_view":
+		// 清空全部积木视图记录
+		if err := blockViewClear(); err != nil {
+			jsonResp, _ := json.Marshal(map[string]string{"status": "error", "error": err.Error()})
+			w.Write(jsonResp)
+			return
+		}
+		w.Write([]byte(`{"status":"ok"}`))
 		return
 
 	case "dic_debug_run":

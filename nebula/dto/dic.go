@@ -42,6 +42,12 @@ type LocalDicValue struct {
 	NodeJs     LocalDicValueNodeJs
 	Database   *sql.DB     `json:"database"`
 	Stop       atomic.Bool `json:"stop"`
+	// Halted 仅在 >终止 / >终止 文案 指令时置位（区别于函数报错的 Stop），
+	// 供 测试> 框区分「显式终止」（需向上传播）与「函数报错」（捕获到 %报错%）。
+	Halted     atomic.Bool `json:"halted"`
+	// InTry 标记当前执行上下文为 测试> 框：函数报错时不清空已累积输出、不追加格式化错误，
+	// 由 测试> 框自行保留报错前输出并捕获原始错误。
+	InTry      atomic.Bool `json:"-"`
 	State      RunState    `json:"state"`
 }
 

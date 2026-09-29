@@ -24,6 +24,11 @@ func regexpFind(d *dto.DicInputs) (any, error) {
 	return string(resS), nil
 }
 
+// 正则转义
+func regexpEscape(d *dto.DicInputs) (any, error) {
+	return regexp.QuoteMeta(d.Inputs.String(1)), nil
+}
+
 // 正则匹配
 func regexpMatche(d *dto.DicInputs) (any, error) {
 	matches, err := regexp.MatchString("^"+d.Inputs.String(1)+"$", d.Inputs.String(2))

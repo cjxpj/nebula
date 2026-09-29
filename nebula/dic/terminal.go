@@ -66,6 +66,18 @@ type FormatResult struct {
 	Formatted string `json:"formatted"` // 格式化后的完整词库源码
 }
 
+// DicJSONResult 为 -dic2json 的结构化结果。
+type DicJSONResult struct {
+	Path string `json:"path"` // 词库文件路径
+	JSON string `json:"json"` // 转换得到的词库 JSON 中间表示
+}
+
+// JSONDicResult 为 -json2dic 的结构化结果。
+type JSONDicResult struct {
+	Path string `json:"path"` // JSON 文件路径
+	Code string `json:"code"` // 转换得到的词库源码
+}
+
 // RunFile 加载并执行指定词库文件，返回结构化结果。
 // trigger 为空时默认 Main；timeoutSec <= 0 表示不限制执行时间。
 // 编译存在 error 级诊断时拒绝执行，结果中 CompileError 与 Warnings 会携带原因。
@@ -128,6 +140,32 @@ func splitWarnings(all []dto.BuildWarning) ([]dto.BuildWarning, int) {
 	return list, errCount
 }
 
+// DicToJSON 读取词库文件并解析为词库 JSON 中间表示（IR）文本。
+func DicToJSON(path string) (string, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return "", err
+	}
+	b, err := json.MarshalIndent(build.NebulaToIR(string(data)), "", "  ")
+	if err != nil {
+		return "", err
+	}
+	return string(b) + "\n", nil
+}
+
+// JSONToDic 读取词库 JSON 中间表示（IR）并序列化为 .n 词库源码。
+func JSONToDic(path string) (string, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return "", err
+	}
+	var ir build.IR
+	if err := json.Unmarshal(data, &ir); err != nil {
+		return "", err
+	}
+	return build.IRToNebula(ir), nil
+}
+
 // ExtractJSONFlag 从参数（通常为 os.Args[1:]）中提取 -json/--json 开关。
 // 返回去掉开关后的参数与是否启用 JSON 输出；开关可出现在任意位置。
 func ExtractJSONFlag(args []string) (rest []string, jsonOut bool) {
@@ -142,9 +180,9 @@ func ExtractJSONFlag(args []string) (rest []string, jsonOut bool) {
 	return rest, jsonOut
 }
 
-// RunCLI 执行 -run / -check / -format 命令并把结果写入标准输出/标准错误，返回进程退出码。
-// cmd 为 run、check 或 format；args 为命令后的参数；jsonOut 为 true 时输出 JSON，便于脚本或外部 AI 消费。
-// 退出码：0 成功；1 执行/检测/格式化失败（编译错误、触发词未命中、超时、存在 error 级诊断、读写失败）；2 参数不合法。
+// RunCLI 执行 -run / -check / -format / -dic2json / -json2dic 命令并把结果写入标准输出/标准错误，返回进程退出码。
+// cmd 为 run、check、format、dic2json 或 json2dic；args 为命令后的参数；jsonOut 为 true 时输出 JSON，便于脚本或外部 AI 消费。
+// 退出码：0 成功；1 执行/检测/格式化/转换失败（编译错误、触发词未命中、超时、存在 error 级诊断、读写失败）；2 参数不合法。
 func RunCLI(cmd string, args []string, jsonOut bool) int {
 	switch cmd {
 	case "run":
@@ -153,6 +191,10 @@ func RunCLI(cmd string, args []string, jsonOut bool) int {
 		return cliCheck(args, jsonOut)
 	case "format":
 		return cliFormat(args, jsonOut)
+	case "dic2json":
+		return cliDicToJSON(args, jsonOut)
+	case "json2dic":
+		return cliJSONToDic(args, jsonOut)
 	default:
 		fmt.Fprintln(os.Stderr, "未知命令:", cmd)
 		return 2
@@ -297,6 +339,106 @@ func cliFormat(args []string, jsonOut bool) int {
 		fmt.Fprintln(cliStdout)
 	}
 	return 0
+}
+
+// cliDicToJSON 处理 -dic2json：-dic2json <词库文件> [-o <输出文件>]
+// 把 .n 词库源码解析为词库 JSON 中间表示（IR），默认打印到标准输出，-o 时写入文件。
+func cliDicToJSON(args []string, jsonOut bool) int {
+	input, output, ok := parseConvertArgs(args, "-dic2json <词库文件> [-o <输出文件>]")
+	if !ok {
+		return 2
+	}
+
+	converted, err := DicToJSON(input)
+	if err != nil {
+		return convertFailed(input, "转换失败", err, jsonOut)
+	}
+	return finishConvert(input, output, converted, jsonOut, func(path, out string) any {
+		return &DicJSONResult{Path: path, JSON: out}
+	})
+}
+
+// cliJSONToDic 处理 -json2dic：-json2dic <JSON 文件> [-o <输出文件>]
+// 把词库 JSON 中间表示（IR）转换为 .n 词库源码，默认打印到标准输出，-o 时写入文件。
+func cliJSONToDic(args []string, jsonOut bool) int {
+	input, output, ok := parseConvertArgs(args, "-json2dic <JSON 文件> [-o <输出文件>]")
+	if !ok {
+		return 2
+	}
+
+	converted, err := JSONToDic(input)
+	if err != nil {
+		return convertFailed(input, "转换失败", err, jsonOut)
+	}
+	return finishConvert(input, output, converted, jsonOut, func(path, out string) any {
+		return &JSONDicResult{Path: path, Code: out}
+	})
+}
+
+// parseConvertArgs 解析转换命令参数：<输入文件> [-o <输出文件>]。
+// 参数不合法时打印原因与用法并返回 ok=false（调用方返回退出码 2）。
+func parseConvertArgs(args []string, usage string) (input, output string, ok bool) {
+	if len(args) == 0 {
+		fmt.Fprintln(os.Stderr, "用法："+usage)
+		return "", "", false
+	}
+
+	input = args[0]
+	for i := 1; i < len(args); i++ {
+		switch args[i] {
+		case "-o", "--output":
+			if i+1 >= len(args) {
+				fmt.Fprintln(os.Stderr, "-o 缺少输出文件路径")
+				return "", "", false
+			}
+			output = strings.TrimSpace(args[i+1])
+			if output == "" {
+				fmt.Fprintln(os.Stderr, "-o 输出文件路径不能为空")
+				return "", "", false
+			}
+			i++
+		default:
+			fmt.Fprintf(os.Stderr, "未知参数：%s\n", args[i])
+			return "", "", false
+		}
+	}
+	return input, output, true
+}
+
+// finishConvert 输出转换结果：-o 指定文件时写入文件，否则打印到标准输出；带 -json 时输出结构化结果。
+// toResult 把输入路径与转换结果组装为对应命令的结构化结果。
+func finishConvert(input, output, converted string, jsonOut bool, toResult func(path, out string) any) int {
+	if output != "" {
+		if err := os.WriteFile(output, []byte(converted), 0o644); err != nil {
+			return convertFailed(input, "写出失败", err, jsonOut)
+		}
+	}
+
+	if jsonOut {
+		writeJSON(toResult(input, converted))
+		return 0
+	}
+
+	if output != "" {
+		fmt.Fprintln(cliStdout, "已写入："+output)
+		return 0
+	}
+
+	fmt.Fprint(cliStdout, converted)
+	if !strings.HasSuffix(converted, "\n") {
+		fmt.Fprintln(cliStdout)
+	}
+	return 0
+}
+
+// convertFailed 统一打印转换失败信息并返回退出码 1。
+func convertFailed(path, action string, err error, jsonOut bool) int {
+	if jsonOut {
+		writeJSON(map[string]string{"path": path, "error": err.Error()})
+	} else {
+		fmt.Fprintln(os.Stderr, action+":", err)
+	}
+	return 1
 }
 
 // printRunResult 以人类可读形式输出 -run 结果：正文走标准输出，诊断走标准错误。

@@ -186,6 +186,7 @@ func Setup() {
 		f{Name: "捕获输出", L: "0", Fn: captureOutput},
 		f{Name: "拦截输出", L: "0", Fn: interceptOutput},
 		f{Name: "STOP", L: "0", Fn: stopProgram},
+		f{Name: "报错", L: "0|1", Fn: throwError},
 		f{Name: "重启", L: "0", Fn: restart},
 		f{Name: "GC回收", L: "0", Fn: gcCollect},
 		f{Name: "跳行", L: "1", Fn: jumpAbsNoop},
@@ -222,6 +223,8 @@ func Setup() {
 		f{Name: "下载文件", L: "2|3|4", Fn: downloadFile},
 		f{Name: "文件属性", L: "1", Fn: fileAttributeGet},
 		f{Name: "设置文件属性", L: "2", Fn: fileAttributeSet},
+		f{Name: "读配置", L: "2|3", Fn: readConfig},
+		f{Name: "写配置", L: "2|3", Fn: writeConfig},
 
 		// ========== 日志 ==========
 		f{Name: "日志", L: "1|2", Fn: logfile},
@@ -246,6 +249,7 @@ func Setup() {
 
 		// ========== 正则 ==========
 		f{Name: "分割匹配", L: "3", Fn: splitMatch},
+		f{Name: "正则转义", L: "1", Fn: regexpEscape},
 		f{Name: "正则替换", L: "2|3|4", Fn: regexReplace},
 		f{Name: "正则匹配", L: "2", Fn: regexpMatche},
 		f{Name: "正则", L: "2", Fn: regexpFind},
@@ -341,8 +345,6 @@ func Setup() {
 		f{Name: "读图片", L: "1|2", Fn: readImage},
 
 		// ========== 其他 ==========
-		f{Name: "读配置", L: "2|3", Fn: readConfig},
-		f{Name: "写配置", L: "2|3", Fn: writeConfig},
 		f{Name: "云工具状态", L: "0", Fn: cloudToolStatus},
 		f{Name: "GIF拆帧", L: "1", Fn: getGif},
 		f{Name: "图片相似度", L: "2", Fn: imageSimilarity},

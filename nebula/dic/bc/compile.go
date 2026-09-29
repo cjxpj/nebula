@@ -415,6 +415,8 @@ func (c *compiler) compileBlock(b *ast.Block) {
 		c.compileFunc(b)
 	case ast.BlockForEach:
 		c.compileForEach(b)
+	case ast.BlockTry:
+		c.compileTry(b)
 	}
 }
 
@@ -533,6 +535,22 @@ func (c *compiler) compileFunc(b *ast.Block) {
 		op = OpExecFuncBlock
 	}
 	c.emit(Instr{Op: op, Text: b.Open, Lines: content, LineNums: contentNums})
+}
+
+// compileTry 编译 测试> 框为 OpTryBlock：内容行为开启行与关闭行之间的原始行，
+// 运行时立即执行，任意报错捕获到 %报错% 后继续（>终止 仍向上传播）。
+func (c *compiler) compileTry(b *ast.Block) {
+	content := b.Raw
+	contentNums := b.RawLineNums
+	if len(content) > 0 {
+		content = content[1:] // 去掉开启行
+		contentNums = contentNums[1:]
+	}
+	if b.CloseLine != 0 && len(content) > 0 {
+		content = content[:len(content)-1] // 去掉关闭行
+		contentNums = contentNums[:len(contentNums)-1]
+	}
+	c.emit(Instr{Op: OpTryBlock, Text: b.Open, Lines: content, LineNums: contentNums})
 }
 
 // compileForEach 编译 遍历> 框为原生遍历循环：OpForEachInit 求值遍历源并入帧，

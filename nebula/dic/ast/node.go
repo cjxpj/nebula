@@ -41,6 +41,7 @@ const (
 	BlockValText                // 变量:""" ... """（赋值文本框，内容 %变量% 插值）
 	BlockValTextr               // 变量:''' ... '''（赋值文本框，内容原样）
 	BlockNodeJs                 // --js ... --end（JS 代码框）
+	BlockTry                    // 测试> ... <测试（报错捕获框，任意报错写入 %报错% 后继续）
 )
 
 func (k BlockKind) String() string {
@@ -71,6 +72,8 @@ func (k BlockKind) String() string {
 		return "赋值原文本"
 	case BlockNodeJs:
 		return "JS代码"
+	case BlockTry:
+		return "测试"
 	}
 	return "未知框"
 }

@@ -67,6 +67,7 @@ const (
 	blkText                     // 文本>/纯文本> ... <文本
 	blkJson                     // JSON> ... <JSON
 	blkNewJson                  // JSON>{ / JSON>[ ... 平衡括号
+	blkTry                      // 测试> ... <测试
 )
 
 // blockFrame 栈中的一帧。
@@ -94,6 +95,8 @@ func blockKindOpen(k blockKind) string {
 		return "JSON>"
 	case blkNewJson:
 		return "JSON>{/["
+	case blkTry:
+		return "测试>"
 	}
 	return "?"
 }
@@ -134,6 +137,8 @@ func blockOpen(line string) (blockKind, bool) {
 			return blkFunc, true
 		case strings.HasPrefix(vs, "文本>"), strings.HasPrefix(vs, "纯文本>"):
 			return blkText, true
+		case strings.HasPrefix(vs, "测试>"):
+			return blkTry, true
 		}
 	}
 	return 0, false
@@ -156,6 +161,8 @@ func blockClose(line string) (blockKind, bool) {
 		return blkText, true
 	case "<JSON":
 		return blkJson, true
+	case "<测试":
+		return blkTry, true
 	}
 	return 0, false
 }
@@ -209,7 +216,10 @@ func checkBlockPairsLines(lines []string, lineNums []int, stack *importStack) {
 
 		if k, ok := blockClose(line); ok {
 			if len(frames) == 0 {
-				stack.addError(ln, "框配对错误：多余的关闭标记 "+line)
+				// 测试框的关闭标记 <测试 在无对应「变量:测试>」开启时按普通文本输出，不报多余关闭标记。
+				if k != blkTry {
+					stack.addError(ln, "框配对错误：多余的关闭标记 "+line)
+				}
 				continue
 			}
 			top := frames[len(frames)-1]
@@ -424,16 +434,6 @@ func checkFuncParamsEntry(e *dto.BuildDic, v *dto.BuildValue, funcIndex map[stri
 	}
 }
 
-// runtimeInjectedFuncs 运行时由调用方注入的内置函数及其参数规则。
-// HTTP 链路（dic/webhttp.go 的 setDicWebFuncs）与词库调试 / AI 运行（server/opui.go 的 localHTTPFuncs）
-// 在运行词库前把 设置头部 / GET / POST 挂到词库函数表上，编译期静态检查看不到它们，
-// 不在此放行会让 API / 网页词库里的 $设置头部$ / $GET$ / $POST$ 被误报为「函数不存在」。
-var runtimeInjectedFuncs = map[string]string{
-	"设置头部": "2",
-	"GET":  "1|2",
-	"POST": "1|2",
-}
-
 func checkFuncCall(name string, argCount, line int, v *dto.BuildValue, funcIndex map[string][]*dto.BuildDic, stack *importStack) {
 	// $!函数名 参数$：捕获报错调用，! 为前缀，需去掉后再解析函数名。
 	name = strings.TrimPrefix(name, "!")
@@ -477,8 +477,10 @@ func checkFuncCall(name string, argCount, line int, v *dto.BuildValue, funcIndex
 		return
 	}
 
-	// 运行时注入的 HTTP 函数（设置头部 / GET / POST）：仅 HTTP 链路与词库调试存在，编译期不可见
-	if rule, ok := runtimeInjectedFuncs[name]; ok {
+	// 上下文函数（网页接收 设置头部 / GET / POST 与 QQ 机器人发送 / 管理类）：
+	// 由调用方在运行时按上下文注入（dic/webhttp.go、bot/qqbot），编译期不可见，
+	// 此处按 dto 登记的上下文函数规则放行并做参数数量校验，避免误报「函数不存在」。
+	if rule, ok := dto.CtxFuncRule(name); ok {
 		if !utils.MatchLenRule(argCount, rule) {
 			stack.addError(line, fmt.Sprintf("函数参数数量错误：$%s$ 需要 %s 个参数，实际 %d 个", name, rule, argCount))
 		}
@@ -1178,7 +1180,9 @@ func isBlockAssign(line, key string) bool {
 // 运行时由 dic/bc 的 inlineIfStart/inlineElifCond 按前缀拦截，不会走赋值路径；
 // 静态检查需保持一致，否则「如果:/if:」会被当成名为「如果」「if」的变量赋值而误告警。
 func isInlineControlLine(line string) bool {
-	for _, p := range [...]string{"否则如果:", "如果:", "elif:", "if:"} {
+	// 匹配框的 case 行（如果是:值）由运行时按前缀拦截，不是变量赋值，需一并排除，
+	// 否则「如果是:你好」会被误判为变量名「如果是」的赋值，产生「变量未使用」误报。
+	for _, p := range [...]string{"否则如果:", "如果是:", "如果:", "elif:", "if:"} {
 		if strings.HasPrefix(line, p) && len(line) > len(p) {
 			return true
 		}

@@ -34,6 +34,16 @@ func stopProgram(d *dto.DicInputs) (any, error) {
 	return "", errors.New("stop")
 }
 
+// throwError 主动抛错：$报错$ 或 $报错 错误信息$。
+// 返回 error 触发统一报错处理，可被 测试> 框捕获；无参时用默认错误文案。
+func throwError(d *dto.DicInputs) (any, error) {
+	msg := d.Inputs.String(1)
+	if msg == "" {
+		msg = "主动报错"
+	}
+	return nil, errors.New(msg)
+}
+
 func encodeDic(d *dto.DicInputs) (any, error) {
 	setpath := d.Inputs.String(1)
 	file := utils.NewFileQueue(setpath)

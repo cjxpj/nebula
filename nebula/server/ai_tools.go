@@ -176,6 +176,11 @@ func aiToolDefinitions() []map[string]any {
 				"path":    str("词库路径（相对应用目录，.n 或 .wn 结尾）"),
 				"content": str("要保存的完整词库代码"),
 			}, "path", "content"),
+		aiTool("save_dic_ir", "保存 .n 机器人/API 词库：传结构化 JSON 中间表示（ir），由后端统一转成 .n 源码后保存并编译（与 save_dic 的 .n 路径完全一致）。用本工具而非手写 .n 文本，可避免 .n 的缩进/空行/块闭合等格式错误；.wn 网页词库不支持，仍用 save_dic。ir 顶层：{\"header\":[语句],\"entries\":[词条]}；header 放 $引入$/初始化赋值等（可空数组）；entries 每个词条 {\"kind\":\"normal|func|inner|func_class|inner_class\",\"name\":\"触发词或方法名\",\"className\":\"类名(仅 class 类)\",\"body\":[语句]}。语句以 t 字段区分，字段随类型：output(输出一行,v)；assign(赋值,name,op=set|add|sub|raw,v)；raw(原样一行 .n 语句,text)；comment(注释,text)；import($引入,path)；if(如果,cond,do,else)；match(匹配,expr,cases=[{v,body}],def)；loopCount(循环次数,var,count,body)；loopRange(循环范围,var,from,to,body)；loopWhile(判断循环,cond,body)；foreach(遍历,mode=kv|v,key,val,target,body)；break/continue/stop/stopLoop/stopForeach(对应 >中断/>跳过/>终止/>终止循环/>终止遍历，无其它字段)；json(JSON框,name,kind=obj|arr,body=[kv语句])；kv(JSON键值,key,mode==|:=,v)；textblock(文本框赋值,name,sep,body)。",
+			map[string]any{
+				"path": str("词库路径（相对应用目录，.n 结尾）"),
+				"ir":   map[string]any{"type": "object", "description": "词库的 JSON 中间表示，结构见工具描述"},
+			}, "path", "ir"),
 		aiTool("check_dic", "编译检查 .n 词库：返回诊断（error/warning），以及编译后的清单——函数（functions，全局 [函数] 与自定义函数）、面向对象的类方法（classes，类名 -> 方法名，含构造函数 new）、触发词（triggers）；不修改文件。清单含 #引入= 带入的部分，函数为「名称」、触发词为「触发词」或「[类别]触发词」；可用它确认新增的函数 / 类方法 / 触发词是否已生效、是否与既有名称冲突。也支持网页词库 .wn：返回执行块（<?n ... ?> 内联块 / <script type=\"nebula\"> 脚本块）的变量检查与模板键核对结果。",
 			map[string]any{"path": str("词库路径（相对应用目录，.n 或 .wn 结尾）")}, "path"),
 		aiTool("run_dic", "运行 .n 词库并返回输出与运行诊断，用于验证修改效果。存在 error 级编译诊断时会拒绝运行。",
@@ -290,7 +295,7 @@ func aiToolResultWarning(result string) string {
 // 读取类工具的失败（如文件不存在）不在此列，避免把正常的「查不到」当成待修复项。
 func aiToolResultIsVerification(name string) bool {
 	switch name {
-	case "save_dic", "check_dic", "run_dic", "run_web_dic":
+	case "save_dic", "save_dic_ir", "check_dic", "run_dic", "run_web_dic":
 		return true
 	}
 	return false
@@ -477,6 +482,8 @@ func aiToolExecute(name, argsJSON, streamID, sessionID string, vision bool) (res
 		return aiToolPair(aiToolReadSkill(argsJSON))
 	case "save_dic":
 		return aiToolPair(aiToolSaveDic(argsJSON))
+	case "save_dic_ir":
+		return aiToolPair(aiToolSaveDicIR(argsJSON))
 	case "check_dic":
 		return aiToolPair(aiToolCheckDic(argsJSON))
 	case "run_dic":
@@ -1175,18 +1182,23 @@ func aiToolSaveDic(argsJSON string) (string, string) {
 		}
 		return aiToolResult(resp), brief
 	}
+	return aiToolSaveDicN(p, a.Content)
+}
+
+// aiToolSaveDicN 保存 .n 词库内容（lint 校验 → 格式化 → 写入 → 编译），返回 (结果, 摘要)。
+// 供 save_dic（保存 .n 文本）与 save_dic_ir（保存 JSON IR，转 .n 后复用）共用。
+func aiToolSaveDicN(p, content string) (string, string) {
 	// 保存前强校验：拦下编译查不出、却会让代码静默失效的写法，把问题回灌给模型让它改对再存
-	if problems := aiDicLintContent(a.Content); len(problems) > 0 {
+	if problems := aiDicLintContent(content); len(problems) > 0 {
 		return aiToolResult(map[string]any{
 			"status": "rejected",
 			"path":   p,
 			"error": "词库内容不符合语法规范，已拒绝写入（磁盘文件未改动）。" +
-				"请逐条修正下列问题后，用修正后的完整内容再次调用 save_dic：\n" + strings.Join(problems, "\n"),
+				"请逐条修正下列问题后，用修正后的完整内容再次调用保存工具：\n" + strings.Join(problems, "\n"),
 		}), fmt.Sprintf("词库内容不规范，已拒绝保存（%d 处问题）", len(problems))
 	}
 	// 与手动保存（dic_save_content）保持一致：落盘前按块结构重新缩进，
 	// 否则 AI 保存的 .n 缩进会与前端保存的结果不一致，用户每次都要手动点一次格式化
-	content := a.Content
 	formatted := false
 	if dicAutoFormatEnabled() {
 		if f := build.FormatDic(content); f != content {
@@ -1225,7 +1237,7 @@ func aiToolSaveDic(argsJSON string) (string, string) {
 		resp["errors"] = errors
 		resp["nextStep"] = fmt.Sprintf(
 			"本次内容已写入磁盘，但编译存在 %d 个 error 级诊断（见 errors），词库无法正常运行。"+
-				"必须逐条修复后用完整内容再次调用 save_dic 覆盖保存，直到 error 级诊断清零再收尾。"+
+				"必须逐条修复后用完整内容再次调用保存工具覆盖保存，直到 error 级诊断清零再收尾。"+
 				"不要只在答复里说明问题而不修复。", len(errors))
 		brief = fmt.Sprintf("已保存词库 %s（%d 个编译错误，%d 条警告）", p, len(errors), len(warnings)-len(errors))
 	case len(warnings) > 0:
@@ -1235,6 +1247,33 @@ func aiToolSaveDic(argsJSON string) (string, string) {
 		brief = fmt.Sprintf("已保存词库 %s（%d 条编译警告）", p, len(warnings))
 	}
 	return aiToolResult(resp), brief
+}
+
+// aiToolSaveDicIR 把结构化 JSON IR 转成 .n 后保存，供「AI 生成 JSON IR 而非手写 .n」的协作模式使用。
+// 与 save_dic 共用 aiToolSaveDicN（lint → 格式化 → 写入 → 编译），仅把 content 换成 ir 并统一转 .n。
+func aiToolSaveDicIR(argsJSON string) (string, string) {
+	var a struct {
+		Path string    `json:"path"`
+		IR   *build.IR `json:"ir"`
+	}
+	if err := aiToolDecode(argsJSON, &a); err != nil {
+		return aiToolFail("参数解析失败: " + err.Error()), "参数错误"
+	}
+	p := strings.TrimSpace(a.Path)
+	if !checkDicOrWebPath(p) {
+		return aiToolFail("词库路径不合法，需为应用目录内的相对路径且以 .n 结尾"), "路径不合法"
+	}
+	if checkWebDicPath(p) {
+		return aiToolFail("网页词库 .wn 不支持 IR 保存，请改用 save_dic 传完整 .wn 内容"), "类型不支持"
+	}
+	if a.IR == nil {
+		return aiToolFail("缺少 ir 参数（词库的 JSON 中间表示）"), "参数缺失"
+	}
+	code := build.IRToNebula(*a.IR)
+	if strings.TrimSpace(code) == "" {
+		return aiToolFail("ir 为空：header 与 entries 都为空，无法生成词库，已拒绝保存"), "内容为空"
+	}
+	return aiToolSaveDicN(p, code)
 }
 
 // aiToolCheckDic 仅编译检查词库；网页词库（.wn）改做脚本块变量检查与模板键核对。

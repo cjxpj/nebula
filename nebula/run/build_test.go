@@ -134,6 +134,57 @@ func TestDicCompileCache(t *testing.T) {
 	}
 }
 
+// TestListAndRemoveDicCache 验证缓存列表能反推出主词库路径，且单条清理按文件名生效、
+// 非法文件名（路径穿越）被拒绝。
+func TestListAndRemoveDicCache(t *testing.T) {
+	chdirToAppWin()
+
+	dto.ServerConfig.DicCache = true
+	defer func() { dto.ServerConfig.DicCache = false }()
+
+	const path = "cache_list_test_unique.n"
+	name := dicHash(importFilePath(path)) + ".gob"
+	defer os.Remove(dicCachePath(importFilePath(path)))
+
+	BuildDic(path, "Main\n缓存列表测试")
+	waitForCacheFile(t, path)
+
+	var found *DicCacheItem
+	for _, item := range ListDicCache() {
+		if item.Name == name {
+			found = &item
+			break
+		}
+	}
+	if found == nil {
+		t.Fatalf("缓存列表中未找到 %v", name)
+	}
+	if found.DicPath != importFilePath(path) {
+		t.Fatalf("主词库路径反推不符，got=%q want=%q", found.DicPath, importFilePath(path))
+	}
+	if found.Size <= 0 || found.Deps == 0 {
+		t.Fatalf("缓存条目信息不完整：%+v", *found)
+	}
+
+	// 路径穿越或非缓存文件名必须被拒绝
+	for _, bad := range []string{"../secret.gob", "a/b.gob", "noext", ""} {
+		if err := RemoveDicCache(bad); err == nil {
+			t.Fatalf("非法文件名 %q 应被拒绝", bad)
+		}
+	}
+
+	if err := RemoveDicCache(name); err != nil {
+		t.Fatalf("清理缓存失败：%v", err)
+	}
+	if _, err := os.Stat(dicCachePath(importFilePath(path))); !os.IsNotExist(err) {
+		t.Fatalf("缓存文件应已被删除")
+	}
+	// 重复清理视为成功（文件已不存在）
+	if err := RemoveDicCache(name); err != nil {
+		t.Fatalf("重复清理应成功，实际：%v", err)
+	}
+}
+
 // TestBuildDicHeadBlockNoTrigger 无触发词、无空行、无末尾换行的头部循环框：
 // 整篇应按头部初始化脚本解析，不应把首行当触发词、把 <循环 当多余关闭标记告警。
 func TestBuildDicHeadBlockNoTrigger(t *testing.T) {

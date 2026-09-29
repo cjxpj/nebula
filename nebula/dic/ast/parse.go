@@ -56,6 +56,9 @@ func blockOpen(line string) (BlockKind, bool) {
 			// 变量:文本> / 变量:纯文本>：与 变量:""" / 变量:''' 同族的赋值文本框。
 			case strings.HasPrefix(vs, "纯文本>"), strings.HasPrefix(vs, "文本>"):
 				return BlockText, true
+			// 变量:测试>：报错捕获框（赋予值形式）。
+			case strings.HasPrefix(vs, "测试>"):
+				return BlockTry, true
 			}
 		}
 		switch vs {
@@ -91,6 +94,8 @@ func blockClose(line string) (BlockKind, bool) {
 		return BlockText, true
 	case "<JSON":
 		return BlockJson, true
+	case "<测试":
+		return BlockTry, true
 	}
 	return 0, false
 }

@@ -194,6 +194,11 @@ func (m *mockRT) ExecFuncBlock(text string, lines []string, lineNums []int) stri
 	return "EXECFUNC:" + strings.Join(lines, "|")
 }
 
+// TryBlock 模拟 测试> 框（仅验证字节码控制流，不做真实报错捕获语义）。
+func (m *mockRT) TryBlock(text string, lines []string, lineNums []int) string {
+	return "TRY:" + strings.Join(lines, "|")
+}
+
 // ForEachInit 模拟 遍历> 框入口：解析 `遍历>k,v=[...]`，物化数组项，按帧深度隔离。
 func (m *mockRT) ForEachInit(depth int, text string) int {
 	rest := text[len("遍历>"):]

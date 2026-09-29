@@ -96,7 +96,15 @@
    .\nebula\app\win\nebulaApp.exe -format public\hello.n
    .\nebula\app\win\nebulaApp.exe -format public\hello.n -w
    
-   # 与 -run / -check / -format 组合，输出 JSON 结构化结果
+   # 词库转 JSON（解析为词库 JSON 中间表示，默认打印，-o 写入文件）
+   .\nebula\app\win\nebulaApp.exe -dic2json public\hello.n
+   .\nebula\app\win\nebulaApp.exe -dic2json public\hello.n -o hello.json
+   
+   # JSON 转词库（把词库 JSON 中间表示生成 .n 源码，默认打印，-o 写入文件）
+   .\nebula\app\win\nebulaApp.exe -json2dic hello.json
+   .\nebula\app\win\nebulaApp.exe -json2dic hello.json -o public\hello.n
+   
+   # 与 -run / -check / -format / -dic2json / -json2dic 组合，输出 JSON 结构化结果
    .\nebula\app\win\nebulaApp.exe -check public\hello.n -json
    
    # 设置开机自启
@@ -108,7 +116,7 @@
 
 #### 命令行工具（CLI）
 
-除图形界面外，Nebula 客户端还提供命令行能力，可直接**执行词库**、**预编译检测词库**与**格式化词库**，便于在脚本、CI 流程或外部 AI 中调用。
+除图形界面外，Nebula 客户端还提供命令行能力，可直接**执行词库**、**预编译检测词库**、**格式化词库**，以及**在词库与 JSON 之间双向转换**，便于在脚本、CI 流程或外部 AI 中调用。
 
 **命令一览**
 
@@ -117,7 +125,9 @@
 | `-run <文件> [触发词] [超时秒]` | 执行词库，触发词默认 `Main`，超时 0 表示不限制 |
 | `-check <文件>` | 预编译检测词库，输出诊断与错误/警告汇总 |
 | `-format <文件> [-w]` | 格式化词库：自动缩进块结构，默认打印，`-w` 写回原文件 |
-| `-json` | 与 `-run` / `-check` / `-format` 组合，输出 JSON 结构化结果 |
+| `-dic2json <文件> [-o <输出>]` | 词库转 JSON：解析为词库 JSON 中间表示，默认打印，`-o` 写入文件 |
+| `-json2dic <文件> [-o <输出>]` | JSON 转词库：把词库 JSON 中间表示生成 `.n` 源码，默认打印，`-o` 写入文件 |
+| `-json` | 与上述命令组合，输出 JSON 结构化结果 |
 | `-help` / `-v` | 显示帮助 / 显示版本 |
 
 ```bash
@@ -126,6 +136,10 @@ Nebula -run public/hello.n Main 10
 Nebula -check public/hello.n
 Nebula -format public/hello.n
 Nebula -format public/hello.n -w
+Nebula -dic2json public/hello.n
+Nebula -dic2json public/hello.n -o hello.json
+Nebula -json2dic hello.json
+Nebula -json2dic hello.json -o public/hello.n
 Nebula -check public/hello.n -json
 ```
 
@@ -167,6 +181,29 @@ Nebula -check public/hello.n -json
 
 > 格式化只调整缩进，不改变词条、变量与函数语义；可先 `-check` 再 `-format`，改完再 `-check` 复核。
 
+**词库转 JSON `-dic2json`**
+
+```
+-dic2json <词库文件> [-o <输出文件>]
+```
+
+读取 `.n` 词库源码，解析为**词库 JSON 中间表示（IR）**输出：头部与词条均转为结构化 JSON，供积木编程、AI 协作或其他工具消费。
+
+- **默认打印**到标准输出，不改动文件；加 `-o`（或 `--output`）写入指定文件。
+- 解析使用与积木编程、词库调试界面**同一套后端算法**（`NebulaToIR`），保证各方看到的 IR 一致。
+- 网页词库（`.wn`）是 HTML，不参与 `.n` 的解析，会得到空 IR。
+
+**JSON 转词库 `-json2dic`**
+
+```
+-json2dic <JSON 文件> [-o <输出文件>]
+```
+
+读取词库 JSON 中间表示（IR），序列化为 `.n` 词库源码：缩进、空行与块结构均由后端统一生成，避免手工拼接导致的格式错误。
+
+- **默认打印**到标准输出；加 `-o`（或 `--output`）写入指定文件，可直接生成新的 `.n` 词库。
+- 与 `-dic2json` 构成往返：`-dic2json` 的输出可作为 `-json2dic` 的输入。
+
 **JSON 结构化输出 `-json`**
 
 加上 `-json` 后结果以 JSON 输出，字段如下。
@@ -203,15 +240,29 @@ Nebula -check public/hello.n -json
 | `written` | bool | 是否已写回原文件（带 `-w` 时） |
 | `formatted` | string | 格式化后的完整词库源码 |
 
-读写或执行失败时，输出 `{"path": "...", "error": "..."}`。
+`-dic2json`：
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| `path` | string | 词库文件路径 |
+| `json` | string | 转换得到的词库 JSON 中间表示 |
+
+`-json2dic`：
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| `path` | string | JSON 文件路径 |
+| `code` | string | 转换得到的词库源码 |
+
+读写或转换失败时，输出 `{"path": "...", "error": "..."}`。
 
 **退出码**
 
 | 退出码 | 含义 |
 |--------|------|
 | 0 | 成功 |
-| 1 | 失败：执行出错、触发词未命中、执行超时、存在 error 级诊断、格式化/读写失败 |
-| 2 | 参数不合法：缺少文件参数、超时秒数非法、出现未知参数 |
+| 1 | 失败：执行出错、触发词未命中、执行超时、存在 error 级诊断、格式化/转换/读写失败 |
+| 2 | 参数不合法：缺少文件参数、超时秒数非法、`-o` 缺少输出路径、出现未知参数 |
 
 ### Linux/macOS 平台（Docker 部署）
 

@@ -6,11 +6,11 @@ import "testing"
 // 也应视为头部初始化脚本：头部同样是词块容器，可承载框。
 func TestFirstHeadLikeLineBlockOpen(t *testing.T) {
 	cases := map[string][]string{
-		"循环框":   {"循环>i=10", "    a", "    <循环"},
-		"遍历框":   {"遍历>i 1 3", "    %i%", "    <遍历"},
-		"赋值行":   {"a:1", "b:2"},
+		"循环框":  {"循环>i=10", "    a", "    <循环"},
+		"遍历框":  {"遍历>i 1 3", "    %i%", "    <遍历"},
+		"赋值行":  {"a:1", "b:2"},
 		"函数调用": {"$执行词库 private/test.n Main$"},
-		"纯正文":   {"循环测试", "    内容"},
+		"纯正文":  {"循环测试", "    内容"},
 	}
 	for name, lines := range cases {
 		want := name != "纯正文"
@@ -22,7 +22,7 @@ func TestFirstHeadLikeLineBlockOpen(t *testing.T) {
 
 // TestFormatDicHeadLikeBlock 无触发词的头部循环框应整篇按头部排版：
 // 框内缩进一级，关闭标记与开启行同层；正文部分不因末尾换行差异而变化
-//（末尾换行本身按 FormatDic 约定保留原文）。
+// （末尾换行本身按 FormatDic 约定保留原文）。
 func TestFormatDicHeadLikeBlock(t *testing.T) {
 	const body = "循环>i=10\n    a\n<循环"
 	for _, src := range []string{body, body + "\n"} {
@@ -85,5 +85,27 @@ func TestFormatDicTriggerBodyFlush(t *testing.T) {
 	want := "测试\n甲:1\n%甲%\n\n测试2\n循环>i=2\n    %i%\n<循环\n"
 	if got := FormatDic(src); got != want {
 		t.Fatalf("格式化结果不符:\n--- got ---\n%s--- want ---\n%s", got, want)
+	}
+}
+
+// TestFormatDicMultilineBlockAcrossBlank 多行块 #{ ... }# 内部允许空行：
+// 整块（含块内缩进）原样保留，块外仍照常格式化，且二次格式化稳定。
+// 修复前 formatRegion 遇空行即停，块被切段后中间部分会被逐行重排。
+func TestFormatDicMultilineBlockAcrossBlank(t *testing.T) {
+	src := "测试\n甲:1\nMain #{\n    如果:%a%==1\n        内容\n    如果尾\n\n    第二段\n}#\n    乙:2\n"
+	want := "测试\n甲:1\nMain #{\n    如果:%a%==1\n        内容\n    如果尾\n\n    第二段\n}#\n乙:2\n"
+	if got := FormatDic(src); got != want {
+		t.Fatalf("格式化结果不符:\n--- got ---\n%s--- want ---\n%s", got, want)
+	}
+	if twice := FormatDic(want); twice != want {
+		t.Fatalf("二次格式化结果不一致:\n--- once ---\n%s--- twice ---\n%s", want, twice)
+	}
+}
+
+// TestFormatDicMultilineBlockUnclosed 缺少配对收尾行时不吞入后续内容，保持原有行为。
+func TestFormatDicMultilineBlockUnclosed(t *testing.T) {
+	src := "测试\nMain #{\n    内容\n"
+	if got := FormatDic(src); got != src {
+		t.Fatalf("格式化结果不符:\n--- got ---\n%q\n--- src ---\n%q", got, src)
 	}
 }

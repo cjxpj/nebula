@@ -58,6 +58,11 @@ const (
 	aiProjectMemoryFile = "private/ai/memory.json"
 	// aiProjectMemoryMaxRunes 项目记忆的最大字符数（超出截断）
 	aiProjectMemoryMaxRunes = 20000
+
+	// aiTaskLayoutFile 任务列表「抽屉」布局的持久化文件（抽屉列表 + 各容器内的任务顺序）
+	aiTaskLayoutFile = "private/ai/task_layout.json"
+	// aiTaskDrawerNameMaxRunes 抽屉名最大字符数
+	aiTaskDrawerNameMaxRunes = 30
 )
 
 // AISessionMessage 单条对话消息。
@@ -127,6 +132,113 @@ var (
 	aiSessions       = map[string]*AISession{}
 	aiSessionsLoaded bool
 )
+
+// ---------- 任务列表「抽屉」布局 ----------
+//
+// 「抽屉」是任务列表里的分组：用户可新建抽屉并把任务拖入其中，抽屉可展开查看、可返回。
+// 会话本身按更新时间倒序返回，无法表达用户的手工排序，因此抽屉列表与各容器内的任务顺序
+// 单独持久化一份，避免与会话数据相互影响。
+
+// aiTaskDrawerJSON 单个抽屉（分组）。
+type aiTaskDrawerJSON struct {
+	ID   string `json:"id"`
+	Name string `json:"name"`
+}
+
+// aiTaskLayoutJSON 任务列表布局：抽屉定义 + 各容器内的任务顺序。
+// Order 的键为容器 ID：空串表示根列表（未归入抽屉的任务），否则为抽屉 ID；
+// 值为该容器内任务的 ID 顺序，任务归属由其所在的数组决定。
+type aiTaskLayoutJSON struct {
+	Version int                 `json:"version"`
+	Drawers []aiTaskDrawerJSON  `json:"drawers"`
+	Order   map[string][]string `json:"order"`
+}
+
+var (
+	aiTaskLayoutMu     sync.Mutex
+	aiTaskLayoutData   *aiTaskLayoutJSON
+	aiTaskLayoutLoaded bool
+)
+
+// newAITaskDrawerID 生成抽屉 ID。
+func newAITaskDrawerID() string {
+	var b [4]byte
+	_, _ = crand.Read(b[:])
+	return fmt.Sprintf("drw%d%s", time.Now().UnixMilli(), hex.EncodeToString(b[:]))
+}
+
+// ensureAITaskLayoutLoadedLocked 首次访问时从私有目录加载抽屉布局；调用方需持有 aiTaskLayoutMu。
+func ensureAITaskLayoutLoadedLocked() {
+	if aiTaskLayoutLoaded {
+		return
+	}
+	aiTaskLayoutLoaded = true
+	aiTaskLayoutData = &aiTaskLayoutJSON{Version: 1, Order: map[string][]string{}}
+	data, err := utils.NewFileQueue(aiTaskLayoutFile).ReadFromFile()
+	if err != nil || strings.TrimSpace(data) == "" {
+		return
+	}
+	cfg := aiTaskLayoutJSON{}
+	if json.Unmarshal([]byte(data), &cfg) != nil {
+		return
+	}
+	if cfg.Order == nil {
+		cfg.Order = map[string][]string{}
+	}
+	cfg.Version = 1
+	aiTaskLayoutData = &cfg
+}
+
+// saveAITaskLayoutLocked 将抽屉布局写入私有目录；调用方需持有 aiTaskLayoutMu。
+func saveAITaskLayoutLocked() {
+	if aiTaskLayoutData == nil {
+		return
+	}
+	data, _ := json.Marshal(aiTaskLayoutData)
+	utils.NewFileQueue(aiTaskLayoutFile).WriteToFile(string(data))
+}
+
+// aiNormalizeTaskLayout 清洗前端提交的布局：过滤空抽屉、去重任务 ID、限制抽屉名长度。
+func aiNormalizeTaskLayout(in *aiTaskLayoutJSON) *aiTaskLayoutJSON {
+	out := &aiTaskLayoutJSON{Version: 1, Order: map[string][]string{}}
+	if in == nil {
+		return out
+	}
+	seenDrawer := map[string]bool{}
+	for _, d := range in.Drawers {
+		id := strings.TrimSpace(d.ID)
+		if id == "" || seenDrawer[id] {
+			continue
+		}
+		name := strings.TrimSpace(d.Name)
+		if name == "" {
+			name = "未命名抽屉"
+		}
+		if rs := []rune(name); len(rs) > aiTaskDrawerNameMaxRunes {
+			name = string(rs[:aiTaskDrawerNameMaxRunes])
+		}
+		seenDrawer[id] = true
+		out.Drawers = append(out.Drawers, aiTaskDrawerJSON{ID: id, Name: name})
+	}
+	// 只保留仍存在的抽屉容器与根容器，并去掉容器内重复的任务 ID
+	seenItem := map[string]bool{}
+	for container, ids := range in.Order {
+		if container != "" && !seenDrawer[container] {
+			continue
+		}
+		list := make([]string, 0, len(ids))
+		for _, sid := range ids {
+			sid = strings.TrimSpace(sid)
+			if sid == "" || seenItem[sid] {
+				continue
+			}
+			seenItem[sid] = true
+			list = append(list, sid)
+		}
+		out.Order[container] = list
+	}
+	return out
+}
 
 // ---------- 全局项目记忆 ----------
 //
@@ -1512,6 +1624,38 @@ func aiSessionHandle(w http.ResponseWriter, h *HttpOpUiData) {
 		saveAISessionsLocked()
 		aiSessionsMu.Unlock()
 		aiWriteJSON(w, map[string]any{"status": "ok", "count": count})
+		return
+
+	case "get_ai_task_layout":
+		// 读取任务列表的抽屉布局（抽屉列表 + 各容器内的任务顺序）
+		aiTaskLayoutMu.Lock()
+		ensureAITaskLayoutLoadedLocked()
+		snapshot := *aiTaskLayoutData
+		snapshot.Drawers = append([]aiTaskDrawerJSON(nil), aiTaskLayoutData.Drawers...)
+		snapshot.Order = make(map[string][]string, len(aiTaskLayoutData.Order))
+		for k, v := range aiTaskLayoutData.Order {
+			snapshot.Order[k] = append([]string(nil), v...)
+		}
+		aiTaskLayoutMu.Unlock()
+		aiWriteJSON(w, map[string]any{"status": "ok", "layout": snapshot})
+		return
+
+	case "save_ai_task_layout":
+		// 整体保存抽屉布局：前端每次增删抽屉 / 移动任务 / 排序后提交完整布局
+		var j struct {
+			Layout *aiTaskLayoutJSON `json:"layout"`
+		}
+		if err := json.Unmarshal(h.Data, &j); err != nil {
+			http.Error(w, `{"status":"error","error":"invalid json"}`, http.StatusBadRequest)
+			return
+		}
+		normalized := aiNormalizeTaskLayout(j.Layout)
+		aiTaskLayoutMu.Lock()
+		ensureAITaskLayoutLoadedLocked()
+		aiTaskLayoutData = normalized
+		saveAITaskLayoutLocked()
+		aiTaskLayoutMu.Unlock()
+		aiWriteJSON(w, map[string]any{"status": "ok"})
 		return
 
 	default:

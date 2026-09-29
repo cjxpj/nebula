@@ -12,6 +12,7 @@ import (
 	pathpkg "path"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strings"
 	"sync"
 
@@ -700,7 +701,7 @@ func dicHashBytes(b []byte) string {
 
 // dicCachePath 返回某词库对应的磁盘缓存文件路径（private/.dic_cache 目录下）。
 func dicCachePath(dicPath string) string {
-	return filepath.Join(utils.GetAppDir(), "private", ".dic_cache", dicHash(dicPath)+".gob")
+	return filepath.Join(dicCacheDir(), dicHash(dicPath)+".gob")
 }
 
 // readDicFileContent 读取词库文件，返回编译输入行与用于内容 hash 的原始字节；
@@ -867,7 +868,78 @@ func writeDicCacheFile(dicPath string, data []byte) {
 // ClearDicCache 清空磁盘编译缓存目录，供程序启动时调用，
 // 避免旧缓存（含已删除词库的残留缓存）在进程间累积。
 func ClearDicCache() {
-	_ = os.RemoveAll(filepath.Join(utils.GetAppDir(), "private", ".dic_cache"))
+	_ = os.RemoveAll(dicCacheDir())
+}
+
+// DicCacheItem 单条词库编译缓存信息，供管理面板列表展示与逐条清理。
+type DicCacheItem struct {
+	Name    string `json:"name"`     // 缓存文件名（清理时使用）
+	DicPath string `json:"dic_path"` // 主词库路径（缓存文件名即其摘要）
+	Size    int64  `json:"size"`     // 缓存文件大小（字节）
+	ModTime int64  `json:"mod_time"` // 缓存写入时间（Unix 秒）
+	Deps    int    `json:"deps"`     // 依赖文件数量（含主文件）
+}
+
+// dicCacheMeta 列表用的轻量缓存条目：只解码依赖表，
+// 避免为列缓存目录把每份编译产物完整反序列化（gob 会忽略目标结构里没有的字段）。
+type dicCacheMeta struct {
+	Deps map[string]string
+}
+
+// dicCacheDir 返回词库编译缓存目录（private/.dic_cache）。
+func dicCacheDir() string {
+	return filepath.Join(utils.GetAppDir(), "private", ".dic_cache")
+}
+
+// ListDicCache 列出磁盘编译缓存，按写入时间倒序（最新在前）。
+// 主词库路径由依赖表反推：缓存文件名恒为「主词库路径的摘要 + .gob」。
+func ListDicCache() []DicCacheItem {
+	dir := dicCacheDir()
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return []DicCacheItem{}
+	}
+	items := make([]DicCacheItem, 0, len(entries))
+	for _, ent := range entries {
+		name := ent.Name()
+		if ent.IsDir() || filepath.Ext(name) != ".gob" {
+			continue
+		}
+		info, err := ent.Info()
+		if err != nil {
+			continue
+		}
+		item := DicCacheItem{Name: name, Size: info.Size(), ModTime: info.ModTime().Unix()}
+		if data, err := os.ReadFile(filepath.Join(dir, name)); err == nil {
+			var meta dicCacheMeta
+			if gob.NewDecoder(bytes.NewReader(data)).Decode(&meta) == nil {
+				item.Deps = len(meta.Deps)
+				for dep := range meta.Deps {
+					if dicHash(dep)+".gob" == name {
+						item.DicPath = dep
+						break
+					}
+				}
+			}
+		}
+		items = append(items, item)
+	}
+	sort.Slice(items, func(i, j int) bool { return items[i].ModTime > items[j].ModTime })
+	return items
+}
+
+// RemoveDicCache 删除单条词库编译缓存（按缓存文件名）；文件已不存在视为成功。
+func RemoveDicCache(name string) error {
+	// 仅接受缓存目录下的文件名，避免路径穿越删除目录之外的文件
+	if filepath.Base(name) != name || filepath.Ext(name) != ".gob" {
+		return errors.New("非法的缓存文件名")
+	}
+	p := filepath.Join(dicCacheDir(), name)
+	if err := os.Remove(p); err != nil && !os.IsNotExist(err) {
+		return fmt.Errorf("清理缓存失败: %w", err)
+	}
+	debugLog.Debugf("已清理词库编译缓存：%v", p)
+	return nil
 }
 
 // injectBotFuncs 处理 @xxx 的编译期 bot 函数注入，命中返回注入的函数表（未命中返回 nil）。

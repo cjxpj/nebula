@@ -75,16 +75,18 @@ func Registers(list ...dto.RegisterDicFunc) error {
 	return nil
 }
 
-// FuncInfo 单个已注册函数的补全信息（供 OPUI 前端代码补全）
+// FuncInfo 单个已注册函数的补全信息（供 OPUI 前端代码补全与积木编程）
 type FuncInfo struct {
 	Name  string `json:"name"`
 	NoArg bool   `json:"no_arg"` // 无参数（L 为 "0"）
+	Rule  string `json:"rule"`   // 参数数量规则（如 "1"、"1|2"、"2.."），供积木编程生成参数槽
 }
 
-// ListFuncs 返回全部已注册函数名称与是否无参，按名称排序。
+// ListFuncs 返回全部已注册函数名称、是否无参与参数数量规则，按名称排序。
 // FuncList 在应用启动时由 funcs.Setup 与 dic 包动态注入，故返回值为实时最新列表。
 func ListFuncs() []FuncInfo {
 	infos := make([]FuncInfo, 0)
+	seen := make(map[string]bool)
 	FuncList.Range(func(key, value any) bool {
 		name, ok := key.(string)
 		if !ok {
@@ -94,8 +96,17 @@ func ListFuncs() []FuncInfo {
 		if !ok {
 			return true
 		}
-		infos = append(infos, FuncInfo{Name: name, NoArg: df.L == "0"})
+		infos = append(infos, FuncInfo{Name: name, NoArg: df.L == "0", Rule: df.L})
+		seen[name] = true
 		return true
+	})
+	// 上下文函数（网页接收 / QQ 机器人）由调用方按上下文注入，不在 FuncList 内，
+	// 一并纳入以便积木编程工具箱与代码补全可见；若已被真实注册则跳过以免重复。
+	dto.EachCtxFunc(func(name, rule string) {
+		if seen[name] {
+			return
+		}
+		infos = append(infos, FuncInfo{Name: name, NoArg: rule == "0", Rule: rule})
 	})
 	sort.Slice(infos, func(i, j int) bool { return infos[i].Name < infos[j].Name })
 	return infos

@@ -217,7 +217,9 @@ func main() {
 		fmt.Println("-run <文件> [触发词] [超时秒]	（执行词库，触发词默认 Main，超时 0 表示不限制）")
 		fmt.Println("-check <文件>       		（预编译检测，输出诊断与错误/警告汇总）")
 		fmt.Println("-format <文件> [-w] 		（格式化词库：自动缩进块结构，默认打印，-w 写回原文件）")
-		fmt.Println("-json               		（与 -run/-check/-format 组合，输出 JSON 结构化结果）")
+		fmt.Println("-dic2json <文件> [-o <输出>]	（词库转 JSON：解析为词库 JSON 中间表示，默认打印，-o 写入文件）")
+		fmt.Println("-json2dic <文件> [-o <输出>]	（JSON 转词库：把词库 JSON 中间表示生成 .n 源码，默认打印，-o 写入文件）")
+		fmt.Println("-json               		（与 -run/-check/-format/-dic2json/-json2dic 组合，输出 JSON 结构化结果）")
 	case "-v":
 		fmt.Print(appfiles.Version)
 		return
@@ -245,6 +247,12 @@ func main() {
 		return
 	case "-format":
 		exitCode = dic.RunCLI("format", cmdArgs[1:], jsonOut)
+		return
+	case "-dic2json":
+		exitCode = dic.RunCLI("dic2json", cmdArgs[1:], jsonOut)
+		return
+	case "-json2dic":
+		exitCode = dic.RunCLI("json2dic", cmdArgs[1:], jsonOut)
 		return
 	default:
 		fmt.Println("未知命令")

@@ -233,9 +233,28 @@ func Funcs(d *dic_dto.DicFunc, dic_i *utils.DicInputs) (any, error) {
 				SetDic_v(d.Dic)
 
 			resRunDic := dic_api.Api.DicRunLine(RunDic, str)
-			if captureErr && RunDic.Sys_v.Stop.Load() {
-				d.Val.P.Set("报错", resRunDic)
+			if RunDic.Sys_v.Halted.Load() {
+				// 函数体内 >终止：保留已产出内容并向上传播终止。
+				if resRunDic != "" {
+					d.Output.Add(resRunDic)
+				}
+				d.Sys.Halted.Store(true)
+				d.Sys.Stop.Store(true)
 				return "", nil
+			}
+			if RunDic.Sys_v.Stop.Load() {
+				if captureErr {
+					d.Val.P.Set("报错", resRunDic)
+					return "", nil
+				}
+				// 函数体执行报错：向上传播到调用方。原始错误优先取函数体写入的 %报错%，
+				// 否则回退函数体输出；统一走 handleFuncError，用调用方行号与函数名重新生成报错
+				// （测试> 框内则捕获为原始错误并保留报错前输出）。
+				errMsg := RunDic.Val.P.GetStr("报错")
+				if errMsg == "" {
+					errMsg = resRunDic
+				}
+				return handleFuncError(d, dic_i.String(0), errors.New(errMsg), false), nil
 			}
 			if tparts != "" {
 				subParts := strings.SplitSeq(tparts, ",")
@@ -310,14 +329,19 @@ func Funcs(d *dic_dto.DicFunc, dic_i *utils.DicInputs) (any, error) {
 // handleFuncError 统一处理函数调用报错。
 // captureErr 为 true（$!函数名$ 调用）时把错误写入「报错」变量、清除 Stop 并返回空串（函数不返回错误文本）；
 // 否则按原逻辑停止执行并把格式化错误写入输出，返回空串。
+// 两种情况下都先把原始错误写入「报错」变量，供 测试> 框捕获原始错误信息。
 func handleFuncError(d *dic_dto.DicFunc, name string, err error, captureErr bool) string {
+	d.Val.P.Set("报错", err.Error())
 	if captureErr {
-		d.Val.P.Set("报错", err.Error())
 		d.Sys.Stop.Store(false)
 		return ""
 	}
 	d.Sys.Stop.Store(true)
 	if err.Error() != "stop" {
+		if d.Sys.InTry.Load() {
+			// 测试> 框内：不清空已累积输出、不追加格式化错误，仅记录原始错误与停止标志。
+			return ""
+		}
 		d.Output.Clear()
 		d.Output.Add(fmt.Sprintf("[%s]%s(line:%d)：%v", d.Val.G.GetStr("_词库路径_"), name, d.CurLine, err))
 	}

@@ -362,6 +362,7 @@ func (a *dicRuntime) Stop() bool {
 }
 
 func (a *dicRuntime) Halt() {
+	a.r.Sys_v.Halted.Store(true)
 	a.r.Sys_v.Stop.Store(true)
 }
 
@@ -771,6 +772,66 @@ func (a *dicRuntime) ExecFuncBlock(text string, lines []string, lineNums []int) 
 		return out
 	}
 	r.Val.P.Set(valueName, out)
+	return ""
+}
+
+// TryBlock 原生执行 变量:测试> 框（仅赋予值形式）：以共享变量作用域（赋值会回写外层）立即执行内容行。
+//   - 框内语句照常执行、输出直接追加到外层（不拦截）；
+//   - 报错时捕获原始报错信息（handleFuncError 已写入 %报错%），赋给目标变量，
+//     并终止框内后续、不中断整体；报错的格式化文本不输出；
+//   - >终止 仍向上传播、不被捕获。
+func (a *dicRuntime) TryBlock(text string, lines []string, lineNums []int) string {
+	r := a.r
+
+	// 解析赋值目标变量名（变量:测试> 形式）。
+	valueName := ""
+	if vt, vp, vs := dicBuild.ValTextTest(text); vt == 6 && vp != "" && strings.HasPrefix(vs, "测试>") {
+		valueName = vp
+	}
+
+	// 进入前清空目标变量与 %报错%，使块结束后能精确判断本次是否报错。
+	if valueName != "" {
+		r.Val.P.Set(valueName, "")
+	}
+	r.Val.P.Set("报错", "")
+
+	// 子条目共享同一变量表（赋值改动持久），但用独立的 Stop/Halted/Output 隔离报错。
+	content := append([]string(nil), lines...)
+	nums := append([]int(nil), lineNums...)
+	sub := &dic_dto.DicEntry{
+		Output:   &dto.SingleValue{},
+		Val:      r.Val,
+		Sys_v:    &dto.LocalDicValue{},
+		Trigger:  false,
+		Dic:      r.Dic,
+		LineNums: nums,
+	}
+	sub.Sys_v.InTry.Store(true)
+	out := a.m.dicRunLineBytecode(sub, content)
+
+	if sub.Sys_v.Halted.Load() {
+		// >终止：保留已产出内容并向上传播终止，不捕获。
+		if out != "" {
+			r.Output.Add(out)
+		}
+		r.Sys_v.Halted.Store(true)
+		r.Sys_v.Stop.Store(true)
+		return ""
+	}
+	if sub.Sys_v.Stop.Load() {
+		// 报错：保留报错前已产出的输出，原始报错信息赋给目标变量。
+		if out != "" {
+			r.Output.Add(out)
+		}
+		if valueName != "" {
+			r.Val.P.Set(valueName, r.Val.P.GetStr("报错"))
+		}
+		return ""
+	}
+	// 正常执行：框内输出直接追加到外层，目标变量保持空。
+	if out != "" {
+		r.Output.Add(out)
+	}
 	return ""
 }
 

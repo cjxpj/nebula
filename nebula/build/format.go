@@ -64,6 +64,10 @@ func formatOpen(line string) (formatFrame, bool) {
 		if vk != "" && (strings.HasPrefix(vv, "执行函数>") || strings.HasPrefix(vv, "函数>")) {
 			return formatFrame{kind: "func", close: "<函数"}, true
 		}
+		// 变量名:测试>：报错捕获框（赋予值形式）。
+		if vk != "" && strings.HasPrefix(vv, "测试>") {
+			return formatFrame{kind: "try", close: "<测试"}, true
+		}
 		// 变量名:文本> / 变量名:纯文本>：与 变量名:""" / 变量名:''' 同族的赋值文本框。
 		if vk != "" && (strings.HasPrefix(vv, "纯文本>") || strings.HasPrefix(vv, "文本>")) {
 			return formatFrame{kind: "text", close: "<文本", leaf: true}, true
@@ -120,6 +124,8 @@ func formatCloseKind(line string) string {
 		return "for"
 	case "<遍历":
 		return "foreach"
+	case "<测试":
+		return "try"
 	}
 	return ""
 }
@@ -231,6 +237,59 @@ func formatMultiline(region []string) bool {
 		}
 	}
 	return false
+}
+
+// multilineCloser 返回多行块开启行对应的收尾标记，非开启行返回空串。
+// 标记口径与 formatMultiline 保持一致：`xx #{` 对应 `}#`，`<?n` 对应 `?>`。
+func multilineCloser(line string) string {
+	trimmed := strings.TrimSpace(line)
+	if strings.HasSuffix(trimmed, " #{") {
+		return "}#"
+	}
+	if trimmed == "<?n" {
+		return "?>"
+	}
+	return ""
+}
+
+// multilinePending 返回区域内「开了但还没收」的多行块收尾标记；没有则返回空串。
+func multilinePending(region []string) string {
+	pending := ""
+	for _, line := range region {
+		if pending == "" {
+			pending = multilineCloser(line)
+			continue
+		}
+		if strings.TrimSpace(line) == pending {
+			pending = ""
+		}
+	}
+	return pending
+}
+
+// extendMultilineBlock 补齐跨空行的多行块：formatRegion 遇空行即停，
+// 使 `xx #{ ... }#`（或 `<?n ... ?>`）这类块在含空行时被切成多段，
+// 只有首段被 formatMultiline 识别，中间段会被逐行重新缩进。
+// 这里在已收集区域内开启标记未配对收尾、且后方确实存在配对收尾行时，
+// 把空行与中间内容一并吞入直到收尾行，让整块原样保留。
+// 找不到配对收尾行时保持原状，避免把误判的开启标记一路吞到文件尾。
+func extendMultilineBlock(lines []string, region []string, start int) ([]string, int) {
+	pending := multilinePending(region)
+	if pending == "" {
+		return region, start
+	}
+	closeIdx := -1
+	for j := start; j < len(lines); j++ {
+		if strings.TrimSpace(lines[j]) == pending {
+			closeIdx = j
+			break
+		}
+	}
+	if closeIdx < 0 {
+		return region, start
+	}
+	region = append(region, lines[start:closeIdx+1]...)
+	return region, closeIdx + 1
 }
 
 // IsHeadLine 判断一行是否为头部内容：预编译指令（//@）、#引入=/$引入 导入行、赋值行或函数调用行。
@@ -355,6 +414,17 @@ func formatBody(lines []string) string {
 		i = next
 
 		if formatMultiline(region) {
+			// 多行块可能跨空行，补齐后再整段原样保留（见 extendMultilineBlock）
+			prev := i
+			region, i = extendMultilineBlock(lines, region, i)
+			// 块内空行在原文里会结束「头部」判定；这里按同样口径重置，
+			// 否则块后内容会被误当成头部初始化脚本排版。
+			for j := prev; j < i; j++ {
+				if strings.TrimSpace(lines[j]) == "" {
+					inHead = false
+					break
+				}
+			}
 			out = append(out, region...)
 			continue
 		}

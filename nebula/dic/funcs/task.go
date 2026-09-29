@@ -24,6 +24,7 @@ type ScheduledTaskInfo struct {
 	Interval   string `json:"interval"`
 	Once       bool   `json:"once"`
 	RunAtStart bool   `json:"run_at_start"`
+	Async      bool   `json:"async"`
 }
 
 // ScheduledTask 定时任务运行时状态
@@ -34,6 +35,7 @@ type ScheduledTask struct {
 	Interval   string
 	Once       bool
 	RunAtStart bool
+	Async      bool
 	cancel     chan struct{}
 }
 
@@ -43,8 +45,9 @@ var scheduledTasks sync.Map // map[string]*ScheduledTask
 // scheduledTaskTable 定时任务在全局数据库中的持久化表名
 const scheduledTaskTable = "scheduled_tasks"
 
-// AddScheduledTask 添加定时任务并启动调度，返回唯一编号；once 为 true 时仅执行一次，runAtStart 为 true 时启动立即触发一次
-func AddScheduledTask(dicPath, trigger, interval string, once, runAtStart bool) (string, error) {
+// AddScheduledTask 添加定时任务并启动调度，返回唯一编号；once 为 true 时仅执行一次，runAtStart 为 true 时启动立即触发一次，
+// async 为 true 时每次执行放在独立 goroutine 中，避免执行耗时拖慢下一次定时触发
+func AddScheduledTask(dicPath, trigger, interval string, once, runAtStart, async bool) (string, error) {
 	dicPath = strings.TrimSpace(dicPath)
 	if dicPath == "" {
 		return "", errors.New("定时任务：词库路径不能为空")
@@ -68,6 +71,7 @@ func AddScheduledTask(dicPath, trigger, interval string, once, runAtStart bool) 
 		Interval:   interval,
 		Once:       once,
 		RunAtStart: runAtStart,
+		Async:      async,
 		cancel:     make(chan struct{}),
 	}
 	scheduledTasks.Store(id, task)
@@ -107,6 +111,7 @@ func ListScheduledTasks() []ScheduledTaskInfo {
 			Interval:   task.Interval,
 			Once:       task.Once,
 			RunAtStart: task.RunAtStart,
+			Async:      task.Async,
 		})
 		return true
 	})
@@ -132,6 +137,7 @@ func persistScheduledTask(task *ScheduledTask) {
 		Interval:   task.Interval,
 		Once:       task.Once,
 		RunAtStart: task.RunAtStart,
+		Async:      task.Async,
 	})
 	if err != nil {
 		debugLog.Infof("定时任务 %s 序列化失败: %v", task.ID, err)
@@ -197,6 +203,14 @@ func LoadScheduledTasks() {
 			}
 			// 以数据库主键为准，避免脏数据导致 ID 不一致
 			info.ID = id
+			// 历史数据没有 async 字段，按「默认异步」处理
+			async := true
+			var meta struct {
+				Async *bool `json:"async"`
+			}
+			if err := json.Unmarshal([]byte(data), &meta); err == nil && meta.Async != nil {
+				async = *meta.Async
+			}
 			task := &ScheduledTask{
 				ID:         info.ID,
 				DicPath:    info.DicPath,
@@ -204,6 +218,7 @@ func LoadScheduledTasks() {
 				Interval:   info.Interval,
 				Once:       info.Once,
 				RunAtStart: info.RunAtStart,
+				Async:      async,
 				cancel:     make(chan struct{}),
 			}
 			scheduledTasks.Store(task.ID, task)
@@ -215,7 +230,7 @@ func LoadScheduledTasks() {
 // run 定时调度循环：启动时可选立即触发一次，之后每次等待间隔后执行指定词库的触发词，直到被取消或（一次性任务）执行完毕
 func (t *ScheduledTask) run() {
 	if t.RunAtStart {
-		t.execute()
+		t.trigger()
 		if t.Once {
 			// 一次性任务执行完后自动移除自身（内存 + 数据库）
 			scheduledTasks.Delete(t.ID)
@@ -239,7 +254,7 @@ func (t *ScheduledTask) run() {
 			timer.Stop()
 			return
 		}
-		t.execute()
+		t.trigger()
 		if t.Once {
 			// 一次性任务执行完后自动移除自身（内存 + 数据库）
 			scheduledTasks.Delete(t.ID)
@@ -247,6 +262,16 @@ func (t *ScheduledTask) run() {
 			return
 		}
 	}
+}
+
+// trigger 触发一次执行：Async 为 true 时在独立 goroutine 中执行，不阻塞调度循环，
+// 避免单次执行耗时导致间隔较短（如 1 分钟）的任务被拖慢
+func (t *ScheduledTask) trigger() {
+	if t.Async {
+		go t.execute()
+		return
+	}
+	t.execute()
 }
 
 // execute 加载并执行一次词库
@@ -299,7 +324,7 @@ func parseInterval(s string) (time.Duration, error) {
 	}
 }
 
-// $添加定时任务(时间, 触发词, 词库路径, 一次性, 启动触发一次)$
+// $添加定时任务(时间, 触发词, 词库路径, 一次性, 启动触发一次, 异步执行)$
 func addScheduledTaskFunc(d *dto.DicInputs) (any, error) {
 	interval := d.Inputs.String(1)
 	trigger := d.Inputs.StringDefault(2, "Main")
@@ -312,7 +337,12 @@ func addScheduledTaskFunc(d *dto.DicInputs) (any, error) {
 	}
 	once := d.Inputs.Bool(4)
 	runAtStart := d.Inputs.Bool(5)
-	return AddScheduledTask(dicPath, trigger, interval, once, runAtStart)
+	// 异步执行为可选参数，缺省按「默认异步」处理
+	async := true
+	if len(d.Inputs.List) > 6 {
+		async = d.Inputs.Bool(6)
+	}
+	return AddScheduledTask(dicPath, trigger, interval, once, runAtStart, async)
 }
 
 // $删除定时任务(编号)$
