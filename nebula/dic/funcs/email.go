@@ -12,9 +12,10 @@ import (
 
 // EmailConfig 邮件连接配置
 type EmailConfig struct {
-	Addr string // host:port
-	From string
-	Auth smtp.Auth
+	Addr     string // host:port
+	From     string
+	Nickname string // 发件人显示名，空则只显示邮箱地址
+	Auth     smtp.Auth
 }
 
 func getEmailConfig(d *dto.DicInputs) *EmailConfig {
@@ -26,7 +27,7 @@ func getEmailConfig(d *dto.DicInputs) *EmailConfig {
 	return nil
 }
 
-// 创建邮件 链接 端口 账号 密码
+// 创建邮件 链接 端口 账号 密码 [昵称]
 func emailCreate(d *dto.DicInputs) (any, error) {
 	smtpHost := d.Inputs.String(1)
 	smtpPort := d.Inputs.String(2)
@@ -34,9 +35,10 @@ func emailCreate(d *dto.DicInputs) (any, error) {
 	password := d.Inputs.String(4)
 
 	return newEmailClass(&EmailConfig{
-		Addr: smtpHost + ":" + smtpPort,
-		From: from,
-		Auth: smtp.PlainAuth("", from, password, smtpHost),
+		Addr:     smtpHost + ":" + smtpPort,
+		From:     from,
+		Nickname: d.Inputs.String(5), // 不填则不发件人昵称
+		Auth:     smtp.PlainAuth("", from, password, smtpHost),
 	}), nil
 }
 
@@ -46,6 +48,7 @@ func newEmailClass(cfg *EmailConfig) *dto.DicClass {
 		LocalValue: dto.NewVal().Set("_邮件_", cfg),
 	}
 	instance.Fn = map[string]dto.DicFunc{
+		"设置昵称":   wrapObj(cfg, emailSetNickname, "1"),
 		"发送":     wrapObj(cfg, emailSend, "3"),
 		"发送HTML": wrapObj(cfg, emailSendHTML, "3"),
 	}
@@ -62,7 +65,7 @@ func doSendMail(cfg *EmailConfig, to string, subject string, body string, isHTML
 	msg.Grow(256 + len(body))
 
 	msg.WriteString("From: ")
-	msg.WriteString(cfg.From)
+	writeFrom(&msg, cfg.Nickname, cfg.From)
 	msg.WriteString("\r\nTo: ")
 	msg.WriteString(to)
 	msg.WriteString("\r\nSubject: ")
@@ -91,6 +94,41 @@ func writeSubject(msg *bytes.Buffer, subject string) {
 		}
 	}
 	msg.WriteString(subject)
+}
+
+// writeFrom 写发件人地址，有昵称时输出「昵称 <邮箱>」
+func writeFrom(msg *bytes.Buffer, nickname string, addr string) {
+	if nickname == "" {
+		msg.WriteString(addr)
+		return
+	}
+	msg.WriteString(encodeDisplayName(nickname))
+	msg.WriteString(" <")
+	msg.WriteString(addr)
+	msg.WriteString(">")
+}
+
+// encodeDisplayName 编码发件人显示名：含非 ASCII 用 RFC 2047 编码，含特殊字符用引号包裹
+func encodeDisplayName(name string) string {
+	for i := 0; i < len(name); i++ {
+		if name[i] > 127 {
+			return mime.BEncoding.Encode("UTF-8", name)
+		}
+	}
+	if strings.ContainsAny(name, `()<>@,;:\".[]`) {
+		return `"` + strings.ReplaceAll(name, `"`, `\"`) + `"`
+	}
+	return name
+}
+
+// $a.设置昵称 昵称
+func emailSetNickname(d *dto.DicInputs) (any, error) {
+	cfg := getEmailConfig(d)
+	if cfg == nil {
+		return "", fmt.Errorf("未创建邮件连接")
+	}
+	cfg.Nickname = d.Inputs.String(2)
+	return "true", nil
 }
 
 // $a.发送 收件人 标题 文本

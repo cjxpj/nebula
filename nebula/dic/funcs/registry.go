@@ -354,7 +354,7 @@ func Setup() {
 		f{Name: "范围", L: "2", Fn: doRange},
 		f{Name: "ZIP压缩", L: "2", Fn: zipCompress},
 		f{Name: "ZIP解压", L: "2", Fn: zipDecompress},
-		f{Name: "创建邮件", L: "4", Fn: emailCreate},
+		f{Name: "创建邮件", L: "4|5", Fn: emailCreate},
 		f{Name: "主机", L: "1", Fn: host_information},
 		f{Name: "时间戳转时间", L: "1|2", Fn: timestampToTime},
 		f{Name: "时间转时间戳", L: "1|2", Fn: timeToTimestamp},
