@@ -160,13 +160,6 @@ var (
 	aiTaskLayoutLoaded bool
 )
 
-// newAITaskDrawerID 生成抽屉 ID。
-func newAITaskDrawerID() string {
-	var b [4]byte
-	_, _ = crand.Read(b[:])
-	return fmt.Sprintf("drw%d%s", time.Now().UnixMilli(), hex.EncodeToString(b[:]))
-}
-
 // ensureAITaskLayoutLoadedLocked 首次访问时从私有目录加载抽屉布局；调用方需持有 aiTaskLayoutMu。
 func ensureAITaskLayoutLoadedLocked() {
 	if aiTaskLayoutLoaded {

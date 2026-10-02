@@ -1,8 +1,10 @@
 package funcs
 
 import (
+	"context"
 	"database/sql"
 	"fmt"
+	"net"
 	"strings"
 	"sync"
 	"time"
@@ -10,8 +12,15 @@ import (
 	"github.com/cjxpj/nebula/dto"
 	"github.com/cjxpj/nebula/utils"
 
-	_ "github.com/go-sql-driver/mysql"
+	mysqldriver "github.com/go-sql-driver/mysql"
 )
+
+// MySQL 拨号同样走统一出网守卫，禁止词库把连接打到内网地址。
+func init() {
+	mysqldriver.RegisterDialContext("tcp", func(ctx context.Context, addr string) (net.Conn, error) {
+		return utils.GuardedDialContext(ctx, "tcp", addr)
+	})
+}
 
 // MysqlConn MySQL 连接对象，保存账号密码地址等信息
 type MysqlConn struct {

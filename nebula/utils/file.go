@@ -13,7 +13,6 @@ import (
 	"io"
 	"math/big"
 	mrand "math/rand/v2"
-	"net"
 	"net/http"
 	"os"
 	"path"
@@ -29,7 +28,10 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-var httpClient = &http.Client{Timeout: 30 * time.Second}
+var httpClient = &http.Client{
+	Timeout:   30 * time.Second,
+	Transport: GuardTransport(nil),
+}
 
 // androidDataDir Android 端固定数据目录（Documents/Nebula）。
 // 启动词库 start.n 位于该目录下，实际数据目录由启动词库初始化「$设置工作目录$」切换到 Nebula/NebulaData 下。
@@ -56,7 +58,7 @@ func PrintLog(code bool, head, text string) {
 	text = strings.ReplaceAll(text, "\n", `\n`)
 	currentTime := time.Now().Format("20060102/15")
 	currentTime2 := time.Now().Format("04m05s")
-	file := NewFileQueue(path.Join("database", "log", currentTime+".txt"))
+	file := NewFileQueue(filepath.Join(GetLogDir(), filepath.FromSlash(currentTime)+".txt"))
 	resCode := "No"
 	if code {
 		resCode = "Yes"
@@ -102,6 +104,33 @@ func WorkDir() string {
 		return ""
 	}
 	return wd
+}
+
+// logDir 日志目录，默认相对应用数据目录的 database/log；
+// 设为绝对路径时可脱离应用数据目录单独存放。
+var logDir = path.Join("database", "log")
+
+// SetLogDir 设置日志目录。相对路径基于应用数据目录解析，绝对路径直接使用。
+// 传空字符串恢复默认值 database/log。
+func SetLogDir(dir string) {
+	dir = strings.TrimSpace(dir)
+	if dir == "" {
+		logDir = path.Join("database", "log")
+		return
+	}
+	logDir = path.Clean(filepath.ToSlash(dir))
+}
+
+// GetLogDir 返回日志目录绝对路径：相对路径基于应用数据目录拼接，绝对路径原样返回。
+func GetLogDir() string {
+	p := filepath.FromSlash(logDir)
+	if !filepath.IsAbs(p) {
+		p = filepath.Join(GetAppDir(), p)
+	}
+	if abs, err := filepath.Abs(p); err == nil {
+		return abs
+	}
+	return p
 }
 
 // IsWithinWorkDir 判断目标路径解析为绝对路径后是否仍位于工作目录内。
@@ -520,11 +549,7 @@ func (fq *FileQueue) downloadWithDynamicThreads(ctx context.Context, url string,
 			TLSHandshakeTimeout:   dialTimeout,
 			DisableCompression:    true,
 			ResponseHeaderTimeout: 30 * time.Second, // 首字节 30 s 足够
-			DialContext: (&net.Dialer{
-				Timeout:   dialTimeout,
-				KeepAlive: 30 * time.Second,
-				DualStack: true,
-			}).DialContext,
+			DialContext:           GuardedDialContext,
 		},
 	}
 	req, err := http.NewRequestWithContext(ctx, "HEAD", url, nil)

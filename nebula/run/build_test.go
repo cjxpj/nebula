@@ -79,7 +79,7 @@ func TestParseImportLine(t *testing.T) {
 // waitForCacheFile 等待异步写盘完成（缓存文件已原子替换到位）。
 func waitForCacheFile(t *testing.T, dicPath string) {
 	t.Helper()
-	p := dicCachePath(importFilePath(dicPath))
+	p := dicCachePath(dicCacheDirFor(dicPath), importFilePath(dicPath))
 	deadline := time.Now().Add(3 * time.Second)
 	for time.Now().Before(deadline) {
 		if _, err := os.Stat(p); err == nil {
@@ -100,12 +100,12 @@ func TestDicCompileCache(t *testing.T) {
 
 	const path = "cache_test_unique.n"
 	// 测试收尾清理缓存文件，避免每次跑测试都在真实数据目录残留 .dic_cache 垃圾文件
-	defer os.Remove(dicCachePath(importFilePath(path)))
+	defer os.Remove(dicCachePath(dicCacheDirFor(path), importFilePath(path)))
 	text1 := "Main\n缓存测试内容1"
 	text2 := "Main\n缓存测试内容2"
 
 	// 清理旧缓存，保证从干净状态开始
-	_ = os.Remove(dicCachePath(importFilePath(path)))
+	_ = os.Remove(dicCachePath(dicCacheDirFor(path), importFilePath(path)))
 
 	r1 := BuildDic(path, text1)
 	if r1 == nil || len(r1.Dic) == 0 {
@@ -144,7 +144,7 @@ func TestListAndRemoveDicCache(t *testing.T) {
 
 	const path = "cache_list_test_unique.n"
 	name := dicHash(importFilePath(path)) + ".gob"
-	defer os.Remove(dicCachePath(importFilePath(path)))
+	defer os.Remove(dicCachePath(dicCacheDirFor(path), importFilePath(path)))
 
 	BuildDic(path, "Main\n缓存列表测试")
 	waitForCacheFile(t, path)
@@ -176,7 +176,7 @@ func TestListAndRemoveDicCache(t *testing.T) {
 	if err := RemoveDicCache(name); err != nil {
 		t.Fatalf("清理缓存失败：%v", err)
 	}
-	if _, err := os.Stat(dicCachePath(importFilePath(path))); !os.IsNotExist(err) {
+	if _, err := os.Stat(dicCachePath(dicCacheDirFor(path), importFilePath(path))); !os.IsNotExist(err) {
 		t.Fatalf("缓存文件应已被删除")
 	}
 	// 重复清理视为成功（文件已不存在）

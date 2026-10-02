@@ -22,11 +22,12 @@ func downloadFile(d *dto.DicInputs) (any, error) {
 	if !d.Inputs.LenOk(2) {
 		return "", errors.New("参数数量错误")
 	}
-	url := d.Inputs.String(1)
-	savePath := d.Inputs.String(2)
+	// 先校验保存路径并写回，再读取参数，避免用到未受限的原始路径
 	if err := checkFuncPath(d, 2); err != nil {
 		return "", err
 	}
+	url := d.Inputs.String(1)
+	savePath := d.Inputs.String(2)
 	threads := 0 // 默认 0：按文件大小自适应（2~8）
 	printOpen := false
 	if d.Inputs.LenOk(3) {
@@ -138,6 +139,7 @@ func accessGet(d *dto.DicInputs) (any, error) {
 			TLSClientConfig: &tls.Config{
 				InsecureSkipVerify: true,
 			},
+			DialContext: utils.GuardedDialContext,
 		},
 	}
 
@@ -189,8 +191,10 @@ func accessPost(d *dto.DicInputs) (any, error) {
 
 	client := &http.Client{
 		// 超时限制
-		Timeout:   15 * time.Second,
-		Transport: &http.Transport{},
+		Timeout: 15 * time.Second,
+		Transport: &http.Transport{
+			DialContext: utils.GuardedDialContext,
+		},
 	}
 	resp, err := client.Do(req)
 	if err != nil {
@@ -279,6 +283,7 @@ func requestForward(d *dto.DicInputs) (any, error) {
 		Timeout: 15 * time.Second,
 		Transport: &http.Transport{
 			TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
+			DialContext:     utils.GuardedDialContext,
 		},
 	}
 	resp, err := client.Do(forwardReq)
@@ -416,6 +421,7 @@ func sendRequest(req *AccessRequest) (any, error) {
 		Timeout: time.Duration(req.Timeout) * time.Second,
 		Transport: &http.Transport{
 			TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
+			DialContext:     utils.GuardedDialContext,
 		},
 	}
 	if client.Timeout <= 0 {

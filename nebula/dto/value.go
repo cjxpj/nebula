@@ -47,6 +47,9 @@ type Val struct {
 	slots []slotCell
 	// Class 变量表：类名 -> 类变量，供 %类名.变量% 解析
 	Class map[string]*Val `json:"-"`
+	// thread 线程变量私有存储：非空时本 Val 上 `_名_` 形式的线程变量路由到该存储，
+	// 实现机器人之间的隔离；为空则回退进程级全局 GV。
+	thread *Val
 }
 
 // slotCell 变量槽单元：isInt 为 true 时存 int64（免装箱），否则存 any；present 表示是否已赋值。
@@ -121,6 +124,88 @@ func (v *Val) Close() {
 
 // 线程变量
 var GV *Val = NewVal()
+
+// botThreadVars 按作用域（机器人词库目录）隔离的线程变量存储表。
+// 用于替代进程级共享的 GV，使不同机器人之间的线程变量互不串线。
+var botThreadVars sync.Map
+
+// BotThreadVars 返回指定作用域私有的线程变量存储，不存在则创建。
+func BotThreadVars(scope string) *Val {
+	if v, ok := botThreadVars.Load(scope); ok {
+		return v.(*Val)
+	}
+	actual, _ := botThreadVars.LoadOrStore(scope, NewVal())
+	return actual.(*Val)
+}
+
+// ReleaseBotThreadVars 释放指定作用域的线程变量存储（机器人删除时调用）。
+func ReleaseBotThreadVars(scope string) {
+	botThreadVars.Delete(scope)
+}
+
+// SetThreadStore 为当前 Val 绑定私有线程变量存储，绑定后 `_名_` 形式的线程变量落到该存储。
+func (v *Val) SetThreadStore(store *Val) *Val {
+	if v != nil {
+		v.thread = store
+	}
+	return v
+}
+
+// threadTarget 返回线程变量写入目标：有私有存储则用私有存储，否则用进程级全局 GV。
+func (v *Val) threadTarget() *Val {
+	if v != nil && v.thread != nil {
+		return v.thread
+	}
+	return GV
+}
+
+// getThread 读取线程变量：优先私有存储，未命中回退进程级全局 GV（兼容引擎注入的系统级键）。
+func (v *Val) getThread(key string) (any, bool) {
+	if v != nil && v.thread != nil {
+		if val, ok := v.thread.get(key); ok {
+			return val, true
+		}
+	}
+	return GV.get(key)
+}
+
+// getThreadInt64 读取整数线程变量：优先私有存储，未命中回退进程级全局 GV。
+func (v *Val) getThreadInt64(key string) (int64, bool) {
+	if v != nil && v.thread != nil {
+		if n, ok := v.thread.getInt64(key); ok {
+			return n, true
+		}
+	}
+	return GV.getInt64(key)
+}
+
+// setThread 写入线程变量：有私有存储则写私有存储，否则写进程级全局 GV。
+func (v *Val) setThread(key string, val any) {
+	v.threadTarget().set(key, val)
+}
+
+// setThreadInt64 写入整数线程变量：有私有存储则写私有存储，否则写进程级全局 GV。
+func (v *Val) setThreadInt64(key string, val int64) {
+	v.threadTarget().setInt64(key, val)
+}
+
+// SetThreadRaw 以原始键写入线程变量（落到当前 Val 的私有存储，无私有则落 GV）。
+func (v *Val) SetThreadRaw(key string, val any) {
+	v.setThread(key, val)
+}
+
+// GetThreadRaw 以原始键读取线程变量（优先私有存储，未命中回退 GV）。
+func (v *Val) GetThreadRaw(key string) (any, bool) {
+	return v.getThread(key)
+}
+
+// threadOwner 返回 DicVal 的线程变量归属 Val：优先 G，其次 P。
+func (v *DicVal) threadOwner() *Val {
+	if v.G != nil {
+		return v.G
+	}
+	return v.P
+}
 
 // threadVarName 将词库变量名规范化为全局线程变量 GV 的键：
 // 变量名前后都有下划线（_变量名_ / __变量名__ ...）时，去掉一层下划线得到线程变量键。
@@ -281,6 +366,7 @@ func (v *Val) Clone() *Val {
 		}
 	}
 	class := v.Class
+	thread := v.thread
 	v.mu.RUnlock()
 
 	nv := &Val{
@@ -290,6 +376,7 @@ func (v *Val) Clone() *Val {
 		once:    once,
 		slots:   slots,
 		Class:   class,
+		thread:  thread,
 	}
 	nv.hasOnce.Store(hasOnce)
 	return nv
@@ -580,7 +667,7 @@ func (v *DicVal) GetAll() map[string]any {
 // Get 返回指定键的值
 func (v *Val) Get(key string) any {
 	if name, ok := threadVarName(key); ok {
-		value, _ := GV.get(name)
+		value, _ := v.getThread(name)
 		return value
 	}
 	value, _ := v.get(key)
@@ -707,7 +794,7 @@ func (v *Val) SetLock(key string, val bool) *Val {
 // Set 设置指定键的值，只有在键未被锁定时才设置
 func (v *Val) Set(key string, val any) *Val {
 	if name, ok := threadVarName(key); ok {
-		GV.set(name, val)
+		v.setThread(name, val)
 		return v
 	}
 	locked := true
@@ -771,7 +858,7 @@ func (v *Val) SetOnce(key string, val any) *Val {
 // SetInt64 设置整数变量值（直存 int64 免装箱），只有在键未被锁定时才设置。
 func (v *Val) SetInt64(key string, val int64) *Val {
 	if name, ok := threadVarName(key); ok {
-		GV.setInt64(name, val)
+		v.setThreadInt64(name, val)
 		return v
 	}
 	locked := true
@@ -791,7 +878,7 @@ func (v *Val) SetInt64(key string, val int64) *Val {
 // GetInt64 读取整数变量值（直读 int64 免装箱），未命中返回 false。
 func (v *Val) GetInt64(key string) (int64, bool) {
 	if name, ok := threadVarName(key); ok {
-		return GV.getInt64(name)
+		return v.getThreadInt64(name)
 	}
 	return v.getInt64(key)
 }
@@ -831,7 +918,7 @@ func (v *Val) HeaderAdd(key string, val any) {
 // 获取变量值，优先从 P，再从 G
 func (v *DicVal) GetVal(key string) (any, bool) {
 	if name, ok := threadVarName(key); ok {
-		return GV.get(name)
+		return v.threadOwner().getThread(name)
 	}
 	value, ok := v.P.get(key)
 	if !ok && v.G != nil {
@@ -843,7 +930,7 @@ func (v *DicVal) GetVal(key string) (any, bool) {
 // GetInt64 读取整数变量值（优先从 P，再从 G），未命中返回 false。用于免装箱的数值快速路径。
 func (v *DicVal) GetInt64(key string) (int64, bool) {
 	if name, ok := threadVarName(key); ok {
-		return GV.getInt64(name)
+		return v.threadOwner().getThreadInt64(name)
 	}
 	n, ok := v.P.getInt64(key)
 	if !ok && v.G != nil {
@@ -877,6 +964,12 @@ func (v *DicVal) GetSlot(slot int32) (any, bool) {
 // 获取变量值，优先从 P，再从 G
 func (v *Val) GetVal(vv *Val, key string) (any, bool) {
 	if name, ok := threadVarName(key); ok {
+		if v != nil && v.thread != nil {
+			return v.getThread(name)
+		}
+		if vv != nil {
+			return vv.getThread(name)
+		}
 		return GV.get(name)
 	}
 	value, ok := v.get(key)

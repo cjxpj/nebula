@@ -9,6 +9,7 @@ import (
 	"image/draw"
 	"image/gif"
 	"path"
+	"path/filepath"
 	"strconv"
 	"strings"
 
@@ -314,6 +315,10 @@ func (j *JsonImage) Draw(jsonData []map[string]any) string {
 		case "字体":
 			if valueLen != 1 {
 				return "参数不对"
+			}
+			// 字体名只允许相对文件名，禁止绝对路径与 .. 越界，避免跳出字体目录读取任意文件
+			if filepath.IsAbs(value[0]) || filepath.VolumeName(value[0]) != "" || strings.Contains(value[0], "..") {
+				return "字体名不合法"
 			}
 			imgTtf, err = utils.NewFileQueue(path.Join(ttfDir, value[0])).ReadFileByte()
 			if err != nil {

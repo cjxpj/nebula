@@ -28,20 +28,87 @@ func confirmFileDelete(action, target string) bool {
 	return FileDeleteConfirm(action, target)
 }
 
-// checkPathValue 校验给定路径解析后是否位于工作目录内，越界返回错误。
-func checkPathValue(raw string) error {
-	if raw == "" {
-		return nil
+// dicDatabaseDir 返回当前词库所属账号的数据库目录：与词库目录同级（bots/<账号>/database），
+// 每个账号各自独立；内存词库（无磁盘文件）回退到引擎工作目录下的 database。
+func dicDatabaseDir(d *dto.DicInputs) string {
+	if d != nil && d.Dic != nil && d.Dic.Dir != "" {
+		return filepath.Join(filepath.Dir(d.Dic.Dir), "database")
 	}
-	if !utils.IsWithinWorkDir(utils.NewFileQueue(raw).FileName) {
-		return fmt.Errorf("路径越界（超出工作目录）：%s", raw)
+	return filepath.Join(utils.WorkDir(), "database")
+}
+
+// resolveDatabasePath 把数据库内的文件路径解析为绝对路径：只接受相对路径，
+// 且解析后必须仍在当前账号的数据库目录内；绝对路径与 .. 越界一律拒绝。
+func resolveDatabasePath(d *dto.DicInputs, raw string) (string, error) {
+	if raw == "" {
+		return "", nil
+	}
+	if filepath.IsAbs(raw) || filepath.VolumeName(raw) != "" {
+		return "", fmt.Errorf("只允许相对路径（不支持绝对路径）：%s", raw)
+	}
+	base := dicDatabaseDir(d)
+	absBase, err := filepath.Abs(base)
+	if err != nil {
+		return "", fmt.Errorf("数据库目录不可用，拒绝访问：%s", raw)
+	}
+	target := filepath.Join(absBase, raw)
+	rel, err := filepath.Rel(absBase, target)
+	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		return "", fmt.Errorf("路径越界（超出数据库目录）：%s", raw)
+	}
+	return target, nil
+}
+
+// dicBaseDir 返回当前词库的基准目录：优先取词库文件所在目录（每个词库各自独立），
+// 内存词库（无磁盘文件）回退到引擎工作目录。
+func dicBaseDir(d *dto.DicInputs) string {
+	if d != nil && d.Dic != nil && d.Dic.Dir != "" {
+		return d.Dic.Dir
+	}
+	return utils.WorkDir()
+}
+
+// resolveDicPath 把词库内的文件路径解析为绝对路径：只接受相对路径，
+// 且解析后必须仍在当前词库目录内；绝对路径与 .. 越界一律拒绝。
+func resolveDicPath(d *dto.DicInputs, raw string) (string, error) {
+	if raw == "" {
+		return "", nil
+	}
+	if filepath.IsAbs(raw) || filepath.VolumeName(raw) != "" {
+		return "", fmt.Errorf("只允许相对路径（不支持绝对路径）：%s", raw)
+	}
+	base := dicBaseDir(d)
+	if base == "" {
+		return "", fmt.Errorf("词库目录不可用，拒绝访问：%s", raw)
+	}
+	absBase, err := filepath.Abs(base)
+	if err != nil {
+		return "", fmt.Errorf("词库目录不可用，拒绝访问：%s", raw)
+	}
+	target := filepath.Join(absBase, raw)
+	rel, err := filepath.Rel(absBase, target)
+	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		return "", fmt.Errorf("路径越界（超出词库目录）：%s", raw)
+	}
+	return target, nil
+}
+
+// checkFuncPath 校验第 idx 个参数：路径必须位于当前词库目录内，
+// 校验通过后把解析出的绝对路径写回该参数，后续读取参数即得到受限后的路径。
+func checkFuncPath(d *dto.DicInputs, idx int) error {
+	p, err := resolveDicPath(d, d.Inputs.String(idx))
+	if err != nil {
+		return err
+	}
+	if p != "" && idx >= 0 && idx < len(d.Inputs.List) {
+		d.Inputs.List[idx] = p
 	}
 	return nil
 }
 
-// checkFuncPath 校验第 idx 个参数解析后的路径是否位于工作目录内，越界返回错误。
-func checkFuncPath(d *dto.DicInputs, idx int) error {
-	return checkPathValue(d.Inputs.String(idx))
+// CheckFuncPath 供 dic 包等外部调用：校验并写回第 idx 个参数路径（限定在当前词库目录内）。
+func CheckFuncPath(d *dto.DicInputs, idx int) error {
+	return checkFuncPath(d, idx)
 }
 
 // 删除文件（越界拒绝，执行前人工确认）
@@ -201,9 +268,12 @@ func readStringFileLinesCount(d *dto.DicInputs) (any, error) {
 }
 
 func writeKeyStringFile(d *dto.DicInputs) (any, error) {
-	path := "database/" + d.Inputs.String(1)
-	if err := checkPathValue(path); err != nil {
+	path, err := resolveDatabasePath(d, d.Inputs.String(1))
+	if err != nil {
 		return "", err
+	}
+	if path == "" {
+		return "", nil
 	}
 	if strings.EqualFold(filepath.Ext(path), ".json") {
 		return writeJsonKeyFile(d, path)
@@ -213,9 +283,12 @@ func writeKeyStringFile(d *dto.DicInputs) (any, error) {
 }
 
 func readKeyStringFile(d *dto.DicInputs) (any, error) {
-	path := "database/" + d.Inputs.String(1)
-	if err := checkPathValue(path); err != nil {
+	path, err := resolveDatabasePath(d, d.Inputs.String(1))
+	if err != nil {
 		return "", err
+	}
+	if path == "" {
+		return "", nil
 	}
 	if strings.EqualFold(filepath.Ext(path), ".json") {
 		return readJsonKeyFile(d, path)

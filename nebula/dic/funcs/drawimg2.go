@@ -25,7 +25,10 @@ import (
 	"golang.org/x/image/math/fixed"
 )
 
-var httpClient = &http.Client{Timeout: 30 * time.Second}
+var httpClient = &http.Client{
+	Timeout:   30 * time.Second,
+	Transport: utils.GuardTransport(nil),
+}
 
 type NDrawImg struct {
 	img *image.RGBA // 改为 *image.RGBA
@@ -129,8 +132,11 @@ func drawImgNew(d *dto.DicInputs) (any, error) {
 				// 先尝试直接把字符串当作图片二进制数据解析
 				imgDecoded, _, err := image.Decode(strings.NewReader(v))
 				if err != nil {
-					// 解析失败当成本地文件路径读取
-					pp := v
+					// 解析失败当成本地文件路径读取：只允许相对路径，且必须位于当前词库目录内
+					pp, pathErr := resolveDicPath(d, v)
+					if pathErr != nil {
+						return nil, pathErr
+					}
 					imgFile, err := utils.NewFileQueue(pp).ReadImage()
 					if err != nil {
 						return nil, fmt.Errorf("打开图片失败: %v", err)
@@ -2463,7 +2469,12 @@ func drawImgPaste(d *dto.DicInputs) (any, error) {
 		} else {
 			imgDecoded, _, err := image.Decode(strings.NewReader(v))
 			if err != nil {
-				fileData, fileErr := utils.NewFileQueue(v).ReadFileByte()
+				// 本地文件回退：只允许相对路径，且必须位于当前词库目录内
+				rp, pathErr := resolveDicPath(d, v)
+				if pathErr != nil {
+					return nil, pathErr
+				}
+				fileData, fileErr := utils.NewFileQueue(rp).ReadFileByte()
 				if fileErr != nil {
 					return nil, fmt.Errorf("读取本地文件失败: %v", fileErr)
 				}

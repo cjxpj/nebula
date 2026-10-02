@@ -46,6 +46,14 @@ type DicEntryRunner interface {
 	NewDicRunLine(D *dic_dto.DicEntry, txt []string) string
 }
 
+// DicInfoReader 词库信息读取。
+type DicInfoReader interface {
+	// DicReadInfo 读取词库信息：静态读取 [函数]词库信息 内设置的局部变量（名称/价格/描述），
+	// 只解析变量赋值，不执行函数体内的任何函数调用与其他逻辑，避免不可信词库产生副作用。
+	// 未定义 [函数]词库信息 时返回错误。
+	DicReadInfo(D *dic_dto.Dic) (*dic_dto.DicInfo, error)
+}
+
 // WebDicRunner 网页词库执行。
 type WebDicRunner interface {
 	// 执行网页词库（处理 <?n ... ?> 代码块）
@@ -60,5 +68,6 @@ type DicApi interface {
 	DicPrivateRunner
 	DicEventRunner
 	DicEntryRunner
+	DicInfoReader
 	WebDicRunner
 }

@@ -43,7 +43,13 @@ func readConfig(d *dto.DicInputs) (any, error) {
 	}
 
 	fileName := d.Inputs.String(1)
-	filePath := resolveConfigPath(fileName)
+	if fileName == "" {
+		return nil, fmt.Errorf("文件名不能为空")
+	}
+	filePath, err := resolveDicPath(d, resolveConfigPath(d, fileName))
+	if err != nil {
+		return nil, err
+	}
 	node := d.Inputs.String(2)
 
 	defaultVal := ""
@@ -111,7 +117,13 @@ func writeConfig(d *dto.DicInputs) (any, error) {
 	}
 
 	fileName := d.Inputs.String(1)
-	filePath := resolveConfigPath(fileName)
+	if fileName == "" {
+		return nil, fmt.Errorf("文件名不能为空")
+	}
+	filePath, err := resolveDicPath(d, resolveConfigPath(d, fileName))
+	if err != nil {
+		return nil, err
+	}
 	node := d.Inputs.String(2)
 
 	value := ""
@@ -205,10 +217,11 @@ func parseYamlPath(node string) []string {
 	return path
 }
 
-// resolveConfigPath 解析文件名简写为实际路径，同时支持 ini 和 yaml。
-// system / config 及其 .ini/.yml/.yaml 变体统一指向合并后的 config.yaml。
-// 省略扩展名时自动匹配已存在的 .ini / .yml / .yaml，都不存在默认按 .ini 创建。
-func resolveConfigPath(fileName string) string {
+// resolveConfigPath 解析文件名简写为词库目录内的相对文件名，同时支持 ini 和 yaml。
+// system / config 及其 .ini/.yml/.yaml 变体统一指向词库目录下的 CONFIG_PATH。
+// 省略扩展名时自动匹配词库目录下已存在的 .ini / .yml / .yaml，都不存在默认按 .ini 创建。
+// 越界拦截由调用方的 resolveDicPath 统一完成：只允许相对路径且必须落在词库自己所在目录内。
+func resolveConfigPath(d *dto.DicInputs, fileName string) string {
 	switch fileName {
 	case "system", "system.ini", "system.yaml", "system.yml",
 		"config", "config.ini", "config.yaml", "config.yml":
@@ -218,7 +231,7 @@ func resolveConfigPath(fileName string) string {
 	if filepath.Ext(fileName) == "" {
 		for _, ext := range []string{".ini", ".yml", ".yaml"} {
 			path := fileName + ext
-			if configFileExists(path) {
+			if dicConfigExists(d, path) {
 				return path
 			}
 		}
@@ -227,11 +240,13 @@ func resolveConfigPath(fileName string) string {
 	return fileName
 }
 
-// configFileExists 检查配置文件（相对路径基于 NebulaData）是否存在
-func configFileExists(path string) bool {
-	file := utils.NewFile()
-	file.SetPath(path)
-	return file.FileExists()
+// dicConfigExists 判断当前词库目录下是否存在指定相对路径的文件。
+func dicConfigExists(d *dto.DicInputs, name string) bool {
+	abs, err := resolveDicPath(d, name)
+	if err != nil {
+		return false
+	}
+	return utils.NewFileQueue(abs).FileExists()
 }
 
 // isYamlFile 判断文件路径是否为 yaml 格式

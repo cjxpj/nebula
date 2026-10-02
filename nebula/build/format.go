@@ -174,9 +174,26 @@ func formatIndent(lines []string) []string {
 		return strings.Repeat(indentUnit, depth) + line
 	}
 
+	// 跨行注释（/* ... */）内部行整体平移：按注释开启行的原始缩进作为基准，
+	// 保留内部相对缩进与空行，避免逐行归零导致注释排版被抹平。
+	inComment := false
+	commentBase := ""
+
 	for _, raw := range lines {
 		line := trimLeadingBlank(raw)
 		depth := len(stack)
+
+		if inComment {
+			rel := raw
+			if strings.HasPrefix(rel, commentBase) {
+				rel = rel[len(commentBase):]
+			}
+			out = append(out, pad(depth, rel))
+			if strings.Contains(strings.TrimSpace(raw), "*/") {
+				inComment = false
+			}
+			continue
+		}
 
 		if depth > 0 && stack[depth-1].leaf {
 			f := &stack[depth-1]
@@ -208,21 +225,39 @@ func formatIndent(lines []string) []string {
 			continue
 		}
 
+		// 跨行注释开启行：按当前层级输出，并记录其原始缩进作为内部行平移基准。
+		if isBlockCommentOpen(line) {
+			out = append(out, pad(depth, line))
+			commentBase = raw[:len(raw)-len(line)]
+			inComment = true
+			continue
+		}
+
 		out = append(out, pad(depth, line))
 	}
 	return out
 }
 
 // formatRegion 从 start 起取一段连续内容，遇空行或缩进开关标记即停，等价内置算法的 ps。
+// 跨行注释（/* ... */）内部允许空行：注释尚未收尾时空行不切断区域，
+// 保证整段注释交给 formatIndent 平滑移，不被拆成两段后各自重排缩进。
 func formatRegion(lines []string, start int) ([]string, int) {
 	region := make([]string, 0, 8)
 	i := start
+	inComment := false
 	for i < len(lines) {
 		trimmed := strings.TrimSpace(lines[i])
-		if trimmed == "" || trimmed == "//@关闭缩进" || trimmed == "//@启用缩进" {
+		if !inComment && (trimmed == "" || trimmed == "//@关闭缩进" || trimmed == "//@启用缩进") {
 			break
 		}
 		region = append(region, lines[i])
+		if inComment {
+			if strings.Contains(trimmed, "*/") {
+				inComment = false
+			}
+		} else if isBlockCommentOpen(trimmed) {
+			inComment = true
+		}
 		i++
 	}
 	return region, i

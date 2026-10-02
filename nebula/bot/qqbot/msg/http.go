@@ -12,7 +12,16 @@ import (
 	"github.com/cjxpj/nebula/debugLog"
 )
 
+// OnSend 发送消息回调（非 nil 时在真正发送前触发，供上层记录消息日志）
+var OnSend func(b *QQBot, path string, body any)
+
+// OnSendResult 发送完成回调（成功且响应对象非空时触发，供上层回填消息 ID）
+var OnSendResult func(b *QQBot, path string, resp any)
+
 func (b *QQBot) Send(path string, body any, respObj any) error {
+	if OnSend != nil {
+		OnSend(b, path, body)
+	}
 	if b.Sandbox != nil {
 		b.captureSend(body)
 		b.fillSandboxResp(respObj)
@@ -24,6 +33,9 @@ func (b *QQBot) Send(path string, body any, respObj any) error {
 	headers := GetQQBotAuthHeader(b.Key.AccessToken)
 
 	err := postJson(APIURL+path, body, headers, respObj, b.Debug)
+	if err == nil && respObj != nil && OnSendResult != nil {
+		OnSendResult(b, path, respObj)
+	}
 
 	if b.Debug {
 		if err != nil {
@@ -108,6 +120,9 @@ func (b *QQBot) Delete(path string, respObj any) error {
 }
 
 func (b *QQBot) SendChannelImage(path string, imgData []byte, body any, respObj any) error {
+	if OnSend != nil {
+		OnSend(b, path, body)
+	}
 	if err := b.EnsureToken(); err != nil {
 		return err
 	}
@@ -120,6 +135,9 @@ func (b *QQBot) SendChannelImage(path string, imgData []byte, body any, respObj 
 	}
 
 	err := postImageWithJsonDataAsFormFields(APIURL+path, imgData, "NebulaImage", body, headers, respObj, b.Debug)
+	if err == nil && respObj != nil && OnSendResult != nil {
+		OnSendResult(b, path, respObj)
+	}
 
 	if b.Debug {
 		if err != nil {

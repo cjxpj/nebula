@@ -560,16 +560,29 @@ func commentStmtOf(line string) Stmt {
 }
 
 // commentTextLines 把内置注释文本切成注释行数组（CRLF 归一、去空行、非注释行补 "// " 前缀）。
+// /* ... */ 跨行注释内部的行原样保留，避免被补上 "// " 前缀而改变内容。
 func commentTextLines(text string) []string {
 	s := strings.ReplaceAll(text, "\r\n", "\n")
 	s = strings.ReplaceAll(s, "\r", "\n")
 	out := []string{}
+	inBlock := false
 	for _, l := range strings.Split(s, "\n") {
 		l = strings.TrimRightFunc(l, unicode.IsSpace)
 		if strings.TrimSpace(l) == "" {
 			continue
 		}
-		out = append(out, textToComment(l))
+		switch {
+		case inBlock:
+			out = append(out, l)
+			if strings.Contains(l, "*/") {
+				inBlock = false
+			}
+		case isBlockCommentOpen(l):
+			inBlock = true
+			out = append(out, l)
+		default:
+			out = append(out, textToComment(l))
+		}
 	}
 	return out
 }

@@ -969,13 +969,10 @@ const maxServerLogLines = 20000
 // serverLogPageSize 面板回放日志时每页默认返回的行数
 const serverLogPageSize = 300
 
-// serverLogDir 返回服务端日志目录（应用储存目录下的 database/log，绝对路径）
+// serverLogDir 返回服务端日志目录（应用储存目录下的日志目录，绝对路径）。
+// 具体子路径由 utils.SetLogDir 决定，默认 database/log。
 func serverLogDir() string {
-	p := filepath.Join(utils.GetAppDir(), "database", "log")
-	if abs, err := filepath.Abs(p); err == nil {
-		p = abs
-	}
-	return p
+	return utils.GetLogDir()
 }
 
 // serverLogFq 返回当天对应的日志文件句柄（database/log/YYYYMMDD.txt，按天区分，不再建子目录）

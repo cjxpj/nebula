@@ -42,6 +42,9 @@ func hajimimanboDecrypt(d *dto.DicInputs) (any, error) {
 
 // 写图片
 func writeImage(d *dto.DicInputs) (any, error) {
+	if err := checkFuncPath(d, 1); err != nil {
+		return "", err
+	}
 	path1 := utils.NewFileQueue(d.Inputs.String(1)).FileName
 	imgdata, err := utils.SetImgData(path1, []byte(d.Inputs.String(2)))
 	if err != nil {
@@ -52,6 +55,9 @@ func writeImage(d *dto.DicInputs) (any, error) {
 
 // 读图片
 func readImage(d *dto.DicInputs) (any, error) {
+	if err := checkFuncPath(d, 1); err != nil {
+		return "", err
+	}
 	path1 := utils.NewFileQueue(d.Inputs.String(1)).FileName
 	res, err := utils.ReadImgData(path1)
 	if err != nil {

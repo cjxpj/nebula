@@ -125,6 +125,11 @@ func Funcs(d *dic_dto.DicFunc, dic_i *utils.DicInputs) (any, error) {
 		return "", nil
 	}
 
+	// 禁用函数：不执行任何函数（含条件/插值中的调用），返回原始字面量。
+	if d.Sys.NoFunc.Load() {
+		return "$" + strings.Join(dic_i.StringList(), " ") + "$", nil
+	}
+
 	// 捕获报错调用：$!函数名 参数$，报错时写入「报错」变量并返回错误文本，不停止后续执行
 	captureErr := false
 	if name := dic_i.String(0); strings.HasPrefix(name, "!") {

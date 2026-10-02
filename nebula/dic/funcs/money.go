@@ -65,10 +65,11 @@ func moneyBalanceAndRank(db *sql.DB, typ, account string) (any, error) {
 
 // db_添加 <类型> <账号> <整数>：增加余额，返回操作后的余额。
 func dbMoneyAdd(d *dto.DicInputs) (any, error) {
-	db, err := GetGlobalDB()
+	db, err := GetDicDB(d)
 	if err != nil {
-		return nil, fmt.Errorf("全局数据库初始化失败: %w", err)
+		return nil, fmt.Errorf("数据库初始化失败: %w", err)
 	}
+	defer db.Close()
 	if err = EnsureMoneyTable(db); err != nil {
 		return nil, err
 	}
@@ -95,10 +96,11 @@ func dbMoneyAdd(d *dto.DicInputs) (any, error) {
 
 // db_减少 <类型> <账号> <整数>：减少余额，返回操作后的余额。
 func dbMoneySub(d *dto.DicInputs) (any, error) {
-	db, err := GetGlobalDB()
+	db, err := GetDicDB(d)
 	if err != nil {
-		return nil, fmt.Errorf("全局数据库初始化失败: %w", err)
+		return nil, fmt.Errorf("数据库初始化失败: %w", err)
 	}
+	defer db.Close()
 	if err = EnsureMoneyTable(db); err != nil {
 		return nil, err
 	}
@@ -125,10 +127,11 @@ func dbMoneySub(d *dto.DicInputs) (any, error) {
 
 // db_设置 <类型> <账号> <整数或负数>：直接设置余额，返回操作后的余额。
 func dbMoneySet(d *dto.DicInputs) (any, error) {
-	db, err := GetGlobalDB()
+	db, err := GetDicDB(d)
 	if err != nil {
-		return nil, fmt.Errorf("全局数据库初始化失败: %w", err)
+		return nil, fmt.Errorf("数据库初始化失败: %w", err)
 	}
+	defer db.Close()
 	if err = EnsureMoneyTable(db); err != nil {
 		return nil, err
 	}
@@ -155,10 +158,11 @@ func dbMoneySet(d *dto.DicInputs) (any, error) {
 
 // db_查询 <类型> <账号>：账号留空返回 {} 数据（账号->余额），否则返回 {"余额":...,"排名":...}。
 func dbMoneyQuery(d *dto.DicInputs) (any, error) {
-	db, err := GetGlobalDB()
+	db, err := GetDicDB(d)
 	if err != nil {
-		return nil, fmt.Errorf("全局数据库初始化失败: %w", err)
+		return nil, fmt.Errorf("数据库初始化失败: %w", err)
 	}
+	defer db.Close()
 	if err = EnsureMoneyTable(db); err != nil {
 		return nil, err
 	}
@@ -195,10 +199,11 @@ func dbMoneyQuery(d *dto.DicInputs) (any, error) {
 
 // db_查询排名 <类型> <页数> <显示数量>：按余额降序返回排名列表；页数留空返回全部，显示数量默认 10。
 func dbMoneyRank(d *dto.DicInputs) (any, error) {
-	db, err := GetGlobalDB()
+	db, err := GetDicDB(d)
 	if err != nil {
-		return nil, fmt.Errorf("全局数据库初始化失败: %w", err)
+		return nil, fmt.Errorf("数据库初始化失败: %w", err)
 	}
+	defer db.Close()
 	if err = EnsureMoneyTable(db); err != nil {
 		return nil, err
 	}
@@ -257,10 +262,11 @@ func dbMoneyRank(d *dto.DicInputs) (any, error) {
 
 // db_清空经济系统 <类型>：清空指定类型的所有记录；类型留空则清空整个 money 表。
 func dbMoneyClear(d *dto.DicInputs) (any, error) {
-	db, err := GetGlobalDB()
+	db, err := GetDicDB(d)
 	if err != nil {
-		return nil, fmt.Errorf("全局数据库初始化失败: %w", err)
+		return nil, fmt.Errorf("数据库初始化失败: %w", err)
 	}
+	defer db.Close()
 	if err = EnsureMoneyTable(db); err != nil {
 		return nil, err
 	}

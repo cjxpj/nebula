@@ -15,6 +15,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 
 	"github.com/cjxpj/nebula/appfiles"
 	"github.com/cjxpj/nebula/build"
@@ -633,6 +634,10 @@ type importStack struct {
 
 	// importedFuncs 通过 #引入= 合并进来的函数词条，「函数未使用」检查只针对当前文件定义的函数，故跳过它们。
 	importedFuncs map[*dto.BuildDic]bool
+
+	// noImport 为 true 时禁用编译期文件读取指令（#引入= / $引入 / //@资源 / //@一次性资源），
+	// 供服务端编译不可信词库内容（如商店发布取元数据）时使用，避免读取服务器本地文件。
+	noImport bool
 }
 
 // newImportStack 创建空的引入链。
@@ -699,9 +704,20 @@ func dicHashBytes(b []byte) string {
 	return hex.EncodeToString(sum[:])
 }
 
-// dicCachePath 返回某词库对应的磁盘缓存文件路径（private/.dic_cache 目录下）。
-func dicCachePath(dicPath string) string {
-	return filepath.Join(dicCacheDir(), dicHash(dicPath)+".gob")
+// dicCacheDirFunc 自定义的编译缓存目录推导函数：入参为规范化前的原始词库路径，
+// 返回该词库的缓存目录。供多租户平台把缓存收到词库目录之外并按机器人/账号分开；
+// 未设置时用默认目录 private/.dic_cache。
+var dicCacheDirFunc atomic.Value // func(string) string
+
+// SetDicCacheDirFunc 设置编译缓存目录的推导函数，需在加载词库前调用；传 nil 恢复默认。
+// 返回空串时该次编译回退到默认目录。
+func SetDicCacheDirFunc(f func(dicPath string) string) {
+	dicCacheDirFunc.Store(f)
+}
+
+// dicCachePath 返回某词库在指定缓存目录下的磁盘缓存文件路径。
+func dicCachePath(cacheDir, dicPath string) string {
+	return filepath.Join(cacheDir, dicHash(dicPath)+".gob")
 }
 
 // readDicFileContent 读取词库文件，返回编译输入行与用于内容 hash 的原始字节；
@@ -806,8 +822,8 @@ func UnmarshalBuildValue(data []byte) (*dto.BuildValue, error) {
 var dicCacheMu sync.Mutex
 
 // loadDicCache 读取并校验磁盘编译缓存；命中则返回重建的 BuildValue，否则返回 nil。
-func loadDicCache(dicPath, mainHash string) *dto.BuildValue {
-	data, err := os.ReadFile(dicCachePath(dicPath))
+func loadDicCache(cacheDir, dicPath, mainHash string) *dto.BuildValue {
+	data, err := os.ReadFile(dicCachePath(cacheDir, dicPath))
 	if err != nil {
 		return nil
 	}
@@ -834,7 +850,7 @@ func loadDicCache(dicPath, mainHash string) *dto.BuildValue {
 // saveDicCache 将编译结果写入磁盘缓存。先在当前 goroutine 同步编码为字节
 // （此时编译结果尚未对外可见，避免异步读取共享数据），再异步落盘，
 // 避免磁盘 IO 阻塞词库加载。
-func saveDicCache(dicPath string, e *dicCacheEntry) {
+func saveDicCache(cacheDir, dicPath string, e *dicCacheEntry) {
 	// 启动阶段不写编译缓存，避免启动时自动创建 private/.dic_cache 目录
 	if utils.InStartupMode() {
 		return
@@ -843,15 +859,15 @@ func saveDicCache(dicPath string, e *dicCacheEntry) {
 	if err := gob.NewEncoder(&buf).Encode(e); err != nil {
 		return
 	}
-	go writeDicCacheFile(dicPath, buf.Bytes())
+	go writeDicCacheFile(cacheDir, dicPath, buf.Bytes())
 }
 
 // writeDicCacheFile 将编码后的缓存字节写入磁盘（临时文件 + 原子替换，并发安全）。
-func writeDicCacheFile(dicPath string, data []byte) {
+func writeDicCacheFile(cacheDir, dicPath string, data []byte) {
 	dicCacheMu.Lock()
 	defer dicCacheMu.Unlock()
 
-	p := dicCachePath(dicPath)
+	p := dicCachePath(cacheDir, dicPath)
 	if err := os.MkdirAll(filepath.Dir(p), 0755); err != nil {
 		return
 	}
@@ -889,6 +905,20 @@ type dicCacheMeta struct {
 // dicCacheDir 返回词库编译缓存目录（private/.dic_cache）。
 func dicCacheDir() string {
 	return filepath.Join(utils.GetAppDir(), "private", ".dic_cache")
+}
+
+// dicCacheDirFor 返回某词库应使用的缓存目录。
+// 由 SetDicCacheDirFunc 注入的推导函数决定（多租户平台据此把缓存放到词库目录之外）；
+// 未注入或返回空串时用默认目录 private/.dic_cache。
+// 注意：必须传入规范化（importFilePath）之前的原始词库路径，否则绝对路径会被
+// 改写成 private/... 前缀而丢失原本的目录层级。
+func dicCacheDirFor(dicPath string) string {
+	if f, ok := dicCacheDirFunc.Load().(func(string) string); ok && f != nil {
+		if dir := f(dicPath); dir != "" {
+			return dir
+		}
+	}
+	return dicCacheDir()
 }
 
 // ListDicCache 列出磁盘编译缓存，按写入时间倒序（最新在前）。
@@ -1092,6 +1122,10 @@ func web(dicPath string, lines []string, stack *importStack) *dto.BuildValue {
 		}
 
 		if varName, path, ok := parseImportLine(line); ok {
+			if stack.noImport {
+				stack.addError(i+1, "已禁用引入指令")
+				continue
+			}
 			isDir, pkg := importPackage(dicPath, path, "", funcDict, classText, myFunc, stack, i+1)
 			// 赋予值形式：变量:$引入 目标$ → 导入全部函数组成包并返回实例
 			if varName != "" && !isDir {
@@ -1132,17 +1166,28 @@ func BuildDicLinesWithRaw(dicPath string, lines []string, raw []byte) *dto.Build
 // BuildDicLinesWithRawNoCache 与 BuildDicLinesWithRaw 相同，但不写磁盘缓存。
 // 供「编译检测」等仅需诊断信息、无需缓存加速的场景使用，避免每次保存/打开都产生缓存文件。
 func BuildDicLinesWithRawNoCache(dicPath string, lines []string, raw []byte) *dto.BuildValue {
-	return buildDicWithHashMode(dicPath, lines, dicHashBytes(raw), false)
+	return buildDicWithHashMode(dicPath, lines, dicHashBytes(raw), false, false)
+}
+
+// BuildDicNoImport 与 BuildDic 相同，但禁用编译期文件读取指令（#引入= / $引入 / //@资源 / //@一次性资源）：
+// 不会读取任何外部文件，供服务端编译不可信词库内容（如商店发布取元数据）时使用。
+func BuildDicNoImport(dicPath, text string) *dto.BuildValue {
+	return buildDicWithHashMode(dicPath, strings.Split(text, "\n"), dicHashBytes([]byte(text)), false, true)
 }
 
 // buildDicWithHash 为编译入口的内部实现，携带引入链用于检测循环引入，并按内容 hash 校验磁盘缓存。
 func buildDicWithHash(dicPath string, lines []string, mainHash string) *dto.BuildValue {
-	return buildDicWithHashMode(dicPath, lines, mainHash, true)
+	return buildDicWithHashMode(dicPath, lines, mainHash, true, false)
 }
 
 // buildDicWithHashMode 编译核心；writeCache 为 false 时跳过写缓存（读缓存不受影响）。
-func buildDicWithHashMode(dicPath string, lines []string, mainHash string, writeCache bool) *dto.BuildValue {
+// noImport 为 true 时禁用编译期文件读取指令（#引入= / $引入 / //@资源 / //@一次性资源）。
+func buildDicWithHashMode(dicPath string, lines []string, mainHash string, writeCache, noImport bool) *dto.BuildValue {
 	stack := newImportStack()
+	stack.noImport = noImport
+	// 缓存目录必须在路径规范化之前按原始路径推导：importFilePath 会把绝对路径
+	// 改写成 private/... 前缀，规范化后就无法定位词库原本所在的目录了。
+	cacheDir := dicCacheDirFor(dicPath)
 	// 顶层词库同样压入引入链，路径与 #引入= 加载路径保持一致（统一 private/ 前缀与 .n 后缀），
 	// 避免被引入文件反向引入顶层时把顶层重复加载，导致同一条循环引入被重复报告。
 	dicPath = importFilePath(dicPath)
@@ -1153,7 +1198,7 @@ func buildDicWithHashMode(dicPath string, lines []string, mainHash string, write
 	cacheEnabled := dto.ServerConfig.DicCache
 
 	if cacheEnabled {
-		if cached := loadDicCache(dicPath, mainHash); cached != nil {
+		if cached := loadDicCache(cacheDir, dicPath, mainHash); cached != nil {
 			return cached
 		}
 	}
@@ -1163,7 +1208,7 @@ func buildDicWithHashMode(dicPath string, lines []string, mainHash string, write
 
 	// 含 bot 注入的词库（MyFunc 非空）不落缓存，避免序列化 Go 函数；其余词库写缓存加速后续加载。
 	if writeCache && cacheEnabled && len(result.MyFunc) == 0 {
-		saveDicCache(dicPath, &dicCacheEntry{
+		saveDicCache(cacheDir, dicPath, &dicCacheEntry{
 			Version:       dicCacheVersion,
 			Deps:          stack.deps,
 			Dic:           result.Dic,
@@ -1274,7 +1319,9 @@ func buildDic(dicPath string, lines []string, stack *importStack) *dto.BuildValu
 	for i, l := range lines {
 		if strings.TrimSpace(l) == "" {
 			hasBlank = true
-			runhead = i > 0
+			// 首个空行之前为头部，但该段必须是真正的头部（引入/赋值/指令/框开启）；
+			// 否则（如以 [函数]/[词条] 开头）按正文解析，避免整篇被当成头部中间件。
+			runhead = i > 0 && build.FirstHeadLikeLine(lines[:i])
 			break
 		}
 	}
@@ -1349,13 +1396,21 @@ func buildDic(dicPath string, lines []string, stack *importStack) *dto.BuildValu
 			}
 			if strings.TrimSpace(line) == "//@资源" {
 				// //@资源 单独一行：开启多行资源块，后续「变量名:路径」行逐个声明资源
-				resourceBlock = true
-				resourceOnce = false
+				if stack.noImport {
+					stack.addError(dic_i+1, "已禁用 //@资源 指令")
+				} else {
+					resourceBlock = true
+					resourceOnce = false
+				}
 			}
 			if strings.TrimSpace(line) == "//@一次性资源" {
 				// //@一次性资源 单独一行：开启多行一次性资源块，读取一次后销毁
-				resourceBlock = true
-				resourceOnce = true
+				if stack.noImport {
+					stack.addError(dic_i+1, "已禁用 //@一次性资源 指令")
+				} else {
+					resourceBlock = true
+					resourceOnce = true
+				}
 			}
 			// 普通 // 注释（非 @ 指令）：收集为函数上方的说明，不参与头部/正文分隔
 			if !strings.HasPrefix(line, "//@") {
@@ -1366,6 +1421,10 @@ func buildDic(dicPath string, lines []string, stack *importStack) *dto.BuildValu
 
 		if runhead {
 			if varName, path, ok := parseImportLine(line); ok {
+				if stack.noImport {
+					stack.addError(dic_i+1, "已禁用引入指令")
+					continue
+				}
 				isDir, pkg := importPackage(dicPath, path, fHeaderName, chajianText, classText, myFunc, stack, dic_i+1)
 				// 赋予值形式：变量:$引入 目标$ → 导入全部函数组成包并返回实例
 				if varName != "" && !isDir {

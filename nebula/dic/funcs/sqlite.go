@@ -30,10 +30,18 @@ func (r *SqliteRes) r() string {
 
 func sqliteOpen(d *dto.DicInputs) (any, error) {
 	dbPath := d.Inputs.String(1)
+	var dbf *utils.FileQueue
 	if dbPath == "" || dbPath == ":内存:" {
-		dbPath = ":memory:"
+		// 内存库没有磁盘路径：直接用 DSN，避免被工作目录拼成一个非法文件名
+		dbf = utils.NewFile()
+		dbf.FileName = ":memory:"
+	} else {
+		if err := checkFuncPath(d, 1); err != nil {
+			return "", err
+		}
+		// 校验后参数已被写回为词库目录内的绝对路径
+		dbf = utils.NewFileQueue(d.Inputs.String(1))
 	}
-	dbf := utils.NewFileQueue(dbPath)
 	db, err := dbf.OpenSqlite()
 	if err == nil {
 		return newSqliteClass(db), nil

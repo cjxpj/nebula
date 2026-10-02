@@ -41,6 +41,15 @@ func SetPushContext(dic *dic_dto.Dic, ctx *PushContext) {
 	if dic == nil || dic.Val == nil || dic.Val.G == nil || ctx == nil {
 		return
 	}
+	// 按机器人词库目录挂载私有的线程变量存储：`_名_` 形式的线程变量落到本机器人自己的
+	// 存储，避免不同机器人之间串线（此前落进程级全局 GV，会跨机器人共享）。
+	if ctx.Bot != nil && ctx.Bot.FilePath != "" {
+		store := dto.BotThreadVars(ctx.Bot.FilePath)
+		dic.Val.G.SetThreadStore(store)
+		if dic.Val.P != nil {
+			dic.Val.P.SetThreadStore(store)
+		}
+	}
 	// 必须用 SetRaw：pushCtxKey 前后都带下划线，Set/Get 会把它当成线程变量路由到全局 GV，
 	// 导致并发处理多条消息时上下文互相覆盖（串线）。SetRaw 绕过线程变量映射，落到本词库实例。
 	dic.Val.G.SetRaw(pushCtxKey, ctx)

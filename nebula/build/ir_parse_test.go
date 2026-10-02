@@ -254,6 +254,57 @@ JSON测试
 	}
 }
 
+// TestNebulaToIRBlockComment 验证跨行注释（/* ... */）不会拆散词条：
+// 注释出现在正文中间时，其后的代码行仍属于同一词条；出现在触发词之前时，
+// 整段作为前置注释词条，注释内部的行不会被误当成触发词。
+func TestNebulaToIRBlockComment(t *testing.T) {
+	body := "测试词条\n    输出 \"a\"\n    /* 说明\n       多行 */\n    输出 \"b\"\n"
+	ir := NebulaToIR(body)
+	if len(ir.Entries) != 1 {
+		t.Fatalf("正文内多行注释拆散了词条：entries=%d（%+v）", len(ir.Entries), ir.Entries)
+	}
+	if n := len(ir.Entries[0].Body); n != 4 {
+		t.Fatalf("正文语句数不符：got=%d body=%+v", n, ir.Entries[0].Body)
+	}
+	if got, want := normalizeNonBlankLines(IRToNebula(ir)), normalizeNonBlankLines(body); !reflect.DeepEqual(got, want) {
+		t.Errorf("正文多行注释往返不一致：\n--- got ---\n%s\n--- want ---\n%s", strings.Join(got, "\n"), strings.Join(want, "\n"))
+	}
+	if got, want := normalizeNonBlankLines(IRToNebula(blocksRoundTrip(t, ir))), normalizeNonBlankLines(body); !reflect.DeepEqual(got, want) {
+		t.Errorf("正文多行注释经积木层往返不一致：\n--- got ---\n%s\n--- want ---\n%s", strings.Join(got, "\n"), strings.Join(want, "\n"))
+	}
+
+	// 注释内部含空行：空行不应切分词条，也不应在重发时丢失
+	blank := "测试词条\n    输出 \"a\"\n    /* 说明\n\n       多行 */\n    输出 \"b\"\n"
+	ir = NebulaToIR(blank)
+	if len(ir.Entries) != 1 {
+		t.Fatalf("注释内空行拆散了词条：entries=%d（%+v）", len(ir.Entries), ir.Entries)
+	}
+	if got := IRToNebula(ir); !strings.Contains(got, "/* 说明\n\n") {
+		t.Errorf("多行注释内的空行未保留：\n%s", got)
+	}
+	if !reflect.DeepEqual(NebulaToIR(IRToNebula(ir)), ir) {
+		t.Errorf("含空行的多行注释不幂等：%+v", ir)
+	}
+
+	lead := "/* 说明\n   多行 */\n测试词条\n    输出 \"a\"\n"
+	ir = NebulaToIR(lead)
+	if len(ir.Entries) != 2 {
+		t.Fatalf("前置多行注释词条数不符：entries=%d（%+v）", len(ir.Entries), ir.Entries)
+	}
+	if !isCommentEntry(ir.Entries[0]) || ir.Entries[0].Name != "/* 说明" {
+		t.Fatalf("前置多行注释未按注释词条解析：%+v", ir.Entries[0])
+	}
+	if ir.Entries[1].Name != "测试词条" {
+		t.Fatalf("前置多行注释后触发词解析错误：%+v", ir.Entries[1])
+	}
+	if got, want := normalizeNonBlankLines(IRToNebula(ir)), normalizeNonBlankLines(lead); !reflect.DeepEqual(got, want) {
+		t.Errorf("前置多行注释往返不一致：\n--- got ---\n%s\n--- want ---\n%s", strings.Join(got, "\n"), strings.Join(want, "\n"))
+	}
+	if got, want := normalizeNonBlankLines(IRToNebula(blocksRoundTrip(t, ir))), normalizeNonBlankLines(lead); !reflect.DeepEqual(got, want) {
+		t.Errorf("前置多行注释经积木层往返不一致：\n--- got ---\n%s\n--- want ---\n%s", strings.Join(got, "\n"), strings.Join(want, "\n"))
+	}
+}
+
 // TestNebulaToIRImportAssign 验证赋予值形式引入（变量:$引入 路径$）：
 // 解析为 import 语句且携带实例变量名（而非退化成赋值），往返逐字一致。
 func TestNebulaToIRImportAssign(t *testing.T) {

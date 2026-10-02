@@ -114,9 +114,10 @@ func splitEntryChunks(lines []string) [][]string {
 			}
 			continue
 		case "blockcomment":
+			// 多行注释只吞空行、不切分词条：注释整体是词条正文的一部分，
+			// 闭合后仍要与其后的行同属一个词条（由空行触发 flush）。
 			cur = append(cur, raw)
 			if strings.HasSuffix(t, "*/") {
-				flush()
 				state = "normal"
 			}
 			continue
@@ -131,7 +132,7 @@ func splitEntryChunks(lines []string) [][]string {
 			state = "qmark"
 			continue
 		}
-		if strings.HasPrefix(t, "/*") && !strings.Contains(t[2:], "*/") {
+		if isBlockCommentOpen(t) {
 			cur = append(cur, raw)
 			state = "blockcomment"
 			continue
@@ -151,13 +152,7 @@ func chunkToEntries(chunk []string) []Entry {
 	if len(chunk) == 0 {
 		return nil
 	}
-	j := -1
-	for i, l := range chunk {
-		if !isCommentLine(strings.TrimSpace(l)) {
-			j = i
-			break
-		}
-	}
+	j := firstNonCommentLine(chunk)
 	if j < 0 {
 		return []Entry{commentEntry(chunk)}
 	}
@@ -167,18 +162,49 @@ func chunkToEntries(chunk []string) []Entry {
 	return buildEntryFromChunk(chunk)
 }
 
-// commentEntry 把一段纯注释行转成词条：首行作触发词（原样输出），其余行按语句解析。
+// firstNonCommentLine 返回块内首个非注释行的下标（整块都是注释行时返回 -1）。
+// 多行注释（/* ... */）整体按注释行看待，其内部行不会被误当成触发词。
+func firstNonCommentLine(chunk []string) int {
+	for i := 0; i < len(chunk); i++ {
+		t := strings.TrimSpace(chunk[i])
+		if !isCommentLine(t) {
+			return i
+		}
+		if isBlockCommentOpen(t) {
+			for i < len(chunk) && !strings.Contains(strings.TrimSpace(chunk[i]), "*/") {
+				i++
+			}
+			if i >= len(chunk) {
+				return -1
+			}
+		}
+	}
+	return -1
+}
+
+// commentEntry 把一段纯注释行转成词条：首行作触发词（原样输出），其余行按注释语句解析
+// （与积木层 commentEntriesOf 互为逆操作，保证 /* ... */ 这类注释原样保留、往返无损）。
 // 运行时会把 // 开头的行整体跳过（只收集为函数说明），故此形态语义与原文件一致。
 func commentEntry(lines []string) Entry {
 	if len(lines) == 0 {
 		return Entry{Kind: "normal"}
 	}
-	return Entry{Kind: "normal", Name: trimLeadingBlank(lines[0]), Body: parseStmts(lines[1:])}
+	body := make([]Stmt, 0, len(lines)-1)
+	for _, l := range lines[1:] {
+		body = append(body, commentStmtOf(trimLeadingBlank(l)))
+	}
+	return Entry{Kind: "normal", Name: trimLeadingBlank(lines[0]), Body: body}
 }
 
 // isCommentLine 判断是否为注释行（// 、/* 、*/ 开头）。
 func isCommentLine(t string) bool {
 	return strings.HasPrefix(t, "//") || strings.HasPrefix(t, "/*") || strings.HasPrefix(t, "*/")
+}
+
+// isBlockCommentOpen 判断是否为「未在本行闭合的跨行注释起始行」（即 /* 之后同行没有 */）。
+func isBlockCommentOpen(t string) bool {
+	t = strings.TrimLeft(t, " \t")
+	return strings.HasPrefix(t, "/*") && !strings.Contains(t[2:], "*/")
 }
 
 // buildEntryFromChunk 由词条块生成词条：首行是触发词，其余行为正文。
@@ -264,7 +290,7 @@ func parseStmtsCtx(lines []string, inJson bool) []Stmt {
 		}
 
 		// 多行块注释：整段原样保留
-		if strings.HasPrefix(t, "/*") && !strings.Contains(t[2:], "*/") {
+		if isBlockCommentOpen(t) {
 			j := i + 1
 			for j < len(lines) && !strings.Contains(trimLeadingBlank(lines[j]), "*/") {
 				j++

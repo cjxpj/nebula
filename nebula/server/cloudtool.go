@@ -670,8 +670,20 @@ func cloudShopStripMeta(text string) string {
 	return strings.Join(lines[i:], "\n")
 }
 
+// cloudShopReadMeta 读取上传词库的信息：编译后交给词库引擎公开接口静态读取 [函数]词库信息 内的
+// 局部变量（名称/价格/描述），不执行函数体内的函数与逻辑；未定义该函数时报错。
+// 编译使用 NewDicNoImport 禁用 #引入= 与 //@资源，避免编译不可信上传内容时读取服务器本地文件。
+func cloudShopReadMeta(dicPath string, raw []byte) (name, desc string, price int64, err error) {
+	info, err := dic_api.Api.DicReadInfo(dic_dto.NewDicNoImport(dicPath, string(raw)))
+	if err != nil {
+		return "", "", 0, err
+	}
+	return info.Name, info.Desc, info.Price, nil
+}
+
 // cloudShopPublish 发布词库：解码 base64 内容并写入数据库，元数据同时存表。
-// Args: [0]文件名 [1]名称 [2]价格 [3]描述；商品 ID 取自文件名（去扩展名），同名商品不允许覆盖。
+// Args: [0]文件名；名称/价格/描述取自词库内 [函数]词库信息 设置的局部变量。
+// 商品 ID 取自文件名（去扩展名），同名商品不允许覆盖。
 // username 为上传者；开启词库审核时新词库先进入待审核状态，通过后才上架。
 func cloudShopPublish(db *sql.DB, username string, msg cloudServerMsg) (string, error) {
 	if strings.TrimSpace(msg.Data) == "" {
@@ -692,13 +704,11 @@ func cloudShopPublish(db *sql.DB, username string, msg cloudServerMsg) (string, 
 		return "", errors.New("词库过大（最大 8MB）")
 	}
 
-	arg := func(i int) string {
-		if i < len(msg.Args) {
-			return strings.TrimSpace(msg.Args[i])
-		}
-		return ""
+	fileName := ""
+	if len(msg.Args) > 0 {
+		fileName = strings.TrimSpace(msg.Args[0])
 	}
-	id := cloudShopSafeID(arg(0))
+	id := cloudShopSafeID(fileName)
 	if id == "" {
 		return "", errors.New("词库文件名不合法")
 	}
@@ -706,20 +716,13 @@ func cloudShopPublish(db *sql.DB, username string, msg cloudServerMsg) (string, 
 		return "", errors.New("同名词库已存在，请修改文件名后重试")
 	}
 
-	// 元数据行内的换行会破坏头部解析，统一压成空格
-	oneLine := strings.NewReplacer("\r", " ", "\n", " ")
-	name := oneLine.Replace(arg(1))
+	// 元数据由词库内 [函数]词库信息 设置局部变量后读取获得
+	name, desc, price, err := cloudShopReadMeta(id, raw)
+	if err != nil {
+		return "", err
+	}
 	if name == "" {
 		name = id
-	}
-	desc := oneLine.Replace(arg(3))
-	price := int64(0)
-	if p := arg(2); p != "" {
-		v, perr := strconv.ParseInt(p, 10, 64)
-		if perr != nil || v < 0 {
-			return "", errors.New("价格必须是不小于 0 的整数")
-		}
-		price = v
 	}
 
 	status := cloudReviewApproved

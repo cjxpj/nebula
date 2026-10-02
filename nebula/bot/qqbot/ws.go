@@ -545,7 +545,14 @@ func getWsGatewayUrl(bot *qqbot_msg.RouterQQBot) string {
 
 // ================= WS 消息分发 =================
 
+// OnRecv 收到事件回调（非 nil 时在分发前触发，供上层记录消息日志）
+var OnRecv func(bot *qqbot_msg.RouterQQBot, eventType string, data json.RawMessage)
+
 func wsDispatch(bot *qqbot_msg.RouterQQBot, t string, d json.RawMessage, id string) {
+	if OnRecv != nil {
+		OnRecv(bot, t, d)
+	}
+
 	payload := &qqbot_msg.Payload{
 		Op:   0,
 		Id:   id,

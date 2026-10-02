@@ -48,6 +48,9 @@ type LocalDicValue struct {
 	// InTry 标记当前执行上下文为 测试> 框：函数报错时不清空已累积输出、不追加格式化错误，
 	// 由 测试> 框自行保留报错前输出并捕获原始错误。
 	InTry      atomic.Bool `json:"-"`
+	// NoFunc 为真时禁用函数调用：所有 $函数$ 一律不执行，直接返回原始字面量。
+	// 供词库信息读取等场景在复用引擎执行逻辑时屏蔽函数副作用。
+	NoFunc     atomic.Bool `json:"-"`
 	State      RunState    `json:"state"`
 }
 
@@ -257,6 +260,9 @@ type BuildValue struct {
 	OnceResources map[string]bool `json:"一次性资源,omitempty"`
 	// Deps 所有依赖文件（含主文件、#引入、//@资源）路径 -> 内容 sha256，用于编译缓存与打包指纹的确定性失效校验。非序列化。
 	Deps map[string]string `json:"-"`
+	// Dir 词库文件所在目录（绝对路径）。词库内的文件函数只允许以相对路径读写该目录下的内容；
+	// 内存词库（无磁盘文件）为空，此时回退到引擎默认工作目录。非序列化。
+	Dir string `json:"-"`
 	// InHeader 运行时标记：当前是否正在执行词库头部（供 $重定向触发词$ 等仅在头部生效的功能判断）。
 	InHeader bool `json:"-"`
 	// funcIndex 函数名 -> 词条索引（触发词去掉 -> 后缀后作为键），惰性构建；MergeFuncs 追加后失效重建。非序列化。

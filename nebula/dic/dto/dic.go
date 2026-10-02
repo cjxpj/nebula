@@ -2,6 +2,7 @@ package dic_dto
 
 import (
 	"maps"
+	"path/filepath"
 	"strings"
 
 	"github.com/cjxpj/nebula/appfiles"
@@ -121,7 +122,30 @@ func RunDicNoCache(path string) (*Dic, error) {
 	return NewDicFileNoCache(path)
 }
 
+// dicDir 返回词库文件所在目录的绝对路径。
+// 只传了文件名（内存/测试用词库）时返回空串，运行期由文件函数回退到引擎默认工作目录。
+func dicDir(path string) string {
+	dir := filepath.Dir(path)
+	if dir == "" || dir == "." {
+		return ""
+	}
+	if abs, err := filepath.Abs(dir); err == nil {
+		return abs
+	}
+	return dir
+}
+
 func NewDic(path, text string) *Dic {
+	return newDic(path, text, false)
+}
+
+// NewDicNoImport 与 NewDic 相同，但禁用编译期文件读取指令（#引入= / //@资源 等）：
+// 不会读取任何外部文件，供服务端编译不可信词库内容（如商店发布取元数据）时使用。
+func NewDicNoImport(path, text string) *Dic {
+	return newDic(path, text, true)
+}
+
+func newDic(path, text string, noImport bool) *Dic {
 	// 去除注释后解密
 	str, err := utils.Decrypt(utils.RemoveComments(text), appfiles.Key)
 	if err == nil {
@@ -129,7 +153,13 @@ func NewDic(path, text string) *Dic {
 	}
 
 	val := dto.NewDicVal()
-	SplitText := run.BuildDic(path, text)
+	var SplitText *dto.BuildValue
+	if noImport {
+		SplitText = run.BuildDicNoImport(path, text)
+	} else {
+		SplitText = run.BuildDic(path, text)
+	}
+	SplitText.Dir = dicDir(path)
 
 	return &Dic{
 		Data:      SplitText,
@@ -174,6 +204,7 @@ func newDicFile(path string, noCache bool) (*Dic, error) {
 	} else {
 		SplitText = run.BuildDicLinesWithRaw(path, lines, raw)
 	}
+	SplitText.Dir = dicDir(path)
 
 	return &Dic{
 		Data:      SplitText,

@@ -3,6 +3,7 @@ package funcs
 import (
 	"errors"
 	"fmt"
+	"path/filepath"
 
 	"github.com/cjxpj/nebula/appfiles"
 	"github.com/cjxpj/nebula/dto"
@@ -45,8 +46,13 @@ func throwError(d *dto.DicInputs) (any, error) {
 }
 
 func encodeDic(d *dto.DicInputs) (any, error) {
-	setpath := d.Inputs.String(1)
-	file := utils.NewFileQueue(setpath)
+	raw := d.Inputs.String(1)
+	// 读入路径：限定在词库目录内
+	inPath, err := resolveDicPath(d, raw)
+	if err != nil || inPath == "" {
+		return "false", nil
+	}
+	file := utils.NewFileQueue(inPath)
 	if file.ReadFileExt() != ".n" {
 		return "false", nil
 	}
@@ -54,7 +60,12 @@ func encodeDic(d *dto.DicInputs) (any, error) {
 	if err != nil {
 		return "false", nil
 	}
-	file.SetPath("encode/" + d.Inputs.String(1))
+	// 输出路径：词库目录下的 encode/ 子目录，同样限制在词库目录内
+	outPath, err := resolveDicPath(d, filepath.Join("encode", raw))
+	if err != nil || outPath == "" {
+		return "false", nil
+	}
+	file.SetPath(outPath)
 	encodeDic, err := utils.Encrypt(filedata, appfiles.Key)
 	if err != nil {
 		return "false", nil

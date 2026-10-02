@@ -23,6 +23,7 @@ import (
 	"github.com/cjxpj/nebula/debugLog"
 	dic_api "github.com/cjxpj/nebula/dic/api"
 	dic_dto "github.com/cjxpj/nebula/dic/dto"
+	"github.com/cjxpj/nebula/dic/funcs"
 	"github.com/cjxpj/nebula/dto"
 	"github.com/cjxpj/nebula/run"
 	dic_server "github.com/cjxpj/nebula/server"
@@ -81,6 +82,10 @@ func runDic(d *dto.DicInputs) (any, error) {
 
 // 执行词库文件
 func runDicFile(d *dto.DicInputs) (any, error) {
+	// 词库文件路径限制在当前词库目录内
+	if err := funcs.CheckFuncPath(d, 1); err != nil {
+		return "", err
+	}
 	dicPath := d.Inputs.String(1)
 	data, err := utils.NewFileQueue(dicPath).ReadFromFile()
 	if err != nil {
@@ -230,6 +235,10 @@ func runWebPHPDic(d *dto.DicInputs) (any, error) {
 
 // 执行网页词库文件
 func runWebPHPDicFile(d *dto.DicInputs) (any, error) {
+	// 第 1 参数为本地词库文件路径，限制在当前词库目录内
+	if err := funcs.CheckFuncPath(d, 1); err != nil {
+		return "", err
+	}
 	dicPath := d.Inputs.String(1)
 	data, err := utils.NewFileQueue(dicPath).ReadFromFile()
 	if err != nil {
@@ -258,6 +267,10 @@ func runWebDic(d *dto.DicInputs) (any, error) {
 
 // 执行网页词库文件
 func runWebDicFile(d *dto.DicInputs) (any, error) {
+	// 第 1 参数为本地词库文件路径，限制在当前词库目录内
+	if err := funcs.CheckFuncPath(d, 1); err != nil {
+		return "", err
+	}
 	dicPath := d.Inputs.String(1)
 	data, err := utils.NewFileQueue(dicPath).ReadFromFile()
 	if err != nil {
@@ -1194,6 +1207,9 @@ func (st *dicServerState) serveHTTP(w http.ResponseWriter, r *http.Request) {
 
 // =================== 读词库 ===================
 func readDicFile(d *dto.DicInputs) (any, error) {
+	if err := funcs.CheckFuncPath(d, 1); err != nil {
+		return nil, err
+	}
 	filePath := utils.NewFileQueue(d.Inputs.String(1)).FileName
 	trigger := d.Inputs.StringDefault(2, "Main")
 	useRegex := d.Inputs.String(3) == "true"
@@ -1218,6 +1234,10 @@ func readDicFile(d *dto.DicInputs) (any, error) {
 
 // =================== 写词库 ===================
 func writeDicFile(d *dto.DicInputs) (any, error) {
+	// 先校验并写回路径，读取与写回文件均使用受限后的绝对路径
+	if err := funcs.CheckFuncPath(d, 1); err != nil {
+		return nil, err
+	}
 	dicPath := d.Inputs.String(1)
 	trigger := d.Inputs.StringDefault(2, "Main")
 	content := d.Inputs.StringDefault(3, "")

@@ -109,3 +109,29 @@ func TestFormatDicMultilineBlockUnclosed(t *testing.T) {
 		t.Fatalf("格式化结果不符:\n--- got ---\n%q\n--- src ---\n%q", got, src)
 	}
 }
+
+// TestFormatDicBlockCommentPreserve 正文内的跨行注释 /* ... */（含空行）
+// 内部缩进原样保留，不被逐行归零，且二次格式化稳定。
+func TestFormatDicBlockCommentPreserve(t *testing.T) {
+	src := "测试\n输出 \"a\"\n/* 说明\n    多行内容\n\n  末行 */\n输出 \"b\"\n"
+	if got := FormatDic(src); got != src {
+		t.Fatalf("格式化结果不符:\n--- got ---\n%q\n--- src ---\n%q", got, src)
+	}
+	if twice := FormatDic(src); twice != src {
+		t.Fatalf("二次格式化结果不一致:\n--- once ---\n%q\n--- twice ---\n%q", src, twice)
+	}
+}
+
+// TestFormatDicBlockCommentInLoop 循环体内的跨行注释：
+// 注释整体按其开启行所在层级平移，内部相对缩进保留；
+// 周围块结构（循环体 %i%、<循环）仍照常缩进，且二次格式化稳定。
+func TestFormatDicBlockCommentInLoop(t *testing.T) {
+	src := "测试\n循环>i=2\n/* 说明\n    内部一\n\n    内部二 */\n%i%\n<循环\n"
+	want := "测试\n循环>i=2\n    /* 说明\n        内部一\n\n        内部二 */\n    %i%\n<循环\n"
+	if got := FormatDic(src); got != want {
+		t.Fatalf("格式化结果不符:\n--- got ---\n%s--- want ---\n%s", got, want)
+	}
+	if twice := FormatDic(want); twice != want {
+		t.Fatalf("二次格式化结果不一致:\n--- once ---\n%s--- twice ---\n%s", want, twice)
+	}
+}

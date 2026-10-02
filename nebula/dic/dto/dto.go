@@ -24,6 +24,16 @@ type WebDic struct {
 	MyFunc map[string]dto.DicFunc
 }
 
+// DicInfo 词库信息，来自 [函数]词库信息 内用局部变量（名称/价格/描述）声明的元数据。
+type DicInfo struct {
+	// 名称
+	Name string `json:"name"`
+	// 描述
+	Desc string `json:"desc"`
+	// 价格
+	Price int64 `json:"price"`
+}
+
 // run
 type DicEntry struct {
 	// 返回信息

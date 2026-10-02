@@ -110,7 +110,10 @@ func (api *TencentAPI) Request(payload map[string]any) ([]byte, error) {
 	}
 
 	// 执行请求
-	client := &http.Client{Timeout: 30 * time.Second}
+	client := &http.Client{
+		Timeout:   30 * time.Second,
+		Transport: GuardTransport(nil),
+	}
 	resp, err := client.Do(req)
 	if err != nil {
 		return nil, err

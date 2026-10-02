@@ -5,7 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"path"
+	"path/filepath"
 	"regexp"
 	"strings"
 	"sync"
@@ -17,35 +17,75 @@ import (
 
 var tableNameRe = regexp.MustCompile(`^[a-zA-Z0-9_]{1,32}$`)
 
+// resolveSqlitePath 解析「读sqlite / 写sqlite」的数据库文件路径：
+// 只接受相对路径，且解析后必须仍位于当前账号的 database 目录内，防止用 .. 越界读写其它位置。
+func resolveSqlitePath(d *dto.DicInputs, raw string) (string, error) {
+	if raw == "" {
+		return "", fmt.Errorf("数据库名不能为空")
+	}
+	if filepath.IsAbs(raw) || filepath.VolumeName(raw) != "" {
+		return "", fmt.Errorf("只允许相对路径（不支持绝对路径）：%s", raw)
+	}
+	absBase, err := filepath.Abs(dicDatabaseDir(d))
+	if err != nil {
+		return "", fmt.Errorf("数据库目录不可用，拒绝访问：%s", raw)
+	}
+	target := filepath.Join(absBase, raw)
+	rel, err := filepath.Rel(absBase, target)
+	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		return "", fmt.Errorf("路径越界（超出数据库目录）：%s", raw)
+	}
+	return target, nil
+}
+
+// openDBByDir 打开指定目录下 sqlite（data.db）的句柄；调用方用完必须 Close。
+func openDBByDir(dir string) (*sql.DB, error) {
+	abs, err := filepath.Abs(dir)
+	if err != nil {
+		return nil, err
+	}
+	if err := os.MkdirAll(abs, 0755); err != nil {
+		return nil, err
+	}
+	db, err := sql.Open("sqlite", filepath.Join(abs, "data.db"))
+	if err != nil {
+		return nil, err
+	}
+	// 单连接 + 忙碌等待，避免与词库写入并发时出现 database is locked
+	db.SetMaxOpenConns(1)
+	db.SetMaxIdleConns(1)
+	if _, err = db.Exec("PRAGMA busy_timeout=5000"); err != nil {
+		db.Close()
+		return nil, err
+	}
+	return db, nil
+}
+
 var (
-	globalDB     *sql.DB
-	globalDBOnce sync.Once
-	globalDBErr  error
+	globalMu    sync.Mutex
+	globalCache *sql.DB
 )
 
+// GetGlobalDB 返回引擎应用数据目录下 database/data.db 的进程级共享句柄，
+// 供无词库上下文（如服务端内置工具）使用；句柄常驻，调用方不要关闭。
 func GetGlobalDB() (*sql.DB, error) {
-	globalDBOnce.Do(func() {
-		dir := path.Join(utils.GetAppDir(), "database")
-		if err := os.MkdirAll(dir, 0755); err != nil {
-			globalDBErr = err
-			return
-		}
-		db, err := sql.Open("sqlite", path.Join(dir, "data.db"))
-		if err != nil {
-			globalDBErr = err
-			return
-		}
-		// 单连接 + 忙碌等待，避免与词库写入并发时出现 database is locked
-		db.SetMaxOpenConns(1)
-		db.SetMaxIdleConns(1)
-		if _, err = db.Exec("PRAGMA busy_timeout=5000"); err != nil {
-			db.Close()
-			globalDBErr = err
-			return
-		}
-		globalDB = db
-	})
-	return globalDB, globalDBErr
+	globalMu.Lock()
+	defer globalMu.Unlock()
+	if globalCache != nil {
+		return globalCache, nil
+	}
+	db, err := openDBByDir(filepath.Join(utils.GetAppDir(), "database"))
+	if err != nil {
+		return nil, err
+	}
+	globalCache = db
+	return db, nil
+}
+
+// GetDicDB 打开当前词库所属账号的数据库句柄（bots/<账号>/database/data.db），
+// 各账号数据相互隔离。调用方用完必须 Close，避免连接按账号常驻占用资源。
+func GetDicDB(d *dto.DicInputs) (*sql.DB, error) {
+	return openDBByDir(dicDatabaseDir(d))
 }
 
 func normalizeTableName(name string) (string, error) {
@@ -80,7 +120,10 @@ func EnsureFsTable(db *sql.DB, table string) error {
 }
 
 func readSqlite(d *dto.DicInputs) (any, error) {
-	p := path.Join("database", d.Inputs.String(1))
+	p, err := resolveSqlitePath(d, d.Inputs.String(1))
+	if err != nil {
+		return "", err
+	}
 	db, err := utils.NewFileQueue(p).OpenSqlite()
 	if err != nil {
 		return d.Inputs.String(3), nil
@@ -126,10 +169,11 @@ func readSqlite(d *dto.DicInputs) (any, error) {
 }
 
 func dbDelete(d *dto.DicInputs) (any, error) {
-	db, err := GetGlobalDB()
+	db, err := GetDicDB(d)
 	if err != nil {
-		return nil, fmt.Errorf("全局数据库初始化失败: %w", err)
+		return nil, fmt.Errorf("数据库初始化失败: %w", err)
 	}
+	defer db.Close()
 
 	rawTable := d.Inputs.String(1)
 	key := d.Inputs.String(2)
@@ -155,10 +199,11 @@ func dbDelete(d *dto.DicInputs) (any, error) {
 }
 
 func dbDeleteFile(d *dto.DicInputs) (any, error) {
-	db, err := GetGlobalDB()
+	db, err := GetDicDB(d)
 	if err != nil {
-		return nil, fmt.Errorf("全局数据库初始化失败: %w", err)
+		return nil, fmt.Errorf("数据库初始化失败: %w", err)
 	}
+	defer db.Close()
 	table := "fs_files"
 	if err = EnsureFsTable(db, table); err != nil {
 		return nil, err
@@ -171,10 +216,11 @@ func dbDeleteFile(d *dto.DicInputs) (any, error) {
 }
 
 func dbDeleteDir(d *dto.DicInputs) (any, error) {
-	db, err := GetGlobalDB()
+	db, err := GetDicDB(d)
 	if err != nil {
-		return nil, fmt.Errorf("全局数据库初始化失败: %w", err)
+		return nil, fmt.Errorf("数据库初始化失败: %w", err)
 	}
+	defer db.Close()
 	table := "fs_files"
 	if err = EnsureFsTable(db, table); err != nil {
 		return nil, err
@@ -187,7 +233,10 @@ func dbDeleteDir(d *dto.DicInputs) (any, error) {
 }
 
 func writeSqlite(d *dto.DicInputs) (any, error) {
-	p := path.Join("database", d.Inputs.String(1))
+	p, err := resolveSqlitePath(d, d.Inputs.String(1))
+	if err != nil {
+		return nil, err
+	}
 	db, err := utils.NewFileQueue(p).OpenSqlite()
 	if err != nil {
 		return nil, nil
@@ -225,10 +274,11 @@ func writeSqlite(d *dto.DicInputs) (any, error) {
 }
 
 func dbWrite(d *dto.DicInputs) (any, error) {
-	db, err := GetGlobalDB()
+	db, err := GetDicDB(d)
 	if err != nil {
-		return nil, fmt.Errorf("全局数据库初始化失败: %w", err)
+		return nil, fmt.Errorf("数据库初始化失败: %w", err)
 	}
+	defer db.Close()
 
 	// 与 写sqlite 一致，固定写入 fs_files 表
 	table := "fs_files"
@@ -279,10 +329,11 @@ func joinKey(namespace, key string) string {
 }
 
 func dbRead(d *dto.DicInputs) (any, error) {
-	db, err := GetGlobalDB()
+	db, err := GetDicDB(d)
 	if err != nil {
-		return nil, fmt.Errorf("全局数据库初始化失败: %w", err)
+		return nil, fmt.Errorf("数据库初始化失败: %w", err)
 	}
+	defer db.Close()
 
 	// 与 读sqlite 一致，固定读取 fs_files 表
 	table := "fs_files"
