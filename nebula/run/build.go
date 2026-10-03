@@ -674,8 +674,9 @@ func (s *importStack) addError(line int, text string) {
 	s.warnings = append(s.warnings, dto.BuildWarning{Line: line, File: s.curFile, Text: text, Level: "error"})
 }
 
-// dicCacheVersion 磁盘编译缓存格式版本，结构变化时递增以淘汰旧缓存。
-const dicCacheVersion = 9
+// dicCacheVersion 磁盘编译缓存格式版本，结构/编译逻辑变化时递增以淘汰旧缓存。
+// v10：头部判定回归「首个空行之前即头部」，旧缓存把普通文本首行当成触发词，需强制重编译。
+const dicCacheVersion = 10
 
 // dicCacheEntry 词库编译结果的磁盘缓存结构（gob 序列化）。
 // 只缓存可序列化词条；含 bot 注入（MyFunc 非空）的词库不落缓存，故无需序列化 Go 函数。
@@ -902,9 +903,28 @@ type dicCacheMeta struct {
 	Deps map[string]string
 }
 
-// dicCacheDir 返回词库编译缓存目录（private/.dic_cache）。
+// dicCacheDir 返回词库编译缓存目录（应用数据目录下的 private/.dic_cache）。
+// 移动端/沙箱由 GetAppDir 注入，直接采用；桌面端数据目录为进程当前工作目录
+// （启动词库会切换到 NebulaData）。若工作目录仍停留在程序目录（如直接运行、
+// 测试或冒烟测试），则退回程序目录下的 NebulaData，避免缓存被误建到源码树等位置。
 func dicCacheDir() string {
-	return filepath.Join(utils.GetAppDir(), "private", ".dic_cache")
+	if d := utils.GetAppDir(); d != "" {
+		return filepath.Join(d, "private", ".dic_cache")
+	}
+	wd, err := os.Getwd()
+	if err != nil {
+		return filepath.Join("NebulaData", "private", ".dic_cache")
+	}
+	if abs, aerr := filepath.Abs(wd); aerr == nil {
+		wd = abs
+	}
+	if filepath.Base(wd) == "NebulaData" {
+		return filepath.Join(wd, "private", ".dic_cache")
+	}
+	if exe, eerr := os.Executable(); eerr == nil {
+		return filepath.Join(filepath.Dir(exe), "NebulaData", "private", ".dic_cache")
+	}
+	return filepath.Join(wd, "private", ".dic_cache")
 }
 
 // dicCacheDirFor 返回某词库应使用的缓存目录。
@@ -1319,9 +1339,9 @@ func buildDic(dicPath string, lines []string, stack *importStack) *dto.BuildValu
 	for i, l := range lines {
 		if strings.TrimSpace(l) == "" {
 			hasBlank = true
-			// 首个空行之前为头部，但该段必须是真正的头部（引入/赋值/指令/框开启）；
-			// 否则（如以 [函数]/[词条] 开头）按正文解析，避免整篇被当成头部中间件。
-			runhead = i > 0 && build.FirstHeadLikeLine(lines[:i])
+			// 首个空行之前的内容即头部（中间件），每次执行都会经过；即便首行是普通文本
+			// 也算作头部。若要让首个词条是触发词而非头部，文件开头需先留一个空行。
+			runhead = i > 0
 			break
 		}
 	}

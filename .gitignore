@@ -1,5 +1,9 @@
 /nebula/app/win/NebulaData/
 /nebula/app/win/NebulaData0/
+# 测试/工具在非数据目录（未切到 NebulaData）下运行时可能生成的日志与数据库
+/nebula/server/database/
+/nebula/app/database/
+/nebula/app/win/private/
 dist
 debug
 __debug_bin.exe*

@@ -28,13 +28,15 @@ func confirmFileDelete(action, target string) bool {
 	return FileDeleteConfirm(action, target)
 }
 
-// dicDatabaseDir 返回当前词库所属账号的数据库目录：与词库目录同级（bots/<账号>/database），
-// 每个账号各自独立；内存词库（无磁盘文件）回退到引擎工作目录下的 database。
+// dicDatabaseDir 返回当前词库所属账号的数据库目录。
+// 账号词库布局为 <账号>/dic/<词库.n>，数据库与 dic 目录同级（<账号>/database），各账号相互隔离；
+// 非账号布局（如程序根目录的 start.n、任意独立脚本）回退到引擎全局数据目录，
+// 避免把数据目录误建到程序目录之外（如源码树）。内存词库（无磁盘文件）同样走回退分支。
 func dicDatabaseDir(d *dto.DicInputs) string {
-	if d != nil && d.Dic != nil && d.Dic.Dir != "" {
+	if d != nil && d.Dic != nil && d.Dic.Dir != "" && filepath.Base(d.Dic.Dir) == "dic" {
 		return filepath.Join(filepath.Dir(d.Dic.Dir), "database")
 	}
-	return filepath.Join(utils.WorkDir(), "database")
+	return globalDBDir()
 }
 
 // resolveDatabasePath 把数据库内的文件路径解析为绝对路径：只接受相对路径，

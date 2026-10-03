@@ -379,6 +379,12 @@ func blocksStmtToIR(b *blockState) *Stmt {
 			Sep:  b.field("SEP"),
 			Body: blocksChainToIR(b.inputBlock("BODY")),
 		}
+	case "nbc_try":
+		return &Stmt{
+			T:    "try",
+			Name: strings.TrimSpace(b.field("NAME")),
+			Body: blocksChainToIR(b.inputBlock("BODY")),
+		}
 	}
 	return nil
 }
@@ -892,6 +898,12 @@ func irStmtToBlock(s Stmt) *blockState {
 		return b
 	case "textblock":
 		b := newBlock("nbc_textblock", map[string]any{"NAME": s.Name, "SEP": s.Sep})
+		if c, ok := irStmtInput(s.Body); ok {
+			b.setInput("BODY", c)
+		}
+		return b
+	case "try":
+		b := newBlock("nbc_try", map[string]any{"NAME": s.Name})
 		if c, ok := irStmtInput(s.Body); ok {
 			b.setInput("BODY", c)
 		}

@@ -71,7 +71,8 @@ func drawImgNew(d *dto.DicInputs) (any, error) {
 			imgColor = c
 		}
 
-		img = image.NewRGBA(image.Rect(0, 0, p1, p2))
+		// 参数为 <高> <宽>：image.Rect 第 3 个参数是宽、第 4 个是高，故此处宽放 p2、高放 p1
+		img = image.NewRGBA(image.Rect(0, 0, p2, p1))
 		draw.Draw(img, img.Bounds(), &image.Uniform{imgColor}, image.Point{}, draw.Src)
 	} else {
 		param1 := d.Inputs.Get(1)
@@ -967,10 +968,10 @@ func (f *DicFunc) DrawImgEllipse() error {
 		return errors.New("图片不能为空")
 	}
 
-	x := f.Inputs.Float64(2)
-	y := f.Inputs.Float64(3)
-	width := f.Inputs.Float64(4)
-	height := f.Inputs.Float64(5)
+	x1 := f.Inputs.Float64(2)
+	y1 := f.Inputs.Float64(3)
+	x2 := f.Inputs.Float64(4)
+	y2 := f.Inputs.Float64(5)
 	c := img.GetColor()
 	if cc, ok := f.Inputs.Get(6).(*color.NRGBA); ok {
 		c = cc
@@ -980,10 +981,11 @@ func (f *DicFunc) DrawImgEllipse() error {
 	gc.SetStrokeColor(c)
 	gc.SetLineWidth(img.size)
 
-	centerX := x + width/2
-	centerY := y + height/2
-	radiusX := width / 2
-	radiusY := height / 2
+	// 参数为外接矩形的两个对角坐标 (X1,Y1)-(X2,Y2)
+	centerX := (x1 + x2) / 2
+	centerY := (y1 + y2) / 2
+	radiusX := math.Abs(x2-x1) / 2
+	radiusY := math.Abs(y2-y1) / 2
 
 	points := ellipsePoints(centerX, centerY, radiusX, radiusY, 40)
 	if len(points) > 0 {
@@ -1007,10 +1009,10 @@ func (f *DicFunc) DrawImgEllipseFill() error {
 		return errors.New("图片不能为空")
 	}
 
-	x := f.Inputs.Float64(2)
-	y := f.Inputs.Float64(3)
-	width := f.Inputs.Float64(4)
-	height := f.Inputs.Float64(5)
+	x1 := f.Inputs.Float64(2)
+	y1 := f.Inputs.Float64(3)
+	x2 := f.Inputs.Float64(4)
+	y2 := f.Inputs.Float64(5)
 	c := img.GetColor()
 	if cc, ok := f.Inputs.Get(6).(*color.NRGBA); ok {
 		c = cc
@@ -1021,10 +1023,11 @@ func (f *DicFunc) DrawImgEllipseFill() error {
 	// 不需要设置线宽
 	// gc.SetLineWidth(img.size)
 
-	centerX := x + width/2
-	centerY := y + height/2
-	radiusX := width / 2
-	radiusY := height / 2
+	// 参数为外接矩形的两个对角坐标 (X1,Y1)-(X2,Y2)
+	centerX := (x1 + x2) / 2
+	centerY := (y1 + y2) / 2
+	radiusX := math.Abs(x2-x1) / 2
+	radiusY := math.Abs(y2-y1) / 2
 
 	points := ellipsePoints(centerX, centerY, radiusX, radiusY, 40)
 	if len(points) > 0 {
@@ -2844,10 +2847,10 @@ func drawImgEllipseFill(d *dto.DicInputs) (any, error) {
 		return nil, errors.New("图片不能为空")
 	}
 
-	x := d.Inputs.Float64(2)
-	y := d.Inputs.Float64(3)
-	width := d.Inputs.Float64(4)
-	height := d.Inputs.Float64(5)
+	x1 := d.Inputs.Float64(2)
+	y1 := d.Inputs.Float64(3)
+	x2 := d.Inputs.Float64(4)
+	y2 := d.Inputs.Float64(5)
 	c := img.GetColor()
 	if cc, ok := d.Inputs.Get(6).(*color.NRGBA); ok {
 		c = cc
@@ -2856,10 +2859,11 @@ func drawImgEllipseFill(d *dto.DicInputs) (any, error) {
 	gc := draw2dimg.NewGraphicContext(img.img)
 	gc.SetFillColor(c)
 
-	centerX := x + width/2
-	centerY := y + height/2
-	radiusX := width / 2
-	radiusY := height / 2
+	// 参数为外接矩形的两个对角坐标 (X1,Y1)-(X2,Y2)
+	centerX := (x1 + x2) / 2
+	centerY := (y1 + y2) / 2
+	radiusX := math.Abs(x2-x1) / 2
+	radiusY := math.Abs(y2-y1) / 2
 
 	points := ellipsePoints(centerX, centerY, radiusX, radiusY, 40)
 	if len(points) > 0 {
@@ -2882,10 +2886,10 @@ func drawImgEllipse(d *dto.DicInputs) (any, error) {
 		return nil, errors.New("图片不能为空")
 	}
 
-	x := d.Inputs.Float64(2)
-	y := d.Inputs.Float64(3)
-	width := d.Inputs.Float64(4)
-	height := d.Inputs.Float64(5)
+	x1 := d.Inputs.Float64(2)
+	y1 := d.Inputs.Float64(3)
+	x2 := d.Inputs.Float64(4)
+	y2 := d.Inputs.Float64(5)
 	c := img.GetColor()
 	if cc, ok := d.Inputs.Get(6).(*color.NRGBA); ok {
 		c = cc
@@ -2895,10 +2899,11 @@ func drawImgEllipse(d *dto.DicInputs) (any, error) {
 	gc.SetStrokeColor(c)
 	gc.SetLineWidth(img.size)
 
-	centerX := x + width/2
-	centerY := y + height/2
-	radiusX := width / 2
-	radiusY := height / 2
+	// 参数为外接矩形的两个对角坐标 (X1,Y1)-(X2,Y2)
+	centerX := (x1 + x2) / 2
+	centerY := (y1 + y2) / 2
+	radiusX := math.Abs(x2-x1) / 2
+	radiusY := math.Abs(y2-y1) / 2
 
 	points := ellipsePoints(centerX, centerY, radiusX, radiusY, 40)
 	if len(points) > 0 {

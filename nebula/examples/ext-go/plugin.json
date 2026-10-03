@@ -1,0 +1,5 @@
+{
+  "name": "Go 示例扩展",
+  "command": "go",
+  "args": ["run", "main.go"]
+}

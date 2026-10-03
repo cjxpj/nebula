@@ -524,6 +524,8 @@ func buildBlockStmt(f formatFrame, lines []string, start, end int) (Stmt, bool) 
 		return buildTextStmt(lines, start, end)
 	case "json":
 		return buildJsonStmt(lines, start, end)
+	case "try":
+		return buildTryStmt(lines, start, end)
 	}
 	return Stmt{}, false
 }
@@ -680,6 +682,16 @@ func buildTextStmt(lines []string, start, end int) (Stmt, bool) {
 		return Stmt{}, false
 	}
 	return Stmt{T: "textblock", Name: name, Sep: sep, Body: parseStmts(lines[start+1 : end])}, true
+}
+
+// buildTryStmt 构建测试框语句（变量名:测试> ... <测试），报错捕获框，仅赋予值形式。
+func buildTryStmt(lines []string, start, end int) (Stmt, bool) {
+	open := trimLeadingBlank(lines[start])
+	vt, name, val := ValTextTest(open)
+	if vt != 6 || name == "" || val != "测试>" {
+		return Stmt{}, false
+	}
+	return Stmt{T: "try", Name: name, Body: parseStmts(lines[start+1 : end])}, true
 }
 
 // buildJsonStmt 构建 JSON 框语句（JSON>变量名={} / JSON>变量名=[]）。

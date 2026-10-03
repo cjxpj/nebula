@@ -40,6 +40,10 @@ type Lib struct {
 	name   string
 	native nativeLib
 	Funcs  []FuncInfo
+
+	// callMu 保证单个扩展的调用串行执行：进程内 C 扩展使用静态返回缓冲区，
+	// 独立进程后端亦为「一次一个请求」的协议，二者都要求服务端串行调用。
+	callMu sync.Mutex
 }
 
 var (
@@ -52,9 +56,19 @@ func pluginsDir() string {
 	return filepath.Join(utils.GetAppDir(), "private", "plugins")
 }
 
-// Load 加载指定路径的动态库，解析其函数列表并执行初始化。
+// Load 加载指定扩展：动态库文件（.dll/.so）走进程内后端，含 plugin.json 的目录走独立进程后端。
+// 随后解析其函数列表并执行初始化。
 func Load(path string) (*Lib, error) {
-	n, err := openNative(path)
+	info, err := os.Stat(path)
+	if err != nil {
+		return nil, err
+	}
+	var n nativeLib
+	if info.IsDir() {
+		n, err = openIPC(path)
+	} else {
+		n, err = openNative(path)
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -75,11 +89,14 @@ func Load(path string) (*Lib, error) {
 }
 
 // Call 调用扩展中的函数，返回其执行结果。参数与返回值均为字符串。
+// 对单个扩展串行加锁，避免并发调用破坏扩展的静态缓冲区/单请求协议。
 func (l *Lib) Call(funcName string, args []any) (any, error) {
 	strArgs := make([]string, len(args))
 	for i, a := range args {
 		strArgs[i] = anyToString(a)
 	}
+	l.callMu.Lock()
+	defer l.callMu.Unlock()
 	return l.native.call(funcName, strArgs)
 }
 
@@ -88,7 +105,8 @@ func (l *Lib) Close() error {
 	return l.native.close()
 }
 
-// scanDir 扫描扩展目录，返回其中的扩展动态库文件名列表。
+// scanDir 扫描扩展目录，返回其中的扩展条目名列表：
+// 当前平台支持的动态库文件（.dll/.so），以及内含 plugin.json 的子目录（独立进程扩展）。
 func scanDir() ([]string, error) {
 	dir := pluginsDir()
 	if err := os.MkdirAll(dir, 0o755); err != nil {
@@ -100,13 +118,24 @@ func scanDir() ([]string, error) {
 	}
 	var names []string
 	for _, e := range entries {
-		if e.IsDir() || !isExtFile(e.Name()) {
+		if e.IsDir() {
+			if fileExists(filepath.Join(dir, e.Name(), ipcManifestName)) {
+				names = append(names, e.Name())
+			}
 			continue
 		}
-		names = append(names, e.Name())
+		if isExtFile(e.Name()) {
+			names = append(names, e.Name())
+		}
 	}
 	sort.Strings(names)
 	return names, nil
+}
+
+// fileExists 判断路径是否存在且为普通文件。
+func fileExists(path string) bool {
+	fi, err := os.Stat(path)
+	return err == nil && !fi.IsDir()
 }
 
 // registerLib 注册某个扩展的全部函数到词库。

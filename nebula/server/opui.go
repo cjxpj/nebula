@@ -969,6 +969,12 @@ const maxServerLogLines = 20000
 // serverLogPageSize 面板回放日志时每页默认返回的行数
 const serverLogPageSize = 300
 
+// serverStarted 标记服务器是否已启动（由 Start 置位）。
+// 仅当服务器真正运行后才把终端输出落盘：本包的 init 会在被导入时即接管 stdout，
+// 若不设此闸门，go test 等「只导入本包、不启动服务器」的场景会把测试输出当作
+// 服务日志写入相对工作目录的 database/log，污染源码树。
+var serverStarted atomic.Bool
+
 // serverLogDir 返回服务端日志目录（应用储存目录下的日志目录，绝对路径）。
 // 具体子路径由 utils.SetLogDir 决定，默认 database/log。
 func serverLogDir() string {
@@ -1032,7 +1038,7 @@ func processServerLogLine(raw string) {
 		if startupLogDir() != "" {
 			startupLogFq().AppendToFile(line + "\n")
 		}
-	} else {
+	} else if serverStarted.Load() {
 		serverLogFq().AppendToFile(line + "\n")
 	}
 

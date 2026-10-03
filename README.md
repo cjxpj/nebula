@@ -297,6 +297,95 @@ Nebula -check public/hello.n -json
    ./deploy.sh down
    ```
 
+## 🔌 DLL / SDK 接口（C ABI）
+
+Nebula 可以用 `c-shared` 方式编译为动态库（Windows `.dll` / Linux `.so`），供外部宿主（C/C++/C# 等）通过固定 C ABI 调用。宿主与 DLL 之间**只传字符串（JSON）**，不跨边界传指针、闭包或 HTTP 对象；词库执行过程中的事件由宿主轮询获取。
+
+### 构建
+
+```bash
+# Windows x64（需 MinGW-w64 gcc）
+CGO_ENABLED=1 GOOS=windows GOARCH=amd64 CC=gcc \
+  go build -tags dll -buildmode=c-shared -ldflags "-s -w" -trimpath \
+  -o dist/sdk/windows-amd64/nebula.dll ./nebula/app
+```
+
+- 产物为 `nebula.dll` 与同名头文件 `nebula.h`（含全部导出声明）。
+- VS Code 任务：`SDK: 打包 Windows .dll`（定义在 `.vscode/tasks.json`）。
+
+### 通用约定
+
+- **返回字符串内存**：所有返回 `char*` 的接口，调用方用完必须调用 `NebulaFreeString`（legacy 为 `FreeString`）释放。
+- **JSON 信封**：除 legacy `RunN` / `RunCompiled` 外，所有接口返回统一信封——成功 `{"ok":true,"data":...}`，失败 `{"ok":false,"error":"..."}`。
+- **机器人标识**：`id` 为 `long long`（Go `int64`）。
+- **事件队列**：词库执行期间的「收到消息 / 发送消息 / 发送完成」事件写入 DLL 内部队列，宿主通过 `NebulaPollEvent` 轮询取出；队列上限 10000，超限丢弃最旧事件。
+- 可能执行不可信词库的入口内部用 `guarded` 包裹，panic 会转成 `{"ok":false,"error":"内部异常: ..."}`。
+
+### 导出接口一览
+
+#### 初始化 / 版本 / 调试
+
+| 导出 | 签名 | 说明 |
+|------|------|------|
+| `NebulaInit` | `char* NebulaInit(const char* cfgJSON)` | 初始化引擎（仅首次生效）。`cfgJSON`：`{"botsRoot":"词库根目录","logDir":"日志目录","debug":true}`，用于收紧沙箱、设置日志目录、启用编译缓存、注册事件回调。 |
+| `NebulaVersion` | `char* NebulaVersion(void)` | 返回引擎版本，`data` 为版本字符串。 |
+| `NebulaSetDebug` | `char* NebulaSetDebug(int on)` | 设置调试开关（`on != 0` 打开）。 |
+
+#### 机器人生命周期
+
+| 导出 | 签名 | 说明 |
+|------|------|------|
+| `NebulaBotStart` | `char* NebulaBotStart(long long id, const char* appID, const char* secret, const char* name, const char* filePath)` | 让机器人上线（幂等）；配置变化时重建实例。`filePath` 为机器人词库目录。 |
+| `NebulaBotStop` | `char* NebulaBotStop(long long id)` | 机器人下线。 |
+| `NebulaBotStopAll` | `char* NebulaBotStopAll(void)` | 停止全部机器人。 |
+| `NebulaBotOnline` | `char* NebulaBotOnline(long long id)` | 是否已与网关完成鉴权，`data` 为 `true`/`false`。 |
+| `NebulaBotRunning` | `char* NebulaBotRunning(long long id)` | 是否已下发上线任务，`data` 为 `true`/`false`。 |
+| `NebulaBotRemove` | `char* NebulaBotRemove(long long id, const char* filePath)` | 下线并释放该机器人的线程变量（删除机器人时调用）。 |
+
+#### 消息收发
+
+| 导出 | 签名 | 说明 |
+|------|------|------|
+| `NebulaRecall` | `char* NebulaRecall(long long id, const char* appID, const char* secret, const char* scene, const char* target, const char* msgID)` | 撤回消息；`scene` 取 `group`/`c2c`。 |
+| `NebulaReply` | `char* NebulaReply(long long id, const char* appID, const char* secret, const char* scene, const char* target, const char* msgID, const char* content)` | 回复消息；`msgID` 为空即主动发送。`scene` 取 `group`/`c2c`/`channel`/`dm`。 |
+
+> 机器人已注册时优先复用运行实例，`appID`/`secret` 仅在离线时用于临时创建发送实例。
+
+#### 词库执行
+
+| 导出 | 签名 | 说明 |
+|------|------|------|
+| `NebulaDicRun` | `char* NebulaDicRun(const char* path, const char* content, const char* trigger)` | 执行一次词库匹配，`data` 为执行输出。 |
+| `NebulaWebDicRun` | `char* NebulaWebDicRun(const char* path, const char* content)` | 执行一次网页词库（`.wn`）。 |
+| `NebulaDicReadInfo` | `char* NebulaDicReadInfo(const char* path, const char* content)` | 静态读取词库内 `[函数]词库信息`，`data`：`{"name":"...","desc":"...","price":0}`。 |
+| `NebulaSandboxScan` | `char* NebulaSandboxScan(const char* content)` | 扫描词库内容，`data` 为调用的高危函数名字符串数组。 |
+
+#### 云词库公开访问
+
+| 导出 | 签名 | 说明 |
+|------|------|------|
+| `NebulaCloudServe` | `char* NebulaCloudServe(const char* reqJSON)` | 执行一次云词库页面请求（`.n`/`.wn`）。请求 JSON 字段：`method`、`urlPath`、`filePath`、`ext`、`content`、`host`、`remoteAddr`、`headers`、`body`；`data`：`{"status":200,"headers":{...},"body":"..."}`。 |
+
+#### 事件轮询
+
+| 导出 | 签名 | 说明 |
+|------|------|------|
+| `NebulaPollEvent` | `char* NebulaPollEvent(void)` | 取出一个事件（空串表示暂无事件），返回的原始 JSON 同样需 `NebulaFreeString` 释放。事件字段：`kind`（`recv`/`send`/`sendResult`）、`botId`、`msgKind`、`content`、`msgId`、`group`、`user`、`scene`、`target`。 |
+
+#### 内存释放
+
+| 导出 | 签名 | 说明 |
+|------|------|------|
+| `NebulaFreeString` | `void NebulaFreeString(char* s)` | 释放本 DLL 返回的任意 C 字符串。 |
+
+#### legacy 导出（向后兼容）
+
+| 导出 | 签名 | 说明 |
+|------|------|------|
+| `RunN` | `char* RunN(const char* text, const char* trigger, const char* path)` | 执行一次词库匹配（旧接口，直接返回结果字符串，非 JSON 信封）。 |
+| `RunCompiled` | `char* RunCompiled(void* data, int dataLen, const char* trigger)` | 执行已编译的词库产物。 |
+| `FreeString` | `void FreeString(char* s)` | `NebulaFreeString` 的 legacy 别名。 |
+
 ## 📁 项目结构
 
 ```

@@ -90,6 +90,25 @@ func waitForCacheFile(t *testing.T, dicPath string) {
 	t.Fatalf("等待缓存写入超时：%v", p)
 }
 
+// removeDirIfEmpty 若目录存在且已空则删除该目录；目录非空或不存在时静默忽略（仅测试收尾使用）。
+func removeDirIfEmpty(dir string) {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return
+	}
+	if len(entries) == 0 {
+		_ = os.Remove(dir)
+	}
+}
+
+// cleanDicCacheFile 删除指定词库的缓存文件；若缓存目录随后已空则一并删除空文件夹，
+// 避免测试收尾在数据目录残留空目录。
+func cleanDicCacheFile(dicPath string) {
+	dir := dicCacheDirFor(dicPath)
+	_ = os.Remove(dicCachePath(dir, importFilePath(dicPath)))
+	removeDirIfEmpty(dir)
+}
+
 // TestDicCompileCache 验证磁盘编译缓存的命中与失效。
 func TestDicCompileCache(t *testing.T) {
 	chdirToAppWin()
@@ -100,7 +119,7 @@ func TestDicCompileCache(t *testing.T) {
 
 	const path = "cache_test_unique.n"
 	// 测试收尾清理缓存文件，避免每次跑测试都在真实数据目录残留 .dic_cache 垃圾文件
-	defer os.Remove(dicCachePath(dicCacheDirFor(path), importFilePath(path)))
+	defer cleanDicCacheFile(path)
 	text1 := "Main\n缓存测试内容1"
 	text2 := "Main\n缓存测试内容2"
 
@@ -144,7 +163,10 @@ func TestListAndRemoveDicCache(t *testing.T) {
 
 	const path = "cache_list_test_unique.n"
 	name := dicHash(importFilePath(path)) + ".gob"
-	defer os.Remove(dicCachePath(dicCacheDirFor(path), importFilePath(path)))
+	defer cleanDicCacheFile(path)
+
+	// 从空缓存目录开始，保证「删完最后一条后目录被移除」可确定性断言
+	ClearDicCache()
 
 	BuildDic(path, "Main\n缓存列表测试")
 	waitForCacheFile(t, path)
@@ -182,6 +204,11 @@ func TestListAndRemoveDicCache(t *testing.T) {
 	// 重复清理视为成功（文件已不存在）
 	if err := RemoveDicCache(name); err != nil {
 		t.Fatalf("重复清理应成功，实际：%v", err)
+	}
+	// 测试收尾清理：缓存文件删完后目录已空，应连空文件夹一并清理
+	cleanDicCacheFile(path)
+	if _, err := os.Stat(dicCacheDir()); !os.IsNotExist(err) {
+		t.Fatalf("缓存目录为空时应被一并删除")
 	}
 }
 

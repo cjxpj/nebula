@@ -1,0 +1,5 @@
+{
+  "name": "Python 示例扩展",
+  "command": "python",
+  "args": ["main.py"]
+}

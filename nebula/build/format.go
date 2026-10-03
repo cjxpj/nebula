@@ -184,10 +184,7 @@ func formatIndent(lines []string) []string {
 		depth := len(stack)
 
 		if inComment {
-			rel := raw
-			if strings.HasPrefix(rel, commentBase) {
-				rel = rel[len(commentBase):]
-			}
+			rel := strings.TrimPrefix(raw, commentBase)
 			out = append(out, pad(depth, rel))
 			if strings.Contains(strings.TrimSpace(raw), "*/") {
 				inComment = false

@@ -216,6 +216,10 @@ func stmtsToLines(stmts []Stmt, indent int) []string {
 			lines = append(lines, pad+s.Name+":文本>"+s.Sep)
 			pushBlock(s.Body)
 			lines = append(lines, pad+"<文本")
+		case "try":
+			lines = append(lines, pad+s.Name+":测试>")
+			pushBlock(s.Body)
+			lines = append(lines, pad+"<测试")
 		}
 	}
 	return lines

@@ -23,6 +23,9 @@ type StartEvent struct {
 func Start() []StartEvent {
 	res := make([]StartEvent, 0)
 
+	// 服务器开始运行后才允许终端输出落盘（见 opui.go serverStarted 说明）
+	serverStarted.Store(true)
+
 	if dto.ServerConfig.Ngrok != nil {
 		authToken := dto.ServerConfig.Ngrok.Token
 		ngrokUrl := dto.ServerConfig.Ngrok.Addr

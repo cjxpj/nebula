@@ -66,6 +66,30 @@ var (
 	globalCache *sql.DB
 )
 
+// globalDBDir 定位全局库所在目录（应用数据目录下的 database）。
+// 移动端/沙箱由 GetAppDir 注入，直接采用；桌面端数据目录为进程当前工作目录
+// （启动词库会切换到 NebulaData）。若工作目录仍停留在程序目录（如直接运行、
+// 测试或冒烟测试），则退回程序目录下的 NebulaData，避免全局库被误建到源码树等位置。
+func globalDBDir() string {
+	if d := utils.GetAppDir(); d != "" {
+		return filepath.Join(d, "database")
+	}
+	wd, err := os.Getwd()
+	if err != nil {
+		return filepath.Join("NebulaData", "database")
+	}
+	if abs, aerr := filepath.Abs(wd); aerr == nil {
+		wd = abs
+	}
+	if filepath.Base(wd) == "NebulaData" {
+		return filepath.Join(wd, "database")
+	}
+	if exe, eerr := os.Executable(); eerr == nil {
+		return filepath.Join(filepath.Dir(exe), "NebulaData", "database")
+	}
+	return filepath.Join(wd, "database")
+}
+
 // GetGlobalDB 返回引擎应用数据目录下 database/data.db 的进程级共享句柄，
 // 供无词库上下文（如服务端内置工具）使用；句柄常驻，调用方不要关闭。
 func GetGlobalDB() (*sql.DB, error) {
@@ -74,7 +98,7 @@ func GetGlobalDB() (*sql.DB, error) {
 	if globalCache != nil {
 		return globalCache, nil
 	}
-	db, err := openDBByDir(filepath.Join(utils.GetAppDir(), "database"))
+	db, err := openDBByDir(globalDBDir())
 	if err != nil {
 		return nil, err
 	}
