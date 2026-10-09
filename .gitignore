@@ -16,3 +16,5 @@ nebula/app/win/nebula.exe
 .trae/
 nebula/app/win/start.n
 /tools/
+nebula/app.exe
+nebula/dic.test.exe

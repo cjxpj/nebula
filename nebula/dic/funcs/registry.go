@@ -192,7 +192,7 @@ func Setup() {
 		f{Name: "跳行", L: "1", Fn: jumpAbsNoop},
 
 		// ========== 定时任务 ==========
-		f{Name: "添加定时任务", L: "1|2|3|4|5", Fn: addScheduledTaskFunc},
+		f{Name: "添加定时任务", L: "1|2|3|4|5|6", Fn: addScheduledTaskFunc},
 		f{Name: "删除定时任务", L: "1", Fn: delScheduledTaskFunc},
 		f{Name: "定时任务列表", L: "0", Fn: listScheduledTaskFunc},
 
@@ -286,6 +286,9 @@ func Setup() {
 		f{Name: "访问", L: "1|2", Fn: accessGet},
 		f{Name: "访问POST", L: "2|3", Fn: accessPost},
 		f{Name: "访问转发", L: "1", Fn: requestForward},
+		f{Name: "解析域名", L: "1|2", Fn: dnsResolve},
+		f{Name: "域名解析", L: "1|2", Fn: dnsResolve},
+		f{Name: "DNS解析", L: "1|2", Fn: dnsResolve},
 
 		// ========== 终端 ==========
 		f{Name: "创建终端", L: "1..", Fn: runCommandNew},

@@ -145,103 +145,119 @@ func normalizeWebDicNewlines(s string) string {
 
 func (m *dicImpl) WebPHPDicRun(WD *dic_dto.WebDic) string {
 
-	// 返回数据
-	var result string
-
 	dicRun := dic_dto.NewRunDicEntry().
 		SetV(WD.Val)
 
-	result = run.ReplaceProcessedContent(normalizeWebDicNewlines(WD.Text), "<?n", "?>", func(text string) string {
-		// fmt.Println("词库文本:", text)
-		// 词条总数据
-		lines := strings.Split(text, "\n")
-		SplitText := run.Web(WD.Path, lines)
-		dicRun.SetDic(SplitText)
-		dicRun.Dic.MyFunc = WD.MyFunc
-		maps.Copy(dicRun.Dic.MyFunc, SplitText.MyFunc)
-		// fmt.Println("词库:", SplitText)
-		if head := SplitText.HeaderEntry(); head != nil {
-			return m.DicRunLine(dicRun, head.Text)
-		}
-		return ""
+	// 按账号会员状态限时（会员 1 分钟 / 非会员 10 秒），超时置停止标志中断并返回已产出内容。
+	result, _ := m.withDicTimeout(WD.Path, WD.Val.G, DefaultDicRunTimeout, func() {
+		dicRun.Sys_v.Stop.Store(true)
+	}, func() string {
+		return run.ReplaceProcessedContent(normalizeWebDicNewlines(WD.Text), "<?n", "?>", func(text string) string {
+			// fmt.Println("词库文本:", text)
+			// 词条总数据
+			lines := strings.Split(text, "\n")
+			SplitText := run.Web(WD.Path, lines)
+			dicRun.SetDic(SplitText)
+			dicRun.Dic.MyFunc = WD.MyFunc
+			maps.Copy(dicRun.Dic.MyFunc, SplitText.MyFunc)
+			// fmt.Println("词库:", SplitText)
+			if head := SplitText.HeaderEntry(); head != nil {
+				return m.DicRunLine(dicRun, head.Text)
+			}
+			return ""
+		})
 	})
 
 	return result
 }
 
-// 运行网页词库
+// 运行网页词库：按账号会员状态限时（会员 1 分钟 / 非会员 10 秒），超时置各执行块停止标志中断并返回已产出内容。
 func (m *dicImpl) WebDicRun(WD *dic_dto.WebDic) string {
-
-	// 返回数据
-	var result string
-
-	// t := &run.Build{
-	// 	Val: WD.Val,
-	// }
-
-	data := make(map[string]any)
 
 	// 每个执行块独立作用域：私有变量区（P）各块隔离、块间不接力；
 	// 全局变量区（G）跨块共享，承载 响应状态 / 输出头部 / GET / POST 等页面级上下文。
 	// <script type="nebula" id="x"> 脚本块把整块输出存进 data[x]，页面用 {{.x}} 取；
 	// 不带 id 的脚本块里赋值的变量并入模板数据，页面用 {{.变量名}} 取；
 	// 内联块就地输出，其赋值不进模板数据。
+	var (
+		blockMu   sync.Mutex
+		blockRuns []*dic_dto.DicEntry
+	)
 	newBlockRun := func() *dic_dto.DicEntry {
 		// 挂载调用方注入的内置函数（HTTP 链路的 设置头部 / GET / POST，本地调试注入的空实现）：
 		// 不挂载时脚本里的 $GET$ / $设置头部$ 会解析不到函数、被当成普通文本原样输出。
 		run := dic_dto.NewRunDicEntry().SetGlobal_v(WD.Val.G)
 		run.Dic.MyFunc = WD.MyFunc
+		// 登记执行块，供超时回调统一置停止标志：各块 Sys_v 独立，需逐个中断。
+		blockMu.Lock()
+		blockRuns = append(blockRuns, run)
+		blockMu.Unlock()
 		return run
 	}
 
-	// 1. 先处理内联执行块 <?n ... ?>，就地执行并把结果插回块所在位置。
-	// 必须在 html.Parse 之前按原文处理：Go 的 html 解析器会把 <?...> 当成注释节点吞掉，
-	// 解析后再找就找不到这个块了。结果按原文插回，因此块内可以直接输出 HTML 片段。
-	// 先统一换行符，避免 CRLF 的 \r 残留破坏块内循环次数/关闭标记解析。
-	src := run.ReplaceProcessedContent(normalizeWebDicNewlines(WD.Text), "<?n", "?>", func(block string) string {
-		// 与脚本块一致：先裁掉首尾空白（块内首行是空行时会被当成「头部结束」，语句不会执行）
-		lines := run.TrimWebScriptIndent(strings.Split(strings.TrimSpace(block), "\n"))
-		return m.DicRunLine(newBlockRun(), lines)
+	result, _ := m.withDicTimeout(WD.Path, WD.Val.G, DefaultDicRunTimeout, func() {
+		blockMu.Lock()
+		defer blockMu.Unlock()
+		for _, r := range blockRuns {
+			r.Sys_v.Stop.Store(true)
+		}
+	}, func() string {
+		// 返回数据
+		var result string
+
+		data := make(map[string]any)
+
+		// 1. 先处理内联执行块 <?n ... ?>，就地执行并把结果插回块所在位置。
+		// 必须在 html.Parse 之前按原文处理：Go 的 html 解析器会把 <?...> 当成注释节点吞掉，
+		// 解析后再找就找不到这个块了。结果按原文插回，因此块内可以直接输出 HTML 片段。
+		// 先统一换行符，避免 CRLF 的 \r 残留破坏块内循环次数/关闭标记解析。
+		src := run.ReplaceProcessedContent(normalizeWebDicNewlines(WD.Text), "<?n", "?>", func(block string) string {
+			// 与脚本块一致：先裁掉首尾空白（块内首行是空行时会被当成「头部结束」，语句不会执行）
+			lines := run.TrimWebScriptIndent(strings.Split(strings.TrimSpace(block), "\n"))
+			return m.DicRunLine(newBlockRun(), lines)
+		})
+
+		// 解析成节点树
+		doc, err := html.Parse(strings.NewReader(src))
+		if err != nil {
+			debugLog.Error(err)
+		}
+
+		// 2. 执行 nebula script，收集数据
+		for _, s := range findNebulaScripts(doc) {
+			// 脚本块正文可能带缩进（格式化后的网页词库），先去掉行首空白再解析
+			lines := run.TrimWebScriptIndent(strings.Split(s.Text, "\n"))
+			run := newBlockRun()
+			res := m.DicRunLine(run, lines)
+			if s.Id != "" {
+				data[s.Id] = res
+			} else {
+				maps.Copy(data, run.Val.P.GetAll())
+			}
+		}
+
+		// 3. 只移除 type="nebula" 的 script
+		removeNebulaScripts(doc)
+
+		var htmlBuf bytes.Buffer
+		html.Render(&htmlBuf, doc)
+
+		// 4. 使用 Go 模板引擎渲染
+		tpl, err := template.New("page").Parse(htmlBuf.String())
+		if err != nil {
+			debugLog.Infof("模板解析失败: %v", err)
+		}
+		if err == nil {
+			var buf bytes.Buffer
+			if err := tpl.Execute(&buf, data); err != nil {
+				debugLog.Infof("模板渲染失败: %v", err)
+			}
+			// 5. 模板渲染结果
+			result = buf.String()
+		}
+
+		return result
 	})
-
-	// 解析成节点树
-	doc, err := html.Parse(strings.NewReader(src))
-	if err != nil {
-		debugLog.Error(err)
-	}
-
-	// 2. 执行 nebula script，收集数据
-	for _, s := range findNebulaScripts(doc) {
-		// 脚本块正文可能带缩进（格式化后的网页词库），先去掉行首空白再解析
-		lines := run.TrimWebScriptIndent(strings.Split(s.Text, "\n"))
-		run := newBlockRun()
-		res := m.DicRunLine(run, lines)
-		if s.Id != "" {
-			data[s.Id] = res
-		} else {
-			maps.Copy(data, run.Val.P.GetAll())
-		}
-	}
-
-	// 3. 只移除 type="nebula" 的 script
-	removeNebulaScripts(doc)
-
-	var htmlBuf bytes.Buffer
-	html.Render(&htmlBuf, doc)
-
-	// 4. 使用 Go 模板引擎渲染
-	tpl, err := template.New("page").Parse(htmlBuf.String())
-	if err != nil {
-		debugLog.Infof("模板解析失败: %v", err)
-	}
-	if err == nil {
-		var buf bytes.Buffer
-		if err := tpl.Execute(&buf, data); err != nil {
-			debugLog.Infof("模板渲染失败: %v", err)
-		}
-		// 5. 模板渲染结果
-		result = buf.String()
-	}
 
 	return result
 }
@@ -253,7 +269,7 @@ func (m *dicImpl) DicRunPrivate(D *dic_dto.Dic, trigger string) string {
 	return m.DicRunPrivateVal(D, trigger, newV)
 }
 
-// 运行内部-自义定局部变量
+// 运行内部-自义定局部变量：按账号会员状态限时（会员 1 分钟 / 非会员 10 秒），超时中断并返回已产出内容。
 func (m *dicImpl) DicRunPrivateVal(D *dic_dto.Dic, trigger string, v *dto.DicVal) string {
 
 	D.Val.G.SetRaw("_词库路径_", D.Path)
@@ -276,8 +292,13 @@ func (m *dicImpl) DicRunPrivateVal(D *dic_dto.Dic, trigger string, v *dto.DicVal
 	// 注入编译期资源变量（//@资源），供内部函数引用
 	D.Data.ApplyResources(D.Val)
 
-	return m.DicRunLine(dicRun, GetDic)
+	result, _ := m.withDicTimeout(D.Path, D.Val.G, DefaultDicRunTimeout, func() {
+		dicRun.Sys_v.Stop.Store(true)
+	}, func() string {
+		return m.DicRunLine(dicRun, GetDic)
+	})
 
+	return result
 }
 
 // 运行特殊触发
@@ -287,7 +308,7 @@ func (m *dicImpl) DicRunEvent(D *dic_dto.Dic, event string, trigger string) stri
 	return m.DicRunEventVal(D, event, trigger, newV)
 }
 
-// 运行特殊触发-自义定局部变量
+// 运行特殊触发-自义定局部变量：按账号会员状态限时（会员 1 分钟 / 非会员 10 秒），超时中断并返回已产出内容。
 func (m *dicImpl) DicRunEventVal(D *dic_dto.Dic, event string, trigger string, v *dto.DicVal) string {
 
 	D.Val.G.SetRaw("_词库路径_", D.Path)
@@ -314,8 +335,13 @@ func (m *dicImpl) DicRunEventVal(D *dic_dto.Dic, event string, trigger string, v
 	// 注入编译期资源变量（//@资源），供特殊事件引用
 	D.Data.ApplyResources(D.Val)
 
-	return m.DicRunLine(dicRun, GetDic)
+	result, _ := m.withDicTimeout(D.Path, D.Val.G, DefaultDicRunTimeout, func() {
+		dicRun.Sys_v.Stop.Store(true)
+	}, func() string {
+		return m.DicRunLine(dicRun, GetDic)
+	})
 
+	return result
 }
 
 // 新建运行
@@ -324,17 +350,109 @@ func (m *dicImpl) NewDicRunLine(D *dic_dto.DicEntry, txt []string) string {
 	return m.DicRunLine(D, txt)
 }
 
-// 运行词库(全局变量,词库文本,触发)
-func (m *dicImpl) DicRun(D *dic_dto.Dic, trigger string) string {
+// DefaultDicRunTimeout 词库执行的默认超时上限（会员账号，及未注入解析器时）：1 分钟。
+// 超时后中断执行并返回已产出内容。
+const DefaultDicRunTimeout = time.Minute
 
-	// 返回数据
-	var result string
+// MemberDicRunTimeout 会员账号词库执行的超时上限：1 分钟。
+const MemberDicRunTimeout = DefaultDicRunTimeout
 
-	// 执行返回数据
-	var RunDic string
+// GuestDicRunTimeout 非会员账号词库执行的超时上限：10 秒。
+const GuestDicRunTimeout = 10 * time.Second
 
-	// fmt.Println("词库文本:", SplitText)
+// DicRunTimeoutResolver 按词库路径解析该账号可用的词库执行超时上限。
+// 由引擎 app 层注入（依据账号会员到期时间返回 MemberDicRunTimeout / GuestDicRunTimeout）；
+// 未注入或返回 0 时按 DefaultDicRunTimeout 处理（保持既有行为）。
+var DicRunTimeoutResolver func(path string) time.Duration
 
+// SetDicRunTimeoutResolver 注入按词库路径解析账号超时上限的解析器。
+func SetDicRunTimeoutResolver(fn func(path string) time.Duration) {
+	DicRunTimeoutResolver = fn
+}
+
+// dicRunTimeoutLimit 返回该词库路径对应的超时上限；无解析器或不适用时回退默认值。
+func dicRunTimeoutLimit(path string) time.Duration {
+	if DicRunTimeoutResolver != nil {
+		if d := DicRunTimeoutResolver(path); d > 0 {
+			return d
+		}
+	}
+	return DefaultDicRunTimeout
+}
+
+// clampDicRunTimeout 把请求的超时夹到该账号的上限内：timeout<=0 或超过上限时取上限。
+func clampDicRunTimeout(path string, timeout time.Duration) time.Duration {
+	limit := dicRunTimeoutLimit(path)
+	if timeout <= 0 || timeout > limit {
+		return limit
+	}
+	return timeout
+}
+
+// dicRunTimeoutMarker 记录「当前词库实例正在执行且已由最外层计时」的标记，存放于全局变量区 G。
+// $执行词库$ / $网页词库$ 等嵌套执行共享外层的 G，据此识别为嵌套执行、直接同步执行不重复计时，
+// 从而让整条执行链（含嵌套）共用同一个 1 分钟上限。
+const dicRunTimeoutMarker = "_词库执行超时中_"
+
+// isNestedDicRun 判断当前执行是否为嵌套执行（G 上已存在最外层设置的执行标记）。
+func isNestedDicRun(G *dto.Val) bool {
+	if G == nil {
+		return false
+	}
+	marked, _ := G.GetRaw(dicRunTimeoutMarker)
+	return marked == true
+}
+
+// withDicTimeout 以统一超时运行一次词库执行：
+//   - 嵌套执行（G 上已有标记）：直接同步运行，不重复计时；
+//   - 顶层执行：在 G 上打标记并计时，超时调用 stop 置停止标志尽快打断执行，返回已产出结果。
+//
+// timeout <=0 或超过该账号上限（会员 1 分钟 / 非会员 10 秒）时按上限计；
+// stop 为 nil 表示无法主动打断（超时后仅返回已产出结果）。
+func (m *dicImpl) withDicTimeout(path string, G *dto.Val, timeout time.Duration, stop func(), run func() string) (result string, timedOut bool) {
+	if isNestedDicRun(G) {
+		return run(), false
+	}
+	timeout = clampDicRunTimeout(path, timeout)
+	G.SetRaw(dicRunTimeoutMarker, true)
+	defer G.SetRaw(dicRunTimeoutMarker, false)
+
+	type outcome struct{ text string }
+	done := make(chan outcome, 1)
+
+	go func() {
+		defer func() {
+			if r := recover(); r != nil {
+				debugLog.Errorf("词库执行 panic: %v", r)
+				done <- outcome{}
+			}
+		}()
+		done <- outcome{run()}
+	}()
+
+	timer := time.NewTimer(timeout)
+	defer timer.Stop()
+
+	select {
+	case o := <-done:
+		return o.text, false
+	case <-timer.C:
+		// 超时：置停止标志，引擎会在行间检查时尽快退出
+		if stop != nil {
+			stop()
+		}
+		// 给引擎短暂宽限，尽量在返回前安全退出，避免并发访问已释放的变量
+		select {
+		case o := <-done:
+			return o.text, true
+		case <-time.After(3 * time.Second):
+			return "", true
+		}
+	}
+}
+
+// prepareDicRun 组装一次词库执行实例：注入词库路径、合并函数/类、按触发词匹配正文词条。
+func (m *dicImpl) prepareDicRun(D *dic_dto.Dic, trigger string) *dic_dto.DicEntry {
 	D.Val.G.SetRaw("_词库路径_", D.Path)
 
 	D.Data.MergeFuncs(D.FuncText)
@@ -344,9 +462,7 @@ func (m *dicImpl) DicRun(D *dic_dto.Dic, trigger string) string {
 	}
 
 	// 正文词块按触发词匹配。
-	DicText := D.Data.Dic
-
-	GetDic, GetDicTrigger, triggerIdx := run.RunForIndexed(D.Data.GetTriggerIndex(), DicText, trigger, 0)
+	_, GetDicTrigger, triggerIdx := run.RunForIndexed(D.Data.GetTriggerIndex(), D.Data.Dic, trigger, 0)
 	D.Val.P.Set("触发词", trigger)
 	D.Val.P.Set("触发", GetDicTrigger)
 	D.Val.P.SetRaw(triggerIdxKey, triggerIdx)
@@ -359,15 +475,22 @@ func (m *dicImpl) DicRun(D *dic_dto.Dic, trigger string) string {
 	// 注入编译期资源变量（//@资源），供初始化/中间件与正文引用
 	D.Data.ApplyResources(D.Val)
 
-	// 生命周期执行顺序：[f]_初始化（首次加载只一次）→ 中间件（每次）→ 正文词条。
+	return dicRun
+}
+
+// dicRunBody 在已准备的执行实例上按生命周期执行正文：
+// [f]_初始化（首次加载只一次）→ 中间件（每次）→ 正文词条。
+func (m *dicImpl) dicRunBody(dicRun *dic_dto.DicEntry, D *dic_dto.Dic) string {
+	DicText := D.Data.Dic
+
 	RunInit := m.runInitOnce(dicRun, D.Data, D.Path)
 
 	RunMiddleware := m.runMiddleware(dicRun, D.Data)
 
-	RunDic = ""
+	RunDic := ""
 	if !dicRun.Sys_v.Stop.Load() {
 		// 中间件可能通过 $重定向触发词$ 或变量改写修改了触发词，重新匹配一次再执行正文
-		GetDic, GetDicTrigger, triggerIdx = run.RunForIndexed(D.Data.GetTriggerIndex(), DicText, D.Val.P.GetStr("触发词"), 0)
+		GetDic, GetDicTrigger, triggerIdx := run.RunForIndexed(D.Data.GetTriggerIndex(), DicText, D.Val.P.GetStr("触发词"), 0)
 		D.Val.P.Set("触发", GetDicTrigger)
 		D.Val.P.SetRaw(triggerIdxKey, triggerIdx)
 		// 设置 body 行号映射（仅当触发器匹配时）
@@ -377,7 +500,18 @@ func (m *dicImpl) DicRun(D *dic_dto.Dic, trigger string) string {
 		RunDic = m.DicRunLine(dicRun, GetDic)
 	}
 
-	result = RunInit + RunMiddleware + RunDic
+	return RunInit + RunMiddleware + RunDic
+}
+
+// 运行词库(全局变量,词库文本,触发)：按账号会员状态限时（会员 1 分钟 / 非会员 10 秒），超时中断并返回已产出内容。
+func (m *dicImpl) DicRun(D *dic_dto.Dic, trigger string) string {
+	dicRun := m.prepareDicRun(D, trigger)
+
+	result, _ := m.withDicTimeout(D.Path, D.Val.G, DefaultDicRunTimeout, func() {
+		dicRun.Sys_v.Stop.Store(true)
+	}, func() string {
+		return m.dicRunBody(dicRun, D)
+	})
 
 	dicRun.Close()
 
@@ -463,87 +597,20 @@ func dicFingerprint(data *dto.BuildValue, path string) string {
 	return b.String()
 }
 
-// 运行词库（带超时）：超过 timeout 后置停止标志强行打断执行，返回当前已产出结果
+// 运行词库（带超时）：超过 timeout 后置停止标志强行打断执行，返回当前已产出结果。
+// timeout <=0 或超过 DefaultDicRunTimeout 时统一按 DefaultDicRunTimeout（1 分钟）计。
 func (m *dicImpl) DicRunTimeout(D *dic_dto.Dic, trigger string, timeout time.Duration) (result string, timedOut bool) {
-	// 无超时限制：直接复用 DicRun，避免不必要的 goroutine
-	if timeout <= 0 {
-		return m.DicRun(D, trigger), false
-	}
+	dicRun := m.prepareDicRun(D, trigger)
 
-	D.Val.G.SetRaw("_词库路径_", D.Path)
-
-	D.Data.MergeFuncs(D.FuncText)
-
-	if D.ClassText != nil {
-		maps.Copy(D.Data.Class, D.ClassText)
-	}
-
-	_, GetDicTrigger, triggerIdx := run.RunForIndexed(D.Data.GetTriggerIndex(), D.Data.Dic, trigger, 0)
-	D.Val.P.Set("触发词", trigger)
-	D.Val.P.Set("触发", GetDicTrigger)
-	D.Val.P.SetRaw(triggerIdxKey, triggerIdx)
-
-	dicRun := dic_dto.NewRunDicEntry().
-		SetV(D.Val).
-		SetDic(D.Data)
-	dicRun.Dic.MyFunc = D.MyFunc
-
-	// 注入编译期资源变量（//@资源），供初始化/中间件与正文引用
-	D.Data.ApplyResources(D.Val)
-
-	type runResult struct {
-		text string
-	}
-	done := make(chan runResult, 1)
-
-	go func() {
-		defer func() {
-			if r := recover(); r != nil {
-				debugLog.Errorf("DicRunTimeout panic: %v", r)
-				done <- runResult{}
-			}
-		}()
-		// 生命周期执行顺序：[f]_初始化（首次加载只一次）→ 中间件（每次，含头部内容）→ 正文词条。
-		text := m.runInitOnce(dicRun, D.Data, D.Path)
-
-		text += m.runMiddleware(dicRun, D.Data)
-
-		if !dicRun.Sys_v.Stop.Load() {
-			// 中间件可能通过 $重定向触发词$ 或变量改写修改了触发词，重新匹配一次再执行正文
-			reGetDic, reTrigger, reIdx := run.RunForIndexed(D.Data.GetTriggerIndex(), D.Data.Dic, D.Val.P.GetStr("触发词"), 0)
-			D.Val.P.Set("触发", reTrigger)
-			D.Val.P.SetRaw(triggerIdxKey, reIdx)
-			dicRun.LineNums = nil
-			if reGetDic != nil && reIdx < len(D.Data.Dic) {
-				dicRun.LineNums = D.Data.Dic[reIdx].LineNums
-			}
-			text += m.DicRunLine(dicRun, reGetDic)
-		}
-		done <- runResult{text}
-	}()
-
-	timer := time.NewTimer(timeout)
-	defer timer.Stop()
-
-	select {
-	case r := <-done:
-		dicRun.Close()
-		return r.text, false
-	case <-timer.C:
-		// 超时：置停止标志，引擎会在行间检查时尽快退出
+	result, timedOut = m.withDicTimeout(D.Path, D.Val.G, timeout, func() {
 		dicRun.Sys_v.Stop.Store(true)
-		// 给引擎短暂宽限，尽量在返回前安全退出，避免并发访问已释放的变量
-		select {
-		case r := <-done:
-			dicRun.Close()
-			return r.text, true
-		case <-time.After(3 * time.Second):
-			// 强制终止：goroutine 可能仍持有 dicRun，无法安全调用 Close()
-			// 但必须清理以避免资源泄漏 —— 3 秒后引擎大概率已退出行间循环
-			dicRun.Close()
-			return "", true
-		}
-	}
+	}, func() string {
+		return m.dicRunBody(dicRun, D)
+	})
+
+	dicRun.Close()
+
+	return result, timedOut
 }
 
 // DicRunScript 执行词库，带「无触发词兜底」：始终走正常执行路径——

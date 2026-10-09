@@ -30,6 +30,11 @@ func resolveSqlitePath(d *dto.DicInputs, raw string) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("数据库目录不可用，拒绝访问：%s", raw)
 	}
+	// 账号数据库目录可能尚未创建（首个使用该库的词库）：先补建目录，
+	// 否则 sqlite 打开会因父目录不存在而失败（与 openDBByDir 的行为保持一致）。
+	if err := os.MkdirAll(absBase, 0755); err != nil {
+		return "", fmt.Errorf("数据库目录不可用，拒绝访问：%s", raw)
+	}
 	target := filepath.Join(absBase, raw)
 	rel, err := filepath.Rel(absBase, target)
 	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
@@ -66,28 +71,10 @@ var (
 	globalCache *sql.DB
 )
 
-// globalDBDir 定位全局库所在目录（应用数据目录下的 database）。
-// 移动端/沙箱由 GetAppDir 注入，直接采用；桌面端数据目录为进程当前工作目录
-// （启动词库会切换到 NebulaData）。若工作目录仍停留在程序目录（如直接运行、
-// 测试或冒烟测试），则退回程序目录下的 NebulaData，避免全局库被误建到源码树等位置。
+// globalDBDir 定位全局库所在目录（应用数据目录下的数据库目录）。
+// 应用数据目录的定位见 utils.AppDataDir。
 func globalDBDir() string {
-	if d := utils.GetAppDir(); d != "" {
-		return filepath.Join(d, "database")
-	}
-	wd, err := os.Getwd()
-	if err != nil {
-		return filepath.Join("NebulaData", "database")
-	}
-	if abs, aerr := filepath.Abs(wd); aerr == nil {
-		wd = abs
-	}
-	if filepath.Base(wd) == "NebulaData" {
-		return filepath.Join(wd, "database")
-	}
-	if exe, eerr := os.Executable(); eerr == nil {
-		return filepath.Join(filepath.Dir(exe), "NebulaData", "database")
-	}
-	return filepath.Join(wd, "database")
+	return filepath.Join(utils.AppDataDir(), utils.CurrentAccountLayout().DatabaseDir)
 }
 
 // GetGlobalDB 返回引擎应用数据目录下 database/data.db 的进程级共享句柄，

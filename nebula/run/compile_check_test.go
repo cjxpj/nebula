@@ -8,7 +8,7 @@ import (
 )
 
 func newTestStack() *importStack {
-	return newImportStack()
+	return newImportStack("")
 }
 
 func newTestBuildValue() *dto.BuildValue {

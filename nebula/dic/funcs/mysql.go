@@ -104,6 +104,10 @@ func mysqlNew(d *dto.DicInputs) (any, error) {
 		dbPort = parts[1]
 	}
 
+	if err := checkSandboxNet(d, net.JoinHostPort(host, dbPort)); err != nil {
+		return nil, err
+	}
+
 	return newMysqlClass(&MysqlConn{
 		User: user,
 		Pass: pass,

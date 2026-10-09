@@ -26,7 +26,7 @@ func (f *DicFunc) UnZip() string {
 }
 
 func zipCompress(d *dto.DicInputs) (any, error) {
-	// 源文件夹与目标压缩包路径均需限制在词库目录内
+	// 源文件夹与目标压缩包路径均需限制在账号根目录（用户根目录）内
 	if err := checkFuncPath(d, 1); err != nil {
 		return "", err
 	}
@@ -42,7 +42,7 @@ func zipCompress(d *dto.DicInputs) (any, error) {
 }
 
 func zipDecompress(d *dto.DicInputs) (any, error) {
-	// 压缩包与解压目标目录路径均需限制在词库目录内
+	// 压缩包与解压目标目录路径均需限制在账号根目录（用户根目录）内
 	if err := checkFuncPath(d, 1); err != nil {
 		return "", err
 	}

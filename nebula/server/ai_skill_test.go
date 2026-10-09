@@ -29,7 +29,7 @@ func TestAIPinnedSkillsTextIncludesSyntax(t *testing.T) {
 
 // 未声明常驻技能的智能体不应被注入任何常驻正文（不白白占用上下文）。
 func TestAIPinnedSkillsTextEmptyWhenNotDeclared(t *testing.T) {
-	if text := aiPinnedSkillsText([]string{aiBuiltinSkillWeb, aiBuiltinSkillTools}); text != "" {
+	if text := aiPinnedSkillsText([]string{aiBuiltinSkillTools}); text != "" {
 		t.Fatalf("未声明常驻技能时应返回空串，实际内容：\n%s", text)
 	}
 	if text := aiPinnedSkillsText(nil); text != "" {
@@ -39,7 +39,7 @@ func TestAIPinnedSkillsTextEmptyWhenNotDeclared(t *testing.T) {
 
 // 常驻技能正文已直接给出，不应再作为「按需 read_skill」的清单项列出。
 func TestAISkillsPromptTextExcludesPinned(t *testing.T) {
-	text := aiSkillsPromptText([]string{aiBuiltinSkillWeb, aiBuiltinSkillSyntax})
+	text := aiSkillsPromptText([]string{aiBuiltinSkillTools, aiBuiltinSkillSyntax})
 	if strings.Contains(text, "- "+aiBuiltinSkillSyntax) {
 		t.Fatalf("常驻技能不应出现在「可用技能」清单中，实际内容：\n%s", text)
 	}
@@ -47,7 +47,7 @@ func TestAISkillsPromptTextExcludesPinned(t *testing.T) {
 		t.Fatalf("清单中缺少常驻技能说明，实际内容：\n%s", text)
 	}
 	// 非常驻技能仍按原样列出
-	if !strings.Contains(text, "- "+aiBuiltinSkillWeb) {
+	if !strings.Contains(text, "- "+aiBuiltinSkillTools) {
 		t.Fatalf("非常驻技能应保留在清单中，实际内容：\n%s", text)
 	}
 }

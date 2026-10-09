@@ -52,6 +52,8 @@ var golden = map[string]string{
 	"判断内循环":          "123",
 	"嵌套判断框":          "外层内层",
 	"循环变量改写":         "1",
+	"循环变量自增改写":       "246",
+	"行数变量读取":         "12",
 	"无限循环终止":         "123",
 	"循环动态次数":         "123",
 	"循环动态次数终止":       "12",
@@ -518,6 +520,25 @@ func TestEquivForModifyVar(t *testing.T) {
 		"%i%",
 		"i:3",
 		"<循环",
+	}, nil)
+}
+
+func TestEquivForModifyVarByAssign(t *testing.T) {
+	// 循环体内经「无副作用自增」改动循环变量本身：VarSafe 判定必须为 false，
+	// 每轮仍需核查改写（否则循环变量步进语义会被错误地优化掉）。
+	assertEquivalent(t, "循环变量自增改写", []string{
+		"循环>i=5",
+		"i+:1",
+		"%i%",
+		"<循环",
+	}, nil)
+}
+
+func TestEquivLineVarRead(t *testing.T) {
+	// 程序引用 %行数% 时必须逐语句维护行号（跳过 SetLine 的优化不得生效）。
+	assertEquivalent(t, "行数变量读取", []string{
+		"%行数%",
+		"%行数%",
 	}, nil)
 }
 

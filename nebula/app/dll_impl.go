@@ -11,14 +11,11 @@
 package main
 
 import (
-	"bytes"
 	"encoding/json"
 	"fmt"
-	"io"
-	"net/http"
-	"net/url"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"sync"
@@ -26,20 +23,28 @@ import (
 
 	"github.com/patrickmn/go-cache"
 
+	"github.com/cjxpj/nebula/appfiles"
+	"github.com/cjxpj/nebula/bot/botdic"
 	qqbot "github.com/cjxpj/nebula/bot/qqbot"
 	qqbot_msg "github.com/cjxpj/nebula/bot/qqbot/msg"
+	"github.com/cjxpj/nebula/debugLog"
 	_ "github.com/cjxpj/nebula/dic" // 触发引擎初始化：注入 dic_api.Api 并注册内置函数
 	dic_api "github.com/cjxpj/nebula/dic/api"
 	dic_dto "github.com/cjxpj/nebula/dic/dto"
 	"github.com/cjxpj/nebula/dic/sandbox"
-	"github.com/cjxpj/nebula/debugLog"
 	"github.com/cjxpj/nebula/dto"
 	"github.com/cjxpj/nebula/run"
 	"github.com/cjxpj/nebula/utils"
 )
 
-// dllVersion 与 appfiles.Version 对齐；DLL 内直接硬编码，避免引入 appfiles 重依赖。
-const dllVersion = "20.6.0"
+// init 在 DLL 加载时把引擎全局并行度放开到宿主机逻辑核数，
+// 使「按账号分配 N 核」真正兑现：账号级并发仍由 accountstat.go 的信号量限制，
+// 这里只设整机总闸——全部词库执行（QQ 机器人、网站词库、调试沙箱及 legacy
+// RunN/RunCompiled）合计最多用满整机，由 OS 与宿主进程公平抢占。
+// 宿主是独立进程，其运行时不受影响。
+func init() {
+	runtime.GOMAXPROCS(runtime.NumCPU())
+}
 
 // ================= 初始化 =================
 
@@ -47,6 +52,9 @@ type initConfig struct {
 	BotsRoot string `json:"botsRoot"` // 词库根目录（沙箱工作目录）
 	LogDir   string `json:"logDir"`   // 引擎日志目录
 	Debug    bool   `json:"debug"`    // 调试开关
+	// AccountLayout 账号目录布局（各固定子目录名），由宿主自定义下发；
+	// 为空时引擎使用内置默认值（见 utils.DefaultAccountLayout）。
+	AccountLayout utils.AccountLayout `json:"accountLayout"`
 }
 
 var initOnce sync.Once
@@ -60,6 +68,8 @@ func dllInit(cfgJSON string) string {
 			}
 		}
 		initOnce.Do(func() {
+			// 账号目录布局（固定子目录名）由宿主自定义下发，引擎不再硬编码
+			utils.SetAccountLayout(cf.AccountLayout)
 			// 收紧词库执行边界：限定工作目录、注销高危函数、禁止出网访问内网
 			if removed := sandbox.Enable(cf.BotsRoot); len(removed) > 0 {
 				debugLog.Infof("[nebula] 已禁用 %d 个高危词库函数", len(removed))
@@ -67,32 +77,30 @@ func dllInit(cfgJSON string) string {
 			if cf.LogDir != "" {
 				utils.SetLogDir(cf.LogDir)
 			}
-			// 词库编译磁盘缓存：缓存提到「词库父目录/.dic_cache」
+			// 词库编译磁盘缓存：账号内所有词库统一放到「私有/.dic_cache」（与引擎默认目录一致）
 			dto.ServerConfig.DicCache = true
 			run.SetDicCacheDirFunc(func(dicPath string) string {
-				// 云词库（.../<uid>/web_dic）的编译缓存归到账号级「我的储存」
-				// （.../<uid>/database），避免 .dic_cache 混进云词库目录被当作词库列出。
-				if accountDir, ok := accountDirOfWebDic(dicPath); ok {
-					return filepath.Join(accountDir, "database", ".dic_cache")
+				// 账号内所有词库（机器人词库、网站词库、网站目录等）共用一个缓存目录，
+				// 避免缓存散落到各机器人目录，或混进网站词库目录被当作词库列出。
+				if accountDir, ok := utils.AccountRootOf(dicPath); ok {
+					return filepath.Join(accountDir, utils.PrivateDirName(), ".dic_cache")
 				}
-				dir := filepath.Dir(dicPath)
-				if filepath.Base(dir) == "dic" {
-					dir = filepath.Dir(dir)
-				}
-				return filepath.Join(dir, ".dic_cache")
+				return filepath.Join(filepath.Dir(dicPath), ".dic_cache")
 			})
 			// 事件回调：改成写入内部队列，宿主轮询取走
 			qqbot.OnRecv = dllOnRecv
+			// 账号维度包裹一次消息分发：并发限制 + 耗时统计（见 accountstat.go）
+			qqbot.OnDispatch = dllOnDispatch
 			qqbot_msg.OnSend = dllOnSend
 			qqbot_msg.OnSendResult = dllOnSendResult
 		})
 		debugLog.SetDebug(cf.Debug)
-		return okEnv(map[string]any{"version": dllVersion})
+		return okEnv(map[string]any{"version": appfiles.Version})
 	})
 }
 
 func dllVersionString() string {
-	return okEnv(dllVersion)
+	return okEnv(appfiles.Version)
 }
 
 func dllSetDebug(on int) string {
@@ -118,6 +126,23 @@ var (
 	byRouter = map[*qqbot_msg.RouterQQBot]*botEntry{}
 )
 
+// dllOnDispatch 在机器人消息分发前按所属账号开始一次「账号级」执行：
+// 由 router 反查 botEntry.filePath（.../<uid>/机器人词库/<botid>）→ 账号 uid → 取令牌计时。
+// 返回的 done 在分发结束后由 wsDispatch 调用。无法反推账号时返回 nil（不限制、不统计）。
+func dllOnDispatch(bot *qqbot_msg.RouterQQBot) func() {
+	regMu.Lock()
+	e := byRouter[bot]
+	var path string
+	if e != nil {
+		path = e.filePath
+	}
+	regMu.Unlock()
+	if path == "" {
+		return nil
+	}
+	return accountBegin(path)
+}
+
 func dllBotStart(id int64, appID, secret, name, filePath string) string {
 	return guarded(func() string {
 		if appID == "" || secret == "" {
@@ -126,7 +151,7 @@ func dllBotStart(id int64, appID, secret, name, filePath string) string {
 		if filePath == "" {
 			return errEnv("机器人目录为空")
 		}
-		if err := os.MkdirAll(filepath.Join(filePath, "dic"), 0o755); err != nil {
+		if err := os.MkdirAll(filepath.Join(filePath, utils.DicDirName()), 0o755); err != nil {
 			return errEnv(err.Error())
 		}
 
@@ -176,6 +201,8 @@ func dllBotStop(id int64) string {
 		regMu.Unlock()
 		if e != nil {
 			qqbot_msg.StopWsFunc(e.router)
+			// 清除该机器人的外部词库注册，避免机器人 ID 复用时残留
+			botdic.SetExtraDics(e.filePath, nil)
 		}
 		return okEnv(nil)
 	})
@@ -194,6 +221,7 @@ func dllBotStopAll() string {
 		regMu.Unlock()
 		for _, e := range list {
 			qqbot_msg.StopWsFunc(e.router)
+			botdic.SetExtraDics(e.filePath, nil)
 		}
 		return okEnv(nil)
 	})
@@ -218,6 +246,41 @@ func dllBotRunning(id int64) string {
 	return okEnv(ok)
 }
 
+// extraDicReq 是宿主下发的「外部词库」条目：
+// Virtual 为账号布局内的绝对虚拟路径（用于账号上下文推断），Real 为可读的真实绝对路径。
+type extraDicReq struct {
+	Virtual string `json:"virtual"`
+	Real    string `json:"real"`
+}
+
+// dllBotSetExtraDics 为已启动的机器人设置外部词库（商城/云词库等，不落盘到账号目录）。
+// 机器人重启后需由宿主重新下发。
+func dllBotSetExtraDics(id int64, reqJSON string) string {
+	return guarded(func() string {
+		regMu.Lock()
+		e := reg[id]
+		regMu.Unlock()
+		if e == nil {
+			return errEnv("机器人未启动")
+		}
+		list := []extraDicReq{}
+		if strings.TrimSpace(reqJSON) != "" {
+			if err := json.Unmarshal([]byte(reqJSON), &list); err != nil {
+				return errEnv("外部词库配置解析失败: " + err.Error())
+			}
+		}
+		dics := make([]botdic.ExtraDic, 0, len(list))
+		for _, d := range list {
+			if d.Virtual == "" || d.Real == "" {
+				continue
+			}
+			dics = append(dics, botdic.ExtraDic{Virtual: d.Virtual, Real: d.Real})
+		}
+		botdic.SetExtraDics(e.filePath, dics)
+		return okEnv(len(dics))
+	})
+}
+
 func dllBotRemove(id int64, filePath string) string {
 	return guarded(func() string {
 		regMu.Lock()
@@ -237,6 +300,7 @@ func dllBotRemove(id int64, filePath string) string {
 		// 释放该机器人的线程变量，避免机器人 ID 被复用时继承旧变量
 		if filePath != "" {
 			dto.ReleaseBotThreadVars(filePath)
+			botdic.SetExtraDics(filePath, nil)
 		}
 		return okEnv(nil)
 	})
@@ -323,6 +387,9 @@ func dllReply(id int64, appID, secret, scene, target, msgID, content string) str
 
 func dllDicRun(path, content, trigger string) string {
 	return guarded(func() string {
+		if done := accountBegin(path); done != nil {
+			defer done()
+		}
 		d := dic_dto.NewDic(path, content)
 		return okEnv(dic_api.Api.DicRun(d, trigger))
 	})
@@ -330,6 +397,9 @@ func dllDicRun(path, content, trigger string) string {
 
 func dllWebDicRun(path, content string) string {
 	return guarded(func() string {
+		if done := accountBegin(path); done != nil {
+			defer done()
+		}
 		wd := dic_dto.NewWebDic(path, content)
 		return okEnv(dic_api.Api.WebDicRun(wd))
 	})
@@ -357,40 +427,17 @@ func dllSandboxScan(content string) string {
 	})
 }
 
-// ================= 云词库公开访问 =================
+// ================= 网站词库公开访问 =================
 
 type cloudReq struct {
-	Method     string              `json:"method"`
-	URLPath    string              `json:"urlPath"` // 请求 URI（含 query）
-	FilePath   string              `json:"filePath"`
-	Ext        string              `json:"ext"` // .n / .wn
-	Content    string              `json:"content"`
-	Host       string              `json:"host"`
-	RemoteAddr string              `json:"remoteAddr"`
-	Headers    map[string][]string `json:"headers"`
-	Body       string              `json:"body"`
+	FilePath string          `json:"filePath"`
+	Ext      string          `json:"ext"` // .n / .wn
+	Content  string          `json:"content"`
+	WebRoot  string          `json:"webRoot"`
+	Trigger  string          `json:"trigger"` // .n 的触发词，空则 Main
+	Access   json.RawMessage `json:"access"`
+	Body     string          `json:"body"`
 }
-
-type cloudResp struct {
-	Status  int         `json:"status"`
-	Headers http.Header `json:"headers"`
-	Body    string      `json:"body"`
-}
-
-// capWriter 捕获词库设置的响应头/状态码，替代真实 http.ResponseWriter 跨 DLL 传递。
-type capWriter struct {
-	header http.Header
-	body   bytes.Buffer
-	status int
-}
-
-func newCapWriter() *capWriter {
-	return &capWriter{header: make(http.Header), status: http.StatusOK}
-}
-
-func (c *capWriter) Header() http.Header         { return c.header }
-func (c *capWriter) Write(b []byte) (int, error) { return c.body.Write(b) }
-func (c *capWriter) WriteHeader(code int)        { c.status = code }
 
 func dllCloudServe(reqJSON string) string {
 	return guarded(func() string {
@@ -398,181 +445,19 @@ func dllCloudServe(reqJSON string) string {
 		if err := json.Unmarshal([]byte(reqJSON), &req); err != nil {
 			return errEnv("请求解析失败: " + err.Error())
 		}
-		target := req.URLPath
-		if target == "" {
-			target = "/"
+		if done := accountBegin(req.FilePath); done != nil {
+			defer done()
 		}
-		hreq, err := http.NewRequest(req.Method, target, io.NopCloser(strings.NewReader(req.Body)))
-		if err != nil {
-			return errEnv("请求重建失败: " + err.Error())
-		}
-		if req.Host != "" {
-			hreq.Host = req.Host
-		}
-		if req.RemoteAddr != "" {
-			hreq.RemoteAddr = req.RemoteAddr
-		}
-		for k, vs := range req.Headers {
-			for _, v := range vs {
-				hreq.Header.Add(k, v)
-			}
-		}
-
-		info := cloudRequestInfo(hreq, req.Body)
-		cw := newCapWriter()
-		globalV := dto.NewVal().
-			Set("响应状态", "200").
-			Set("输出头部", "{}").
-			Set("COOKIE", "[]").
-			Set("网站根目录", ".").
-			SetRaw("_请求数据_", hreq).
-			SetRaw("_响应数据_", cw)
-		if raw, err := json.Marshal(info); err == nil {
-			globalV.Set("访问数据", string(raw))
-		}
-		funcs := cloudHTTPFuncs(cw, info)
-
-		var out string
-		if req.Ext == ".wn" {
-			wd := dic_dto.NewWebDic(req.FilePath, req.Content)
-			wd.SetGlobal_v(globalV)
-			wd.MyFunc = funcs
-			out = dic_api.Api.WebDicRun(wd)
-		} else {
-			// 编译不可信词库：panic 已由 guarded 兜底
-			dic := dic_dto.NewDic(req.FilePath, req.Content)
-			dic.SetGlobal_v(globalV).AddFuncs(funcs)
-			out = dic_api.Api.DicRun(dic, "Main")
-		}
-		applyCloudOutput(cw, globalV, out)
-		return okEnv(cloudResp{Status: cw.status, Headers: cw.header, Body: out})
+		return okEnv(dic_api.Api.WebHTTPRun(&dic_dto.WebHTTPRequest{
+			Path:    req.FilePath,
+			Ext:     req.Ext,
+			Content: req.Content,
+			WebRoot: req.WebRoot,
+			Trigger: req.Trigger,
+			Access:  string(req.Access),
+			Body:    req.Body,
+		}))
 	})
-}
-
-// cloudRequestInfo 构建一次公开访问的请求信息（与引擎网页词库的访问数据保持一致）。
-func cloudRequestInfo(r *http.Request, rawBody string) *dto.HTTPRequestInfo {
-	info := &dto.HTTPRequestInfo{
-		Path:        r.URL.Path,
-		Type:        r.Method,
-		QueryParams: r.URL.Query(),
-		Headers:     r.Header,
-		IP:          utils.GetClientIP(r),
-		Host:        r.Host,
-	}
-	if r.Method != http.MethodPost {
-		return info
-	}
-	if strings.TrimSpace(rawBody) != "" {
-		var bodyMap map[string]any
-		if err := json.Unmarshal([]byte(rawBody), &bodyMap); err == nil {
-			info.Post = bodyMap
-		} else {
-			info.Post = rawBody
-		}
-	} else {
-		_ = r.ParseForm()
-		info.Post = r.PostForm
-	}
-	return info
-}
-
-// applyCloudOutput 按网页词库规范写出响应：应用词库设置的输出头部/COOKIE/响应状态。
-func applyCloudOutput(w *capWriter, globalV *dto.Val, runData string) {
-	if sendHeader, _ := globalV.Get("输出头部").(string); sendHeader != "" && sendHeader != "{}" {
-		var headerMap map[string]string
-		if err := json.Unmarshal([]byte(sendHeader), &headerMap); err == nil {
-			for k, v := range headerMap {
-				w.header.Set(k, v)
-			}
-		}
-	}
-	if sendCookie, _ := globalV.Get("COOKIE").(string); sendCookie != "" && sendCookie != "[]" {
-		var cookies []*dto.SetCookie
-		if err := json.Unmarshal([]byte(sendCookie), &cookies); err == nil {
-			for _, c := range cookies {
-				if c == nil {
-					continue
-				}
-				http.SetCookie(w, &http.Cookie{
-					Name:     c.Name,
-					Value:    c.Value,
-					Path:     c.Path,
-					HttpOnly: c.HttpOnly,
-					MaxAge:   c.MaxAge,
-				})
-			}
-		}
-	}
-	status := http.StatusOK
-	if v, ok := globalV.Get("响应状态").(string); ok {
-		if n, err := strconv.Atoi(v); err == nil {
-			status = n
-		}
-	}
-	w.status = status
-	w.header.Set("Content-Length", strconv.Itoa(len(runData)))
-}
-
-// cloudHTTPFuncs 构造公开访问注入的内置函数：设置头部 / GET / POST。
-func cloudHTTPFuncs(w http.ResponseWriter, info *dto.HTTPRequestInfo) map[string]dto.DicFunc {
-	return map[string]dto.DicFunc{
-		"设置头部": {L: "2", Fn: func(d *dto.DicInputs) (any, error) {
-			if k, ok := d.Inputs.Get(1).(string); ok {
-				if v, ok := d.Inputs.Get(2).(string); ok {
-					w.Header().Set(k, v)
-					return "", nil
-				}
-				return "参数错误2", nil
-			}
-			return "参数错误1", nil
-		}},
-		"GET": {L: "1|2", Fn: func(d *dto.DicInputs) (any, error) {
-			if k, ok := d.Inputs.Get(1).(string); ok {
-				if v := info.QueryParams.Get(k); v != "" {
-					return v, nil
-				}
-				if v, ok := d.Inputs.Get(2).(string); ok {
-					return v, nil
-				}
-			}
-			return "", nil
-		}},
-		"POST": {L: "1|2", Fn: func(d *dto.DicInputs) (any, error) {
-			key, ok := d.Inputs.Get(1).(string)
-			if !ok {
-				return "参数必须是字符串", nil
-			}
-			switch post := info.Post.(type) {
-			case url.Values:
-				if v := post.Get(key); v != "" {
-					return v, nil
-				}
-			case map[string]any:
-				if v, exists := post[key]; exists {
-					switch n := v.(type) {
-					case int:
-						return strconv.FormatInt(int64(n), 10), nil
-					case int64:
-						return strconv.FormatInt(n, 10), nil
-					case float64:
-						return strconv.FormatFloat(n, 'f', -1, 64), nil
-					default:
-						return fmt.Sprint(v), nil
-					}
-				}
-			case map[string][]string:
-				if arr, exists := post[key]; exists && len(arr) > 0 {
-					return arr[0], nil
-				}
-			}
-			if d.Inputs.LenOk(2) {
-				if def, ok := d.Inputs.Get(2).(string); ok {
-					return def, nil
-				}
-			}
-			return "", nil
-		}},
-	}
 }
 
 // ================= 事件队列 =================
@@ -789,21 +674,7 @@ func sendScene(path string) (scene, target string) {
 	return "", ""
 }
 
-// accountDirOfWebDic 若词库位于账号云词库目录（.../<uid>/web_dic[/...]）之下，
-// 返回账号目录 .../<uid>，否则返回 false。用于把云词库编译缓存归到账号级存储目录。
-func accountDirOfWebDic(dicPath string) (string, bool) {
-	dir := filepath.Clean(dicPath)
-	for {
-		if filepath.Base(dir) == "web_dic" {
-			return filepath.Dir(dir), true
-		}
-		parent := filepath.Dir(dir)
-		if parent == dir {
-			return "", false
-		}
-		dir = parent
-	}
-}
+// 平台账号目录布局（固定子目录名）由宿主自定义下发，相关反推逻辑见 utils.AccountRootOf。
 
 func firstNonEmpty(values ...string) string {
 	for _, v := range values {

@@ -269,35 +269,13 @@ func concatLeftStr(v any) string {
 	}
 }
 
-// setInt64OrFloat 整数运算结果写回：ok 为 true 时直存 int64（免装箱），否则以浮点结果回退。
-func setInt64OrFloat(v *dto.Val, key string, res int64, ok bool, fallback float64) {
-	if ok {
-		v.SetInt64(key, res)
-	} else {
-		v.Set(key, fallback)
-	}
-}
-
-// setInt64OrFloatSlot 与 setInt64OrFloat 等价，但在 fastSlot 且目标为普通变量（slot>=0）时
-// 直写无锁槽（num 映射由字节码块结束统一 FlushSlotsToMap），避免热路径每轮加锁。
-func setInt64OrFloatSlot(v *dto.Val, key string, slot int32, res int64, ok bool, fallback float64, fastSlot bool) {
-	if fastSlot && slot >= 0 {
-		if ok {
-			v.SlotSetInt64(slot, res)
-		} else {
-			v.Set(key, fallback)
-		}
-		return
-	}
-	setInt64OrFloat(v, key, res, ok, fallback)
-}
-
 // runSimpleAssign 处理简单赋值/算术行（vType 1,2,3,4,5,7,8），返回 true 表示该行已处理完毕。
 // 这些行不改变状态机、不涉及 JSON 框/连续执行等复杂分支，可在普通状态下走快速路径直接执行，
 // 语义与原解释器的 switch vType 分支完全一致。
-func runSimpleAssign(r *dic_dto.DicEntry, funcV *dic_dto.DicFunc, vType int8, vPrefix, vSuffix string, prefixSlot, suffixSlot int32, fastSlot bool) bool {
+func runSimpleAssign(r *dic_dto.DicEntry, funcV *dic_dto.DicFunc, vType int8, vPrefix, vSuffix string, prefixSlot, suffixSlot int32) bool {
 	// 整数直算快速路径：左右操作数均为整数时直接 int64 原生运算，免装箱、免字符串中转。
 	// 仅当左值为整数变量且右操作数为整数变量时生效；否则回退下方通用 any 逻辑，语义不变。
+	// 结果写回逻辑内联在此（不再经 helper），避免热路径多一层函数调用。
 	if vType == 1 || vType == 2 || vType == 7 || vType == 8 {
 		var left int64
 		var lok bool
@@ -310,28 +288,44 @@ func runSimpleAssign(r *dic_dto.DicEntry, funcV *dic_dto.DicFunc, vType int8, vP
 			var right int64
 			var rok bool
 			if suffixSlot >= 0 {
-				right, rok = funcV.Val.GetSlotInt64(suffixSlot)
+				// 与 dto.DicVal.GetSlotInt64 等价（先 P 后 G），内联以免多一层调用。
+				right, rok = funcV.Val.P.SlotGetInt64(suffixSlot)
+				if !rok && funcV.Val.G != nil {
+					right, rok = funcV.Val.G.SlotGetInt64(suffixSlot)
+				}
 			} else {
 				right, rok = runNumOperandInt64(funcV, vSuffix)
 			}
 			if rok {
-				switch vType {
-				case 1: // 自减
-					res, ok := subInt64(left, right)
-					setInt64OrFloatSlot(r.Val.P, vPrefix, prefixSlot, res, ok, float64(left)-float64(right), fastSlot)
-					return true
-				case 2: // 自增
-					res, ok := addInt64(left, right)
-					setInt64OrFloatSlot(r.Val.P, vPrefix, prefixSlot, res, ok, float64(left)+float64(right), fastSlot)
-					return true
-				case 7: // 乘法
-					res, ok := mulInt64(left, right)
-					setInt64OrFloatSlot(r.Val.P, vPrefix, prefixSlot, res, ok, float64(left)*float64(right), fastSlot)
-					return true
-				case 8: // 除法
+				if vType == 8 { // 除法：与解释器一致，按浮点结果写回
 					r.Val.P.Set(vPrefix, float64(left)/float64(right))
 					return true
 				}
+				var res int64
+				var ok bool
+				var fallback float64
+				switch vType {
+				case 1: // 自减
+					res, ok = subInt64(left, right)
+					fallback = float64(left) - float64(right)
+				case 2: // 自增
+					res, ok = addInt64(left, right)
+					fallback = float64(left) + float64(right)
+				case 7: // 乘法
+					res, ok = mulInt64(left, right)
+					fallback = float64(left) * float64(right)
+				}
+				if ok {
+					if prefixSlot >= 0 {
+						r.Val.P.SlotSetInt64(prefixSlot, res)
+					} else {
+						r.Val.P.SetInt64(vPrefix, res)
+					}
+				} else {
+					// 整数溢出：退化为浮点写回（与原 setInt64OrFloat 回退一致）
+					r.Val.P.Set(vPrefix, fallback)
+				}
+				return true
 			}
 		}
 	}

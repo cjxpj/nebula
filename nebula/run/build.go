@@ -543,32 +543,231 @@ func parseImportFuncCall(line string) (varName, target string, ok bool) {
 	return "", "", false
 }
 
+// 编译期文件读取的安全上限，防止恶意词库通过引入耗尽宿主资源。
+const (
+	// maxImportFileSize 单次引入/资源读取的文件大小上限（字节）。
+	maxImportFileSize = 64 << 20
+	// maxImportDepth 引入链最大嵌套层数。
+	maxImportDepth = 64
+	// maxImportFileCount 目录形式引入单次加载的文件数量上限。
+	maxImportFileCount = 1024
+)
+
+// validateImportTarget 校验编译期文件读取指令（#引入= / $引入 / //@资源 / //@一次性资源）的目标路径。
+// 引入功能保持开放，但目标必须是应用数据目录（private/）内的相对路径：
+// 禁止绝对路径、跨区（跨盘/跨卷，含 Windows 盘符与 UNC）路径、目录回退（..）、
+// NTFS 备用数据流（冒号）与 Windows 保留设备名（CON/NUL/COM1…）。
+// raw 为原始目标（可带目录形式的 /* 后缀）。
+func validateImportTarget(raw string) error {
+	p := strings.TrimSuffix(strings.TrimSpace(raw), "/*")
+	if p == "" {
+		return fmt.Errorf("引入目标为空：%s", raw)
+	}
+	// 绝对路径与跨区路径：Windows 盘符/UNC、以分隔符开头的根路径。
+	// 盘符显式识别（X:），避免在非 Windows 平台 filepath.VolumeName 返回空而漏判。
+	if filepath.IsAbs(p) || filepath.VolumeName(p) != "" || hasDrivePrefix(p) {
+		return fmt.Errorf("禁止绝对路径或跨区路径：%s", raw)
+	}
+	if strings.HasPrefix(p, "/") || strings.HasPrefix(p, "\\") {
+		return fmt.Errorf("禁止绝对路径或跨区路径：%s", raw)
+	}
+	// 逐段校验：目录回退、备用数据流、Windows 保留设备名。
+	p = filepath.ToSlash(p)
+	for _, seg := range strings.Split(p, "/") {
+		if isParentTraversal(seg) {
+			return fmt.Errorf("禁止目录回退（..）：%s", raw)
+		}
+		// 冒号：NTFS 备用数据流（ads）与残留盘符。
+		if strings.Contains(seg, ":") {
+			return fmt.Errorf("禁止包含冒号的路径分量：%s", raw)
+		}
+		if isWindowsReservedName(strings.TrimRight(seg, " .")) {
+			return fmt.Errorf("禁止 Windows 保留设备名：%s", raw)
+		}
+	}
+	return nil
+}
+
+// isParentTraversal 判断单个路径分量是否为目录回退（..）。
+// Windows 打开文件时会裁剪每个分量结尾的空格与点，因此「.. 」「.. .」等
+// 会在系统调用层被还原成 ..，必须按裁剪后的结果判定，否则可绕过精确比较逃逸 private/。
+func isParentTraversal(seg string) bool {
+	if seg == ".." {
+		return true
+	}
+	// 仅由点与空格组成、且含两个以上点的分量（如 ".. "、".. ."、"..."）都会被当作回退。
+	if strings.Trim(seg, " .") == "" && strings.Count(seg, ".") >= 2 {
+		return true
+	}
+	// 去掉尾随空格后恰好是 ..
+	return strings.TrimRight(seg, " ") == ".."
+}
+
+// hasDrivePrefix 判断路径是否以 Windows 盘符前缀开头（如 C:、c:），跨平台可用。
+func hasDrivePrefix(p string) bool {
+	if len(p) < 2 || p[1] != ':' {
+		return false
+	}
+	c := p[0]
+	return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z')
+}
+
+// isWindowsReservedName 判断单个路径分量是否为 Windows 保留设备名（不区分扩展名，如 CON.n 仍是设备）。
+func isWindowsReservedName(seg string) bool {
+	name := seg
+	if i := strings.IndexByte(name, '.'); i >= 0 {
+		name = name[:i]
+	}
+	name = strings.ToUpper(strings.TrimSpace(name))
+	switch name {
+	case "CON", "PRN", "AUX", "NUL":
+		return true
+	}
+	if len(name) == 4 && (strings.HasPrefix(name, "COM") || strings.HasPrefix(name, "LPT")) {
+		c := name[3]
+		return c >= '0' && c <= '9'
+	}
+	return false
+}
+
+// importTargetAbs 返回引入目标（相对应用数据目录的路径，如 private/x.n）的绝对路径。
+func importTargetAbs(relPath string) string {
+	return utils.NewFileQueue(relPath).GetAbsPath()
+}
+
+// ensureWithinPrivate 校验编译期读取的目标确实位于本次编译允许的私有目录之内。
+// relPath 为「相对应用数据目录」的路径（如 private/xxx.n），与 utils.NewFileQueue 的入参一致；
+// privateRel 为本次编译允许读取的私有目录「相对应用数据目录」的路径（见 importStack.privateRel），
+// 空串时回退到默认私有目录名，保证引擎独立运行行为不变。
+// 先做词法归属校验，再解析符号链接后复核，防止软链接指向私有目录之外。
+func ensureWithinPrivate(relPath, privateRel string) error {
+	if filepath.IsAbs(relPath) || filepath.VolumeName(relPath) != "" || hasDrivePrefix(relPath) {
+		return fmt.Errorf("禁止绝对路径：%s", relPath)
+	}
+	base := utils.WorkDir()
+	if base == "" {
+		return fmt.Errorf("无法确定工作目录，拒绝读取：%s", relPath)
+	}
+	absBase, err := filepath.Abs(base)
+	if err != nil {
+		return err
+	}
+	if privateRel == "" {
+		privateRel = utils.PrivateDirName()
+	}
+	root := filepath.Join(absBase, filepath.FromSlash(privateRel))
+	absTarget := importTargetAbs(relPath)
+	if !isWithin(root, absTarget) {
+		return fmt.Errorf("引入目标越界（须在私有目录内）：%s", relPath)
+	}
+	// 逐个分量检查重解析点：filepath.EvalSymlinks 对「经目录联接的子路径」会报错（并非解析出越界），
+	// 若据此放行则会失败开放；因此改为逐段 Lstat，凡非普通文件/目录（符号链接、目录联接等）一律拒绝。
+	if hasReparse, err := pathHasReparsePoint(root, absTarget); err != nil {
+		return fmt.Errorf("引入路径校验失败：%s（%v）", relPath, err)
+	} else if hasReparse {
+		return fmt.Errorf("引入目标经符号链接/目录联接越界：%s", relPath)
+	}
+	return nil
+}
+
+// pathHasReparsePoint 逐个分量检查 target（须位于 root 内）路径上是否存在重解析点
+// （符号链接、目录联接等），防止经链接逃逸 root。
+// 不存在的分量视为正常终止（后续读取会失败，不构成越界）。
+func pathHasReparsePoint(root, target string) (bool, error) {
+	rel, err := filepath.Rel(root, target)
+	if err != nil {
+		return false, err
+	}
+	if rel == "." {
+		return false, nil
+	}
+	cur := root
+	for _, seg := range strings.Split(rel, string(filepath.Separator)) {
+		if seg == "" || seg == "." {
+			continue
+		}
+		cur = filepath.Join(cur, seg)
+		fi, err := os.Lstat(cur)
+		if err != nil {
+			return false, nil
+		}
+		// 既非普通文件（ModeType==0）也非目录（ModeDir）的分量即为符号链接/目录联接/设备等。
+		if fi.Mode()&os.ModeType != 0 && fi.Mode()&os.ModeDir == 0 {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
+// isWithin 判断 target 是否位于 root 之内（含 root 本身）。
+func isWithin(root, target string) bool {
+	rel, err := filepath.Rel(root, target)
+	if err != nil {
+		return false
+	}
+	if rel == "." {
+		return true
+	}
+	return rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator))
+}
+
+// checkImportFileSize 读取前校验文件大小上限，防止超大文件耗尽内存；文件不存在等错误交由后续读取统一处理。
+func checkImportFileSize(relPath string) error {
+	info, err := os.Stat(importTargetAbs(relPath))
+	if err != nil {
+		return nil
+	}
+	if info.IsDir() {
+		return fmt.Errorf("引入目标是目录，非文件：%s", relPath)
+	}
+	if info.Size() > maxImportFileSize {
+		return fmt.Errorf("引入文件超过大小上限（%d 字节）：%s", maxImportFileSize, relPath)
+	}
+	return nil
+}
+
 // resolveResourcePath 将 //@资源 的文件路径解析为「相对应用数据目录」的路径：
-// 相对路径基于应用数据目录（private/）解析（与 #引入= 一致），绝对路径原样返回。
-// 返回路径统一带 private/ 前缀（后续经 utils.NewFileQueue 读取时补应用数据主目录）。
-func resolveResourcePath(rel string) string {
+// 相对路径基于本次编译允许的私有目录解析（privateRel，与 $引入/#引入= 一致）。
+// 绝对路径已在 validateImportTarget 中拒绝，此处保留原样返回作为兜底。
+// 返回路径统一带私有目录前缀（后续经 utils.NewFileQueue 读取时补应用数据主目录）。
+func resolveResourcePath(rel, privateRel string) string {
 	if filepath.IsAbs(rel) {
 		return rel
 	}
+	if privateRel == "" {
+		privateRel = utils.PrivateDirName()
+	}
 	rel = filepath.ToSlash(rel)
-	if !strings.HasPrefix(rel, "private/") {
-		rel = "private/" + rel
+	if prefix := filepath.ToSlash(privateRel) + "/"; !strings.HasPrefix(rel, prefix) {
+		rel = prefix + rel
 	}
 	return filepath.FromSlash(rel)
 }
 
 // compileDicResource 将 .n 词库资源编译并序列化为 gob 字节，供 //@资源 匹配 .n 后缀时自动编译。
 // 含自定义函数（bot 注入）无法序列化时返回 nil，调用方回退按原始文本存入。
-func compileDicResource(dicPath string, raw []byte) []byte {
+// 资源为加密词库时，其明文的编译产物会并入父词库结果，故标记整条编译链禁用磁盘缓存（stack.encrypted）。
+func compileDicResource(dicPath string, raw []byte, stack *importStack) []byte {
 	lines := utils.SplitLines(raw)
+	encrypted := false
 	// 单行密文：整块解密后重新切分（与 NewDicFile 一致）
 	if len(lines) == 1 {
 		if str, err := utils.Decrypt(utils.RemoveComments(lines[0]), appfiles.Key); err == nil {
 			lines = utils.SplitLines([]byte(str))
 			raw = []byte(str)
+			encrypted = true
 		}
 	}
-	split := BuildDicLinesWithRaw(dicPath, lines, raw)
+	if encrypted {
+		stack.encrypted = true
+	}
+	// 加密资源不落缓存；noImport 透传给内层编译，避免资源文件内的嵌套引入绕过禁用指令。
+	split := buildDicWithHashMode(dicPath, lines, dicHashBytes(raw), dicBuildMode{
+		writeCache: !encrypted,
+		readCache:  !encrypted,
+		noImport:   stack.noImport,
+		encrypted:  encrypted,
+	})
 	b, err := MarshalBuildValue(split)
 	if err != nil {
 		return nil
@@ -593,14 +792,26 @@ func parseResourceVar(line string) (name, rel string, ok bool) {
 
 // loadResource 读取并登记一个资源：.n 自动编译为 gob 字节 / 文本两种形式。
 func loadResource(name, rel string, resources map[string]any, stack *importStack, lineNo int) {
-	abs := resolveResourcePath(rel)
+	if err := validateImportTarget(rel); err != nil {
+		stack.addError(lineNo, err.Error())
+		return
+	}
+	abs := resolveResourcePath(rel, stack.privateRel)
+	if err := ensureWithinPrivate(abs, stack.privateRel); err != nil {
+		stack.addError(lineNo, err.Error())
+		return
+	}
+	if err := checkImportFileSize(abs); err != nil {
+		stack.addError(lineNo, err.Error())
+		return
+	}
 	data, err := utils.NewFileQueue(abs).ReadFileByte()
 	if err != nil {
 		stack.addError(lineNo, "资源文件读取失败："+err.Error())
 		return
 	}
 	if strings.HasSuffix(rel, ".n") {
-		if b := compileDicResource(abs, data); b != nil {
+		if b := compileDicResource(abs, data, stack); b != nil {
 			resources[name] = b
 		} else {
 			resources[name] = string(data)
@@ -638,15 +849,28 @@ type importStack struct {
 	// noImport 为 true 时禁用编译期文件读取指令（#引入= / $引入 / //@资源 / //@一次性资源），
 	// 供服务端编译不可信词库内容（如商店发布取元数据）时使用，避免读取服务器本地文件。
 	noImport bool
+
+	// privateRel 本次编译允许读取的私有目录「相对应用数据目录」的路径（如 private、1/私有），
+	// 由顶层词库路径推导（见 utils.PrivateRootRel）：引入与编译期资源只能从该目录读取。
+	privateRel string
+
+	// encrypted 本次编译链路上是否出现过加密词库（顶层、#引入= 引入的文件、//@资源 的 .n 资源）。
+	// 加密词库的编译产物含解密后的源码，一旦落盘即泄漏源码，故整条编译链禁用磁盘缓存。
+	encrypted bool
 }
 
-// newImportStack 创建空的引入链。
-func newImportStack() *importStack {
+// newImportStack 创建空的引入链；privateRel 为空时按私有目录名回退
+// （仅做告警检查、不读取文件的场景可传空）。
+func newImportStack(privateRel string) *importStack {
+	if privateRel == "" {
+		privateRel = utils.PrivateRootRel("")
+	}
 	return &importStack{
 		files:         make(map[string]bool),
 		deps:          make(map[string]string),
 		funcUses:      make(map[string]bool),
 		importedFuncs: make(map[*dto.BuildDic]bool),
+		privateRel:    filepath.ToSlash(privateRel),
 	}
 }
 
@@ -676,7 +900,9 @@ func (s *importStack) addError(line int, text string) {
 
 // dicCacheVersion 磁盘编译缓存格式版本，结构/编译逻辑变化时递增以淘汰旧缓存。
 // v10：头部判定回归「首个空行之前即头部」，旧缓存把普通文本首行当成触发词，需强制重编译。
-const dicCacheVersion = 10
+// v11：BuildDic/BuildDicNoImport 改用 utils.SplitLines 切行以兼容 CRLF，
+// 旧缓存把 CRLF 行尾的 \r 混入触发词导致 Main 不生效，需强制重编译。
+const dicCacheVersion = 11
 
 // dicCacheEntry 词库编译结果的磁盘缓存结构（gob 序列化）。
 // 只缓存可序列化词条；含 bot 注入（MyFunc 非空）的词库不落缓存，故无需序列化 Go 函数。
@@ -721,12 +947,15 @@ func dicCachePath(cacheDir, dicPath string) string {
 	return filepath.Join(cacheDir, dicHash(dicPath)+".gob")
 }
 
-// readDicFileContent 读取词库文件，返回编译输入行与用于内容 hash 的原始字节；
-// 若为单行密文则整块解密后重新切分，此时原始字节取解密后的内容。
-func readDicFileContent(filePath string) (lines []string, raw []byte, err error) {
+// readDicFileContent 读取词库文件，返回编译输入行、用于内容 hash 的原始字节，
+// 以及该文件是否为加密词库；若为单行密文则整块解密后重新切分，此时原始字节取解密后的内容。
+func readDicFileContent(filePath string) (lines []string, raw []byte, encrypted bool, err error) {
+	if err := checkImportFileSize(filePath); err != nil {
+		return nil, nil, false, err
+	}
 	data, err := utils.NewFileQueue(filePath).ReadFileByte()
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, false, err
 	}
 	lines = utils.SplitLines(data)
 	raw = data
@@ -734,9 +963,10 @@ func readDicFileContent(filePath string) (lines []string, raw []byte, err error)
 		if str, err := utils.Decrypt(utils.RemoveComments(lines[0]), appfiles.Key); err == nil {
 			lines = strings.Split(str, "\n")
 			raw = []byte(str)
+			encrypted = true
 		}
 	}
-	return lines, raw, nil
+	return lines, raw, encrypted, nil
 }
 
 // classFuncsOf 提取 Class 表里可序列化的 DicFuncs 部分。
@@ -839,8 +1069,13 @@ func loadDicCache(cacheDir, dicPath, mainHash string) *dto.BuildValue {
 		if dep == dicPath {
 			continue
 		}
-		_, raw, err := readDicFileContent(dep)
+		_, raw, depEncrypted, err := readDicFileContent(dep)
 		if err != nil || dicHashBytes(raw) != h {
+			return nil
+		}
+		// 依赖文件为加密词库：旧缓存可能已包含其解密后的源码，一律作废，
+		// 交由重编译链路改写为「不使用缓存」，避免源码继续落盘。
+		if depEncrypted {
 			return nil
 		}
 	}
@@ -904,27 +1139,9 @@ type dicCacheMeta struct {
 }
 
 // dicCacheDir 返回词库编译缓存目录（应用数据目录下的 private/.dic_cache）。
-// 移动端/沙箱由 GetAppDir 注入，直接采用；桌面端数据目录为进程当前工作目录
-// （启动词库会切换到 NebulaData）。若工作目录仍停留在程序目录（如直接运行、
-// 测试或冒烟测试），则退回程序目录下的 NebulaData，避免缓存被误建到源码树等位置。
+// 应用数据目录的定位见 utils.AppDataDir。
 func dicCacheDir() string {
-	if d := utils.GetAppDir(); d != "" {
-		return filepath.Join(d, "private", ".dic_cache")
-	}
-	wd, err := os.Getwd()
-	if err != nil {
-		return filepath.Join("NebulaData", "private", ".dic_cache")
-	}
-	if abs, aerr := filepath.Abs(wd); aerr == nil {
-		wd = abs
-	}
-	if filepath.Base(wd) == "NebulaData" {
-		return filepath.Join(wd, "private", ".dic_cache")
-	}
-	if exe, eerr := os.Executable(); eerr == nil {
-		return filepath.Join(filepath.Dir(exe), "NebulaData", "private", ".dic_cache")
-	}
-	return filepath.Join(wd, "private", ".dic_cache")
+	return filepath.Join(utils.AppDataDir(), utils.PrivateDirName(), ".dic_cache")
 }
 
 // dicCacheDirFor 返回某词库应使用的缓存目录。
@@ -1016,12 +1233,16 @@ func importPackage(dicPath, path, fHeaderName string, funcMap map[string][]*dto.
 // 并返回本次导入的全部函数组成的「包」（供变量:$引入 的赋予值形式使用）。
 // fHeaderName 非空时给「函数」触发词加前缀。isDir 表示目标是否为目录（目录形式不返回实例）。
 func loadImport(dicPath, path, fHeaderName string, funcMap map[string][]*dto.BuildDic, classMap map[string]*dto.DicClass, myFunc map[string]dto.DicFunc, stack *importStack, lineNum int) (isDir bool, pkg *dto.DicClass) {
-	dirName, isDir := strings.CutSuffix(path, "/*")
 	pkg = dto.NewDicClass()
+	if err := validateImportTarget(path); err != nil {
+		stack.addError(lineNum, err.Error())
+		return false, pkg
+	}
+	dirName, isDir := strings.CutSuffix(path, "/*")
 
 	var filesToLoad []string
 	if isDir {
-		dirPath := pathpkg.Join("private", dirName)
+		dirPath := pathpkg.Join(stack.privateRel, dirName)
 		fileLoad := utils.NewFileQueue(dirPath)
 		if !fileLoad.DirExists() {
 			debugLog.Infof("加载目录不存在：%v", dirPath)
@@ -1039,19 +1260,36 @@ func loadImport(dicPath, path, fHeaderName string, funcMap map[string][]*dto.Bui
 		if !strings.HasSuffix(path, ".n") {
 			path += ".n"
 		}
-		filesToLoad = append(filesToLoad, pathpkg.Join("private", path))
+		filesToLoad = append(filesToLoad, pathpkg.Join(stack.privateRel, path))
+	}
+
+	if len(filesToLoad) > maxImportFileCount {
+		stack.addWarning(lineNum, fmt.Sprintf("目录引入文件数超过上限（%d），仅加载前 %d 个：%s", maxImportFileCount, maxImportFileCount, path))
+		filesToLoad = filesToLoad[:maxImportFileCount]
 	}
 
 	for _, filePath := range filesToLoad {
+		if stack.importDepth >= maxImportDepth {
+			stack.addWarning(lineNum, fmt.Sprintf("引入层数超过上限（%d），跳过：%s", maxImportDepth, filePath))
+			continue
+		}
+		if err := ensureWithinPrivate(filePath, stack.privateRel); err != nil {
+			stack.addError(lineNum, err.Error())
+			continue
+		}
 		if !stack.push(filePath) {
 			stack.addWarning(lineNum, "循环引入："+filePath+" 已在引入链中，跳过加载（由 "+dicPath+" 引入）")
 			continue
 		}
 
-		FileData, raw, err := readDicFileContent(filePath)
+		FileData, raw, encrypted, err := readDicFileContent(filePath)
 		if err != nil {
 			stack.pop(filePath)
 			continue
+		}
+		// 引入文件为加密词库：其解密后的源码会并入本次编译结果，标记整条链禁用磁盘缓存。
+		if encrypted {
+			stack.encrypted = true
 		}
 		// 记录依赖文件内容 hash，供磁盘编译缓存失效校验。
 		stack.deps[filePath] = dicHashBytes(raw)
@@ -1093,7 +1331,7 @@ func loadImport(dicPath, path, fHeaderName string, funcMap map[string][]*dto.Bui
 
 // 运行网页词库
 func Web(dicPath string, lines []string) *dto.BuildValue {
-	return web(dicPath, lines, newImportStack())
+	return web(dicPath, lines, newImportStack(utils.PrivateRootRel(dicPath)))
 }
 
 // web 为 Web 的内部实现，携带引入链用于检测循环引入。
@@ -1174,7 +1412,15 @@ func web(dicPath string, lines []string, stack *importStack) *dto.BuildValue {
 }
 
 func BuildDic(dicPath, text string) *dto.BuildValue {
-	return BuildDicLinesWithRaw(dicPath, strings.Split(text, "\n"), []byte(text))
+	return BuildDicLinesWithRaw(dicPath, utils.SplitLines([]byte(text)), []byte(text))
+}
+
+// BuildDicNoCache 与 BuildDic 相同，但完全不使用磁盘缓存（既不读也不写），
+// 并清理该词库可能已存在的历史缓存文件。供加密词库使用：其编译产物包含解密后的源码，
+// 一旦落盘即泄漏源码，故加密词库必须走此入口。
+func BuildDicNoCache(dicPath, text string) *dto.BuildValue {
+	return buildDicWithHashMode(dicPath, utils.SplitLines([]byte(text)), dicHashBytes([]byte(text)),
+		dicBuildMode{encrypted: true})
 }
 
 // BuildDicLinesWithRaw 以已切分的行与原始内容字节编译词库；raw 用于计算内容 hash（缓存键），
@@ -1183,41 +1429,64 @@ func BuildDicLinesWithRaw(dicPath string, lines []string, raw []byte) *dto.Build
 	return buildDicWithHash(dicPath, lines, dicHashBytes(raw))
 }
 
+// BuildDicLinesNoCache 与 BuildDicLinesWithRaw 相同，但完全不使用磁盘缓存（既不读也不写），
+// 并清理该词库可能已存在的历史缓存文件，供加密词库使用（见 BuildDicNoCache）。
+func BuildDicLinesNoCache(dicPath string, lines []string, raw []byte) *dto.BuildValue {
+	return buildDicWithHashMode(dicPath, lines, dicHashBytes(raw), dicBuildMode{encrypted: true})
+}
+
 // BuildDicLinesWithRawNoCache 与 BuildDicLinesWithRaw 相同，但不写磁盘缓存。
 // 供「编译检测」等仅需诊断信息、无需缓存加速的场景使用，避免每次保存/打开都产生缓存文件。
 func BuildDicLinesWithRawNoCache(dicPath string, lines []string, raw []byte) *dto.BuildValue {
-	return buildDicWithHashMode(dicPath, lines, dicHashBytes(raw), false, false)
+	return buildDicWithHashMode(dicPath, lines, dicHashBytes(raw), dicBuildMode{readCache: true})
 }
 
 // BuildDicNoImport 与 BuildDic 相同，但禁用编译期文件读取指令（#引入= / $引入 / //@资源 / //@一次性资源）：
 // 不会读取任何外部文件，供服务端编译不可信词库内容（如商店发布取元数据）时使用。
 func BuildDicNoImport(dicPath, text string) *dto.BuildValue {
-	return buildDicWithHashMode(dicPath, strings.Split(text, "\n"), dicHashBytes([]byte(text)), false, true)
+	return buildDicWithHashMode(dicPath, utils.SplitLines([]byte(text)), dicHashBytes([]byte(text)),
+		dicBuildMode{readCache: true, noImport: true})
 }
 
 // buildDicWithHash 为编译入口的内部实现，携带引入链用于检测循环引入，并按内容 hash 校验磁盘缓存。
 func buildDicWithHash(dicPath string, lines []string, mainHash string) *dto.BuildValue {
-	return buildDicWithHashMode(dicPath, lines, mainHash, true, false)
+	return buildDicWithHashMode(dicPath, lines, mainHash, dicBuildMode{writeCache: true, readCache: true})
 }
 
-// buildDicWithHashMode 编译核心；writeCache 为 false 时跳过写缓存（读缓存不受影响）。
-// noImport 为 true 时禁用编译期文件读取指令（#引入= / $引入 / //@资源 / //@一次性资源）。
-func buildDicWithHashMode(dicPath string, lines []string, mainHash string, writeCache, noImport bool) *dto.BuildValue {
-	stack := newImportStack()
-	stack.noImport = noImport
+// dicBuildMode 控制一次词库编译的缓存行为与指令开关。
+type dicBuildMode struct {
+	writeCache bool // 是否写磁盘缓存
+	readCache  bool // 是否读磁盘缓存
+	noImport   bool // 禁用编译期文件读取指令（#引入= / $引入 / //@资源 / //@一次性资源）
+	encrypted  bool // 顶层词库为加密词库：编译产物含解密源码，完全禁用磁盘缓存
+}
+
+// buildDicWithHashMode 编译核心。
+// writeCache 为 false 时跳过写缓存；readCache 为 false 时跳过读缓存。
+// encrypted 为 true 表示顶层词库是加密词库：既不读也不写缓存，并清理历史残留缓存。
+// 编译链路上任一引入文件或 .n 资源为加密词库时，同样会禁用写缓存并清理残留。
+func buildDicWithHashMode(dicPath string, lines []string, mainHash string, m dicBuildMode) *dto.BuildValue {
+	stack := newImportStack(utils.PrivateRootRel(dicPath))
+	stack.noImport = m.noImport
+	stack.encrypted = m.encrypted
 	// 缓存目录必须在路径规范化之前按原始路径推导：importFilePath 会把绝对路径
-	// 改写成 private/... 前缀，规范化后就无法定位词库原本所在的目录了。
+	// 改写成 <私有目录>/... 前缀，规范化后就无法定位词库原本所在的目录了。
 	cacheDir := dicCacheDirFor(dicPath)
-	// 顶层词库同样压入引入链，路径与 #引入= 加载路径保持一致（统一 private/ 前缀与 .n 后缀），
+	// 顶层词库同样压入引入链，路径与 #引入= 加载路径保持一致（统一私有目录前缀与 .n 后缀），
 	// 避免被引入文件反向引入顶层时把顶层重复加载，导致同一条循环引入被重复报告。
-	dicPath = importFilePath(dicPath)
+	dicPath = importFilePath(dicPath, stack.privateRel)
 	stack.push(dicPath)
 	stack.deps[dicPath] = mainHash
 
 	// 词库编译缓存由服务器配置开关控制（默认关闭），关闭时跳过读写
 	cacheEnabled := dto.ServerConfig.DicCache
+	cachePath := dicCachePath(cacheDir, dicPath)
 
-	if cacheEnabled {
+	// 加密词库的编译产物含解密后的源码，一旦落盘即泄漏源码：
+	// 完全不读缓存，并清理历史残留的缓存文件。
+	if m.encrypted {
+		_ = os.Remove(cachePath)
+	} else if cacheEnabled && m.readCache {
 		if cached := loadDicCache(cacheDir, dicPath, mainHash); cached != nil {
 			return cached
 		}
@@ -1226,8 +1495,17 @@ func buildDicWithHashMode(dicPath string, lines []string, mainHash string, write
 	result := buildDic(dicPath, lines, stack)
 	result.Deps = stack.deps
 
+	// 编译过程中才发现加密来源（#引入= 的文件或 //@资源 的 .n 资源为加密词库）：
+	// 其明文的编译产物已并入本次结果，禁止落盘，并清理历史残留缓存。
+	if stack.encrypted {
+		if !m.encrypted {
+			_ = os.Remove(cachePath)
+		}
+		return result
+	}
+
 	// 含 bot 注入的词库（MyFunc 非空）不落缓存，避免序列化 Go 函数；其余词库写缓存加速后续加载。
-	if writeCache && cacheEnabled && len(result.MyFunc) == 0 {
+	if m.writeCache && cacheEnabled && len(result.MyFunc) == 0 {
 		saveDicCache(cacheDir, dicPath, &dicCacheEntry{
 			Version:       dicCacheVersion,
 			Deps:          stack.deps,
@@ -1244,13 +1522,17 @@ func buildDicWithHashMode(dicPath string, lines []string, mainHash string, write
 	return result
 }
 
-// importFilePath 将 #引入= 目标或顶层词库路径规范化为统一的文件路径（private/xxx.n）。
-func importFilePath(name string) string {
+// importFilePath 将 #引入= 目标或顶层词库路径规范化为统一的文件路径（<私有目录>/xxx.n）。
+// privateRel 为本次编译允许读取的私有目录「相对应用数据目录」的路径（见 importStack.privateRel）。
+func importFilePath(name, privateRel string) string {
+	if privateRel == "" {
+		privateRel = utils.PrivateDirName()
+	}
 	// 统一分隔符为 /，兼容 Windows 下 filepath.Join 产生的反斜杠，
-	// 避免 private\... 匹配不到 private/ 前缀而被重复拼接（如 private/private\...）。
+	// 避免 <私有目录>\... 匹配不到 <私有目录>/ 前缀而被重复拼接。
 	name = filepath.ToSlash(name)
-	if !strings.HasPrefix(name, "private/") {
-		name = pathpkg.Join("private", name)
+	if prefix := filepath.ToSlash(privateRel) + "/"; !strings.HasPrefix(name, prefix) {
+		name = pathpkg.Join(privateRel, name)
 	}
 	if !strings.HasSuffix(name, ".n") {
 		name += ".n"

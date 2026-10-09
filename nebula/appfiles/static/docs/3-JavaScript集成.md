@@ -2,7 +2,9 @@
 
 ## 基本用法
 
-**支持库**：`Buffer`、`setTimeout`、`setInterval`、`console`、`url`、`require`；词库参数以逗号分隔、从参数 0 开始（如 `a,b,c`）：
+支持库：`Buffer`、`setTimeout`、`setInterval`、`console`、`url`、`require`。
+
+词库参数以逗号分隔、从参数 0 开始（如 `a,b,c`）：
 
 ```
 a:1

@@ -4,25 +4,14 @@ import (
 	"encoding/json"
 	"io"
 	"net/http"
-	"strings"
 
-	dic_api "github.com/cjxpj/nebula/dic/api"
-	dic_dto "github.com/cjxpj/nebula/dic/dto"
+	botdic "github.com/cjxpj/nebula/bot/botdic"
 	"github.com/cjxpj/nebula/debugLog"
 	"github.com/cjxpj/nebula/dto"
-	"github.com/cjxpj/nebula/utils"
 )
 
 // 群消息处理
 func yunHuBOTGroupRun(payload *Payload) {
-	// 词库
-	BotDic := utils.NewFileQueue(dto.ServerConfig.YunHuBot.FilePath)
-	FileData, err := BotDic.ReadFromFile()
-	if err != nil {
-		utils.Error("读取机器人词库出错")
-		return
-	}
-
 	ev := payload.Event
 	sendPlayer := ev.Sender
 	msgData := ev.Message
@@ -34,21 +23,22 @@ func yunHuBOTGroupRun(payload *Payload) {
 	content := msgData.Content.Text   // 消息内容
 
 	// 回复消息
-	dic := dic_dto.NewDic(dto.ServerConfig.YunHuBot.FilePath, FileData).
-		SetGlobal_v(dto.NewVal().
+	botdic.Run{
+		FilePath:   dto.ServerConfig.YunHuBot.FilePath,
+		SingleFile: true,
+		Val: dto.NewVal().
 			Set("来源", "群聊").
 			Set("昵称", nick).
 			Set("群号", groupID).
-			Set("QQ", userID))
-
-	rMsg := dic_api.Api.DicRun(dic, content)
-	rMsg = strings.ReplaceAll(rMsg, "\\r", "\n")
-	if rMsg != "" {
-		debugLog.Infof("%v", rMsg)
-		if err := SendText(groupID, "group", rMsg); err != nil {
-			debugLog.Infof("%v", err)
-		}
-	}
+			Set("QQ", userID),
+		Trigger: content,
+		Deliver: func(rMsg string, _ *dto.DicVal) {
+			debugLog.Infof("%v", rMsg)
+			if err := SendText(groupID, "group", rMsg); err != nil {
+				debugLog.Infof("%v", err)
+			}
+		},
+	}.Exec()
 }
 
 func BotMessage(w http.ResponseWriter, r *http.Request) {

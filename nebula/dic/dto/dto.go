@@ -24,6 +24,36 @@ type WebDic struct {
 	MyFunc map[string]dto.DicFunc
 }
 
+// WebHTTPRequest 是一次由宿主下发的网页词库公开访问请求。
+//
+// 宿主负责用真实请求构建「访问数据」（Access，对应 dto.HTTPRequestInfo 的 JSON）
+// 与响应回写；引擎只做执行期编排：重建原始请求、挂载通用内置函数、运行词库并收集输出。
+type WebHTTPRequest struct {
+	// Path 词库文件绝对路径
+	Path string
+	// Ext 词库扩展名（.n / .wn）
+	Ext string
+	// Content 词库文本内容
+	Content string
+	// WebRoot 「网站根目录」变量取值（空则用 "."）
+	WebRoot string
+	// Trigger 正文词条的触发词，仅 .n 使用（空则用 Main）。
+	// 多文件路由下由宿主解析出具体文件，按 Main 执行；单文件路由下宿主传站内 URL 路径，
+	// 使入口词库像路由词库一样按路径分发。
+	Trigger string
+	// Access 宿主构建的「访问数据」JSON（路径/来源/GET/请求头/IP/Host/POST）
+	Access string
+	// Body 原始请求体，用于重建 _请求数据_
+	Body string
+}
+
+// WebHTTPResult 是网页词库执行后的响应状态、头部与正文。
+type WebHTTPResult struct {
+	Status  int                 `json:"status"`
+	Headers map[string][]string `json:"headers"`
+	Body    string              `json:"body"`
+}
+
 // DicInfo 词库信息，来自 [函数]词库信息 内用局部变量（名称/价格/描述）声明的元数据。
 type DicInfo struct {
 	// 名称

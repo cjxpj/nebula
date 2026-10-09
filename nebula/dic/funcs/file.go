@@ -28,37 +28,55 @@ func confirmFileDelete(action, target string) bool {
 	return FileDeleteConfirm(action, target)
 }
 
-// dicDatabaseDir 返回当前词库所属账号的数据库目录。
-// 账号词库布局为 <账号>/dic/<词库.n>，数据库与 dic 目录同级（<账号>/database），各账号相互隔离；
-// 非账号布局（如程序根目录的 start.n、任意独立脚本）回退到引擎全局数据目录，
+// dicDatabaseDir 返回当前词库所属账号的数据库目录，账号内所有词库共用一个库：
+// 宿主账号级布局 <账号>/机器人词库[/<botid>/dic]、<账号>/储存、<账号>/网站词库，
+// 账号库统一放账号目录下（<账号>/<DatabaseDir>）。
+//
+// 各账号相互隔离；非账号布局（如程序根目录的 start.n、任意独立脚本）回退到引擎全局数据目录，
 // 避免把数据目录误建到程序目录之外（如源码树）。内存词库（无磁盘文件）同样走回退分支。
 func dicDatabaseDir(d *dto.DicInputs) string {
-	if d != nil && d.Dic != nil && d.Dic.Dir != "" && filepath.Base(d.Dic.Dir) == "dic" {
-		return filepath.Join(filepath.Dir(d.Dic.Dir), "database")
+	if d != nil && d.Dic != nil && d.Dic.Dir != "" {
+		if accountDir, ok := utils.AccountRootOf(filepath.Clean(d.Dic.Dir)); ok {
+			return filepath.Join(accountDir, utils.CurrentAccountLayout().DatabaseDir)
+		}
 	}
 	return globalDBDir()
 }
 
-// resolveDatabasePath 把数据库内的文件路径解析为绝对路径：只接受相对路径，
-// 且解析后必须仍在当前账号的数据库目录内；绝对路径与 .. 越界一律拒绝。
-func resolveDatabasePath(d *dto.DicInputs, raw string) (string, error) {
+// resolvePathUnder 把 raw 作为相对路径拼到 base 下并解析为绝对路径：只接受相对路径，
+// 且解析后必须仍在 base 内；绝对路径与 .. 越界一律拒绝。kind 用于错误提示（如「词库」「账号」）。
+func resolvePathUnder(raw, base, kind string) (string, error) {
 	if raw == "" {
 		return "", nil
 	}
 	if filepath.IsAbs(raw) || filepath.VolumeName(raw) != "" {
 		return "", fmt.Errorf("只允许相对路径（不支持绝对路径）：%s", raw)
 	}
-	base := dicDatabaseDir(d)
+	if base == "" {
+		return "", fmt.Errorf("%s目录不可用，拒绝访问：%s", kind, raw)
+	}
 	absBase, err := filepath.Abs(base)
 	if err != nil {
-		return "", fmt.Errorf("数据库目录不可用，拒绝访问：%s", raw)
+		return "", fmt.Errorf("%s目录不可用，拒绝访问：%s", kind, raw)
 	}
 	target := filepath.Join(absBase, raw)
 	rel, err := filepath.Rel(absBase, target)
 	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
-		return "", fmt.Errorf("路径越界（超出数据库目录）：%s", raw)
+		return "", fmt.Errorf("路径越界（超出%s目录）：%s", kind, raw)
 	}
 	return target, nil
+}
+
+// dicStoreDir 返回当前词库所属账号的「储存」目录，账号内所有词库共用：
+// 宿主账号级布局 <账号>/储存；非账号布局（独立脚本、内存词库）回退到引擎全局数据目录下的同名目录，
+// 避免把数据写到处在程序目录之外。
+func dicStoreDir(d *dto.DicInputs) string {
+	if d != nil && d.Dic != nil && d.Dic.Dir != "" {
+		if accountDir, ok := utils.AccountRootOf(filepath.Clean(d.Dic.Dir)); ok {
+			return filepath.Join(accountDir, utils.CurrentAccountLayout().MyStoreDir)
+		}
+	}
+	return filepath.Join(utils.AppDataDir(), utils.CurrentAccountLayout().MyStoreDir)
 }
 
 // dicBaseDir 返回当前词库的基准目录：优先取词库文件所在目录（每个词库各自独立），
@@ -70,35 +88,40 @@ func dicBaseDir(d *dto.DicInputs) string {
 	return utils.WorkDir()
 }
 
-// resolveDicPath 把词库内的文件路径解析为绝对路径：只接受相对路径，
-// 且解析后必须仍在当前词库目录内；绝对路径与 .. 越界一律拒绝。
-func resolveDicPath(d *dto.DicInputs, raw string) (string, error) {
-	if raw == "" {
-		return "", nil
+// dicUserBaseDir 返回当前词库的「用户根目录」（账号目录）基准：
+// 命中账号布局时返回账号根目录 <账号>，账号内各词库共享同一批文件；
+// 非账号布局（独立脚本、内存词库）回退到词库目录，保证引擎独立运行行为不变。
+func dicUserBaseDir(d *dto.DicInputs) string {
+	if d != nil && d.Dic != nil && d.Dic.Dir != "" {
+		if accountDir, ok := utils.AccountRootOf(filepath.Clean(d.Dic.Dir)); ok {
+			return accountDir
+		}
 	}
-	if filepath.IsAbs(raw) || filepath.VolumeName(raw) != "" {
-		return "", fmt.Errorf("只允许相对路径（不支持绝对路径）：%s", raw)
-	}
-	base := dicBaseDir(d)
-	if base == "" {
-		return "", fmt.Errorf("词库目录不可用，拒绝访问：%s", raw)
-	}
-	absBase, err := filepath.Abs(base)
-	if err != nil {
-		return "", fmt.Errorf("词库目录不可用，拒绝访问：%s", raw)
-	}
-	target := filepath.Join(absBase, raw)
-	rel, err := filepath.Rel(absBase, target)
-	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
-		return "", fmt.Errorf("路径越界（超出词库目录）：%s", raw)
-	}
-	return target, nil
+	return dicBaseDir(d)
 }
 
-// checkFuncPath 校验第 idx 个参数：路径必须位于当前词库目录内，
+// resolveStorePath 把「读 / 写」键值函数内的文件路径解析为绝对路径：
+// 只接受相对路径，且解析后必须仍在当前账号的储存目录内。
+func resolveStorePath(d *dto.DicInputs, raw string) (string, error) {
+	return resolvePathUnder(raw, dicStoreDir(d), "储存")
+}
+
+// resolveDicPath 把路径解析为当前词库目录内的绝对路径：
+// 用于词库自身操作类函数（执行文件 / 读词库 / 写词库）以及配置、编码、绘图等。
+func resolveDicPath(d *dto.DicInputs, raw string) (string, error) {
+	return resolvePathUnder(raw, dicBaseDir(d), "词库")
+}
+
+// resolveUserPath 把路径解析为当前账号根目录（用户根目录）内的绝对路径：
+// 用于文件操作类函数（读文件 / 写文件 / 存在 / 删除 / 列表 / 压缩解压 / MD5 / 图片 / 下载等）。
+func resolveUserPath(d *dto.DicInputs, raw string) (string, error) {
+	return resolvePathUnder(raw, dicUserBaseDir(d), "账号")
+}
+
+// checkFuncPath 校验文件操作类函数第 idx 个参数：路径必须位于当前账号根目录（用户根目录）内，
 // 校验通过后把解析出的绝对路径写回该参数，后续读取参数即得到受限后的路径。
 func checkFuncPath(d *dto.DicInputs, idx int) error {
-	p, err := resolveDicPath(d, d.Inputs.String(idx))
+	p, err := resolveUserPath(d, d.Inputs.String(idx))
 	if err != nil {
 		return err
 	}
@@ -108,9 +131,17 @@ func checkFuncPath(d *dto.DicInputs, idx int) error {
 	return nil
 }
 
-// CheckFuncPath 供 dic 包等外部调用：校验并写回第 idx 个参数路径（限定在当前词库目录内）。
+// CheckFuncPath 供 dic 包等外部调用（词库自身操作类函数：执行文件 / 读词库 / 写词库）：
+// 校验并写回第 idx 个参数路径（限定在当前词库目录内）。
 func CheckFuncPath(d *dto.DicInputs, idx int) error {
-	return checkFuncPath(d, idx)
+	p, err := resolveDicPath(d, d.Inputs.String(idx))
+	if err != nil {
+		return err
+	}
+	if p != "" && idx >= 0 && idx < len(d.Inputs.List) {
+		d.Inputs.List[idx] = p
+	}
+	return nil
 }
 
 // 删除文件（越界拒绝，执行前人工确认）
@@ -270,7 +301,7 @@ func readStringFileLinesCount(d *dto.DicInputs) (any, error) {
 }
 
 func writeKeyStringFile(d *dto.DicInputs) (any, error) {
-	path, err := resolveDatabasePath(d, d.Inputs.String(1))
+	path, err := resolveStorePath(d, d.Inputs.String(1))
 	if err != nil {
 		return "", err
 	}
@@ -285,7 +316,7 @@ func writeKeyStringFile(d *dto.DicInputs) (any, error) {
 }
 
 func readKeyStringFile(d *dto.DicInputs) (any, error) {
-	path, err := resolveDatabasePath(d, d.Inputs.String(1))
+	path, err := resolveStorePath(d, d.Inputs.String(1))
 	if err != nil {
 		return "", err
 	}

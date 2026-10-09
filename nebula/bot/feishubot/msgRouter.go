@@ -6,13 +6,11 @@ import (
 	"net/http"
 	"path"
 	"strings"
-	"time"
 
 	"github.com/cjxpj/nebula/debugLog"
 
+	botdic "github.com/cjxpj/nebula/bot/botdic"
 	feishubot_msg "github.com/cjxpj/nebula/bot/feishubot/msg"
-	dic_api "github.com/cjxpj/nebula/dic/api"
-	dic_dto "github.com/cjxpj/nebula/dic/dto"
 	"github.com/cjxpj/nebula/dto"
 	"github.com/cjxpj/nebula/utils"
 )
@@ -32,50 +30,16 @@ func isAdmin(userID string) string {
 }
 
 // runDic 遍历词库目录执行词库，reply 为回复函数
-func runDic(valData *dto.Val, content string, reply func(string)) {
-	botDicList, err := utils.NewFileQueue(path.Join(dto.ServerConfig.FeiShuBot.FilePath, "dic")).GetFileList()
-	if err != nil {
-		return
-	}
-
-	for _, v := range botDicList {
-		if !strings.HasSuffix(v, ".n") {
-			continue
-		}
-		go func() {
-			dicPath := path.Join(dto.ServerConfig.FeiShuBot.FilePath, "dic", v)
-			FileData, err := utils.NewFileQueue(dicPath).ReadFromFile()
-			if err != nil {
-				return
-			}
-
-			dic := dic_dto.NewDic(dicPath, FileData).
-				SetGlobal_v(valData)
-
-			// 延迟回复
-			dic.SetFunc("调用", dto.DicFunc{
-				L: "2..",
-				Fn: func(d *dto.DicInputs) (any, error) {
-					go func() {
-						qqVal := dic.NewDicVal()
-						sleepTime := d.Inputs.Int(1)
-						time.Sleep(time.Duration(sleepTime) * time.Millisecond)
-						rMsg := dic_api.Api.DicRunPrivateVal(dic, d.Inputs.StringAfter(2), qqVal)
-						if rMsg != "" {
-							reply(strings.ReplaceAll(rMsg, "\\r", "\n"))
-						}
-					}()
-					return "", nil
-				}})
-
-			dic.AddFuncs(Funcs)
-
-			rMsg := dic_api.Api.DicRun(dic, content)
-			if rMsg != "" {
-				reply(strings.ReplaceAll(rMsg, "\\r", "\n"))
-			}
-		}()
-	}
+func runDic(valData *dto.Val, content string, reply func(string, *dto.DicVal)) {
+	botdic.Run{
+		FilePath:  dto.ServerConfig.FeiShuBot.FilePath,
+		Val:       valData,
+		Funcs:     Funcs,
+		Trigger:   content,
+		Parallel:  true,
+		AsyncCall: true,
+		Deliver:   reply,
+	}.Exec()
 }
 
 func groupMsg(m *feishubot_msg.ImMessageReceiveV1) {
@@ -94,7 +58,7 @@ func groupMsg(m *feishubot_msg.ImMessageReceiveV1) {
 		Set("MessageID", msgID).
 		Set("主人", isAdmin(userID))
 
-	runDic(valData, extractText(m.Event.Message.Content), func(rMsg string) {
+	runDic(valData, extractText(m.Event.Message.Content), func(rMsg string, _ *dto.DicVal) {
 		if _, err := SendGroupMsg(groupID, rMsg); err != nil {
 			debugLog.Infof("%v", err)
 		}
@@ -115,7 +79,7 @@ func p2pMsg(m *feishubot_msg.ImMessageReceiveV1) {
 		Set("MessageID", msgID).
 		Set("主人", isAdmin(userID))
 
-	runDic(valData, extractText(m.Event.Message.Content), func(rMsg string) {
+	runDic(valData, extractText(m.Event.Message.Content), func(rMsg string, _ *dto.DicVal) {
 		if _, err := SendPrivateMsg(userID, rMsg); err != nil {
 			debugLog.Infof("%v", err)
 		}

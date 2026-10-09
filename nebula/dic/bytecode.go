@@ -156,7 +156,7 @@ func (a *dicRuntime) runLeaf(line int, text string) string {
 				}
 			}
 		}
-		if runSimpleAssign(r, funcV, vt, vp, vs, prefixSlot, suffixSlot, true) {
+		if runSimpleAssign(r, funcV, vt, vp, vs, prefixSlot, suffixSlot) {
 			return r.Output.Get()
 		}
 	}
@@ -269,16 +269,11 @@ func (a *dicRuntime) runLeaf(line int, text string) string {
 
 // Assign 执行一条无副作用的赋值/算术叶子（编译期已识别为结构化信息），
 // 直接调用 runSimpleAssign。赋值语句无输出，返回空。
+// prefixSlot/suffixSlot 为编译期预计算的左右操作数槽号（-1 表示按变量名回退查表），
+// 热路径因此无需再做 map[string]int32 查表。
 // text 为原始行文本，仅当 runSimpleAssign 意外未处理时防御性回退到 Line。
-func (a *dicRuntime) Assign(line int, text string, vType int8, prefix, suffix string) string {
-	suffixSlot := int32(-1)
-	if vType == 1 || vType == 2 || vType == 7 || vType == 8 {
-		// 仅当 suffix 为纯 %var% 时提取变量名求槽号；纯字面量操作数走 runSimpleAssign 的通用路径。
-		if len(suffix) > 2 && suffix[0] == '%' && suffix[len(suffix)-1] == '%' {
-			suffixSlot = a.slotFor(suffix[1 : len(suffix)-1])
-		}
-	}
-	if runSimpleAssign(a.r, a.funcV, vType, prefix, suffix, a.slotFor(prefix), suffixSlot, true) {
+func (a *dicRuntime) Assign(line int, text string, vType int8, prefix, suffix string, prefixSlot, suffixSlot int32) string {
+	if runSimpleAssign(a.r, a.funcV, vType, prefix, suffix, prefixSlot, suffixSlot) {
 		return ""
 	}
 	return a.Line(line, text)
@@ -294,8 +289,17 @@ func (a *dicRuntime) Resolve(expr string) string {
 	return utils.AnyToString(Runs(a.funcV, utils.AnyToString(count.RunCountText(a.r.Val, expr, a.funcV))))
 }
 
+// lineNumSlot 「行数」变量的进程级槽号：变量名固定，只解析一次，供 SetLine 热路径直写无锁槽。
+var lineNumSlot = dto.SlotForName("行数")
+
 // SetLine 设置当前执行语句的行号，供 %行数% 变量读取。
+// 热路径只直写无锁槽（免加锁、免 map 哈希；num/obj 映射由块结束 FlushSlotsToMap 统一同步），
+// 避免「每条语句一次带锁 map 写入」成为解释执行的固定开销。
 func (a *dicRuntime) SetLine(line int) {
+	if lineNumSlot >= 0 {
+		a.r.Val.P.SlotSetInt64(lineNumSlot, int64(line))
+		return
+	}
 	a.r.Val.P.SetInt64("行数", int64(line))
 }
 
@@ -310,14 +314,14 @@ func (a *dicRuntime) JumpAbsOffset(expr string) (int, bool) {
 	return n, true
 }
 
-func (a *dicRuntime) SetVarInt(name string, value int) {
-	// 与解释器一致：循环变量以整数写入，保证后续算术/比较语义一致。
-	// 普通变量名直写无锁槽（num 映射由块结束 FlushSlotsToMap 统一同步），非普通回退 map。
-	if slot := a.slotFor(name); slot >= 0 {
+// SetVarInt 写入整数循环变量：按编译期预计算的槽号直写无锁槽（免装箱、免查表）；
+// 槽号为 -1（非普通变量名）时按变量名回退 SetInt64，语义与解释器一致。
+func (a *dicRuntime) SetVarInt(slot int32, name string, value int) {
+	if slot >= 0 {
 		a.r.Val.P.SlotSetInt64(slot, int64(value))
-	} else {
-		a.r.Val.P.SetInt64(name, int64(value))
+		return
 	}
+	a.r.Val.P.SetInt64(name, int64(value))
 }
 
 func (a *dicRuntime) GetVar(name string) string {
@@ -377,10 +381,10 @@ func (a *dicRuntime) Output() string {
 	return a.r.Output.Get()
 }
 
-// LoopVarChanged 槽优先的循环变量步进检查：普通变量名无锁读槽，未命中整数或为字符串时
-// 复用解释器 loopVarChangedFromValue；非普通变量名回退 map 版 loopVarChanged。
-func (a *dicRuntime) LoopVarChanged(name string, cur int) (int, bool, bool) {
-	if slot := a.slotFor(name); slot >= 0 {
+// LoopVarChanged 槽优先的循环变量步进检查：按编译期预计算的槽号无锁读槽，未命中整数或为字符串时
+// 复用解释器 loopVarChangedFromValue；槽号为 -1（非普通变量名）时回退 map 版 loopVarChanged。
+func (a *dicRuntime) LoopVarChanged(slot int32, name string, cur int) (int, bool, bool) {
+	if slot >= 0 {
 		if n, ok := a.r.Val.P.SlotGetInt64(slot); ok {
 			if int(n) != cur {
 				return int(n), true, false
@@ -949,6 +953,8 @@ func (m *dicImpl) dicRunLineBytecodeInstrs(r *dic_dto.DicEntry, instrs []bc.Inst
 	}
 
 	adapter := &dicRuntime{m: m, r: r, funcV: funcV}
+	// 编译期预计算变量槽号：运行时热路径直接按槽号读写，免去每轮的 map[string]int32 查表。
+	bc.ResolveSlots(instrs, dto.SlotForName)
 	bc.Run(instrs, adapter)
 	// 无锁热路径（循环变量/累加器直写槽）结束：一次性把槽同步回 num/obj，保持映射权威。
 	r.Val.P.FlushSlotsToMap()

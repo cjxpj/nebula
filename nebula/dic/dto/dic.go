@@ -145,18 +145,34 @@ func NewDicNoImport(path, text string) *Dic {
 	return newDic(path, text, true)
 }
 
+// NewDicNoCache 与 NewDic 相同，但强制完全不使用磁盘编译缓存（既不读也不写）：
+// 供「外部词库/云词库」等要求执行不落盘的场景使用（内容与编译产物都不落在账号目录里）。
+func NewDicNoCache(path, text string) *Dic {
+	return newDicMode(path, text, false, true)
+}
+
 func newDic(path, text string, noImport bool) *Dic {
-	// 去除注释后解密
-	str, err := utils.Decrypt(utils.RemoveComments(text), appfiles.Key)
-	if err == nil {
+	return newDicMode(path, text, noImport, false)
+}
+
+func newDicMode(path, text string, noImport, noCache bool) *Dic {
+	// 去除注释后解密；加密词库的编译产物含解密后的源码，不得写入磁盘缓存
+	encrypted := false
+	if str, err := utils.Decrypt(utils.RemoveComments(text), appfiles.Key); err == nil {
 		text = str
+		encrypted = true
 	}
 
 	val := dto.NewDicVal()
 	var SplitText *dto.BuildValue
-	if noImport {
+	switch {
+	case noImport:
+		// 禁用引入的编译本身不写缓存，加密内容不会落盘
 		SplitText = run.BuildDicNoImport(path, text)
-	} else {
+	case noCache || encrypted:
+		// 外部词库（强制不落盘）与加密词库：完全不使用磁盘缓存
+		SplitText = run.BuildDicNoCache(path, text)
+	default:
 		SplitText = run.BuildDic(path, text)
 	}
 	SplitText.Dir = dicDir(path)
@@ -190,18 +206,24 @@ func newDicFile(path string, noCache bool) (*Dic, error) {
 	lines := utils.SplitLines(data)
 	raw := data
 	// 加密词库：密文为单行，整块解密后重新切分
+	encrypted := false
 	if len(lines) == 1 {
 		if str, err := utils.Decrypt(utils.RemoveComments(lines[0]), appfiles.Key); err == nil {
 			lines = strings.Split(str, "\n")
 			raw = []byte(str)
+			encrypted = true
 		}
 	}
 
 	val := dto.NewDicVal()
 	var SplitText *dto.BuildValue
-	if noCache {
+	switch {
+	case encrypted:
+		// 加密词库的编译产物含解密后的源码，不得写入磁盘缓存
+		SplitText = run.BuildDicLinesNoCache(path, lines, raw)
+	case noCache:
 		SplitText = run.BuildDicLinesWithRawNoCache(path, lines, raw)
-	} else {
+	default:
 		SplitText = run.BuildDicLinesWithRaw(path, lines, raw)
 	}
 	SplitText.Dir = dicDir(path)

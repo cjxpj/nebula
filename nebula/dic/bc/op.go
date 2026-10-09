@@ -19,6 +19,9 @@ const (
 	OpWhile                 // while 循环入口（判断循环>条件）：push 无限循环帧（无循环变量），随后由 OpJumpIfFalse 判断条件
 	OpLoopEnd               // 循环体末尾：变量递增，未达次数则跳回 Arg（循环体起始 PC）
 	OpLoopPop               // 弹出循环帧（正常退出与 break 的汇聚点）
+	OpLoopFast              // 融合循环（循环体仅由叶子指令组成）：Body 为循环体指令副本，
+	// VM 在单条指令内跑完整个循环（每轮直接执行 Body 并步进循环变量），省去每轮一次 OpLoopEnd 分派。
+	// 循环体为 OpNop/OpLine/OpAssign，编译期保证；循环体指令仍保留在指令流中供 $跳行 行号映射使用。
 	OpBreak                 // 跳出循环/遍历（可能跨多层）：End 为截断后的帧深度，Arg 为目标 PC（对应 OpLoopPop/OpForEachPop）
 	OpHalt                  // 终止执行（无额外输出）
 	OpHaltOut               // 终止执行并输出 Text
@@ -57,4 +60,15 @@ type Instr struct {
 	VType  int8
 	Prefix string
 	Suffix string
+	// OpAssign 使用：编译期预计算的变量槽号（普通变量名 ≥0，特殊形式 -1），运行时免去 map 查表。
+	// 未经 bc.ResolveSlots 解析时保持 -1，运行时回退按变量名查表，语义不变。
+	PrefixSlot int32
+	SuffixSlot int32
+	// OpLoop/OpLoopDyn/OpLoopRange 使用：编译期预计算的循环变量槽号（-1 表示回退按变量名查表）。
+	VarSlot int32
+	// OpLoopEnd 使用：循环体不会改写循环变量（仅由不写该变量的无副作用赋值组成）时为 true，
+	// 运行时据此免去每轮的改写检查（LoopVarChanged）。
+	VarSafe bool
+	// OpLoopFast 使用：循环体指令副本（仅含 OpNop/OpLine/OpAssign），由 VM 在单条指令内循环执行。
+	Body []Instr
 }

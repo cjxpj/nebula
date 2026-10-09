@@ -100,6 +100,9 @@ func drawImgNew(d *dto.DicInputs) (any, error) {
 		case string:
 			if strings.HasPrefix(v, "http://") || strings.HasPrefix(v, "https://") {
 				// 网络图片处理，保持不变
+				if err := checkSandboxNet(d, v); err != nil {
+					return nil, err
+				}
 				resp, err := httpClient.Get(v)
 				if err != nil {
 					return nil, fmt.Errorf("下载网络图片失败: %v", err)
@@ -2459,6 +2462,9 @@ func drawImgPaste(d *dto.DicInputs) (any, error) {
 		srcImg = v.img
 	case string:
 		if strings.HasPrefix(v, "http://") || strings.HasPrefix(v, "https://") {
+			if err := checkSandboxNet(d, v); err != nil {
+				return nil, err
+			}
 			resp, err := httpClient.Get(v)
 			if err != nil {
 				return nil, fmt.Errorf("下载网络图片失败: %v", err)

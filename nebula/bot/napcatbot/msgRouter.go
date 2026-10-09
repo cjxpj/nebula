@@ -8,11 +8,9 @@ import (
 	"path"
 	"strconv"
 	"strings"
-	"time"
 
+	botdic "github.com/cjxpj/nebula/bot/botdic"
 	napcatbot_dto "github.com/cjxpj/nebula/bot/napcatbot/dto"
-	dic_api "github.com/cjxpj/nebula/dic/api"
-	dic_dto "github.com/cjxpj/nebula/dic/dto"
 	"github.com/cjxpj/nebula/debugLog"
 	"github.com/cjxpj/nebula/dto"
 	"github.com/cjxpj/nebula/utils"
@@ -41,12 +39,6 @@ func napCatBOTGroupUploadFileRun(msgData *MessagePayload) {
 		}
 	}
 
-	botDicPath := utils.NewFileQueue(path.Join(dto.ServerConfig.NapCatBot.FilePath, "dic"))
-	botDicList, err := botDicPath.GetFileList()
-	if err != nil {
-		return
-	}
-
 	// 取出需要的数据
 	userID := msgData.UserID // QQ
 
@@ -73,51 +65,24 @@ func napCatBOTGroupUploadFileRun(msgData *MessagePayload) {
 		Set("文件数据", string(fileData)).
 		Set("主人", isAdmin)
 
-	for _, v := range botDicList {
-		if !strings.HasSuffix(v, ".n") {
-			continue
-		}
-		go func() {
-			dicPath := path.Join(dto.ServerConfig.NapCatBot.FilePath, "dic", v)
-			FileData, err := utils.NewFileQueue(dicPath).ReadFromFile()
+	// 回复消息
+	botdic.Run{
+		FilePath:  dto.ServerConfig.NapCatBot.FilePath,
+		Val:       valData,
+		Funcs:     Funcs,
+		Trigger:   "上传文件",
+		Private:   true,
+		Parallel:  true,
+		AsyncCall: true,
+		Deliver: func(rMsg string, _ *dto.DicVal) {
+			debugLog.Infof("%v", rMsg)
+			body, err := SendGroupText(groupID, rMsg)
 			if err != nil {
-				return
+				debugLog.Infof("%v", err)
 			}
-
-			// 回复消息
-		dic := dic_dto.NewDic(dicPath, FileData).
-			SetGlobal_v(valData)
-
-		dic.AddFuncs(Funcs)
-
-		dic.SetFunc("调用", dto.DicFunc{
-			L: "2..",
-			Fn: func(d *dto.DicInputs) (any, error) {
-				go func() {
-					qqVal := dic.NewDicVal()
-					sleepTime := d.Inputs.Int(1)
-					time.Sleep(time.Duration(sleepTime) * time.Millisecond)
-					rMsg := dic_api.Api.DicRunPrivateVal(dic, d.Inputs.StringAfter(2), qqVal)
-					if rMsg != "" {
-						rMsg = strings.ReplaceAll(rMsg, "\\r", "\n")
-						SendGroupText(groupID, rMsg)
-					}
-				}()
-				return "", nil
-			}})
-
-		rMsg := dic_api.Api.DicRunPrivate(dic, "上传文件")
-			if rMsg != "" {
-				rMsg = strings.ReplaceAll(rMsg, "\\r", "\n")
-				debugLog.Infof("%v", rMsg)
-				body, err := SendGroupText(groupID, rMsg)
-				if err != nil {
-					debugLog.Infof("%v", err)
-				}
-				debugLog.Infof("%v", string(body))
-			}
-		}()
-	}
+			debugLog.Infof("%v", string(body))
+		},
+	}.Exec()
 }
 
 // 群撤回消息处理
@@ -141,12 +106,6 @@ func napCatBOTGroupRecallRun(msgData *MessagePayload) {
 		if !found {
 			return // 没匹配到，直接拦截
 		}
-	}
-
-	botDicPath := utils.NewFileQueue(path.Join(dto.ServerConfig.NapCatBot.FilePath, "dic"))
-	botDicList, err := botDicPath.GetFileList()
-	if err != nil {
-		return
 	}
 
 	// 取出需要的数据
@@ -182,61 +141,28 @@ func napCatBOTGroupRecallRun(msgData *MessagePayload) {
 		Set("群名", groupName).
 		Set("主人", isAdmin)
 
-	for _, v := range botDicList {
-		if !strings.HasSuffix(v, ".n") {
-			continue
-		}
-		go func() {
-			dicPath := path.Join(dto.ServerConfig.NapCatBot.FilePath, "dic", v)
-			FileData, err := utils.NewFileQueue(dicPath).ReadFromFile()
+	// 回复消息
+	botdic.Run{
+		FilePath:  dto.ServerConfig.NapCatBot.FilePath,
+		Val:       valData,
+		Funcs:     Funcs,
+		Trigger:   "撤回",
+		Private:   true,
+		Parallel:  true,
+		AsyncCall: true,
+		Deliver: func(rMsg string, _ *dto.DicVal) {
+			debugLog.Infof("%v", rMsg)
+			body, err := SendGroupText(groupID, rMsg)
 			if err != nil {
-				return
+				debugLog.Infof("%v", err)
 			}
-
-			// 回复消息
-		dic := dic_dto.NewDic(dicPath, FileData).
-			SetGlobal_v(valData)
-
-		dic.AddFuncs(Funcs)
-
-		dic.SetFunc("调用", dto.DicFunc{
-			L: "2..",
-			Fn: func(d *dto.DicInputs) (any, error) {
-				go func() {
-					qqVal := dic.NewDicVal()
-					sleepTime := d.Inputs.Int(1)
-					time.Sleep(time.Duration(sleepTime) * time.Millisecond)
-					rMsg := dic_api.Api.DicRunPrivateVal(dic, d.Inputs.StringAfter(2), qqVal)
-					if rMsg != "" {
-						rMsg = strings.ReplaceAll(rMsg, "\\r", "\n")
-						SendGroupText(groupID, rMsg)
-					}
-				}()
-				return "", nil
-			}})
-
-		rMsg := dic_api.Api.DicRunPrivate(dic, "撤回")
-			if rMsg != "" {
-				rMsg = strings.ReplaceAll(rMsg, "\\r", "\n")
-				debugLog.Infof("%v", rMsg)
-				body, err := SendGroupText(groupID, rMsg)
-				if err != nil {
-					debugLog.Infof("%v", err)
-				}
-				debugLog.Infof("%v", string(body))
-			}
-		}()
-	}
+			debugLog.Infof("%v", string(body))
+		},
+	}.Exec()
 }
 
 // 点赞处理
 func napCatBOTProfileLikeRun(msgData *MessagePayload) {
-	botDicPath := utils.NewFileQueue(path.Join(dto.ServerConfig.NapCatBot.FilePath, "dic"))
-	botDicList, err := botDicPath.GetFileList()
-	if err != nil {
-		return
-	}
-
 	// 取出需要的数据
 	userID := msgData.OperatorId // QQ
 
@@ -260,50 +186,24 @@ func napCatBOTProfileLikeRun(msgData *MessagePayload) {
 		Set("AT0", utils.AnyToString(msgData.TargetID)).
 		Set("主人", isAdmin)
 
-	for _, v := range botDicList {
-		if !strings.HasSuffix(v, ".n") {
-			continue
-		}
-		go func() {
-			dicPath := path.Join(dto.ServerConfig.NapCatBot.FilePath, "dic", v)
-			FileData, err := utils.NewFileQueue(dicPath).ReadFromFile()
+	// 回复消息
+	botdic.Run{
+		FilePath:  dto.ServerConfig.NapCatBot.FilePath,
+		Val:       valData,
+		Funcs:     Funcs,
+		Trigger:   fmt.Sprintf("点赞 %d", msgData.Times),
+		Private:   true,
+		Parallel:  true,
+		AsyncCall: true,
+		Deliver: func(rMsg string, _ *dto.DicVal) {
+			fmt.Println(rMsg)
+			body, err := SendPrivateText(userID, rMsg)
 			if err != nil {
-				return
+				fmt.Println(err)
 			}
-
-			// 回复消息
-		dic := dic_dto.NewDic(dicPath, FileData).
-			SetGlobal_v(valData)
-
-		dic.SetFunc("调用", dto.DicFunc{
-			L: "2..",
-			Fn: func(d *dto.DicInputs) (any, error) {
-				go func() {
-					qqVal := dic.NewDicVal()
-					sleepTime := d.Inputs.Int(1)
-					time.Sleep(time.Duration(sleepTime) * time.Millisecond)
-					rMsg := dic_api.Api.DicRunPrivateVal(dic, d.Inputs.StringAfter(2), qqVal)
-					if rMsg != "" {
-						rMsg = strings.ReplaceAll(rMsg, "\\r", "\n")
-						SendPrivateText(userID, rMsg)
-					}
-				}()
-				return "", nil
-			}})
-
-		dic.AddFuncs(Funcs)
-
-		rMsg := dic_api.Api.DicRunPrivate(dic, fmt.Sprintf("点赞 %d", msgData.Times))
-			if rMsg != "" {
-				rMsg = strings.ReplaceAll(rMsg, "\\r", "\n")
-				body, err := SendPrivateText(userID, rMsg)
-				if err != nil {
-					fmt.Println(err)
-				}
-				fmt.Println(string(body))
-			}
-		}()
-	}
+			fmt.Println(string(body))
+		},
+	}.Exec()
 }
 
 // 群戳一戳处理
@@ -329,12 +229,6 @@ func napCatBOTGroupNudgeRun(msgData *MessagePayload) {
 		}
 	}
 
-	botDicPath := utils.NewFileQueue(path.Join(dto.ServerConfig.NapCatBot.FilePath, "dic"))
-	botDicList, err := botDicPath.GetFileList()
-	if err != nil {
-		return
-	}
-
 	// 取出需要的数据
 	userID := msgData.UserID // QQ
 
@@ -358,61 +252,28 @@ func napCatBOTGroupNudgeRun(msgData *MessagePayload) {
 		Set("AT0", utils.AnyToString(msgData.TargetID)).
 		Set("主人", isAdmin)
 
-	for _, v := range botDicList {
-		if !strings.HasSuffix(v, ".n") {
-			continue
-		}
-		go func() {
-			dicPath := path.Join(dto.ServerConfig.NapCatBot.FilePath, "dic", v)
-			FileData, err := utils.NewFileQueue(dicPath).ReadFromFile()
+	// 回复消息
+	botdic.Run{
+		FilePath:  dto.ServerConfig.NapCatBot.FilePath,
+		Val:       valData,
+		Funcs:     Funcs,
+		Trigger:   "戳一戳",
+		Private:   true,
+		Parallel:  true,
+		AsyncCall: true,
+		Deliver: func(rMsg string, _ *dto.DicVal) {
+			debugLog.Infof("%v", rMsg)
+			body, err := SendGroupText(groupID, rMsg)
 			if err != nil {
-				return
+				debugLog.Infof("%v", err)
 			}
-
-			// 回复消息
-		dic := dic_dto.NewDic(dicPath, FileData).
-			SetGlobal_v(valData)
-
-		dic.SetFunc("调用", dto.DicFunc{
-			L: "2..",
-			Fn: func(d *dto.DicInputs) (any, error) {
-				go func() {
-					qqVal := dic.NewDicVal()
-					sleepTime := d.Inputs.Int(1)
-					time.Sleep(time.Duration(sleepTime) * time.Millisecond)
-					rMsg := dic_api.Api.DicRunPrivateVal(dic, d.Inputs.StringAfter(2), qqVal)
-					if rMsg != "" {
-						rMsg = strings.ReplaceAll(rMsg, "\\r", "\n")
-						SendGroupText(groupID, rMsg)
-					}
-				}()
-				return "", nil
-			}})
-
-		dic.AddFuncs(Funcs)
-
-		rMsg := dic_api.Api.DicRunPrivate(dic, "戳一戳")
-			if rMsg != "" {
-				rMsg = strings.ReplaceAll(rMsg, "\\r", "\n")
-				debugLog.Infof("%v", rMsg)
-				body, err := SendGroupText(groupID, rMsg)
-				if err != nil {
-					debugLog.Infof("%v", err)
-				}
-				debugLog.Infof("%v", string(body))
-			}
-		}()
-	}
+			debugLog.Infof("%v", string(body))
+		},
+	}.Exec()
 }
 
 // 私聊消息处理
 func napCatBOTPrivateRun(msgData *MessagePayload) {
-
-	botDicPath := utils.NewFileQueue(path.Join(dto.ServerConfig.NapCatBot.FilePath, "dic"))
-	botDicList, err := botDicPath.GetFileList()
-	if err != nil {
-		return
-	}
 
 	// 取出需要的数据
 	userID := msgData.Sender.UserID // QQ
@@ -456,51 +317,24 @@ func napCatBOTPrivateRun(msgData *MessagePayload) {
 		Set("MessageID", utils.AnyToString(msgId)).
 		Set("主人", isAdmin)
 
-	for _, v := range botDicList {
-		if !strings.HasSuffix(v, ".n") {
-			continue
-		}
-		go func() {
-			dicPath := path.Join(dto.ServerConfig.NapCatBot.FilePath, "dic", v)
-			FileData, err := utils.NewFileQueue(dicPath).ReadFromFile()
+	// 回复消息
+	botdic.Run{
+		FilePath:  dto.ServerConfig.NapCatBot.FilePath,
+		Val:       valData,
+		Funcs:     Funcs,
+		Trigger:   fmt.Sprintf("#私聊#%s", content),
+		Private:   false,
+		Parallel:  true,
+		AsyncCall: true,
+		Deliver: func(rMsg string, _ *dto.DicVal) {
+			fmt.Println(rMsg)
+			body, err := SendPrivateText(userID, rMsg)
 			if err != nil {
-				return
+				fmt.Println(err)
 			}
-
-			// 回复消息
-		dic := dic_dto.NewDic(dicPath, FileData).
-			SetGlobal_v(valData)
-
-		dic.SetFunc("调用", dto.DicFunc{
-			L: "2..",
-			Fn: func(d *dto.DicInputs) (any, error) {
-				go func() {
-					qqVal := dic.NewDicVal()
-					sleepTime := d.Inputs.Int(1)
-					time.Sleep(time.Duration(sleepTime) * time.Millisecond)
-					rMsg := dic_api.Api.DicRunPrivateVal(dic, d.Inputs.StringAfter(2), qqVal)
-				if rMsg != "" {
-					rMsg = strings.ReplaceAll(rMsg, "\\r", "\n")
-					SendPrivateText(userID, rMsg)
-				}
-			}()
-			return "", nil
-		}})
-
-	dic.AddFuncs(Funcs)
-
-	rMsg := dic_api.Api.DicRun(dic, fmt.Sprintf("#私聊#%s", content))
-			if rMsg != "" {
-				rMsg = strings.ReplaceAll(rMsg, "\\r", "\n")
-				fmt.Println(rMsg)
-				body, err := SendPrivateText(userID, rMsg)
-				if err != nil {
-					fmt.Println(err)
-				}
-				fmt.Println(string(body))
-			}
-		}()
-	}
+			fmt.Println(string(body))
+		},
+	}.Exec()
 }
 
 // 群消息处理
@@ -524,12 +358,6 @@ func napCatBOTGroupRun(msgData *MessagePayload) {
 		if !found {
 			return // 没匹配到，直接拦截
 		}
-	}
-
-	botDicPath := utils.NewFileQueue(path.Join(dto.ServerConfig.NapCatBot.FilePath, "dic"))
-	botDicList, err := botDicPath.GetFileList()
-	if err != nil {
-		return
 	}
 
 	// 取出需要的数据
@@ -596,51 +424,24 @@ func napCatBOTGroupRun(msgData *MessagePayload) {
 			}
 		}
 	}
-	for _, v := range botDicList {
-		if !strings.HasSuffix(v, ".n") {
-			continue
-		}
-		go func() {
-			dicPath := path.Join(dto.ServerConfig.NapCatBot.FilePath, "dic", v)
-			FileData, err := utils.NewFileQueue(dicPath).ReadFromFile()
+	// 回复消息
+	botdic.Run{
+		FilePath:  dto.ServerConfig.NapCatBot.FilePath,
+		Val:       valData,
+		Funcs:     Funcs,
+		Trigger:   content,
+		Private:   false,
+		Parallel:  true,
+		AsyncCall: true,
+		Deliver: func(rMsg string, _ *dto.DicVal) {
+			debugLog.Infof("%v", rMsg)
+			body, err := SendGroupText(groupID, rMsg)
 			if err != nil {
-				return
+				debugLog.Infof("%v", err)
 			}
-
-			// 回复消息
-		dic := dic_dto.NewDic(dicPath, FileData).
-			SetGlobal_v(valData)
-
-		dic.SetFunc("调用", dto.DicFunc{
-			L: "2..",
-			Fn: func(d *dto.DicInputs) (any, error) {
-				go func() {
-					qqVal := dic.NewDicVal()
-					sleepTime := d.Inputs.Int(1)
-					time.Sleep(time.Duration(sleepTime) * time.Millisecond)
-					rMsg := dic_api.Api.DicRunPrivateVal(dic, d.Inputs.StringAfter(2), qqVal)
-					if rMsg != "" {
-						rMsg = strings.ReplaceAll(rMsg, "\\r", "\n")
-						SendGroupText(groupID, rMsg)
-					}
-				}()
-				return "", nil
-			}})
-
-		dic.AddFuncs(Funcs)
-
-		rMsg := dic_api.Api.DicRun(dic, content)
-			if rMsg != "" {
-				rMsg = strings.ReplaceAll(rMsg, "\\r", "\n")
-				debugLog.Infof("%v", rMsg)
-				body, err := SendGroupText(groupID, rMsg)
-				if err != nil {
-					debugLog.Infof("%v", err)
-				}
-				debugLog.Infof("%v", string(body))
-			}
-		}()
-	}
+			debugLog.Infof("%v", string(body))
+		},
+	}.Exec()
 }
 
 func BotMessage(w http.ResponseWriter, r *http.Request) {

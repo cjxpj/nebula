@@ -36,9 +36,9 @@ func LoadConfig_napcat(NapCat_Config *ConfigSection) {
 			Secret:   secret,
 			FilePath: dicPath,
 		}
-		BotDic := utils.NewFileQueue(filepath.Join(dicPath, "dic"))
+		BotDic := utils.NewFileQueue(filepath.Join(dicPath, utils.DicDirName()))
 		if !BotDic.DirExists() {
-			BotDic.SetPath(filepath.Join(dicPath, "dic", "dic.n"))
+			BotDic.SetPath(filepath.Join(dicPath, utils.DicDirName(), "dic.n"))
 			if data, err := appfiles.GetFile("dic/NapCatBot.n"); err == nil {
 				BotDic.WriteFileByte(data)
 			} else {
@@ -101,7 +101,7 @@ func LoadConfig_qq(QQBot_Config *ConfigSection, sectionName string) {
 
 		BotDic := utils.NewFileQueue(dicPath)
 		if !BotDic.DirExists() {
-			BotDic.SetPath(filepath.Join(dicPath, "dic", "dic.n"))
+			BotDic.SetPath(filepath.Join(dicPath, utils.DicDirName(), "dic.n"))
 			if data, err := appfiles.GetFile("dic/QQBot.n"); err == nil {
 				BotDic.WriteFileByte(data)
 			} else {
@@ -155,7 +155,7 @@ func LoadConfig_feishu(FeiShu_Config *ConfigSection) {
 		}
 		BotDic := utils.NewFileQueue(dicPath)
 		if !BotDic.DirExists() {
-			BotDic.SetPath(filepath.Join(dicPath, "dic", "dic.n"))
+			BotDic.SetPath(filepath.Join(dicPath, utils.DicDirName(), "dic.n"))
 			if data, err := appfiles.GetFile("dic/FeiShuBot.n"); err == nil {
 				BotDic.WriteFileByte(data)
 			} else {
@@ -223,7 +223,7 @@ func LoadConfig_secluded(Secluded_Config *ConfigSection) {
 		BotDic := utils.NewFileQueue(dicPath)
 		if !BotDic.DirExists() {
 			os.MkdirAll(BotDic.FileName, 0755)
-			BotDic.SetPath(filepath.Join(dicPath, "dic", "dic.n"))
+			BotDic.SetPath(filepath.Join(dicPath, utils.DicDirName(), "dic.n"))
 			if data, err := appfiles.GetFile("dic/SecludedBot.n"); err == nil {
 				BotDic.WriteFileByte(data)
 			} else {

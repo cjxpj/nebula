@@ -1,5 +1,7 @@
 package bc
 
+import "strings"
+
 // Runtime 是字节码 VM 与具体语言运行时之间的接口。
 // 叶子语句（$函数$ 调用、%变量% 插值、赋值、算术等）的执行语义由实现方提供，
 // VM 只负责控制流（跳转、循环、分支）与变量槽（循环变量）的读写。
@@ -23,7 +25,8 @@ type Runtime interface {
 	// 解析失败视为未命中（不跳转）。
 	JumpAbsOffset(expr string) (int, bool)
 	// SetVarInt 写入整数循环变量（直接写 int64，避免字符串往返装箱）。
-	SetVarInt(name string, value int)
+	// slot 为编译期预计算的槽号（普通变量名 ≥0，直接写无锁槽）；-1 时按 name 回退 map 路径。
+	SetVarInt(slot int32, name string, value int)
 	// GetVar 读取循环变量当前值。
 	GetVar(name string) string
 	// LoopCount 求值动态循环次数表达式（%变量%/$函数$ 等），返回循环次数。
@@ -36,10 +39,10 @@ type Runtime interface {
 	Stop() bool
 	// Halt 发出全局终止指令（>终止 / >终止 文案），使外层上下文同样停止。
 	Halt()
-	// LoopVarChanged 循环变量步进检查：给定循环变量名与上一轮序号，返回
+	// LoopVarChanged 循环变量步进检查：给定循环变量槽号/名与上一轮序号，返回
 	// 变量是否被脚本改写、改写后的新值，以及是否因改写为非法值而需终止循环。
 	// 语义与解释器 loopVarChanged 一致（整数直读 / 字符串兼容）。
-	LoopVarChanged(name string, cur int) (newVal int, changed bool, breakLoop bool)
+	LoopVarChanged(slot int32, name string, cur int) (newVal int, changed bool, breakLoop bool)
 	// TextBlock 执行 文本>/纯文本> 框：text 为开启行，lines 为内容行，
 	// pure 为 true 表示纯文本（内容原样输出），false 表示文本（内容做 %变量% 插值）。
 	// 返回应追加到最终输出的文本（赋值到变量时返回空）。
@@ -86,7 +89,27 @@ type Runtime interface {
 	// Assign 执行一条无副作用赋值/算术叶子（已由编译期识别为结构化信息），
 	// 返回应追加到最终输出的文本（赋值语句通常返回空）。text 为原始行文本，供防御性回退。
 	// line 为该语句的真实源文件行号，供防御性回退到 Line 时保持报错定位。
-	Assign(line int, text string, vType int8, prefix, suffix string) string
+	// prefixSlot/suffixSlot 为编译期预计算的左右操作数槽号（-1 表示回退按变量名查表）。
+	Assign(line int, text string, vType int8, prefix, suffix string, prefixSlot, suffixSlot int32) string
+}
+
+// usesLineVar 报告程序是否可能读取 %行数%：任一指令的文本/表达式/操作数/内容行含「行数」即视为使用。
+// 未被使用时 VM 跳过逐语句 SetLine（行号变量无人读取），省去每条语句一次运行时调用。
+// 判定保守：只要文本里出现「行数」就当作使用，不会漏判。
+func usesLineVar(instrs []Instr) bool {
+	for i := range instrs {
+		in := &instrs[i]
+		if strings.Contains(in.Text, "行数") || strings.Contains(in.Expr, "行数") ||
+			strings.Contains(in.Prefix, "行数") || strings.Contains(in.Suffix, "行数") {
+			return true
+		}
+		for _, l := range in.Lines {
+			if strings.Contains(l, "行数") {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // Run 执行字节码，返回累积输出。
@@ -95,6 +118,7 @@ func Run(instrs []Instr, rt Runtime) string {
 	// defer debugLog.Info("Run end")
 	type frame struct {
 		varName string // 循环变量名（遍历帧为空）
+		slot    int32  // 循环变量槽号（编译期预计算；-1 表示按名回退）
 		count   int    // 循环结束值/次数；遍历帧为迭代项数；while 为 -1
 		i       int    // 当前值/游标
 	}
@@ -120,19 +144,30 @@ func Run(instrs []Instr, rt Runtime) string {
 		}
 	}
 
+	// 程序未引用 %行数% 时跳过逐语句 SetLine，省去每条语句一次运行时调用。
+	skipLine := !usesLineVar(instrs)
+
 	for pc := 0; pc < len(instrs); pc++ {
-		in := instrs[pc]
+		in := &instrs[pc]
 		switch in.Op {
 		case OpNop:
 		case OpLine:
-			rt.SetLine(in.Line)
-			rt.Append(rt.Line(in.Line, in.Text))
+			if !skipLine {
+				rt.SetLine(in.Line)
+			}
+			if s := rt.Line(in.Line, in.Text); s != "" {
+				rt.Append(s)
+			}
 			if rt.Stop() {
 				return rt.Output()
 			}
 		case OpAssign:
-			rt.SetLine(in.Line)
-			rt.Append(rt.Assign(in.Line, in.Text, in.VType, in.Prefix, in.Suffix))
+			if !skipLine {
+				rt.SetLine(in.Line)
+			}
+			if s := rt.Assign(in.Line, in.Text, in.VType, in.Prefix, in.Suffix, in.PrefixSlot, in.SuffixSlot); s != "" {
+				rt.Append(s)
+			}
 			if rt.Stop() {
 				return rt.Output()
 			}
@@ -145,57 +180,108 @@ func Run(instrs []Instr, rt Runtime) string {
 		case OpJumpAbs:
 			// 绝对跳行：求值目标行号后跳到对应行号的首条叶子指令。
 			// 未命中（行号不存在/解析失败）时不跳转，顺序执行下一指令。
-			rt.SetLine(in.Line)
+			if !skipLine {
+				rt.SetLine(in.Line)
+			}
 			if target, ok := rt.JumpAbsOffset(in.Expr); ok {
 				if dst, exists := lineToPc[target]; exists {
 					pc = dst - 1 // 循环末尾 pc++ 抵消
 				}
 			}
 		case OpLoop:
-			frames = append(frames, frame{varName: in.Text, count: in.Arg, i: 1})
+			frames = append(frames, frame{varName: in.Text, slot: in.VarSlot, count: in.Arg, i: 1})
 			if in.Arg == 0 {
 				// 0 次：跳过循环体（含 OpLoopEnd），直接落到 OpLoopPop 弹出帧。
 				pc = in.End - 1
 			} else {
-				rt.SetVarInt(in.Text, 1)
+				rt.SetVarInt(in.VarSlot, in.Text, 1)
 			}
 		case OpLoopDyn:
 			count := rt.LoopCount(in.Expr)
-			frames = append(frames, frame{varName: in.Text, count: count, i: 1})
+			frames = append(frames, frame{varName: in.Text, slot: in.VarSlot, count: count, i: 1})
 			if count < 1 {
 				// 次数 ≤0：跳过循环体（含 OpLoopEnd），直接落到 OpLoopPop 弹出帧。
 				pc = in.End - 1
 			} else {
-				rt.SetVarInt(in.Text, 1)
+				rt.SetVarInt(in.VarSlot, in.Text, 1)
 			}
 		case OpLoopRange:
 			start, end := in.Start, in.Arg
 			if in.Expr != "" {
 				start, end = rt.LoopRange(in.Expr)
 			}
-			frames = append(frames, frame{varName: in.Text, count: end, i: start})
+			frames = append(frames, frame{varName: in.Text, slot: in.VarSlot, count: end, i: start})
 			if end < start {
 				// 空范围（起始值 > 结束值）：跳过循环体（含 OpLoopEnd），直接落到 OpLoopPop 弹出帧。
 				pc = in.End - 1
 			} else {
-				rt.SetVarInt(in.Text, start)
+				rt.SetVarInt(in.VarSlot, in.Text, start)
 			}
 		case OpWhile:
 			// while 循环：仅压入一个无限循环帧，实际是否进入循环体由紧随其后的 OpJumpIfFalse 判断。
-			frames = append(frames, frame{varName: "", count: -1})
+			frames = append(frames, frame{varName: "", slot: -1, count: -1})
 		case OpLoopEnd:
 			f := &frames[len(frames)-1]
-			if newVal, changed, breakLoop := rt.LoopVarChanged(f.varName, f.i); breakLoop {
-				// 变量被改写为无法解析的值：结束循环，落到 OpLoopPop
-			} else if changed {
-				f.i = newVal
+			// 循环体经编译期判定不含对循环变量的写入（VarSafe）时，变量必然未被改写，免去每轮检查。
+			if !in.VarSafe {
+				if newVal, changed, breakLoop := rt.LoopVarChanged(f.slot, f.varName, f.i); breakLoop {
+					// 变量被改写为无法解析的值：结束循环，落到 OpLoopPop
+				} else if changed {
+					f.i = newVal
+				}
 			}
 			f.i++
 			if f.count < 0 || f.i <= f.count {
-				rt.SetVarInt(f.varName, f.i)
+				rt.SetVarInt(f.slot, f.varName, f.i)
 				pc = in.Arg - 1
 			}
 			// 正常退出：落到下一条 OpLoopPop
+		case OpLoopFast:
+			// 融合循环：循环体仅由叶子指令（OpNop/OpLine/OpAssign，编译期保证）组成，
+			// 在单条指令内跑完整个循环，省去每轮一次 OpLoopEnd 分派。
+			// 循环体执行与 OpLine/OpAssign 分支保持一致；步进语义与 OpLoopEnd 保持一致
+			// （含 breakLoop 时不改写 f.i、按原序号继续的处理）。
+			frames = append(frames, frame{varName: in.Text, slot: in.VarSlot, count: in.Arg, i: 1})
+			rt.SetVarInt(in.VarSlot, in.Text, 1)
+			f := &frames[len(frames)-1]
+			body := in.Body
+			for {
+				for bi := range body {
+					b := &body[bi]
+					switch b.Op {
+					case OpLine:
+						if !skipLine {
+							rt.SetLine(b.Line)
+						}
+						if s := rt.Line(b.Line, b.Text); s != "" {
+							rt.Append(s)
+						}
+					case OpAssign:
+						if !skipLine {
+							rt.SetLine(b.Line)
+						}
+						if s := rt.Assign(b.Line, b.Text, b.VType, b.Prefix, b.Suffix, b.PrefixSlot, b.SuffixSlot); s != "" {
+							rt.Append(s)
+						}
+					}
+					if rt.Stop() {
+						return rt.Output()
+					}
+				}
+				if !in.VarSafe {
+					if newVal, changed, breakLoop := rt.LoopVarChanged(f.slot, f.varName, f.i); breakLoop {
+						// 与 OpLoopEnd 一致：变量改写为非法值时不改 f.i，按原序号继续步进
+					} else if changed {
+						f.i = newVal
+					}
+				}
+				f.i++
+				if f.i > f.count {
+					break
+				}
+				rt.SetVarInt(f.slot, f.varName, f.i)
+			}
+			pc = in.End - 1 // 落到 OpLoopPop 弹出帧
 		case OpLoopPop:
 			frames = frames[:len(frames)-1]
 		case OpBreak:

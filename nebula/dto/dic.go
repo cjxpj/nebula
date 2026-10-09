@@ -265,6 +265,15 @@ type BuildValue struct {
 	Dir string `json:"-"`
 	// InHeader 运行时标记：当前是否正在执行词库头部（供 $重定向触发词$ 等仅在头部生效的功能判断）。
 	InHeader bool `json:"-"`
+	// Sandbox 运行时标记：本词库是否以沙箱模式执行（由 $创建执行沙箱$ 设置）。
+	// 沙箱模式下禁止调用黑名单内置函数、文件读写限定在 Dir 内、出网禁止访问内网地址。非序列化。
+	Sandbox bool `json:"-"`
+	// SandboxFuncs 运行时标记：沙箱模式下的函数黑名单（由 $创建执行沙箱$ 的「禁用函数」设置）。
+	// 为空时回退到引擎内置高危名单（dic/sandbox.blocked）。非序列化。
+	SandboxFuncs map[string]bool `json:"-"`
+	// SandboxAllow 运行时标记：沙箱模式下的函数白名单（由 $创建执行沙箱$ 的「允许函数」设置）。
+	// 非空时进入白名单模式，仅允许调用名单内的函数，其余一律禁止。非序列化。
+	SandboxAllow map[string]bool `json:"-"`
 	// funcIndex 函数名 -> 词条索引（触发词去掉 -> 后缀后作为键），惰性构建；MergeFuncs 追加后失效重建。非序列化。
 	funcIndex atomic.Pointer[map[string][]*BuildDic]
 	// triggerIndex 词库正文触发词匹配索引，惰性构建；Dic 编译后不变，非序列化。

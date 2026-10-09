@@ -17,6 +17,19 @@ import (
 	"github.com/cjxpj/nebula/utils"
 )
 
+// checkSandboxNet 沙箱执行模式的出网预检：当前词库带沙箱标记时，禁止访问内网地址。
+// 非沙箱（默认）直接放行，保证正常词库出网行为不变。
+func checkSandboxNet(d *dto.DicInputs, target string) error {
+	if d == nil || d.Dic == nil || !d.Dic.Sandbox {
+		return nil
+	}
+	host := target
+	if u, err := url.Parse(target); err == nil && u.Host != "" {
+		host = u.Host
+	}
+	return utils.CheckLANAddr(host)
+}
+
 // 下载文件（异步，返回任务对象，可用「进度/速度/已下载/总大小/状态/错误」方法查询）
 func downloadFile(d *dto.DicInputs) (any, error) {
 	if !d.Inputs.LenOk(2) {
@@ -27,6 +40,9 @@ func downloadFile(d *dto.DicInputs) (any, error) {
 		return "", err
 	}
 	url := d.Inputs.String(1)
+	if err := checkSandboxNet(d, url); err != nil {
+		return "", err
+	}
 	savePath := d.Inputs.String(2)
 	threads := 0 // 默认 0：按文件大小自适应（2~8）
 	printOpen := false
@@ -115,6 +131,9 @@ func accessGet(d *dto.DicInputs) (any, error) {
 	if !regexp.MustCompile(`^https?://`).MatchString(url) {
 		url = "http://" + url
 	}
+	if err := checkSandboxNet(d, url); err != nil {
+		return "", err
+	}
 
 	req, err := http.NewRequest("GET", url, nil)
 	if err != nil {
@@ -163,6 +182,9 @@ func accessPost(d *dto.DicInputs) (any, error) {
 	url := d.Inputs.String(1)
 	if !regexp.MustCompile(`^https?://`).MatchString(url) {
 		url = "http://" + url
+	}
+	if err := checkSandboxNet(d, url); err != nil {
+		return "", err
 	}
 
 	bodys := d.Inputs.String(2)
@@ -220,6 +242,9 @@ func requestForward(d *dto.DicInputs) (any, error) {
 	targetURL := d.Inputs.String(1)
 	if !regexp.MustCompile(`^https?://`).MatchString(targetURL) {
 		targetURL = "http://" + targetURL
+	}
+	if err := checkSandboxNet(d, targetURL); err != nil {
+		return "", err
 	}
 
 	// 从 dic 线程变量中获取原始请求
@@ -331,6 +356,9 @@ func newRequest(d *dto.DicInputs) (any, error) {
 	if !regexp.MustCompile(`^https?://`).MatchString(setUrl) {
 		setUrl = "http://" + setUrl
 	}
+	if err := checkSandboxNet(d, setUrl); err != nil {
+		return "", err
+	}
 
 	req := &AccessRequest{
 		Type:         "get",
@@ -394,6 +422,9 @@ func newRequest(d *dto.DicInputs) (any, error) {
 			return "", nil
 		}},
 		"发送": {L: "0", Fn: func(d *dto.DicInputs) (any, error) {
+			if err := checkSandboxNet(d, req.Host); err != nil {
+				return "", err
+			}
 			return sendRequest(req)
 		}},
 		"全部内容": {L: "0", Fn: func(d *dto.DicInputs) (any, error) {

@@ -39,7 +39,7 @@ func sqliteOpen(d *dto.DicInputs) (any, error) {
 		if err := checkFuncPath(d, 1); err != nil {
 			return "", err
 		}
-		// 校验后参数已被写回为词库目录内的绝对路径
+		// 校验后参数已被写回为账号根目录（用户根目录）内的绝对路径
 		dbf = utils.NewFileQueue(d.Inputs.String(1))
 	}
 	db, err := dbf.OpenSqlite()

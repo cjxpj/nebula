@@ -60,6 +60,9 @@ type WebDicRunner interface {
 	WebPHPDicRun(WD *dic_dto.WebDic) string
 	// 执行网页词库（解析 HTML 与模板渲染）
 	WebDicRun(WD *dic_dto.WebDic) string
+	// 执行一次由宿主下发的网页词库公开访问：
+	// 宿主构建访问上下文并负责响应回写，引擎负责执行期重建请求/挂载内置函数/运行词库。
+	WebHTTPRun(req *dic_dto.WebHTTPRequest) *dic_dto.WebHTTPResult
 }
 
 // DicApi 词库执行公开接口，按功能分类聚合，便于按需依赖与维护。

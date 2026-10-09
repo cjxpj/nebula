@@ -86,6 +86,14 @@ func NebulaBotRunning(id C.longlong) *C.char {
 	return C.CString(dllBotRunning(int64(id)))
 }
 
+// NebulaBotSetExtraDics 为已启动的机器人下发外部词库（商城/云词库等，执行不落盘到账号目录）。
+// reqJSON 为 [{"virtual":"<账号布局内的绝对虚拟路径>","real":"<真实绝对路径>"}]；机器人重启后需重新下发。
+//
+//export NebulaBotSetExtraDics
+func NebulaBotSetExtraDics(id C.longlong, reqJSON *C.char) *C.char {
+	return C.CString(dllBotSetExtraDics(int64(id), C.GoString(reqJSON)))
+}
+
 // NebulaBotRemove 下线机器人并释放其线程变量（删除机器人时调用）。
 //
 //export NebulaBotRemove
@@ -139,13 +147,38 @@ func NebulaSandboxScan(content *C.char) *C.char {
 	return C.CString(dllSandboxScan(C.GoString(content)))
 }
 
-// ================= 云词库公开访问 =================
+// ================= 网站词库公开访问 =================
 
-// NebulaCloudServe 执行一次云词库页面请求（.n/.wn），返回响应状态、头部与正文。
+// NebulaCloudServe 执行一次网站词库页面请求（.n/.wn），返回响应状态、头部与正文。
 //
 //export NebulaCloudServe
 func NebulaCloudServe(reqJSON *C.char) *C.char {
 	return C.CString(dllCloudServe(C.GoString(reqJSON)))
+}
+
+// ================= 账号 CPU 配额 / 占用统计 =================
+
+// NebulaSetUserCores 下发某账号（uid）可用的词库执行并发上限（核）。
+//
+//export NebulaSetUserCores
+func NebulaSetUserCores(cores C.int, uid *C.char) *C.char {
+	return C.CString(dllSetUserCores(C.GoString(uid), int(cores)))
+}
+
+// NebulaSetUserVip 下发某账号（uid）的会员到期时间（unix 秒），用于词库执行超时上限：
+// 会员 1 分钟、非会员 10 秒。
+//
+//export NebulaSetUserVip
+func NebulaSetUserVip(expire C.longlong, uid *C.char) *C.char {
+	return C.CString(dllSetUserVip(C.GoString(uid), int64(expire)))
+}
+
+// NebulaAccountStats 返回各账号的 CPU 占用快照（JSON 信封，data 形如
+// {"<uid>":{"cores":1,"active":0,"percent":12.3}}）。
+//
+//export NebulaAccountStats
+func NebulaAccountStats() *C.char {
+	return C.CString(dllAccountStats())
 }
 
 // ================= 事件轮询 =================

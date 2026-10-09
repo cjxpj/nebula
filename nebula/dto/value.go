@@ -478,7 +478,7 @@ func (v *Val) slotGet(slot int32) (any, bool) {
 	if slot < 0 || slot >= int32(len(v.slots)) {
 		return nil, false
 	}
-	c := v.slots[slot]
+	c := &v.slots[slot] // 取址避免复制整个槽单元
 	if !c.present {
 		return nil, false
 	}
@@ -493,7 +493,7 @@ func (v *Val) slotGetInt64(slot int32) (int64, bool) {
 	if slot < 0 || slot >= int32(len(v.slots)) {
 		return 0, false
 	}
-	c := v.slots[slot]
+	c := &v.slots[slot] // 取址避免复制整个槽单元
 	if !c.present || !c.isInt {
 		return 0, false
 	}
@@ -548,12 +548,14 @@ func (v *Val) slotSet(slot int32, val any) {
 	v.slots[slot] = newSlotCell(val)
 }
 
-// slotSetInt64 无锁写入整数变量槽（免装箱）。
+// slotSetInt64 无锁写入整数槽（免装箱）。快路径内联越界判断，仅在需要扩容时才调用 growSlots。
 func (v *Val) slotSetInt64(slot int32, n int64) {
 	if slot < 0 {
 		return
 	}
-	v.growSlots(slot)
+	if slot >= int32(len(v.slots)) {
+		v.growSlots(slot)
+	}
 	v.slots[slot] = slotCell{present: true, isInt: true, i: n}
 }
 

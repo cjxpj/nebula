@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/cjxpj/nebula/appfiles"
 	"github.com/cjxpj/nebula/debugLog"
 	"github.com/cjxpj/nebula/dto"
 	"github.com/cjxpj/nebula/utils"
@@ -76,10 +77,63 @@ func TestParseImportLine(t *testing.T) {
 	}
 }
 
+// TestValidateImportTarget 校验引入/资源目标的安全限制：
+// 允许应用数据目录（private/）内的相对路径；拒绝目录回退（..）、绝对路径与跨区（盘符/UNC）路径。
+func TestValidateImportTarget(t *testing.T) {
+	allowed := []string{"dic", "dic/*", "dic/test.n", "private/dic/test.n", "a/b/c.n", "dic/console.n", "a/b.c.d", "com10"}
+	for _, p := range allowed {
+		if err := validateImportTarget(p); err != nil {
+			t.Fatalf("应允许 %q，实际报错：%v", p, err)
+		}
+	}
+	rejected := []string{
+		"..", "../secret", "../secret.n", "../dic/*", "a/../../secret.n", "a/..", "dic/../../x",
+		"/etc/passwd", "/abs/path.n", "\\abs\\path.n",
+		"C:\\secret.n", "C:/secret.n", "C:secret.n", "D:/dic/*", "\\\\host\\share\\x.n",
+		// Windows 尾随空格/点会裁剪成 ..，必须按裁剪后判定
+		".. ", ".. /secret.n", "a/.. /b", "dir/.. ",
+		// NTFS 备用数据流（冒号）
+		"x.n:stream", "dir/a.b:ads", "a/B:c",
+		// Windows 保留设备名（不区分扩展名）
+		"CON", "con.n", "NUL", "aux", "PRN.txt", "COM1", "LPT9", "dir/COM1",
+	}
+	for _, p := range rejected {
+		if err := validateImportTarget(p); err == nil {
+			t.Fatalf("应拒绝 %q，实际通过", p)
+		}
+	}
+	if err := validateImportTarget("/*"); err == nil {
+		t.Fatalf("应拒绝空目标 /*")
+	}
+}
+
+// TestBuildDicRejectsUnsafeImport 验证编译期引入指令遇到非法目标时报错。
+func TestBuildDicRejectsUnsafeImport(t *testing.T) {
+	chdirToAppWin()
+
+	for _, line := range []string{"#引入=../secret.n", "$引入 C:/secret.n$", "#引入=..", "变量:$引入 ../x.n$", "#引入=.. /secret.n", "#引入=x.n:stream", "#引入=CON"} {
+		r := BuildDic("unsafe_import_test_unique.n", line+"\n\nMain\n    ok")
+		if !containsText(r.Warnings, "禁止") {
+			t.Fatalf("非法引入 %q 应产生安全告警，实际：%v", line, warningsText(r.Warnings))
+		}
+	}
+}
+
+// TestBuildDicRejectsUnsafeResource 验证 //@资源 遇到非法目标时报错。
+func TestBuildDicRejectsUnsafeResource(t *testing.T) {
+	chdirToAppWin()
+
+	text := "//@资源\n变量:../secret.bin\n\nMain\n    ok"
+	r := BuildDic("unsafe_resource_test_unique.n", text)
+	if !containsText(r.Warnings, "禁止目录回退") {
+		t.Fatalf("非法的 //@资源 目标应产生安全告警，实际：%v", warningsText(r.Warnings))
+	}
+}
+
 // waitForCacheFile 等待异步写盘完成（缓存文件已原子替换到位）。
 func waitForCacheFile(t *testing.T, dicPath string) {
 	t.Helper()
-	p := dicCachePath(dicCacheDirFor(dicPath), importFilePath(dicPath))
+	p := dicCachePath(dicCacheDirFor(dicPath), importFilePath(dicPath, utils.PrivateRootRel(dicPath)))
 	deadline := time.Now().Add(3 * time.Second)
 	for time.Now().Before(deadline) {
 		if _, err := os.Stat(p); err == nil {
@@ -105,7 +159,7 @@ func removeDirIfEmpty(dir string) {
 // 避免测试收尾在数据目录残留空目录。
 func cleanDicCacheFile(dicPath string) {
 	dir := dicCacheDirFor(dicPath)
-	_ = os.Remove(dicCachePath(dir, importFilePath(dicPath)))
+	_ = os.Remove(dicCachePath(dir, importFilePath(dicPath, utils.PrivateRootRel(dicPath))))
 	removeDirIfEmpty(dir)
 }
 
@@ -124,7 +178,7 @@ func TestDicCompileCache(t *testing.T) {
 	text2 := "Main\n缓存测试内容2"
 
 	// 清理旧缓存，保证从干净状态开始
-	_ = os.Remove(dicCachePath(dicCacheDirFor(path), importFilePath(path)))
+	_ = os.Remove(dicCachePath(dicCacheDirFor(path), importFilePath(path, utils.PrivateRootRel(path))))
 
 	r1 := BuildDic(path, text1)
 	if r1 == nil || len(r1.Dic) == 0 {
@@ -162,7 +216,7 @@ func TestListAndRemoveDicCache(t *testing.T) {
 	defer func() { dto.ServerConfig.DicCache = false }()
 
 	const path = "cache_list_test_unique.n"
-	name := dicHash(importFilePath(path)) + ".gob"
+	name := dicHash(importFilePath(path, utils.PrivateRootRel(path))) + ".gob"
 	defer cleanDicCacheFile(path)
 
 	// 从空缓存目录开始，保证「删完最后一条后目录被移除」可确定性断言
@@ -181,8 +235,8 @@ func TestListAndRemoveDicCache(t *testing.T) {
 	if found == nil {
 		t.Fatalf("缓存列表中未找到 %v", name)
 	}
-	if found.DicPath != importFilePath(path) {
-		t.Fatalf("主词库路径反推不符，got=%q want=%q", found.DicPath, importFilePath(path))
+	if found.DicPath != importFilePath(path, utils.PrivateRootRel(path)) {
+		t.Fatalf("主词库路径反推不符，got=%q want=%q", found.DicPath, importFilePath(path, utils.PrivateRootRel(path)))
 	}
 	if found.Size <= 0 || found.Deps == 0 {
 		t.Fatalf("缓存条目信息不完整：%+v", *found)
@@ -198,7 +252,7 @@ func TestListAndRemoveDicCache(t *testing.T) {
 	if err := RemoveDicCache(name); err != nil {
 		t.Fatalf("清理缓存失败：%v", err)
 	}
-	if _, err := os.Stat(dicCachePath(dicCacheDirFor(path), importFilePath(path))); !os.IsNotExist(err) {
+	if _, err := os.Stat(dicCachePath(dicCacheDirFor(path), importFilePath(path, utils.PrivateRootRel(path)))); !os.IsNotExist(err) {
 		t.Fatalf("缓存文件应已被删除")
 	}
 	// 重复清理视为成功（文件已不存在）
@@ -355,5 +409,106 @@ func TestContinuePlacementAcrossLayouts(t *testing.T) {
 	head := BuildDic("continue_head_test_unique.n", "[f]a\n$继续执行$\n")
 	if !containsText(head.Warnings, "继续执行：仅允许在正文触发词下使用") {
 		t.Fatalf("头部/中间件里的 $继续执行$ 应报错，实际：%v", warningsText(head.Warnings))
+	}
+}
+
+// countGobFiles 统计目录下的 .gob 缓存文件数量。
+func countGobFiles(dir string) int {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return 0
+	}
+	n := 0
+	for _, e := range entries {
+		if !e.IsDir() && filepath.Ext(e.Name()) == ".gob" {
+			n++
+		}
+	}
+	return n
+}
+
+// TestEncryptedDicNoDiskCache 验证加密词库不写磁盘编译缓存：
+// 加密词库的编译产物含解密后的源码，一旦落盘即泄漏源码，故必须完全绕过缓存并清理历史残留。
+func TestEncryptedDicNoDiskCache(t *testing.T) {
+	chdirToAppWin()
+
+	// 编译缓存默认关闭，测试显式开启并在结束后还原
+	dto.ServerConfig.DicCache = true
+	defer func() { dto.ServerConfig.DicCache = false }()
+
+	// 缓存目录指向临时目录，避免污染真实数据目录
+	cacheDir := t.TempDir()
+	SetDicCacheDirFunc(func(string) string { return cacheDir })
+	defer SetDicCacheDirFunc(nil)
+
+	// 1) 非加密词库：正常写缓存（作为对照）
+	BuildDic("encrypted_cache_ctrl_unique.n", "\nMain\n明文内容")
+	waitForCacheFile(t, "encrypted_cache_ctrl_unique.n")
+	if n := countGobFiles(cacheDir); n != 1 {
+		t.Fatalf("非加密词库应写入缓存，实际缓存文件数=%d", n)
+	}
+
+	// 2) 加密词库：解密后按「加密」模式编译，不得写缓存，且历史残留缓存应被清理
+	plain := "\nMain\n加密内容"
+	cipher, err := utils.Encrypt(plain, appfiles.Key)
+	if err != nil {
+		t.Fatalf("加密失败：%v", err)
+	}
+	if len(utils.SplitLines([]byte(cipher))) != 1 {
+		t.Fatalf("加密结果应为单行密文")
+	}
+	// 与 dic/dto 的 NewDicFile 一致：调用方解密后以 encrypted 标记编译
+	buildDicWithHashMode("encrypted_cache_ctrl_unique.n",
+		utils.SplitLines([]byte(plain)), dicHashBytes([]byte(plain)), dicBuildMode{encrypted: true})
+	time.Sleep(200 * time.Millisecond) // 写盘为异步，等待确认无缓存落地
+	if n := countGobFiles(cacheDir); n != 0 {
+		t.Fatalf("加密词库不应写磁盘缓存，实际缓存文件数=%d", n)
+	}
+
+	// 3) BuildDicNoCache 是 dic/dto 对加密词库使用的入口：同样不写缓存
+	BuildDicNoCache("encrypted_cache_api_unique.n", plain)
+	time.Sleep(200 * time.Millisecond)
+	if n := countGobFiles(cacheDir); n != 0 {
+		t.Fatalf("BuildDicNoCache 不应写磁盘缓存，实际缓存文件数=%d", n)
+	}
+}
+
+// TestEncryptedImportNoDiskCache 验证引入加密库文件时，父词库也不写磁盘编译缓存：
+// 加密库的解密源码已并入父词库编译结果，落盘同样会泄漏源码。
+func TestEncryptedImportNoDiskCache(t *testing.T) {
+	chdirToAppWin()
+
+	dto.ServerConfig.DicCache = true
+	defer func() { dto.ServerConfig.DicCache = false }()
+
+	cacheDir := t.TempDir()
+	SetDicCacheDirFunc(func(string) string { return cacheDir })
+	defer SetDicCacheDirFunc(nil)
+
+	// 词库文件按进程工作目录解析，切到 NebulaData 才能让 #引入= 读到 private/ 下的测试库。
+	prevDir, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("获取工作目录失败：%v", err)
+	}
+	if err := os.Chdir(filepath.Join(prevDir, "NebulaData")); err != nil {
+		t.Fatalf("切换工作目录失败：%v", err)
+	}
+	defer os.Chdir(prevDir)
+
+	cipherLib, err := utils.Encrypt("[函数]库函数\n    ok\n", appfiles.Key)
+	if err != nil {
+		t.Fatalf("加密失败：%v", err)
+	}
+	libName := "encrypted_import_lib_test_unique.n"
+	libPath := filepath.Join(utils.PrivateDirName(), libName)
+	if err := os.WriteFile(libPath, []byte(cipherLib), 0o644); err != nil {
+		t.Skipf("无法写入私有目录测试文件（%v），跳过该用例", err)
+	}
+	defer os.Remove(libPath)
+
+	BuildDic("encrypted_import_main_test_unique.n", "#引入="+libName+"\n\nMain\n    $库函数$")
+	time.Sleep(200 * time.Millisecond)
+	if n := countGobFiles(cacheDir); n != 0 {
+		t.Fatalf("引入加密库文件时不应写磁盘缓存，实际缓存文件数=%d", n)
 	}
 }

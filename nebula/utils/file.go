@@ -106,6 +106,33 @@ func WorkDir() string {
 	return wd
 }
 
+// DataDirName 桌面端应用数据目录名：程序目录下存放数据的子目录。
+const DataDirName = "NebulaData"
+
+// AppDataDir 定位应用数据目录，供「全局库 / 编译缓存」等不依赖具体词库的数据定位复用。
+// 移动端/沙箱由 SetAppDir 注入，直接采用；桌面端数据目录为进程当前工作目录
+//（启动词库会切换到 NebulaData）。若工作目录仍停留在程序目录（如直接运行、测试或
+// 冒烟测试），则退回程序目录下的 NebulaData，避免数据被误建到源码树等位置。
+func AppDataDir() string {
+	if d := GetAppDir(); d != "" {
+		return d
+	}
+	wd, err := os.Getwd()
+	if err != nil {
+		return DataDirName
+	}
+	if abs, aerr := filepath.Abs(wd); aerr == nil {
+		wd = abs
+	}
+	if filepath.Base(wd) == DataDirName {
+		return wd
+	}
+	if exe, eerr := os.Executable(); eerr == nil {
+		return filepath.Join(filepath.Dir(exe), DataDirName)
+	}
+	return wd
+}
+
 // logDir 日志目录，默认相对应用数据目录的 database/log；
 // 设为绝对路径时可脱离应用数据目录单独存放。
 var logDir = path.Join("database", "log")

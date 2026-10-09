@@ -1,4 +1,4 @@
-// Package sandbox 是引擎内置的词库沙箱，收敛词库（.n）能触达的能力边界。
+// Package sandbox 是引擎内置的执行沙箱，收敛词库（.n）能触达的能力边界。
 //
 // 文件读写由引擎自身负责限制：词库里的路径只允许相对路径，且必须落在该词库自己所在的
 // 目录内（见 nebula/dic/funcs/file.go 的 resolveDicPath），越界与绝对路径一律拒绝。
@@ -47,6 +47,31 @@ var blockedSet = func() map[string]bool {
 	return m
 }()
 
+// IsBlocked 判断函数名是否在内置高危名单内。
+func IsBlocked(name string) bool {
+	return blockedSet[name]
+}
+
+// IsBlockedWith 按自定义黑白名单判断函数名是否被禁用，供 $创建执行沙箱$ 拦截：
+//   - allow 非空时为白名单模式，仅允许调用 allow 内的函数，其余一律禁用；
+//   - allow 为空时为黑名单模式，block 非空以 block 为准，为空则回退到内置高危名单。
+func IsBlockedWith(block, allow map[string]bool, name string) bool {
+	if len(allow) > 0 {
+		return !allow[name]
+	}
+	if len(block) > 0 {
+		return block[name]
+	}
+	return blockedSet[name]
+}
+
+// DefaultBlocked 返回内置高危函数名单的副本，供 $创建执行沙箱$ 以此为初始黑名单。
+func DefaultBlocked() []string {
+	out := make([]string, len(blocked))
+	copy(out, blocked)
+	return out
+}
+
 // Enable 一键启用内置沙箱：限定工作目录、注销高危函数、禁止出网访问内网。
 // 返回实际注销掉的高危函数名。
 func Enable(dir string) []string {
@@ -61,7 +86,9 @@ func Sandbox(dir string) {
 }
 
 // Block 注销 blocked 中的内置函数，返回实际注销掉的名字。
+// 引擎在 init 中异步注册内置函数，此处先等待注册完成，避免注销早于注册导致漏禁。
 func Block() []string {
+	funcs.WaitRegister()
 	removed := make([]string, 0, len(blocked))
 	for _, name := range blocked {
 		if _, ok := funcs.GetFunc(name); !ok {

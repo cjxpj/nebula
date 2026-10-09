@@ -9,8 +9,8 @@ import (
 	"sync"
 	"time"
 
+	botdic "github.com/cjxpj/nebula/bot/botdic"
 	"github.com/cjxpj/nebula/debugLog"
-	dic_api "github.com/cjxpj/nebula/dic/api"
 	dic_dto "github.com/cjxpj/nebula/dic/dto"
 	"github.com/cjxpj/nebula/dto"
 	"github.com/cjxpj/nebula/utils"
@@ -128,39 +128,39 @@ func handleMessage(_ []byte, header *rawPacketHeader) {
 // pushElem 是 PushOicqMsg 的 data 数组中一个元素的通用表示
 // 协议规定 data 是 []map[string]string，通过遍历检测 key 存在性来解析，不能依赖数组下标
 type pushElem struct {
-	Account    string `json:"Account"`
-	Group      string `json:"Group"`
-	Friend     string `json:"Friend"`
-	Temp       string `json:"Temp"`
-	GroupId    string `json:"GroupId"`
-	Uin        string `json:"Uin"`
-	MsgId      string `json:"MsgId"`
-	GroupName  string `json:"GroupName"`
-	OpName     string `json:"OpName"`
-	UinName    string `json:"UinName"`
-	Text       string `json:"Text"`
-	Img        string `json:"Img"`
-	AtUin      string `json:"AtUin"`
-	AtName     string `json:"AtName"`
-	Uid        string `json:"Uid"`
-	All        string `json:"All"`
-	Time       string `json:"Time"`
-	People     string `json:"People"`
-	Op         string `json:"Op"`
-	Url        string `json:"Url"`
-	GolineMode string `json:"GolineMode"`
-	Debug      string `json:"Debug"`
-	System     string `json:"System"`
+	Account     string `json:"Account"`
+	Group       string `json:"Group"`
+	Friend      string `json:"Friend"`
+	Temp        string `json:"Temp"`
+	GroupId     string `json:"GroupId"`
+	Uin         string `json:"Uin"`
+	MsgId       string `json:"MsgId"`
+	GroupName   string `json:"GroupName"`
+	OpName      string `json:"OpName"`
+	UinName     string `json:"UinName"`
+	Text        string `json:"Text"`
+	Img         string `json:"Img"`
+	AtUin       string `json:"AtUin"`
+	AtName      string `json:"AtName"`
+	Uid         string `json:"Uid"`
+	All         string `json:"All"`
+	Time        string `json:"Time"`
+	People      string `json:"People"`
+	Op          string `json:"Op"`
+	Url         string `json:"Url"`
+	GolineMode  string `json:"GolineMode"`
+	Debug       string `json:"Debug"`
+	System      string `json:"System"`
 	InstantPush string `json:"InstantPush"`
-	Json       string `json:"Json"`
-	Size       string `json:"Size"`
-	Height     string `json:"Height"`
-	Width      string `json:"Width"`
-	MD5        string `json:"MD5"`
-	Ptt        string `json:"Ptt"`
-	Video      string `json:"Video"`
-	Bubble     string `json:"Bubble"`
-	Typeface   string `json:"Typeface"`
+	Json        string `json:"Json"`
+	Size        string `json:"Size"`
+	Height      string `json:"Height"`
+	Width       string `json:"Width"`
+	MD5         string `json:"MD5"`
+	Ptt         string `json:"Ptt"`
+	Video       string `json:"Video"`
+	Bubble      string `json:"Bubble"`
+	Typeface    string `json:"Typeface"`
 }
 
 // parsePushOicqData 解析 PushOicqMsg 的 data 数组
@@ -271,14 +271,6 @@ func dispatchPush(elems []pushElem, rawData json.RawMessage) {
 		nick = meta.UinName
 	}
 
-	// 遍历 dic/*.n 词库
-	botDicPath := utils.NewFileQueue(path.Join(dto.ServerConfig.SecludedBot.FilePath, "dic"))
-	botDicList, err := botDicPath.GetFileList()
-	if err != nil {
-		dbgLog("[secluded] get dic list failed: %v", err)
-		return
-	}
-
 	uid := meta.Uid
 
 	// 主人列表
@@ -345,86 +337,50 @@ skipGroupCheck:
 		valData.Set(fmt.Sprintf("AtName%d", i), name)
 	}
 
-	for _, v := range botDicList {
-		if !strings.HasSuffix(v, ".n") {
-			continue
-		}
-		// 保存闭包变量，避免 goroutine 中引用过期
-		dicFile := v
-		msgMeta := meta
-		msgContent := content
-		msgIsGroupEvent := isGroupEvent
-		msgImgUrls := imgUrls
-		msgValData := valData
+	// 按事件/消息执行
+	event := ""
+	if isGroupEvent {
+		event = "群事件"
+	}
 
-		go func() {
-			dicPath := path.Join(dto.ServerConfig.SecludedBot.FilePath, "dic", dicFile)
-			fileData, err := utils.NewFileQueue(dicPath).ReadFromFile()
-			if err != nil {
-				return
-			}
-
-			dic := dic_dto.NewDic(dicPath, fileData).
-				SetGlobal_v(msgValData)
-
+	botdic.Run{
+		FilePath: dto.ServerConfig.SecludedBot.FilePath,
+		Val:      valData,
+		Funcs:    Funcs,
+		Prepare: func(dic *dic_dto.Dic) {
 			// 设置当前上下文（供词库函数使用，挂到本词库实例，避免并发串线）
-			setPushContext(dic, &msgMeta)
-
-			dic.AddFuncs(Funcs)
-
-			dic.SetFunc("调用", dto.DicFunc{
-				L: "2..",
-				Fn: func(d *dto.DicInputs) (any, error) {
-					go func() {
-						qqVal := dto.NewDicVal()
-						sleepTime := d.Inputs.Int(1)
-						time.Sleep(time.Duration(sleepTime) * time.Millisecond)
-
-						rMsg := dic_api.Api.DicRunPrivateVal(dic, d.Inputs.StringAfter(2), qqVal)
-						rMsg = strings.ReplaceAll(rMsg, "\\r", "\n")
-
-						if rMsg != "" {
-							if err := ReplyText(msgMeta, rMsg); err != nil {
-								debugLog.Infof("[secluded] 调用回复失败: %v", err)
-							}
-						}
-					}()
-					return "", nil
-				}})
+			setPushContext(dic, &meta)
 
 			dic.SetFunc("IMG", dto.DicFunc{
 				L: "0|1",
 				Fn: func(d *dto.DicInputs) (any, error) {
 					if d.Inputs.Len() == 0 {
-						if len(msgImgUrls) == 0 {
+						if len(imgUrls) == 0 {
 							return "[]", nil
 						}
-						data, _ := json.Marshal(msgImgUrls)
+						data, _ := json.Marshal(imgUrls)
 						return string(data), nil
 					}
 					index := d.Inputs.Int(1)
-					if index <= 0 || index > len(msgImgUrls) {
+					if index <= 0 || index > len(imgUrls) {
 						return "null", nil
 					}
-					return msgImgUrls[index-1], nil
+					return imgUrls[index-1], nil
 				},
 			})
-
-			var rMsg string
-			if msgIsGroupEvent {
-				rMsg = dic_api.Api.DicRunEvent(dic, "群事件", msgContent)
-			} else {
-				rMsg = dic_api.Api.DicRun(dic, msgContent)
+		},
+		Trigger:   content,
+		Event:     event,
+		EventMsg:  content,
+		Parallel:  true,
+		AsyncCall: true,
+		Deliver: func(rMsg string, _ *dto.DicVal) {
+			debugLog.Infof("[secluded] %v", rMsg)
+			if err := ReplyText(meta, rMsg); err != nil {
+				debugLog.Infof("[secluded] reply failed: %v", err)
 			}
-			rMsg = strings.ReplaceAll(rMsg, "\\r", "\n")
-			if rMsg != "" {
-				debugLog.Infof("[secluded] %v", rMsg)
-				if err := ReplyText(msgMeta, rMsg); err != nil {
-					debugLog.Infof("[secluded] reply failed: %v", err)
-				}
-			}
-		}()
-	}
+		},
+	}.Exec()
 }
 
 // triggerSystemPush 系统即时推送（System=System 且 InstantPush=InstantPush）时触发词库 [系统]推送 事件
@@ -445,41 +401,18 @@ func triggerSystemPush(meta pushElem, rawData json.RawMessage) {
 		Set("Robot", meta.Account).
 		Set("GolineMode", meta.GolineMode)
 
-	// 遍历 dic/*.n 词库
-	botDicPath := utils.NewFileQueue(path.Join(dto.ServerConfig.SecludedBot.FilePath, "dic"))
-	botDicList, err := botDicPath.GetFileList()
-	if err != nil {
-		dbgLog("[secluded] get dic list for system push failed: %v", err)
-		return
-	}
-
-	for _, v := range botDicList {
-		if !strings.HasSuffix(v, ".n") {
-			continue
-		}
-		// 保存闭包变量，避免 goroutine 中引用过期
-		dicFile := v
-		msgValData := valData
-		go func() {
-			dicPath := path.Join(dto.ServerConfig.SecludedBot.FilePath, "dic", dicFile)
-			fileData, err := utils.NewFileQueue(dicPath).ReadFromFile()
-			if err != nil {
-				return
-			}
-
-			dic := dic_dto.NewDic(dicPath, fileData).
-				SetGlobal_v(msgValData)
-
-			dic.AddFuncs(Funcs)
-
-			// 触发 [系统]推送
-			rMsg := dic_api.Api.DicRunEvent(dic, "系统", "推送")
-			rMsg = strings.ReplaceAll(rMsg, "\\r", "\n")
-			if rMsg != "" {
-				debugLog.Infof("[secluded] 系统推送: %v", rMsg)
-			}
-		}()
-	}
+	// 触发 [系统]推送
+	botdic.Run{
+		FilePath: dto.ServerConfig.SecludedBot.FilePath,
+		Val:      valData,
+		Funcs:    Funcs,
+		Event:    "系统",
+		EventMsg: "推送",
+		Parallel: true,
+		Deliver: func(rMsg string, _ *dto.DicVal) {
+			debugLog.Infof("[secluded] 系统推送: %v", rMsg)
+		},
+	}.Exec()
 }
 
 // pushCtxKey 是消息上下文存入词库实例 Val.G 的键名。

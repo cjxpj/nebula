@@ -548,9 +548,18 @@ func getWsGatewayUrl(bot *qqbot_msg.RouterQQBot) string {
 // OnRecv 收到事件回调（非 nil 时在分发前触发，供上层记录消息日志）
 var OnRecv func(bot *qqbot_msg.RouterQQBot, eventType string, data json.RawMessage)
 
+// OnDispatch 分发前回调（非 nil 时在 wsDispatch 开头触发，返回的 done 在分发结束后调用）。
+// 供上层在「账号维度」包裹一次完整的消息处理，用于并发限制与耗时统计。
+var OnDispatch func(bot *qqbot_msg.RouterQQBot) func()
+
 func wsDispatch(bot *qqbot_msg.RouterQQBot, t string, d json.RawMessage, id string) {
 	if OnRecv != nil {
 		OnRecv(bot, t, d)
+	}
+	if OnDispatch != nil {
+		if done := OnDispatch(bot); done != nil {
+			defer done()
+		}
 	}
 
 	payload := &qqbot_msg.Payload{

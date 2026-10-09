@@ -89,8 +89,8 @@ func (m *mockRT) Cond(expr string) bool {
 	return false
 }
 
-func (m *mockRT) SetVarInt(n string, v int) { m.vars[n] = strconv.Itoa(v) }
-func (m *mockRT) GetVar(n string) string    { return m.vars[n] }
+func (m *mockRT) SetVarInt(slot int32, n string, v int) { m.vars[n] = strconv.Itoa(v) }
+func (m *mockRT) GetVar(n string) string                { return m.vars[n] }
 
 // Resolve 模拟表达式求值：%var% 插值，其余原样返回。
 func (m *mockRT) Resolve(expr string) string {
@@ -165,7 +165,7 @@ func (m *mockRT) Append(s string) { m.out.WriteString(s) }
 func (m *mockRT) Output() string  { return m.out.String() }
 
 // LoopVarChanged 模拟：循环变量不被改写，正常步进。
-func (m *mockRT) LoopVarChanged(name string, cur int) (int, bool, bool) {
+func (m *mockRT) LoopVarChanged(slot int32, name string, cur int) (int, bool, bool) {
 	return cur, false, false
 }
 
@@ -276,7 +276,7 @@ func (m *mockRT) NodeJsBlock(lines []string, line int) string {
 }
 
 // Assign 模拟无副作用赋值：将右值写入变量表并返回空。
-func (m *mockRT) Assign(line int, text string, vType int8, prefix, suffix string) string {
+func (m *mockRT) Assign(line int, text string, vType int8, prefix, suffix string, prefixSlot, suffixSlot int32) string {
 	// 模拟算术赋值：n-:v 自减、n+:v 自增（循环计数场景），其余按字面量直接赋值
 	switch vType {
 	case 1: // n-:v

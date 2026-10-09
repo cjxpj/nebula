@@ -75,6 +75,21 @@ func Registers(list ...dto.RegisterDicFunc) error {
 	return nil
 }
 
+// regWG 跟踪异步注册（funcs.Setup / Registers）是否完成。
+// 引擎在 init 中异步注册函数，而按名单注销函数的调用方（如 dic/sandbox.Block）
+// 可能在注册完成前就执行；若不等待，会出现「注销早于注册」导致高危函数漏禁。
+var regWG sync.WaitGroup
+
+// BeginRegister 标记一批异步注册开始，返回在注册完成后应调用的 done（幂等）。
+func BeginRegister() func() {
+	regWG.Add(1)
+	var once sync.Once
+	return func() { once.Do(regWG.Done) }
+}
+
+// WaitRegister 阻塞至所有已开始的注册完成；未调用过 BeginRegister 时立即返回。
+func WaitRegister() { regWG.Wait() }
+
 // FuncInfo 单个已注册函数的补全信息（供 OPUI 前端代码补全与积木编程）
 type FuncInfo struct {
 	Name  string `json:"name"`

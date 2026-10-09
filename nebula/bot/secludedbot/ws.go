@@ -4,17 +4,16 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
-	"path"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
 
+	botdic "github.com/cjxpj/nebula/bot/botdic"
 	"github.com/cjxpj/nebula/debugLog"
 	dic_api "github.com/cjxpj/nebula/dic/api"
 	dic_dto "github.com/cjxpj/nebula/dic/dto"
 	"github.com/cjxpj/nebula/dto"
-	"github.com/cjxpj/nebula/utils"
 	"github.com/gorilla/websocket"
 )
 
@@ -262,29 +261,11 @@ func triggerStartupCallback() {
 		return
 	}
 
-	// 遍历 dic/*.n 词库
-	botDicPath := utils.NewFileQueue(path.Join(dto.ServerConfig.SecludedBot.FilePath, "dic"))
-	botDicList, err := botDicPath.GetFileList()
-	if err != nil {
-		debugLog.Infof("[secluded] get dic list for startup callback failed: %v", err)
-		return
-	}
-
-	for _, v := range botDicList {
-		if !strings.HasSuffix(v, ".n") {
-			continue
-		}
-		dicFile := v
-		go func() {
-			dicPath := path.Join(dto.ServerConfig.SecludedBot.FilePath, "dic", dicFile)
-			fileData, err := utils.NewFileQueue(dicPath).ReadFromFile()
-			if err != nil {
-				return
-			}
-
-			dic := dic_dto.NewDic(dicPath, fileData)
-
-			dic.AddFuncs(Funcs)
+	// 触发 [系统]启动
+	botdic.Run{
+		FilePath: dto.ServerConfig.SecludedBot.FilePath,
+		Funcs:    Funcs,
+		Prepare: func(dic *dic_dto.Dic) {
 			dic.SetFunc("调用", dto.DicFunc{
 				L: "2..",
 				Fn: func(d *dto.DicInputs) (any, error) {
@@ -299,20 +280,14 @@ func triggerStartupCallback() {
 					rMsg := dic_api.Api.DicRunPrivateVal(dic, d.Inputs.StringAfter(2), qqVal)
 					return strings.ReplaceAll(rMsg, "\\r", "\n"), nil
 				}})
-
-			// debugLog.Infof("[secluded] 启动触发: %s", dicPath)
-
-			// 触发 [系统]启动
-			rMsg := dic_api.Api.DicRunEvent(dic, "系统", "启动")
-
-			// debugLog.Infof("[secluded] 返回: %s", rMsg)
-
-			rMsg = strings.ReplaceAll(rMsg, "\\r", "\n")
-			if rMsg != "" {
-				fmt.Println(rMsg)
-			}
-		}()
-	}
+		},
+		Event:    "系统",
+		EventMsg: "启动",
+		Parallel: true,
+		Deliver: func(rMsg string, _ *dto.DicVal) {
+			fmt.Println(rMsg)
+		},
+	}.Exec()
 }
 
 // triggerDisconnectCallback 连接断开后触发词库回调
@@ -321,27 +296,10 @@ func triggerDisconnectCallback() {
 		return
 	}
 
-	botDicPath := utils.NewFileQueue(path.Join(dto.ServerConfig.SecludedBot.FilePath, "dic"))
-	botDicList, err := botDicPath.GetFileList()
-	if err != nil {
-		debugLog.Infof("[secluded] get dic list for disconnect callback failed: %v", err)
-		return
-	}
-
-	for _, v := range botDicList {
-		if !strings.HasSuffix(v, ".n") {
-			continue
-		}
-		dicFile := v
-		go func() {
-			dicPath := path.Join(dto.ServerConfig.SecludedBot.FilePath, "dic", dicFile)
-			fileData, err := utils.NewFileQueue(dicPath).ReadFromFile()
-			if err != nil {
-				return
-			}
-
-			dic := dic_dto.NewDic(dicPath, fileData)
-			dic.AddFuncs(Funcs)
+	botdic.Run{
+		FilePath: dto.ServerConfig.SecludedBot.FilePath,
+		Funcs:    Funcs,
+		Prepare: func(dic *dic_dto.Dic) {
 			dic.SetFunc("调用", dto.DicFunc{
 				L: "2..",
 				Fn: func(d *dto.DicInputs) (any, error) {
@@ -354,12 +312,12 @@ func triggerDisconnectCallback() {
 					rMsg := dic_api.Api.DicRunPrivateVal(dic, d.Inputs.StringAfter(2), qqVal)
 					return strings.ReplaceAll(rMsg, "\\r", "\n"), nil
 				}})
-
-			rMsg := dic_api.Api.DicRunPrivate(dic, "断开连接")
-			rMsg = strings.ReplaceAll(rMsg, "\\r", "\n")
-			if rMsg != "" {
-				fmt.Println(rMsg)
-			}
-		}()
-	}
+		},
+		Private:  true,
+		Trigger:  "断开连接",
+		Parallel: true,
+		Deliver: func(rMsg string, _ *dto.DicVal) {
+			fmt.Println(rMsg)
+		},
+	}.Exec()
 }

@@ -150,7 +150,7 @@ func webDicMultipleScriptWarnings(text string, blocks []webDicBlock) []dto.Build
 // pageKeys 为页面 HTML 里被 {{.键}} 引用过的变量名：脚本块赋值、页面取值是 .wn 的正常用法，
 // 这些变量不能判成「赋值后未被引用」。
 func webDicCheckLines(lines []string, lineNums []int, pageKeys map[string]bool) []dto.BuildWarning {
-	stack := newImportStack()
+	stack := newImportStack("")
 
 	checkFuncClosedLines(lines, lineNums, stack)
 

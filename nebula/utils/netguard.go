@@ -124,3 +124,43 @@ func GuardTransport(t *http.Transport) *http.Transport {
 	t.DialContext = GuardedDialContext
 	return t
 }
+
+// IsLAN 判断 IP 是否属于内网/本机范围：私有段、回环、未指定、链路本地以及多播。
+// 供按执行上下文（沙箱模式）判断目标地址时复用。
+func IsLAN(ip net.IP) bool {
+	return ip.IsLoopback() ||
+		ip.IsPrivate() ||
+		ip.IsUnspecified() ||
+		ip.IsLinkLocalUnicast() ||
+		ip.IsLinkLocalMulticast() ||
+		ip.IsInterfaceLocalMulticast() ||
+		ip.IsMulticast()
+}
+
+// CheckLANAddr 校验目标地址（host 或 host:port / URL 的 host）是否指向内网，
+// 命中内网返回错误。供沙箱执行模式在出网前做按执行的地址预检。
+func CheckLANAddr(addr string) error {
+	host := addr
+	if h, _, err := net.SplitHostPort(addr); err == nil {
+		host = h
+	}
+	if host == "" {
+		return fmt.Errorf("目标地址为空")
+	}
+	if ip := net.ParseIP(host); ip != nil {
+		if IsLAN(ip) {
+			return fmt.Errorf("沙箱模式禁止访问内网地址 %s", ip)
+		}
+		return nil
+	}
+	addrs, err := net.DefaultResolver.LookupIPAddr(context.Background(), host)
+	if err != nil {
+		return fmt.Errorf("解析域名 %s 失败: %w", host, err)
+	}
+	for _, ia := range addrs {
+		if IsLAN(ia.IP) {
+			return fmt.Errorf("沙箱模式禁止访问内网地址 %s", ia.IP)
+		}
+	}
+	return nil
+}

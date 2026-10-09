@@ -107,10 +107,57 @@ func (c *compiler) compileStmt(line int, text string) {
 		c.emit(Instr{Op: OpLine, Line: line, Text: text})
 	default:
 		if vt, vp, vs, ok := assignableLeaf(text); ok {
-			c.emit(Instr{Op: OpAssign, Line: line, Text: text, VType: vt, Prefix: vp, Suffix: vs})
+			c.emit(Instr{Op: OpAssign, Line: line, Text: text, VType: vt, Prefix: vp, Suffix: vs, PrefixSlot: -1, SuffixSlot: -1})
 			return
 		}
 		c.emit(Instr{Op: OpLine, Line: line, Text: text})
+	}
+}
+
+// fusableLoopBody 判断循环体是否可融合为 OpLoopFast：仅由无副作用的叶子指令
+// （OpNop/OpLine/OpAssign）组成时可融合。含跳转、嵌套块或循环控制的循环体不融合，
+// 以保持原指令流的跳转与帧语义完全不变。
+func fusableLoopBody(body []Instr) bool {
+	for i := range body {
+		switch body[i].Op {
+		case OpNop, OpLine, OpAssign:
+		default:
+			return false
+		}
+	}
+	return true
+}
+
+// ResolveSlots 为已编译指令预计算变量槽号：把普通变量名驻留为无锁槽号写入指令，
+// 使运行时热路径免去每轮的 map[string]int32 查表；特殊形式变量名保持 -1，运行时回退按名查表。
+// slot 由调用方注入（bc 包不依赖 dto 包），幂等可重复调用。
+func ResolveSlots(instrs []Instr, slot func(string) int32) {
+	for i := range instrs {
+		in := &instrs[i]
+		resolveSlot(in, slot)
+		// OpLoopFast 的循环体是独立副本，需一并解析其槽号。
+		for bi := range in.Body {
+			resolveSlot(&in.Body[bi], slot)
+		}
+	}
+}
+
+// resolveSlot 解析单条指令的变量槽号。
+func resolveSlot(in *Instr, slot func(string) int32) {
+	switch in.Op {
+	case OpLoop, OpLoopDyn, OpLoopRange, OpLoopFast:
+		in.VarSlot = slot(in.Text)
+	case OpAssign:
+		in.PrefixSlot = slot(in.Prefix)
+		in.SuffixSlot = -1
+		// 仅算术（自减/自增/乘法/除法）的右操作数可能为纯变量 %var%，提取其槽号。
+		if in.VType == 1 || in.VType == 2 || in.VType == 7 || in.VType == 8 {
+			if len(in.Suffix) > 2 && in.Suffix[0] == '%' && in.Suffix[len(in.Suffix)-1] == '%' {
+				if name := in.Suffix[1 : len(in.Suffix)-1]; !strings.Contains(name, "%") {
+					in.SuffixSlot = slot(name)
+				}
+			}
+		}
 	}
 }
 
@@ -748,8 +795,8 @@ func (c *compiler) compileFor(b *ast.Block) {
 	}
 
 	rest := strings.TrimPrefix(b.Open, "循环>")
-	// 循环入口指令：默认 OpLoop 无限循环（Arg=-1）。
-	instr := Instr{Op: OpLoop, Text: rest, Arg: -1}
+	// 循环入口指令：默认 OpLoop 无限循环（Arg=-1）。VarSlot 默认 -1（未解析槽号时按名查表）。
+	instr := Instr{Op: OpLoop, Text: rest, Arg: -1, VarSlot: -1}
 
 	// 「循环>变量=次数」：字面量整数下沉为 OpLoop；变量/函数等运行时求值次数下沉为 OpLoopDyn。
 	// 「循环>变量=起始~结束」：范围循环下沉为 OpLoopRange（字面量起止用 Start/Arg，动态用 Expr）。
@@ -789,7 +836,27 @@ func (c *compiler) compileFor(b *ast.Block) {
 	c.blocks = c.blocks[:len(c.blocks)-1]
 	c.frameDepth--
 
-	endPc := c.emit(Instr{Op: OpLoopEnd, Arg: bodyStart})
+	// 循环体若仅由「无副作用赋值」组成、且都不写循环变量，则循环变量在体内不可能被改写，
+	// 运行时免去每轮的改写检查（VarSafe）。出现任何其他指令（叶子行/嵌套块/跳转）即判定为不安全。
+	varSafe := true
+	for i := bodyStart; i < len(c.instrs); i++ {
+		if bi := &c.instrs[i]; bi.Op != OpAssign || bi.Prefix == instr.Text {
+			varSafe = false
+			break
+		}
+	}
+
+	// 循环体仅由叶子指令组成时融合为 OpLoopFast：VM 在单条指令内跑完整个循环，省去每轮一次
+	// OpLoopEnd 分派。循环体指令仍原样保留在指令流中（供 $跳行 行号映射与 PC 记数），仅额外持有副本。
+	// break/continue 已由上层判定（此循环内为空），故融合不改变跳转语义。
+	if c.instrs[loopIdx].Op == OpLoop && c.instrs[loopIdx].Arg >= 1 &&
+		len(top.breaks) == 0 && len(top.continues) == 0 && fusableLoopBody(c.instrs[bodyStart:]) {
+		c.instrs[loopIdx].Op = OpLoopFast
+		c.instrs[loopIdx].VarSafe = varSafe
+		c.instrs[loopIdx].Body = append([]Instr(nil), c.instrs[bodyStart:]...)
+	}
+
+	endPc := c.emit(Instr{Op: OpLoopEnd, Arg: bodyStart, VarSafe: varSafe})
 	popPc := c.emit(Instr{Op: OpLoopPop})
 	c.instrs[loopIdx].End = popPc
 

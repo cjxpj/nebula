@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -24,6 +25,7 @@ import (
 	dic_api "github.com/cjxpj/nebula/dic/api"
 	dic_dto "github.com/cjxpj/nebula/dic/dto"
 	"github.com/cjxpj/nebula/dic/funcs"
+	"github.com/cjxpj/nebula/dic/sandbox"
 	"github.com/cjxpj/nebula/dto"
 	"github.com/cjxpj/nebula/run"
 	dic_server "github.com/cjxpj/nebula/server"
@@ -31,21 +33,10 @@ import (
 	"github.com/gorilla/websocket"
 )
 
-// 执行词库
-func runDic(d *dto.DicInputs) (any, error) {
-	data := d.Inputs.String(1)
-	if data == "" {
-		return "", nil
-	}
-	dicPath := "执行"
-
-	// 触发
-	chufa := d.Inputs.StringDefault(2, "Main")
-
-	// 执行模式
-	dicType := d.Inputs.StringDefault(3, "独立")
-
-	calldicrun := dic_dto.NewDic(dicPath, data).
+// newChildDic 构建 $执行词库$ 系列执行的子词库：复制调用方自定义函数、注入「调用」异步回调，
+// 并按执行模式处理变量与函数的继承。
+func newChildDic(d *dto.DicInputs, path, data, dicType string) *dic_dto.Dic {
+	calldicrun := dic_dto.NewDic(path, data).
 		SetGlobal_v(d.V.G)
 	maps.Copy(calldicrun.MyFunc, d.Dic.MyFunc)
 	calldicrun.SetFunc("调用", dto.DicFunc{
@@ -63,6 +54,17 @@ func runDic(d *dto.DicInputs) (any, error) {
 		}})
 	calldicrun.ClassText = d.Dic.Class
 
+	// 沙箱上下文随执行链下传：调用方处于沙箱模式时，子词库沿用同一黑白名单与账号基准目录，
+	// 否则被执行的不可信内容可借 $执行词库$ 新建一个无沙箱标记的子词库来逃逸限制。
+	if d.Dic != nil && d.Dic.Sandbox {
+		calldicrun.Data.Sandbox = true
+		calldicrun.Data.SandboxFuncs = d.Dic.SandboxFuncs
+		calldicrun.Data.SandboxAllow = d.Dic.SandboxAllow
+		if d.Dic.Dir != "" {
+			calldicrun.Data.Dir = d.Dic.Dir
+		}
+	}
+
 	switch dicType {
 	case "继承":
 		fv := dto.NewVal()
@@ -75,9 +77,69 @@ func runDic(d *dto.DicInputs) (any, error) {
 		calldicrun.Set_v(d.V.P)
 		calldicrun.FuncText = d.Dic.DicFuncs
 	}
+	return calldicrun
+}
 
-	DicRes := dic_api.Api.DicRun(calldicrun, chufa)
-	return DicRes, nil
+// dicExec 「执行词库」系列入口共用的执行编排：执行模式、执行前注入子词库的变量，
+// 以及可选的子词库装饰（如沙箱标记）。$创建执行$ / $创建执行沙箱$ 的「执行」「执行文件」
+// 与顶层 $执行词库$ / $执行词库文件$ 都走这里，避免同一套编排逻辑各写一遍。
+type dicExec struct {
+	mode     string
+	vars     map[string]any
+	decorate func(d *dto.DicInputs, child *dic_dto.Dic)
+}
+
+// run 按当前执行模式执行词库数据；path 为子词库路径（影响「引入」/资源的相对解析）。
+func (e *dicExec) run(d *dto.DicInputs, path, data, chufa string) (any, error) {
+	return e.runMode(d, path, data, chufa, e.mode)
+}
+
+// runMode 以指定执行模式构建子词库并执行：先装饰子词库，再注入变量。
+func (e *dicExec) runMode(d *dto.DicInputs, path, data, chufa, mode string) (any, error) {
+	if data == "" {
+		return "", nil
+	}
+	child := newChildDic(d, path, data, mode)
+	if e.decorate != nil {
+		e.decorate(d, child)
+	}
+	for k, v := range e.vars {
+		child.Val.P.Set(k, v)
+	}
+	return dic_api.Api.DicRun(child, chufa), nil
+}
+
+// fns 返回各执行面对象共用的方法：设置变量 / 执行 / 执行文件。
+func (e *dicExec) fns() map[string]dto.DicFunc {
+	return map[string]dto.DicFunc{
+		"设置变量": {L: "2", Fn: func(d *dto.DicInputs) (any, error) {
+			e.vars[d.Inputs.String(1)] = d.Inputs.String(2)
+			return "", nil
+		}},
+		"执行": {L: "1|2", Fn: func(d *dto.DicInputs) (any, error) {
+			return e.run(d, "执行", d.Inputs.String(1), d.Inputs.StringDefault(2, "Main"))
+		}},
+		"执行文件": {L: "1|2", Fn: e.runFile},
+	}
+}
+
+// runFile 读取「参数1」指定的词库文件（路径限制在当前词库目录内）后按当前模式执行。
+func (e *dicExec) runFile(d *dto.DicInputs) (any, error) {
+	// 词库文件路径限制在当前词库目录内
+	if err := funcs.CheckFuncPath(d, 1); err != nil {
+		return "", err
+	}
+	data, err := utils.NewFileQueue(d.Inputs.String(1)).ReadFromFile()
+	if err != nil {
+		return "", nil
+	}
+	return e.run(d, "执行", data, d.Inputs.StringDefault(2, "Main"))
+}
+
+// 执行词库
+func runDic(d *dto.DicInputs) (any, error) {
+	return (&dicExec{}).runMode(d, "执行",
+		d.Inputs.String(1), d.Inputs.StringDefault(2, "Main"), d.Inputs.StringDefault(3, "独立"))
 }
 
 // 执行词库文件
@@ -91,47 +153,176 @@ func runDicFile(d *dto.DicInputs) (any, error) {
 	if err != nil {
 		return "", nil
 	}
+	return (&dicExec{}).runMode(d, dicPath,
+		data, d.Inputs.StringDefault(2, "Main"), d.Inputs.StringDefault(3, "独立"))
+}
 
-	// 触发
-	chufa := d.Inputs.StringDefault(2, "Main")
-
-	// 执行模式
-	dicType := d.Inputs.StringDefault(3, "独立")
-
-	calldicrun := dic_dto.NewDic(dicPath, data).
-		SetGlobal_v(d.V.G)
-	maps.Copy(calldicrun.MyFunc, d.Dic.MyFunc)
-
-	calldicrun.SetFunc("调用", dto.DicFunc{
-		L: "2..",
-		Fn: func(d *dto.DicInputs) (any, error) {
-			go func() {
-				sleepTime := d.Inputs.Int(1)
-				time.Sleep(time.Duration(sleepTime) * time.Millisecond)
-				rMsg := dic_api.Api.DicRunPrivate(calldicrun, d.Inputs.StringAfter(2))
-				if rMsg != "" {
-					debugLog.Infof("%v", rMsg)
-				}
-			}()
-			return "", nil
-		}})
-	calldicrun.ClassText = d.Dic.Class
-
-	switch dicType {
-	case "继承":
-		fv := dto.NewVal()
-		fv.Reset(d.V.P.GetAll())
-		calldicrun.Set_v(fv)
-		calldicrun.FuncText = d.Dic.DicFuncs
-	case "继承函数":
-		calldicrun.FuncText = d.Dic.DicFuncs
-	case "互通":
-		calldicrun.Set_v(d.V.P)
-		calldicrun.FuncText = d.Dic.DicFuncs
+// parseDicRunMode 校验执行模式取值：独立/继承/继承函数/互通。
+func parseDicRunMode(mode string) (string, error) {
+	switch mode {
+	case "独立", "继承", "继承函数", "互通":
+		return mode, nil
 	}
+	return "", fmt.Errorf("未知执行模式：%s（可选：独立/继承/继承函数/互通）", mode)
+}
 
-	DicRes := dic_api.Api.DicRun(calldicrun, chufa)
-	return DicRes, nil
+// 创建执行：返回词库执行器面对象，可设定执行模式、函数黑白名单，注入变量后执行词库内容或文件。
+// 黑白名单方法（禁用函数 / 删除禁用函数 / 允许函数 / 删除允许函数）与 $创建执行沙箱$ 共用：
+// 默认黑名单为内置高危名单，执行时给子词库打沙箱标记并按名单拦截。
+func createDicRunner(d *dto.DicInputs) (any, error) {
+	mode, err := parseDicRunMode(d.Inputs.StringDefault(1, "独立"))
+	if err != nil {
+		return nil, err
+	}
+	sb, instance := newSandboxExec(mode)
+	instance.LocalValue.Set("模式", mode)
+	instance.Fn["设置执行模式"] = dto.DicFunc{L: "1", Fn: func(d *dto.DicInputs) (any, error) {
+		mode, err := parseDicRunMode(d.Inputs.String(1))
+		if err != nil {
+			return "", err
+		}
+		sb.exec.mode = mode
+		instance.LocalValue.Set("模式", mode)
+		return "", nil
+	}}
+	return instance, nil
+}
+
+// 执行沙箱：$创建执行$ / $创建执行沙箱$ 返回的面对象所持有的状态。
+// blocked 为函数黑名单（初始为内置高危名单，可由「禁用函数」追加）；allowed 为函数白名单，
+// 一旦通过「允许函数」设置即进入白名单模式（仅允许名单内函数）。
+// 执行编排复用 dicExec，沙箱标记与黑白名单通过 decorate 注入子词库。
+// 黑白名单以面对象变量「禁用函数」「允许函数」为准（JSON 数组文本，如 ["创建终端","重启"]），
+// 增删名单与执行前都会读取变量，用户直接改变量即可生效。
+type dicSandbox struct {
+	instance *dto.DicClass
+	exec     *dicExec
+	blocked  map[string]bool
+	allowed  map[string]bool
+}
+
+// funcNameList 把函数名集合转为 JSON 数组文本（如 ["创建终端","重启"]），空集为 []。
+func funcNameList(set map[string]bool) string {
+	names := make([]string, 0, len(set))
+	for name := range set {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	b, err := json.Marshal(names)
+	if err != nil {
+		return "[]"
+	}
+	return string(b)
+}
+
+// syncSandboxVars 把当前黑白名单以 JSON 数组文本写回面对象变量，
+// 供 %实例.禁用函数% / %实例.允许函数% 读取。
+func syncSandboxVars(instance *dto.DicClass, sb *dicSandbox) {
+	instance.LocalValue.Set("禁用函数", funcNameList(sb.blocked))
+	instance.LocalValue.Set("允许函数", funcNameList(sb.allowed))
+}
+
+// parseNameList 把面对象变量值解析为函数名集合，仅支持 JSON 数组文本（如 ["创建终端","重启"]）。
+func parseNameList(v any) map[string]bool {
+	set := make(map[string]bool)
+	text, ok := v.(string)
+	if !ok || text == "" {
+		return set
+	}
+	var arr []string
+	if err := json.Unmarshal([]byte(text), &arr); err != nil {
+		return set
+	}
+	for _, name := range arr {
+		if name != "" {
+			set[name] = true
+		}
+	}
+	return set
+}
+
+// loadFromVars 以面对象变量为准重建黑白名单（执行与增删名单前调用），
+// 使用户直接修改 %实例.禁用函数% / %实例.允许函数% 即可生效。
+func (s *dicSandbox) loadFromVars() {
+	if s.instance == nil {
+		return
+	}
+	s.blocked = parseNameList(s.instance.LocalValue.Get("禁用函数"))
+	s.allowed = parseNameList(s.instance.LocalValue.Get("允许函数"))
+}
+
+// listFunc 构造黑/白名单的「增」或「删」方法：先以面对象变量为准重建名单，
+// 再逐个增删参数中的函数名，最后写回变量。allow 为 true 时作用于白名单。
+func (s *dicSandbox) listFunc(allow, del bool) dto.DicFunc {
+	return dto.DicFunc{L: "1..", Fn: func(d *dto.DicInputs) (any, error) {
+		s.loadFromVars()
+		target := s.blocked
+		if allow {
+			target = s.allowed
+		}
+		for _, name := range d.Inputs.StringAfterList(1) {
+			if del {
+				delete(target, name)
+			} else {
+				target[name] = true
+			}
+		}
+		syncSandboxVars(s.instance, s)
+		return "", nil
+	}}
+}
+
+// 创建执行沙箱：返回执行沙箱面对象，可设定函数黑白名单、注入变量，再以沙箱模式执行指定词库内容或文件。
+// 沙箱模式下：默认屏蔽黑名单内的函数（初始为内置高危名单），若设置了「允许函数」则转为白名单模式，
+// 仅放行名单内函数；文件读写限定在调用方所属账号（用户根目录）内，出网禁止访问内网地址。
+// 用法: s:$创建执行沙箱$ 然后 $s.禁用函数 创建终端 重启$（空格分隔多个函数名）再 $s.执行 <词库数据>$
+// 当前名单以面对象变量为准，可用 %s.禁用函数% / %s.允许函数% 读取（JSON 数组文本），
+// 直接改这两个变量即可改变黑白名单，无需再调用方法。
+func createDicSandbox(d *dto.DicInputs) (any, error) {
+	_, instance := newSandboxExec("独立")
+	instance.LocalValue.Set("模式", "沙箱")
+	return instance, nil
+}
+
+// newSandboxExec 构建带函数黑白名单拦截的执行面对象，供 $创建执行$ / $创建执行沙箱$ 共用：
+// 默认黑名单为内置高危名单；执行时以面对象变量为准重建名单，并给子词库打沙箱标记后按名单拦截。
+func newSandboxExec(mode string) (*dicSandbox, *dto.DicClass) {
+	sb := &dicSandbox{
+		blocked: make(map[string]bool),
+		allowed: make(map[string]bool),
+	}
+	for _, name := range sandbox.DefaultBlocked() {
+		sb.blocked[name] = true
+	}
+	// 复用共用的执行编排：执行前按变量重建名单并给子词库打沙箱标记。
+	sb.exec = &dicExec{
+		mode: mode,
+		vars: make(map[string]any),
+		decorate: func(d *dto.DicInputs, child *dic_dto.Dic) {
+			// 以面对象变量为准重建黑白名单，使用户直接改 %实例.禁用函数% / %实例.允许函数% 即可生效
+			sb.loadFromVars()
+			child.Data.Sandbox = true
+			// 沿用调用方词库目录以定位所属账号：文件操作类函数据此限定在账号根（用户根目录）内，
+			// $读/$写 限定在账号「储存」目录内（调用方目录为空时回退到引擎默认工作目录）
+			if d.Dic != nil && d.Dic.Dir != "" {
+				child.Data.Dir = d.Dic.Dir
+			}
+			child.Data.SandboxFuncs = sb.blocked
+			child.Data.SandboxAllow = sb.allowed
+		},
+	}
+	instance := &dto.DicClass{LocalValue: dto.NewVal()}
+	sb.instance = instance
+	instance.Fn = sb.exec.fns()
+	maps.Copy(instance.Fn, map[string]dto.DicFunc{
+		"禁用函数":   sb.listFunc(false, false),
+		"删除禁用函数": sb.listFunc(false, true),
+		"允许函数":   sb.listFunc(true, false),
+		"删除允许函数": sb.listFunc(true, true),
+	})
+	// 初始化面对象变量，使 %实例.禁用函数% / %实例.允许函数% 从创建起即可读取当前名单。
+	syncSandboxVars(instance, sb)
+	return sb, instance
 }
 
 // 回调词库
@@ -940,13 +1131,21 @@ func newServerDic(text string) *dic_dto.Dic {
 	lines := utils.SplitLines([]byte(text))
 	raw := []byte(text)
 	// 单行密文：整块解密后重新切分（与 NewDicFile 一致）
+	encrypted := false
 	if len(lines) == 1 {
 		if str, err := utils.Decrypt(utils.RemoveComments(lines[0]), appfiles.Key); err == nil {
 			lines = utils.SplitLines([]byte(str))
 			raw = []byte(str)
+			encrypted = true
 		}
 	}
-	split := run.BuildDicLinesWithRaw("服务器", lines, raw)
+	// 加密词库的编译产物含解密后的源码，不得写入磁盘缓存
+	var split *dto.BuildValue
+	if encrypted {
+		split = run.BuildDicLinesNoCache("服务器", lines, raw)
+	} else {
+		split = run.BuildDicLinesWithRaw("服务器", lines, raw)
+	}
 	return &dic_dto.Dic{
 		Data:   split,
 		Val:    dto.NewDicVal(),

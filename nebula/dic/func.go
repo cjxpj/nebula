@@ -9,6 +9,7 @@ import (
 	dic_api "github.com/cjxpj/nebula/dic/api"
 	dic_dto "github.com/cjxpj/nebula/dic/dto"
 	"github.com/cjxpj/nebula/dic/funcs"
+	"github.com/cjxpj/nebula/dic/sandbox"
 	"github.com/cjxpj/nebula/dto"
 	"github.com/cjxpj/nebula/run"
 	"github.com/cjxpj/nebula/utils"
@@ -301,6 +302,11 @@ func Funcs(d *dic_dto.DicFunc, dic_i *utils.DicInputs) (any, error) {
 			resDics.LineNums = f.LineNums
 			return dic_api.Api.DicRunLine(resDics, f.Content), nil
 		}
+	}
+
+	// 沙箱执行模式：按当前执行词库的沙箱黑白名单拦截（默认黑名单为内置高危名单），按执行上下文隔离。
+	if d.Dic != nil && d.Dic.Sandbox && sandbox.IsBlockedWith(d.Dic.SandboxFuncs, d.Dic.SandboxAllow, dic_i.String(0)) {
+		return handleFuncError(d, dic_i.String(0), fmt.Errorf("沙箱模式下禁止调用函数：%s", dic_i.String(0)), captureErr), nil
 	}
 
 	if fn, ok := d.Dic.MyFunc[dic_i.String(0)]; ok {

@@ -216,14 +216,10 @@ const (
 	// aiBuiltinSkillIDPrefix 内置技能快照的 ID 前缀（用户技能 ID 形如 sk<时间戳><随机>，不会冲突）
 	aiBuiltinSkillIDPrefix = "builtin:"
 
-	// 按词库类型划分的三类技能（与内置智能体一一对应）
-	aiBuiltinSkillWeb = "网页词库开发"
-	aiBuiltinSkillBot = "机器人词库开发"
-	aiBuiltinSkillAPI = "API词库开发"
-	// 三类词库通用的技能
-	aiBuiltinSkillSceneDev = "词库场景开发"
-	aiBuiltinSkillTools    = "词库工具能力"
-	aiBuiltinSkillSyntax   = "词库语法结构"
+	// 应用内置技能只保留两条：工具能力（按需读取）与语法结构（常驻）。
+	// 网页 / 机器人 / API 等场景的开发规则改由内置文档承载（search_docs / read_dic_doc 按需取用），不再单列技能。
+	aiBuiltinSkillTools  = "词库工具能力"
+	aiBuiltinSkillSyntax = "词库语法结构"
 )
 
 // 内置技能正文不写死在 Go 代码里，而是作为 embed 资源随程序分发：

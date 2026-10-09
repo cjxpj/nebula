@@ -176,7 +176,7 @@ func aiToolDefinitions() []map[string]any {
 				"path":    str("词库路径（相对应用目录，.n 或 .wn 结尾）"),
 				"content": str("要保存的完整词库代码"),
 			}, "path", "content"),
-		aiTool("save_dic_ir", "保存 .n 机器人/API 词库：传结构化 JSON 中间表示（ir），由后端统一转成 .n 源码后保存并编译（与 save_dic 的 .n 路径完全一致）。用本工具而非手写 .n 文本，可避免 .n 的缩进/空行/块闭合等格式错误；.wn 网页词库不支持，仍用 save_dic。ir 顶层：{\"header\":[语句],\"entries\":[词条]}；header 放 $引入$/初始化赋值等（可空数组）；entries 每个词条 {\"kind\":\"normal|func|inner|func_class|inner_class\",\"name\":\"触发词或方法名\",\"className\":\"类名(仅 class 类)\",\"body\":[语句]}。语句以 t 字段区分，字段随类型：output(输出一行,v)；assign(赋值,name,op=set|add|sub|raw,v)；raw(原样一行 .n 语句,text)；comment(注释,text)；import($引入,path)；if(如果,cond,do,else)；match(匹配,expr,cases=[{v,body}],def)；loopCount(循环次数,var,count,body)；loopRange(循环范围,var,from,to,body)；loopWhile(判断循环,cond,body)；foreach(遍历,mode=kv|v,key,val,target,body)；break/continue/stop/stopLoop/stopForeach(对应 >中断/>跳过/>终止/>终止循环/>终止遍历，无其它字段)；json(JSON框,name,kind=obj|arr,body=[kv语句])；kv(JSON键值,key,mode==|:=,v)；textblock(文本框赋值,name,sep,body)。",
+		aiTool("save_dic_ir", "保存 .n 机器人/API 词库（降级兜底用）：当用 save_dic 直接写 .n 文本、反复保存并 run_dic 运行仍拿不到正确结果（说明词库写错了）时，改用本工具传结构化 JSON 中间表示（ir），由后端统一转成 .n 源码后保存并编译（与 save_dic 的 .n 路径完全一致），用这种确定性生成拿到正确词库、提高准确率；不要把它当 .n 的默认写法，.wn 网页词库也不支持（仍用 save_dic）。ir 顶层：{\"header\":[语句],\"entries\":[词条]}；header 放 $引入$/初始化赋值等（可空数组）；entries 每个词条 {\"kind\":\"normal|func|inner|func_class|inner_class\",\"name\":\"触发词或方法名\",\"className\":\"类名(仅 class 类)\",\"body\":[语句]}。语句以 t 字段区分，字段随类型：output(输出一行,v)；assign(赋值,name,op=set|add|sub|raw,v)；raw(原样一行 .n 语句,text)；comment(注释,text)；import($引入,path)；if(如果,cond,do,else)；match(匹配,expr,cases=[{v,body}],def)；loopCount(循环次数,var,count,body)；loopRange(循环范围,var,from,to,body)；loopWhile(判断循环,cond,body)；foreach(遍历,mode=kv|v,key,val,target,body)；break/continue/stop/stopLoop/stopForeach(对应 >中断/>跳过/>终止/>终止循环/>终止遍历，无其它字段)；json(JSON框,name,kind=obj|arr,body=[kv语句])；kv(JSON键值,key,mode==|:=,v)；textblock(文本框赋值,name,sep,body)。",
 			map[string]any{
 				"path": str("词库路径（相对应用目录，.n 结尾）"),
 				"ir":   map[string]any{"type": "object", "description": "词库的 JSON 中间表示，结构见工具描述"},
@@ -1249,7 +1249,8 @@ func aiToolSaveDicN(p, content string) (string, string) {
 	return aiToolResult(resp), brief
 }
 
-// aiToolSaveDicIR 把结构化 JSON IR 转成 .n 后保存，供「AI 生成 JSON IR 而非手写 .n」的协作模式使用。
+// aiToolSaveDicIR 把结构化 JSON IR 转成 .n 后保存，作为降级兜底：用 save_dic 直接写 .n
+// 反复保存/运行仍拿不到正确结果时，改由 AI 生成 JSON IR、后端确定性转成正确 .n，提高准确率。
 // 与 save_dic 共用 aiToolSaveDicN（lint → 格式化 → 写入 → 编译），仅把 content 换成 ir 并统一转 .n。
 func aiToolSaveDicIR(argsJSON string) (string, string) {
 	var a struct {
