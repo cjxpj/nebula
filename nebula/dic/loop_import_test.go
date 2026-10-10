@@ -6,9 +6,9 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/cjxpj/nebula/dic/funcs"
 	dic_api "github.com/cjxpj/nebula/dic/api"
 	dic_dto "github.com/cjxpj/nebula/dic/dto"
+	"github.com/cjxpj/nebula/dic/funcs"
 	"github.com/cjxpj/nebula/dto"
 )
 
@@ -47,6 +47,7 @@ func TestFuncParamRule(t *testing.T) {
 		})
 	}
 }
+
 // TestFuncDefaultZeroParam 验证 [函数]名称（未声明规则）默认 0 个参数，不再走正则匹配。
 func TestFuncDefaultZeroParam(t *testing.T) {
 	chdirToAppWin()
@@ -97,6 +98,32 @@ func TestFuncCallFunc(t *testing.T) {
 	D := dic_dto.NewDic("t.n", funcDef+"$a$")
 	if got := dic_api.Api.DicRun(D, "Main"); got != "ok" {
 		t.Errorf("函数调用函数失败，期望 ok，实际 %q", got)
+	}
+}
+
+// TestFuncHaltScoped 验证 [函数] 体内的 >终止 只终止当前函数，调用方继续往下执行。
+func TestFuncHaltScoped(t *testing.T) {
+	chdirToAppWin()
+
+	// 函数体内 >终止 后的语句不再执行，但调用方后续语句继续执行。
+	const funcDef = "\n[函数]test\nA\n>终止\nB\n\nMain\n$test$\n继续"
+	D := dic_dto.NewDic("t.n", funcDef)
+	if got := dic_api.Api.DicRun(D, "Main"); got != "A继续" {
+		t.Errorf("函数内 >终止 应只终止该函数，期望 A继续，实际 %q", got)
+	}
+
+	// >终止 文案：终止并把文案一起输出，调用方继续执行。
+	const funcDefOut = "\n[函数]test\nA\n>终止 停\nB\n\nMain\n$test$\n继续"
+	D = dic_dto.NewDic("t.n", funcDefOut)
+	if got := dic_api.Api.DicRun(D, "Main"); got != "A停继续" {
+		t.Errorf("函数内 >终止 文案 应只终止该函数，期望 A停继续，实际 %q", got)
+	}
+
+	// >返回 是 >终止 的同义词：函数内同样只终止该函数。
+	const funcDefRet = "\n[函数]test\nA\n>返回\nB\n\nMain\n$test$\n继续"
+	D = dic_dto.NewDic("t.n", funcDefRet)
+	if got := dic_api.Api.DicRun(D, "Main"); got != "A继续" {
+		t.Errorf("函数内 >返回 应只终止该函数，期望 A继续，实际 %q", got)
 	}
 }
 

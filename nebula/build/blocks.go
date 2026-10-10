@@ -348,6 +348,8 @@ func blocksStmtToIR(b *blockState) *Stmt {
 		return &Stmt{T: "continue"}
 	case "nbc_stop":
 		return &Stmt{T: "stop"}
+	case "nbc_return":
+		return &Stmt{T: "return"}
 	case "nbc_stop_loop":
 		return &Stmt{T: "stopLoop"}
 	case "nbc_stop_foreach":
@@ -872,6 +874,8 @@ func irStmtToBlock(s Stmt) *blockState {
 		return &blockState{Type: "nbc_continue"}
 	case "stop":
 		return &blockState{Type: "nbc_stop"}
+	case "return":
+		return &blockState{Type: "nbc_return"}
 	case "stopLoop":
 		return &blockState{Type: "nbc_stop_loop"}
 	case "stopForeach":

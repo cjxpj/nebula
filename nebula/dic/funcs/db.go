@@ -71,10 +71,10 @@ var (
 	globalCache *sql.DB
 )
 
-// globalDBDir 定位全局库所在目录（应用数据目录下的数据库目录）。
-// 应用数据目录的定位见 utils.AppDataDir。
+// globalDBDir 定位全局库所在目录（应用数据目录下的数据库目录），
+// 即无词库上下文时的 dicDatabaseDir。
 func globalDBDir() string {
-	return filepath.Join(utils.AppDataDir(), utils.CurrentAccountLayout().DatabaseDir)
+	return dicDatabaseDir(nil)
 }
 
 // GetGlobalDB 返回引擎应用数据目录下 database/data.db 的进程级共享句柄，

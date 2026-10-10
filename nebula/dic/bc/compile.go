@@ -86,10 +86,13 @@ func (c *compiler) compileStmt(line int, text string) {
 		return
 	}
 	switch {
-	case text == ">终止":
+	case text == ">终止", text == ">返回":
+		// >返回 是 >终止 的同义词（均终止当前执行体）。
 		c.emit(Instr{Op: OpHalt})
 	case strings.HasPrefix(text, ">终止 ") && len(text) > len(">终止 "):
 		c.emit(Instr{Op: OpHaltOut, Text: text[len(">终止 "):]})
+	case strings.HasPrefix(text, ">返回 ") && len(text) > len(">返回 "):
+		c.emit(Instr{Op: OpHaltOut, Text: text[len(">返回 "):]})
 	case text == ">终止循环", text == ">中断":
 		if c.emitBreak(blockFor) {
 			return

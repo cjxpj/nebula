@@ -52,10 +52,12 @@ func NebulaSetDebug(on C.int) *C.char {
 // ================= 机器人生命周期 =================
 
 // NebulaBotStart 让机器人上线（幂等）。
+// cfgJSON 为可选的机器人开关：{"atCompat":true,"filterSlash":true,"debug":false,"robot":"","wsIntents":0}；
+// 空串或缺省字段沿用引擎默认值（全量艾特兼容 / 过滤开头斜杠开启）。
 //
 //export NebulaBotStart
-func NebulaBotStart(id C.longlong, appID, secret, name, filePath *C.char) *C.char {
-	return C.CString(dllBotStart(int64(id), C.GoString(appID), C.GoString(secret), C.GoString(name), C.GoString(filePath)))
+func NebulaBotStart(id C.longlong, appID, secret, name, filePath, cfgJSON *C.char) *C.char {
+	return C.CString(dllBotStart(int64(id), C.GoString(appID), C.GoString(secret), C.GoString(name), C.GoString(filePath), C.GoString(cfgJSON)))
 }
 
 // NebulaBotStop 让机器人下线。

@@ -496,6 +496,8 @@ func TestEquivHalt(t *testing.T) {
 	}{
 		"终止":   {[]string{"A", ">终止", "B"}, "A"},
 		"终止文案": {[]string{"A", ">终止 已停", "B"}, "A已停"},
+		"返回":   {[]string{"A", ">返回", "B"}, "A"},
+		"返回文案": {[]string{"A", ">返回 已停", "B"}, "A已停"},
 	} {
 		got, stopped := runNewState(tc.body, nil)
 		if got != tc.wantOut || !stopped {

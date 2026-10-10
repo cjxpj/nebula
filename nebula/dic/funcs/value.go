@@ -1,6 +1,7 @@
 package funcs
 
 import (
+	"fmt"
 	"strings"
 	"sync"
 	"time"
@@ -35,6 +36,18 @@ func threadVar(d *dto.DicInputs) (any, error) {
 	if res, ok := d.V.G.GetThreadRaw(d.Inputs.String(1)); ok {
 		return res, nil
 	}
+	return "", nil
+}
+
+// 设置系统变量：写引擎的系统级线程变量（键规范化为 _名_），供 Go 侧读取，
+// 如启动词库设置「终端词库路径 / 日志目录」等启动配置。参数：<名> <值>。
+// 名称两侧的下划线会被归一化（终端词库路径 / _终端词库路径_ / __终端词库路径__ 等价）。
+func setSystemVar(d *dto.DicInputs) (any, error) {
+	name := strings.Trim(strings.TrimSpace(d.Inputs.String(1)), "_")
+	if name == "" {
+		return "", fmt.Errorf("系统变量名不能为空")
+	}
+	dto.SetThreadVarRaw("_"+name+"_", d.Inputs.Get(2))
 	return "", nil
 }
 

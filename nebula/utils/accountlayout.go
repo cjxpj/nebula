@@ -96,37 +96,38 @@ func PrivateDirName() string {
 // 统一用正斜杠分隔，供拼接引入/资源目标路径与越界校验共用：
 //   - 词库位于账号目录内时取「<账号目录>/<私有目录>」相对应用数据目录的路径，
 //     即每个账号各自独立、互不可见的私有目录；
-//   - 其余情况（引擎独立运行、词库在账号目录之外、内存词库等）回退为私有目录名本身，
-//     即应用数据目录下的 private/，保证引擎独立运行行为不变。
+//   - 词库不在账号目录内（应用数据目录根下文件、账号目录之外、内存词库等）时取
+//     应用数据目录下的私有目录名。
 //
 // 账号目录的判定见 accountRelOf：宿主约定账号目录为词库根目录（沙箱/应用数据目录）
 // 的直接子目录（<BotsRoot>/<uid>），账号下所有子目录（机器人词库、网站目录等）都归到
 // 同一私有目录，不受固定子目录名限制。
 func PrivateRootRel(p string) string {
 	name := PrivateDirName()
-	if rel, ok := accountRelOf(p); ok {
+	if rel := accountRelOf(p); rel != "" {
 		return rel + "/" + name
 	}
 	return filepath.ToSlash(name)
 }
 
-// accountRelOf 判断词库路径 p 是否位于某个账号目录内，是则返回该账号目录
-// 相对应用数据目录的路径（正斜杠分隔）。相对路径按应用数据目录解析。
-func accountRelOf(p string) (string, bool) {
+// accountRelOf 返回词库路径 p 所属账号目录相对应用数据目录的路径（正斜杠分隔）；
+// p 不在任何账号目录内（含空路径、账号目录之外、内存词库）时返回空串。
+// 相对路径按应用数据目录解析。
+func accountRelOf(p string) string {
 	p = strings.TrimSpace(p)
 	if p == "" {
-		return "", false
+		return ""
 	}
 	base := GetAppDir()
 	if base == "" {
 		base = WorkDir()
 	}
 	if base == "" {
-		return "", false
+		return ""
 	}
 	absBase, err := filepath.Abs(base)
 	if err != nil {
-		return "", false
+		return ""
 	}
 	absP := p
 	if !filepath.IsAbs(absP) {
@@ -138,16 +139,16 @@ func accountRelOf(p string) (string, bool) {
 		if parent == absBase {
 			rel, err := filepath.Rel(absBase, dir)
 			if err != nil {
-				return "", false
+				return ""
 			}
 			rel = filepath.ToSlash(rel)
 			if rel == "" || rel == "." || rel == ".." || strings.HasPrefix(rel, "../") {
-				return "", false
+				return ""
 			}
-			return rel, true
+			return rel
 		}
 		if parent == dir {
-			return "", false
+			return ""
 		}
 	}
 }

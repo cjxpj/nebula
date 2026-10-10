@@ -198,6 +198,8 @@ func stmtsToLines(stmts []Stmt, indent int) []string {
 			lines = append(lines, pad+">跳过")
 		case "stop":
 			lines = append(lines, pad+">终止")
+		case "return":
+			lines = append(lines, pad+">返回")
 		case "stopLoop":
 			lines = append(lines, pad+">终止循环")
 		case "stopForeach":

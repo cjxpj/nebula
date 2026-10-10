@@ -169,6 +169,7 @@ func Setup() {
 
 		// ========== 变量 ==========
 		f{Name: "线程变量", L: "1|2", Fn: threadVar},
+		f{Name: "设置系统变量", L: "2", Fn: setSystemVar},
 		f{Name: "临时写", L: "2|3", Fn: tempWrite},
 		f{Name: "临时读", L: "1|2", Fn: tempRead},
 		f{Name: "变量", L: "1|2", Fn: localVar},

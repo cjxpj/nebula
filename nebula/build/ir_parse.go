@@ -408,6 +408,9 @@ func leafStmt(t string) Stmt {
 		return Stmt{T: "continue"}
 	case ">终止":
 		return Stmt{T: "stop"}
+	case ">返回":
+		// >返回 与 >终止 同义，IR 层用独立类型保持积木互逆。
+		return Stmt{T: "return"}
 	case ">终止循环":
 		return Stmt{T: "stopLoop"}
 	case ">终止遍历":

@@ -544,6 +544,65 @@ func (fq *FileQueue) DownloadAsync(url string, maxThreads int, showProgress bool
 	return task
 }
 
+// probeFileSize 探测目标文件大小与是否支持 Range 分段。
+// 优先用 HEAD；服务器不支持 HEAD（非 200 或请求出错）时回退 GET 探测：
+//   - 带 Range: bytes=0-0 请求返回 206：从 Content-Range 解析总大小，按支持 Range 处理；
+//   - 返回 200：说明服务器忽略 Range，用 Content-Length 当大小，按不支持 Range 处理。
+//
+// 返回 (文件大小, 是否支持 Range, 错误)。
+func probeFileSize(ctx context.Context, client *http.Client, url, userAgent string) (int64, bool, error) {
+	head, err := http.NewRequestWithContext(ctx, "HEAD", url, nil)
+	if err != nil {
+		return 0, false, err
+	}
+	head.Header.Set("User-Agent", userAgent)
+	if resp, err := client.Do(head); err == nil {
+		resp.Body.Close()
+		if resp.StatusCode == http.StatusOK {
+			if n := resp.ContentLength; n > 0 {
+				return n, strings.EqualFold(resp.Header.Get("Accept-Ranges"), "bytes"), nil
+			}
+			return 0, false, errors.New("无法获取 Content-Length")
+		}
+	}
+
+	// HEAD 不可用：回退 GET 探测（只取首个字节，读完头部即关闭）
+	get, err := http.NewRequestWithContext(ctx, "GET", url, nil)
+	if err != nil {
+		return 0, false, err
+	}
+	get.Header.Set("User-Agent", userAgent)
+	get.Header.Set("Range", "bytes=0-0")
+	resp, err := client.Do(get)
+	if err != nil {
+		return 0, false, err
+	}
+	defer resp.Body.Close()
+	switch resp.StatusCode {
+	case http.StatusPartialContent:
+		if total := parseContentRangeTotal(resp.Header.Get("Content-Range")); total > 0 {
+			return total, true, nil
+		}
+		return 0, false, errors.New("无法解析 Content-Range")
+	case http.StatusOK:
+		if n := resp.ContentLength; n > 0 {
+			return n, false, nil
+		}
+		return 0, false, errors.New("无法获取 Content-Length")
+	default:
+		return 0, false, fmt.Errorf("探测失败，状态码 %d", resp.StatusCode)
+	}
+}
+
+// parseContentRangeTotal 解析 Content-Range 头里的总大小，如 "bytes 0-0/12345" 返回 12345；解析不出返回 0。
+func parseContentRangeTotal(v string) int64 {
+	var start, end, total int64
+	if _, err := fmt.Sscanf(v, "bytes %d-%d/%d", &start, &end, &total); err == nil && total > 0 {
+		return total
+	}
+	return 0
+}
+
 // downloadWithDynamicThreads 分段多线程下载核心实现。
 // maxThreads <= 0 时在拿到文件大小后按大小自适应计算线程数（2~8）。
 func (fq *FileQueue) downloadWithDynamicThreads(ctx context.Context, url string, maxThreads int, showProgress bool, onProgress func(percent float64, downloaded, total int64)) error {
@@ -565,7 +624,7 @@ func (fq *FileQueue) downloadWithDynamicThreads(ctx context.Context, url string,
 	idleTimeout := 90 * time.Second
 	// -------------------------------------------------------------
 
-	// 1. HEAD 拿大小与 Range 支持
+	// 1. 探测文件大小与 Range 支持：优先 HEAD，服务器不支持 HEAD 时回退 GET 探测
 	client := &http.Client{
 		Timeout: 30 * time.Minute,
 		Transport: &http.Transport{
@@ -579,27 +638,13 @@ func (fq *FileQueue) downloadWithDynamicThreads(ctx context.Context, url string,
 			DialContext:           GuardedDialContext,
 		},
 	}
-	req, err := http.NewRequestWithContext(ctx, "HEAD", url, nil)
+	length, acceptRanges, err := probeFileSize(ctx, client, url, userAgent)
 	if err != nil {
 		return err
-	}
-	req.Header.Set("User-Agent", userAgent)
-	resp, err := client.Do(req)
-	if err != nil {
-		return err
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("HEAD 失败，状态码 %d", resp.StatusCode)
-	}
-	length := resp.ContentLength
-	if length <= 0 {
-		return errors.New("无法获取 Content-Length")
 	}
 	if autoThreads {
 		maxThreads = autoDownloadThreads(length)
 	}
-	acceptRanges := strings.EqualFold(resp.Header.Get("Accept-Ranges"), "bytes")
 	if !acceptRanges {
 		if showProgress {
 			debugLog.Infof("⚠️  服务器不支持 Range，强制单线程")
@@ -607,8 +652,14 @@ func (fq *FileQueue) downloadWithDynamicThreads(ctx context.Context, url string,
 		maxThreads = 1
 	}
 
-	// 2. 分片任务生成
-	chunks := int((length + chunkSize - 1) / chunkSize)
+	// 2. 分片任务生成：只有多线程才分片（每片单独带 Range 请求）；
+	// 单线程必须整文件一片，否则每片都不带 Range、各自请求到整个文件，合并后成倍膨胀导致文件损坏。
+	chunks := 1
+	partSize := length // 单线程：整文件一片
+	if maxThreads > 1 {
+		chunks = int((length + chunkSize - 1) / chunkSize)
+		partSize = chunkSize
+	}
 	type task struct {
 		idx   int
 		start int64
@@ -616,8 +667,8 @@ func (fq *FileQueue) downloadWithDynamicThreads(ctx context.Context, url string,
 	}
 	tasks := make(chan task, chunks)
 	for i := range chunks {
-		start := int64(i) * chunkSize
-		end := start + chunkSize - 1
+		start := int64(i) * partSize
+		end := start + partSize - 1
 		if end >= length {
 			end = length - 1
 		}
@@ -705,6 +756,7 @@ func (fq *FileQueue) downloadWithDynamicThreads(ctx context.Context, url string,
 					if ctx.Err() != nil {
 						break
 					}
+					var attemptBytes int64 // 本次尝试已累加进 downloaded 的字节，失败时回滚
 					if err := func() error {
 						req, _ := http.NewRequestWithContext(ctx, "GET", url, nil)
 						req.Header.Set("User-Agent", userAgent)
@@ -737,6 +789,7 @@ func (fq *FileQueue) downloadWithDynamicThreads(ctx context.Context, url string,
 							n, err := resp.Body.Read(buf)
 							if n > 0 {
 								f.Write(buf[:n])
+								attemptBytes += int64(n)
 								atomic.AddInt64(&downloaded, int64(n))
 							}
 							if err != nil {
@@ -751,6 +804,10 @@ func (fq *FileQueue) downloadWithDynamicThreads(ctx context.Context, url string,
 					}(); err == nil {
 						break
 					} else {
+						// 回滚本次失败尝试的字节，否则重试会重复累加，导致「已下载」超过「总大小」
+						if attemptBytes > 0 {
+							atomic.AddInt64(&downloaded, -attemptBytes)
+						}
 						_ = os.Remove(tmp) // 清理不完整分块，避免续传时误判为完整
 						if ctx.Err() != nil {
 							break

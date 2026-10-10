@@ -32,7 +32,9 @@ func checkSandboxNet(d *dto.DicInputs, target string) error {
 
 // 下载文件（异步，返回任务对象，可用「进度/速度/已下载/总大小/状态/错误」方法查询）
 func downloadFile(d *dto.DicInputs) (any, error) {
-	if !d.Inputs.LenOk(2) {
+	// 允许 2/3/4 个参数（与注册表 L="2|3|4" 一致）；LenOk(2) 只匹配「恰好 2 个」，
+	// 会让文档里带线程/打印参数的 3、4 参调用被误判为参数数量错误。
+	if !d.Inputs.LenOk(2, 3, 4) {
 		return "", errors.New("参数数量错误")
 	}
 	// 先校验保存路径并写回，再读取参数，避免用到未受限的原始路径
@@ -46,11 +48,12 @@ func downloadFile(d *dto.DicInputs) (any, error) {
 	savePath := d.Inputs.String(2)
 	threads := 0 // 默认 0：按文件大小自适应（2~8）
 	printOpen := false
-	if d.Inputs.LenOk(3) {
+	if d.Inputs.LenOk(3, 4) {
 		threads = d.Inputs.Int(3)
 	}
-	if d.Inputs.LenOk(4) && d.Inputs.String(4) == "true" {
-		printOpen = true
+	if d.Inputs.LenOk(4) {
+		// 用 Bool 读取：兼容 true/false 布尔值，避免 "true" 字符串以外的写法被漏判
+		printOpen = d.Inputs.Bool(4)
 	}
 	task := utils.NewFileQueue(savePath).DownloadAsync(url, threads, printOpen)
 	return newDownloadTaskClass(task), nil

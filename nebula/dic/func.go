@@ -239,14 +239,11 @@ func Funcs(d *dic_dto.DicFunc, dic_i *utils.DicInputs) (any, error) {
 				SetDic_v(d.Dic)
 
 			resRunDic := dic_api.Api.DicRunLine(RunDic, str)
+			// 函数体内 >终止：只终止当前函数（RunDic 拥有独立 Sys_v），不向上传播，
+			// 调用方继续往下执行。Halt 会同时置位 Halted 与 Stop，须先用 Halted 拦截，
+			// 否则会被下面的「执行报错」分支误判为函数报错。
 			if RunDic.Sys_v.Halted.Load() {
-				// 函数体内 >终止：保留已产出内容并向上传播终止。
-				if resRunDic != "" {
-					d.Output.Add(resRunDic)
-				}
-				d.Sys.Halted.Store(true)
-				d.Sys.Stop.Store(true)
-				return "", nil
+				return resRunDic, nil
 			}
 			if RunDic.Sys_v.Stop.Load() {
 				if captureErr {

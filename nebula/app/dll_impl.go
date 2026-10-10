@@ -110,12 +110,35 @@ func dllSetDebug(on int) string {
 
 // ================= 机器人注册表 =================
 
+// botOptions 是机器人上线的可选开关（宿主经 NebulaBotStart 的 cfgJSON 传入）。
+// 字段省略时沿用引擎默认值：全量艾特兼容 / 过滤开头斜杠开启，其余关闭。
+type botOptions struct {
+	AtCompat    bool   `json:"atCompat"`    // 全量消息艾特兼容
+	FilterSlash bool   `json:"filterSlash"` // 过滤开头斜杠指令前缀
+	Debug       bool   `json:"debug"`       // 调试打印
+	Robot       string `json:"robot"`       // 自定义 robot 变量值（union_openid 取不到时使用）
+	WsIntents   int    `json:"wsIntents"`   // WebSocket 监听码（0=按公域/私域自动探测）
+}
+
+// parseBotOptions 解析宿主下发的开关 JSON；空串或缺省字段沿用引擎默认值。
+func parseBotOptions(cfgJSON string) (botOptions, error) {
+	// 先填默认值，再由 JSON 覆盖出现的字段
+	opts := botOptions{AtCompat: true, FilterSlash: true}
+	if strings.TrimSpace(cfgJSON) != "" {
+		if err := json.Unmarshal([]byte(cfgJSON), &opts); err != nil {
+			return opts, err
+		}
+	}
+	return opts, nil
+}
+
 type botEntry struct {
 	id       int64
 	appID    string
 	secret   string
 	name     string
 	filePath string
+	opts     botOptions
 	router   *qqbot_msg.RouterQQBot
 }
 
@@ -143,13 +166,17 @@ func dllOnDispatch(bot *qqbot_msg.RouterQQBot) func() {
 	return accountBegin(path)
 }
 
-func dllBotStart(id int64, appID, secret, name, filePath string) string {
+func dllBotStart(id int64, appID, secret, name, filePath, cfgJSON string) string {
 	return guarded(func() string {
 		if appID == "" || secret == "" {
 			return errEnv("机器人 AppID 或密钥为空")
 		}
 		if filePath == "" {
 			return errEnv("机器人目录为空")
+		}
+		opts, err := parseBotOptions(cfgJSON)
+		if err != nil {
+			return errEnv("机器人配置解析失败: " + err.Error())
 		}
 		if err := os.MkdirAll(filepath.Join(filePath, utils.DicDirName()), 0o755); err != nil {
 			return errEnv(err.Error())
@@ -158,7 +185,7 @@ func dllBotStart(id int64, appID, secret, name, filePath string) string {
 		regMu.Lock()
 		old := reg[id]
 		// 已在运行且配置未变：幂等返回
-		if old != nil && old.appID == appID && old.secret == secret && old.name == name && old.filePath == filePath {
+		if old != nil && old.appID == appID && old.secret == secret && old.name == name && old.filePath == filePath && old.opts == opts {
 			regMu.Unlock()
 			return okEnv(nil)
 		}
@@ -168,14 +195,21 @@ func dllBotStart(id int64, appID, secret, name, filePath string) string {
 			delete(byRouter, old.router)
 			delete(byAppID, old.appID)
 		}
+		api := qqbot_msg.NewQQBot(appID, secret)
+		api.Debug = opts.Debug
 		router := &qqbot_msg.RouterQQBot{
-			Open:     true,
-			FilePath: filePath,
-			LastMsg:  cache.New(time.Hour, time.Minute),
-			API:      qqbot_msg.NewQQBot(appID, secret),
-			Remark:   name,
+			Open:        true,
+			FilePath:    filePath,
+			LastMsg:     cache.New(time.Hour, time.Minute),
+			API:         api,
+			Remark:      name,
+			AtCompat:    opts.AtCompat,
+			FilterSlash: opts.FilterSlash,
+			Debug:       opts.Debug,
+			Robot:       opts.Robot,
+			WsIntents:   opts.WsIntents,
 		}
-		e := &botEntry{id: id, appID: appID, secret: secret, name: name, filePath: filePath, router: router}
+		e := &botEntry{id: id, appID: appID, secret: secret, name: name, filePath: filePath, opts: opts, router: router}
 		reg[id] = e
 		byRouter[router] = e
 		byAppID[appID] = e

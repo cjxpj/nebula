@@ -1,8 +1,8 @@
 
 [f]_初始化
     $设置工作目录 NebulaData$
-    __终端词库路径__:private/system/terminal.n
-    __日志目录__:database/log
+    $设置系统变量 终端词库路径 private/system/terminal.n$
+    $设置系统变量 日志目录 database/log$
 
 Main #{
     // 启动服务器
